@@ -1,13 +1,22 @@
 {
   "manifest_version": 3,
   "name": "Помощник по таблице (Pro)",
-  "version": "5.0",
+  "version": "5.1",
   "description": "Авто-режим: ПКМ копирует ячейки, ПКМ вставляет в поиск + Дубликаты",
   "permissions": ["activeTab", "scripting", "storage", "clipboardWrite", "clipboardRead"],
+  
+  "icons": {
+    "16": "icon.png",
+    "48": "icon.png",
+    "128": "icon.png"
+  },
+  
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Настройки"
+    "default_title": "Настройки",
+    "default_icon": "icon.png"
   },
+  
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
