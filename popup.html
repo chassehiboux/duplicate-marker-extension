@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    body { width: 300px; font-family: sans-serif; padding: 12px; }
+    h3 { margin-top: 0; margin-bottom: 10px; font-size: 16px; }
+    
+    .row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+    .option { cursor: pointer; user-select: none; display: flex; align-items: center; }
+    
+    .strict-opt { 
+      font-size: 11px; color: #555; background: #f0f0f0; 
+      padding: 2px 6px; border-radius: 4px; border: 1px solid #ddd;
+    }
+    .strict-opt input { margin-right: 4px; }
+
+    .section-title { font-size: 14px; font-weight: bold; margin-bottom: 8px; color: #333; }
+    
+    .copy-mode-wrapper {
+      background-color: #e8f5e9; padding: 10px; border-radius: 6px; border: 1px solid #c8e6c9; margin-bottom: 15px;
+    }
+    .copy-label { font-weight: bold; color: #2e7d32; gap: 8px; margin-bottom: 5px; }
+    .help-text { font-size: 11px; color: #555; line-height: 1.5; margin-left: 24px; }
+    .key-hint { background: #fff; padding: 0 3px; border-radius: 3px; border: 1px solid #ccc; font-weight: bold; font-family: monospace; }
+
+    hr { border: 0; border-top: 1px solid #ddd; margin: 10px 0; }
+    
+    .btn-group { margin-top: 15px; display: flex; gap: 10px; }
+    button { flex: 1; padding: 8px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; }
+    #btn-check { background-color: #2196F3; color: white; }
+    #btn-check:hover { background-color: #1976D2; }
+    #btn-clear { background-color: #f44336; color: white; }
+    #btn-clear:hover { background-color: #d32f2f; }
+  </style>
+</head>
+<body>
+
+  <!-- Блок управления -->
+  <div class="copy-mode-wrapper">
+    <label class="option copy-label">
+      <input type="checkbox" id="setting_copy_mode"> 
+      ⚡ Турбо-режим
+    </label>
+    <div class="help-text">
+      ЯЧЕЙКА:<br>
+      • <span class="key-hint">ПКМ</span> — Копировать<br>
+      ПОИСК:<br>
+      • <span class="key-hint">ПКМ</span> — Вставить (заменить)<br>
+      • <span class="key-hint">ЛКМ</span> — Выделить всё
+    </div>
+  </div>
+
+  <div class="section-title">🔍 Искать дубликаты:</div>
+  
+  <div class="row"><label class="option"><input type="checkbox" id="list_DebtID"> DebtID</label></div>
+  <div class="row"><label class="option"><input type="checkbox" id="list_EDocID"> EdocID</label></div>
+  <div class="row"><label class="option"><input type="checkbox" id="list_AccAddress_AccountNumber"> ЛС</label></div>
+  <div class="row"><label class="option"><input type="checkbox" id="list_Individual_FullName"> ФИО</label></div>
+
+  <hr>
+  
+  <div class="row">
+    <label class="option"><input type="checkbox" id="list_CaseNumber"> Номер дела</label>
+    <label class="strict-opt" title="Дубль только при совпадении с ЛС"><input type="checkbox" id="strict_CaseNumber"> +ЛС</label>
+  </div>
+
+  <div class="row">
+    <label class="option"><input type="checkbox" id="list_EDNumber"> Номер ИД</label>
+    <label class="strict-opt" title="Дубль только при совпадении с ЛС"><input type="checkbox" id="strict_EDNumber"> +ЛС</label>
+  </div>
+
+  <div class="btn-group">
+    <button id="btn-check">Найти</button>
+    <button id="btn-clear">Сброс</button>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
