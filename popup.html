@@ -4,50 +4,131 @@
   <meta charset="UTF-8">
   <style>
     body { width: 300px; font-family: sans-serif; padding: 12px; }
-    h3 { margin-top: 0; margin-bottom: 10px; font-size: 16px; }
     
+    /* СЧЕТЧИК */
+    .counter-wrapper {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      padding: 15px;
+      border-radius: 8px;
+      margin-bottom: 15px;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+      position: relative;
+      text-align: center;
+    }
+    .counter-header { font-size: 12px; opacity: 0.9; margin-bottom: 10px; }
+    
+    /* Управление счетчиком */
+    .counter-controls {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 15px;
+    }
+    .counter-value { font-size: 36px; font-weight: bold; line-height: 1; min-width: 60px; }
+    
+    .ctrl-btn {
+      width: 30px; height: 30px;
+      border: 1px solid rgba(255,255,255,0.4);
+      background: rgba(255,255,255,0.1);
+      color: white;
+      border-radius: 50%;
+      cursor: pointer;
+      font-size: 18px;
+      display: flex; align-items: center; justify-content: center;
+      transition: background 0.2s;
+      user-select: none;
+    }
+    .ctrl-btn:hover { background: rgba(255,255,255,0.3); }
+    .ctrl-btn:active { transform: scale(0.95); }
+
+    .history-btn {
+      position: absolute;
+      top: 10px; right: 10px;
+      background: transparent; border: none; color: white;
+      cursor: pointer; font-size: 16px; opacity: 0.7;
+    }
+    .history-btn:hover { opacity: 1; }
+
+    #history-container {
+      display: none; margin-top: 10px;
+      background: rgba(0,0,0,0.2); border-radius: 4px; padding: 5px;
+      max-height: 100px; overflow-y: auto; text-align: left;
+    }
+    .history-item {
+      display: flex; justify-content: space-between;
+      font-size: 12px; padding: 4px 8px; border-bottom: 1px solid rgba(255,255,255,0.1);
+    }
+
+    /* ОБЩИЕ СТИЛИ ЭЛЕМЕНТОВ УПРАВЛЕНИЯ */
+    h3 { margin-top: 0; margin-bottom: 10px; font-size: 16px; }
     .row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
     .option { cursor: pointer; user-select: none; display: flex; align-items: center; }
-    
     .strict-opt { 
       font-size: 11px; color: #555; background: #f0f0f0; 
       padding: 2px 6px; border-radius: 4px; border: 1px solid #ddd;
     }
     .strict-opt input { margin-right: 4px; }
-
     .section-title { font-size: 14px; font-weight: bold; margin-bottom: 8px; color: #333; }
-    
     .copy-mode-wrapper {
-      background-color: #e8f5e9; padding: 10px; border-radius: 6px; border: 1px solid #c8e6c9; margin-bottom: 15px;
+      background-color: #e8f5e9; padding: 10px; border-radius: 6px; border: 1px solid #c8e6c9; margin-bottom: 15px; text-align: left;
     }
     .copy-label { font-weight: bold; color: #2e7d32; gap: 8px; margin-bottom: 5px; }
     .help-text { font-size: 11px; color: #555; line-height: 1.5; margin-left: 24px; }
     .key-hint { background: #fff; padding: 0 3px; border-radius: 3px; border: 1px solid #ccc; font-weight: bold; font-family: monospace; }
-
     hr { border: 0; border-top: 1px solid #ddd; margin: 10px 0; }
-    
     .btn-group { margin-top: 15px; display: flex; gap: 10px; }
     button { flex: 1; padding: 8px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; }
     #btn-check { background-color: #2196F3; color: white; }
     #btn-check:hover { background-color: #1976D2; }
     #btn-clear { background-color: #f44336; color: white; }
     #btn-clear:hover { background-color: #d32f2f; }
+
+    /* Стили для лога */
+    .log-wrapper { margin-top: 15px; }
+    .log-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+    #btn-clear-log { border: none; background: transparent; cursor: pointer; font-size: 16px; padding: 0; opacity: 0.6; }
+    #btn-clear-log:hover { opacity: 1; }
+    #log-container {
+      background-color: #f5f5f5;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      height: 150px;
+      overflow-y: auto;
+      padding: 8px;
+      font-family: monospace;
+      font-size: 11px;
+      line-height: 1.4;
+      color: #333;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
   </style>
 </head>
 <body>
 
-  <!-- Блок управления -->
+  <div class="counter-wrapper">
+    <div class="counter-header">Анализ исполнения (Сегодня)</div>
+    
+    <div class="counter-controls">
+      <div class="ctrl-btn" id="btn-minus">–</div>
+      <div class="counter-value" id="today-count">0</div>
+      <div class="ctrl-btn" id="btn-plus">+</div>
+    </div>
+
+    <button class="history-btn" id="btn-show-history" title="История">🕒</button>
+    
+    <div id="history-container"></div>
+  </div>
+
   <div class="copy-mode-wrapper">
     <label class="option copy-label">
       <input type="checkbox" id="setting_copy_mode"> 
       ⚡ Турбо-режим
     </label>
     <div class="help-text">
-      ЯЧЕЙКА:<br>
-      • <span class="key-hint">ПКМ</span> — Копировать<br>
-      ПОИСК:<br>
-      • <span class="key-hint">ПКМ</span> — Вставить (заменить)<br>
-      • <span class="key-hint">ЛКМ</span> — Выделить всё
+      ЯЧЕЙКА: <span class="key-hint">ПКМ</span> — Копировать<br>
+      ПОИСК: <span class="key-hint">ПКМ</span> — Вставить
     </div>
   </div>
 
@@ -59,20 +140,27 @@
   <div class="row"><label class="option"><input type="checkbox" id="list_Individual_FullName"> ФИО</label></div>
 
   <hr>
-  
   <div class="row">
     <label class="option"><input type="checkbox" id="list_CaseNumber"> Номер дела</label>
-    <label class="strict-opt" title="Дубль только при совпадении с ЛС"><input type="checkbox" id="strict_CaseNumber"> +ЛС</label>
+    <label class="strict-opt"><input type="checkbox" id="strict_CaseNumber"> +ЛС</label>
   </div>
-
   <div class="row">
     <label class="option"><input type="checkbox" id="list_EDNumber"> Номер ИД</label>
-    <label class="strict-opt" title="Дубль только при совпадении с ЛС"><input type="checkbox" id="strict_EDNumber"> +ЛС</label>
+    <label class="strict-opt"><input type="checkbox" id="strict_EDNumber"> +ЛС</label>
   </div>
 
   <div class="btn-group">
     <button id="btn-check">Найти</button>
     <button id="btn-clear">Сброс</button>
+  </div>
+
+  <hr>
+  <div class="log-wrapper">
+    <div class="log-header">
+      <span class="section-title">Журнал действий</span>
+      <button id="btn-clear-log" title="Очистить журнал">🗑️</button>
+    </div>
+    <div id="log-container">Журнал пуст.</div>
   </div>
 
   <script src="popup.js"></script>
