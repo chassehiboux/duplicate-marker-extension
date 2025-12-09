@@ -125,7 +125,17 @@ function processCounterLogic(edocid, tabId) {
             'stats_history': history,
             'processed_edocids': processed 
         }, () => {
-            addLog(`-> ДОБАВЛЕН. Счетчик: ${history[todayForHistory]}.`);
+            const newCount = history[todayForHistory];
+            addLog(`-> ДОБАВЛЕН. Счетчик: ${newCount}.`);
+
+            // Показываем уведомление
+            chrome.notifications.create({
+                type: 'basic',
+                iconUrl: 'icon.png',
+                title: 'Счетчик обновлен',
+                message: `Анализ исполнения засчитан! Сегодня: ${newCount} шт.`,
+                silent: true
+            });
         });
     });
 }

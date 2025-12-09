@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Помощник по таблице (Pro)",
-  "version": "5.4",
+  "version": "5.5",
   "description": "Авто-режим: ПКМ копирует ячейки, ПКМ вставляет в поиск + Дубликаты",
   "permissions": [
     "activeTab",
@@ -10,7 +10,8 @@
     "clipboardWrite",
     "clipboardRead",
     "sidePanel",
-    "webRequest"
+    "webRequest",
+    "notifications"
   ],
   "host_permissions": [
     "<all_urls>"
