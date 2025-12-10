@@ -378,32 +378,51 @@ function _incrementEditingCounter(edocid, path) {
         if (!processed[todayForProcessed]) {
             processed[todayForProcessed] = {};
         }
-        if (!Array.isArray(processed[todayForProcessed][path])) {
-            if (!processed[todayForProcessed][path]) {
-                processed[todayForProcessed][path] = [];
-            } else {
-                addLog(`Редакт. -> Попытка добавить edocid в поле, которое было отредактировано вручную. Пропущено.`);
-                return;
-            }
-        }
 
-        if (processed[todayForProcessed][path].includes(edocid)) {
+        let pathData = processed[todayForProcessed][path];
+
+        // --- Миграция / Инициализация pathData к новой структуре ---
+        // Новая структура: { base_count: number, unique_edocids: string[] }
+        if (!pathData) { // Если данных нет, инициализируем
+            pathData = { base_count: 0, unique_edocids: [] };
+            processed[todayForProcessed][path] = pathData;
+        } else if (Array.isArray(pathData)) { // Если старый формат (массив edocid), мигрируем
+            pathData = { base_count: pathData.length, unique_edocids: pathData };
+            processed[todayForProcessed][path] = pathData;
+            addLog(`Редакт. -> Миграция массива для ${path} в новую структуру.`);
+        } else if (typeof pathData === 'number') { // Если старый формат (число от ручной правки), мигрируем
+            pathData = { base_count: pathData, unique_edocids: [] }; // Сброс unique_edocids при ручной правке
+            processed[todayForProcessed][path] = pathData;
+            addLog(`Редакт. -> Миграция числа для ${path} в новую структуру.`);
+        }
+        // --- Конец Миграции ---
+
+
+        if (pathData.unique_edocids.includes(edocid)) {
             addLog(`Редакт. -> УЖЕ ЕСТЬ (${path} - ${edocid}). Счетчик НЕ увеличен.`);
             return;
         }
         
-        processed[todayForProcessed][path].push(edocid);
+        pathData.unique_edocids.push(edocid);
+        pathData.base_count++; // Увеличиваем общий счетчик для этого пути
 
+
+        // Пересчитываем общее количество за день
         let dayTotal = 0;
         Object.keys(processed[todayForProcessed]).forEach(p => {
             const item = processed[todayForProcessed][p];
-            dayTotal += typeof item === 'number' ? item : (Array.isArray(item) ? item.length : 0);
+            if (typeof item === 'object' && item !== null && 'base_count' in item) {
+                dayTotal += item.base_count;
+            } else { // Fallback для старых форматов, которые еще не были мигрированы
+                 dayTotal += typeof item === 'number' ? item : (Array.isArray(item) ? item.length : 0);
+            }
         });
         
         history[todayForHistory] = dayTotal;
         
-        const actionCount = processed[todayForProcessed][path].length;
+        const actionCount = pathData.base_count; // Это общее количество для данного пути
         const actionName = tags[path] || path;
+
 
         let dataToSet = {};
         dataToSet[historyKey] = history;

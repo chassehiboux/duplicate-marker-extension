@@ -78,7 +78,12 @@ document.addEventListener('DOMContentLoaded', () => {
       let todayTotalFromDetails = 0;
       Object.keys(todayProcessed).forEach(path => {
           const item = todayProcessed[path];
-          todayTotalFromDetails += typeof item === 'number' ? item : (Array.isArray(item) ? item.length : 0);
+          // Use base_count from the new structure, or fallback for old formats
+          if (typeof item === 'object' && item !== null && 'base_count' in item) {
+              todayTotalFromDetails += item.base_count;
+          } else {
+              todayTotalFromDetails += typeof item === 'number' ? item : (Array.isArray(item) ? item.length : 0);
+          }
       });
       
       if (todayCount !== todayTotalFromDetails) {
@@ -104,7 +109,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
       paths.forEach(path => {
           const item = processedData[path];
-          const count = typeof item === 'number' ? item : (Array.isArray(item) ? item.length : 0);
+          // Use base_count from the new structure, or fallback for old formats
+          const count = (typeof item === 'object' && item !== null && 'base_count' in item) ? 
+                         item.base_count : 
+                         (typeof item === 'number' ? item : (Array.isArray(item) ? item.length : 0));
           
           if (count > 0) {
               hasVisibleItems = true;
@@ -236,7 +244,12 @@ document.addEventListener('DOMContentLoaded', () => {
       if (processed[dateISO]) {
           Object.keys(processed[dateISO]).forEach(path => {
               const item = processed[dateISO][path];
-              dayTotal += typeof item === 'number' ? item : (Array.isArray(item) ? item.length : 0);
+              // Use base_count from the new structure, or fallback for old formats
+              if (typeof item === 'object' && item !== null && 'base_count' in item) {
+                  dayTotal += item.base_count;
+              } else {
+                  dayTotal += typeof item === 'number' ? item : (Array.isArray(item) ? item.length : 0);
+              }
           });
       }
       history[dateKey] = dayTotal;
@@ -308,7 +321,8 @@ document.addEventListener('DOMContentLoaded', () => {
                       let history = result[EDITING_STATS_KEY] || {};
                       let processed = result[PROCESSED_EDITS_KEY] || {};
                       if (processed[dateISO]) {
-                          processed[dateISO][path] = newCount;
+                          // Update to the new hybrid object format for manual edits
+                          processed[dateISO][path] = { base_count: newCount, unique_edocids: [] };
                           recalculateTotals(processed, history, dateISO);
                           chrome.storage.local.set({ [EDITING_STATS_KEY]: history, [PROCESSED_EDITS_KEY]: processed });
                       }
