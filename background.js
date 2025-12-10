@@ -118,10 +118,14 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     delete pendingEdocids[tabId];
   }
   // Также очищаем для нового счетчика
-  if (pendingEditingActions[tabId]) {
-    addLog(`Вкладка ${tabId} закрыта, удаляю ожидающее действие: ${JSON.stringify(pendingEditingActions[tabId])}`);
-    delete pendingEditingActions[tabId];
-  }
+  chrome.storage.session.get(['pendingEditingActions'], (sessionResult) => {
+    let currentPendingEditingActions = sessionResult.pendingEditingActions || {};
+    if (currentPendingEditingActions[tabId]) {
+      addLog(`Вкладка ${tabId} закрыта, удаляю ожидающее действие: ${JSON.stringify(currentPendingEditingActions[tabId])} из session storage.`);
+      delete currentPendingEditingActions[tabId];
+      chrome.storage.session.set({ 'pendingEditingActions': currentPendingEditingActions });
+    }
+  });
 });
 
 // --- ЭТАП 1: Слушаем ОТКРЫТИЕ формы (событие onCompleted) ---
@@ -226,7 +230,7 @@ function processCounterLogic(edocids, tabId) { // Change parameter name
 
 // --- Логика счетчика "Редактирование/Маркировка" ---
 
-let pendingEditingActions = {};
+
 
 // Паттерны для URL, которые мы отслеживаем.
 // 1. Все, что внутри /ovzid/actions/, кроме /markers_ovzid
@@ -270,9 +274,13 @@ chrome.webRequest.onCompleted.addListener((details) => {
                 const blocked = result.blocked_actions || [];
                 let pending = result.pending_actions || [];
 
-                // Store the array of edocids for the POST request
-                pendingEditingActions[details.tabId] = { id: edocids, path: path };
-                addLog(`Редакт. Открытие. Запомнил: ${JSON.stringify(pendingEditingActions[details.tabId])} для вкл. ${details.tabId}`);
+                chrome.storage.session.get(['pendingEditingActions'], (sessionResult) => {
+                    let currentPendingEditingActions = sessionResult.pendingEditingActions || {};
+                    currentPendingEditingActions[details.tabId] = { id: edocids, path: path };
+                    chrome.storage.session.set({ 'pendingEditingActions': currentPendingEditingActions }, () => {
+                        addLog(`Редакт. Открытие. Запомнил: ${JSON.stringify(currentPendingEditingActions[details.tabId])} для вкл. ${details.tabId}`);
+                    });
+                });
 
                 edocids.forEach(singleEdocid => { // Iterate over each edocid
                     if (blocked.includes(path)) {
@@ -320,15 +328,16 @@ chrome.webRequest.onBeforeRedirect.addListener((details) => {
         if (!isMatch) return;
         
         addLog(`Редакт. Сохранение (POST редирект в ${path}). Ищу действие для вкл. ${details.tabId}`);
-        const actionToProcess = pendingEditingActions[details.tabId];
+        chrome.storage.session.get(['pendingEditingActions'], (sessionResult) => {
+            const currentPendingEditingActions = sessionResult.pendingEditingActions || {};
+            const actionToProcess = currentPendingEditingActions[details.tabId];
 
-        // Если для этой вкладки есть "взведенное" действие, засчитываем его.
-        if (actionToProcess) {
-            // Используем ID и путь, сохраненные на этапе 1.
-            processEditingCounterLogic(actionToProcess.id, actionToProcess.path, details.tabId);
-        } else {
-            addLog(`Редакт. -> Для вкл. ${details.tabId} нет ожидающего действия. Пропущено.`);
-        }
+            if (actionToProcess) {
+                processEditingCounterLogic(actionToProcess.id, actionToProcess.path, details.tabId);
+            } else {
+                addLog(`Редакт. -> Для вкл. ${details.tabId} нет ожидающего действия. Пропущено.`);
+            }
+        });
     } catch (e) {
         addLog(`Редакт. Ошибка на этапе 2 (POST): ${e.message}`);
     }
@@ -341,9 +350,14 @@ chrome.webRequest.onBeforeRedirect.addListener((details) => {
 // Основная логика по добавлению в "pending" уже отработала на этапе GET.
 function processEditingCounterLogic(edocids, path, tabId) { // Change parameter name to edocids
     addLog(`Редакт. -> Сохранение для: path=${path}, edocids=${JSON.stringify(edocids)}`); // Log array
-    if (pendingEditingActions[tabId]) {
-        delete pendingEditingActions[tabId]; // Corrected typo
-    }
+
+    chrome.storage.session.get(['pendingEditingActions'], (sessionResult) => {
+        let currentPendingEditingActions = sessionResult.pendingEditingActions || {};
+        if (currentPendingEditingActions[tabId]) {
+            delete currentPendingEditingActions[tabId];
+            chrome.storage.session.set({ 'pendingEditingActions': currentPendingEditingActions });
+        }
+    });
 
     chrome.storage.local.get(['approved_actions'], (result) => {
         const approved = result.approved_actions || [];
