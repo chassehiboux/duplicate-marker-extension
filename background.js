@@ -27,6 +27,77 @@ const addLog = (message) => {
 chrome.runtime.onInstalled.addListener(() => {
   addLog("Расширение установлено/обновлено.");
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch((error) => addLog(`Ошибка настройки панели: ${error}`));
+  
+  // Инициализация хранилища для нового счетчика
+  chrome.storage.local.get(['approved_actions', 'blocked_actions', 'pending_actions'], (result) => {
+    if (!result.approved_actions) {
+      chrome.storage.local.set({ 'approved_actions': [] });
+    }
+    if (!result.blocked_actions) {
+      chrome.storage.local.set({ 'blocked_actions': [] });
+    }
+    if (!result.pending_actions) {
+      chrome.storage.local.set({ 'pending_actions': [] });
+    }
+  });
+});
+
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    switch (request.action) {
+        case 'approve_action': {
+            const { path, edocid, tag } = request.data;
+            addLog(`Получено утверждение для '${path}' с тегом '${tag || ''}'`);
+            
+            chrome.storage.local.get(['approved_actions', 'pending_actions', 'action_tags'], (result) => {
+                let approved = result.approved_actions || [];
+                let pending = result.pending_actions || [];
+                let tags = result.action_tags || {};
+
+                if (!approved.includes(path)) {
+                    approved.push(path);
+                }
+                
+                if (tag) {
+                    tags[path] = tag;
+                }
+
+                const newPending = pending.filter(p => !(p.path === path && p.edocid === edocid));
+
+                chrome.storage.local.set({ 
+                    'approved_actions': approved, 
+                    'pending_actions': newPending,
+                    'action_tags': tags
+                }, () => {
+                    // Счетчик НЕ увеличивается здесь, только при сохранении (POST)
+                    sendResponse({ success: true });
+                    chrome.runtime.sendMessage({ action: "pendingActionsUpdated" }); // Уведомить UI об изменениях
+                });
+            });
+            return true; // для асинхронного ответа
+        }
+        
+        case 'block_action': {
+            const { path, edocid } = request.data;
+            addLog(`Получена блокировка для '${path}'`);
+            chrome.storage.local.get(['blocked_actions', 'pending_actions'], (result) => {
+                let blocked = result.blocked_actions || [];
+                let pending = result.pending_actions || [];
+
+                if (!blocked.includes(path)) {
+                    blocked.push(path);
+                }
+
+                // Удаляем все ожидающие действия с этим путем
+                const newPending = pending.filter(p => p.path !== path);
+
+                chrome.storage.local.set({ 'blocked_actions': blocked, 'pending_actions': newPending }, () => {
+                    sendResponse({ success: true });
+                    chrome.runtime.sendMessage({ action: "pendingActionsUpdated" }); // Уведомить об изменении
+                });
+            });
+            return true; // для асинхронного ответа
+        }
+    }
 });
 
 chrome.action.onClicked.addListener((tab) => {
@@ -172,7 +243,7 @@ function getEdocIdFromUrl(url) {
 
 
 // ЭТАП 1: Слушаем открытие формы (GET-запрос с edocId)
-// Это "взводит" механизм для данной вкладки.
+// Это "взводит" механизм и решает, является ли действие новым.
 chrome.webRequest.onCompleted.addListener((details) => {
     if (details.method !== "GET" || details.statusCode < 200 || details.statusCode >= 300) return;
 
@@ -180,29 +251,51 @@ chrome.webRequest.onCompleted.addListener((details) => {
         const url = new URL(details.url);
         const path = url.pathname;
 
-        // Проверяем, соответствует ли URL нашим паттернам.
         const isMatch = editingUrlPatterns.some(pattern => pattern.test(path));
         if (!isMatch) return;
 
         const edocid = getEdocIdFromUrl(url);
 
         if (edocid) {
-            // Запоминаем, какую страницу мы открыли в этой вкладке.
-            // Используем сам path как ключ для статистики.
-            pendingEditingActions[details.tabId] = { id: edocid, path: path };
-            addLog(`Редакт. Открытие. Запомнил: ${JSON.stringify(pendingEditingActions[details.tabId])} для вкл. ${details.tabId}`);
+            chrome.storage.local.get(['approved_actions', 'blocked_actions', 'pending_actions'], (result) => {
+                const approved = result.approved_actions || [];
+                const blocked = result.blocked_actions || [];
+                let pending = result.pending_actions || [];
+
+                if (blocked.includes(path)) {
+                    addLog(`Редакт. Открытие. Путь ${path} заблокирован. Игнор.`);
+                    return; 
+                }
+
+                // Всегда запоминаем действие, чтобы поймать POST-запрос на сохранение.
+                pendingEditingActions[details.tabId] = { id: edocid, path: path };
+                addLog(`Редакт. Открытие. Запомнил: ${JSON.stringify(pendingEditingActions[details.tabId])} для вкл. ${details.tabId}`);
+                
+                // Если действие не утверждено, проверяем, не ожидает ли оно уже подтверждения.
+                if (!approved.includes(path)) {
+                    const isAlreadyPending = pending.some(p => p.path === path && p.edocid === edocid);
+                    if (!isAlreadyPending) {
+                        addLog(`Редакт. Открытие (новое). Действие '${path}' добавлено в ожидание.`);
+                        pending.push({ path: path, edocid: edocid });
+                        
+                        chrome.storage.local.set({ 'pending_actions': pending }, () => {
+                            chrome.runtime.sendMessage({ action: "pendingActionsUpdated" });
+                        });
+                    }
+                }
+            });
         }
     } catch (e) {
         addLog(`Редакт. Ошибка на этапе 1 (GET): ${e.message}`);
     }
 }, {
     urls: ["<all_urls>"],
-    types: ["main_frame", "sub_frame", "xmlhttprequest"] // Добавлен xmlhttprequest
+    types: ["main_frame", "sub_frame", "xmlhttprequest"]
 });
 
 
 // ЭТАП 2: Слушаем сохранение (POST-запрос, который вызывает редирект)
-// Это "спускает курок" и засчитывает действие.
+// Это "спускает курок" и засчитывает действие, ЕСЛИ оно было утверждено.
 chrome.webRequest.onBeforeRedirect.addListener((details) => {
     // Убедимся, что это успешный POST-запрос.
     if (details.method !== 'POST' || details.statusCode < 300 || details.statusCode >= 400) return;
@@ -233,11 +326,29 @@ chrome.webRequest.onBeforeRedirect.addListener((details) => {
 });
 
 
+// Упрощенная функция, которая срабатывает при сохранении.
+// Основная логика по добавлению в "pending" уже отработала на этапе GET.
 function processEditingCounterLogic(edocid, path, tabId) {
-    addLog(`Редакт. -> Обработка: path=${path}, edocid=${edocid}`);
+    addLog(`Редакт. -> Сохранение для: path=${path}, edocid=${edocid}`);
     if (pendingEditingActions[tabId]) {
         delete pendingEditingActions[tabId];
     }
+
+    chrome.storage.local.get(['approved_actions'], (result) => {
+        const approved = result.approved_actions || [];
+
+        if (approved.includes(path)) {
+            addLog(`Редакт. -> Действие '${path}' утверждено. Засчитываем.`);
+            _incrementEditingCounter(edocid, path);
+        } else {
+            addLog(`Редакт. -> Действие '${path}' еще не утверждено. Сохранение проигнорировано (ожидает подтверждения в UI).`);
+        }
+    });
+}
+
+// Старая логика, переименованная в "приватную" функцию
+function _incrementEditingCounter(edocid, path) {
+    addLog(`Редакт. -> Инкремент счетчика для: path=${path}, edocid=${edocid}`);
 
     const todayForHistory = new Date().toLocaleDateString('ru-RU');
     const todayForProcessed = new Date().toISOString().split('T')[0];
@@ -254,12 +365,7 @@ function processEditingCounterLogic(edocid, path, tabId) {
         if (!processed[todayForProcessed]) {
             processed[todayForProcessed] = {};
         }
-        // Убедимся, что для этого пути существует массив
         if (!Array.isArray(processed[todayForProcessed][path])) {
-            // Если там не массив (например, число после ручного редактирования),
-            // мы не можем добавить edocid. Логика здесь может быть сложной,
-            // но для простоты мы просто не будем обрабатывать дубликаты для измененных полей.
-            // Если же там ничего нет, создаем массив.
             if (!processed[todayForProcessed][path]) {
                 processed[todayForProcessed][path] = [];
             } else {
@@ -275,7 +381,6 @@ function processEditingCounterLogic(edocid, path, tabId) {
         
         processed[todayForProcessed][path].push(edocid);
 
-        // Пересчитываем общее количество за день
         let dayTotal = 0;
         Object.keys(processed[todayForProcessed]).forEach(p => {
             const item = processed[todayForProcessed][p];
@@ -284,10 +389,8 @@ function processEditingCounterLogic(edocid, path, tabId) {
         
         history[todayForHistory] = dayTotal;
         
-        // Получаем количество для конкретного действия
         const actionCount = processed[todayForProcessed][path].length;
         const actionName = tags[path] || path;
-
 
         let dataToSet = {};
         dataToSet[historyKey] = history;
@@ -295,11 +398,8 @@ function processEditingCounterLogic(edocid, path, tabId) {
 
         chrome.storage.local.set(dataToSet, () => {
             addLog(`Редакт. -> ДОБАВЛЕН. Общий счетчик: ${dayTotal}.`);
-
-            // Отправляем сообщение в popup для обновления
             chrome.runtime.sendMessage({ action: "updateEditingCounter" });
 
-            // Создаем улучшенное уведомление
             chrome.notifications.create({
                 type: 'basic',
                 iconUrl: 'icon.png',

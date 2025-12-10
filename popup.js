@@ -52,12 +52,17 @@ document.addEventListener('DOMContentLoaded', () => {
   const editingDetailsContainer = document.getElementById('editing-details-container');
   const btnEditingPlus = document.getElementById('btn-editing-plus');
   const btnEditingMinus = document.getElementById('btn-editing-minus');
+  
+  // Новые элементы для ожидающих действий
+  const pendingActionsContainer = document.getElementById('pending-actions-container');
+  const pendingActionsTitle = document.getElementById('pending-actions-title');
+
   const MANUAL_KEY = '_manual';
   
-  // Ключи для нового счетчика
   const EDITING_STATS_KEY = 'editing_stats';
   const PROCESSED_EDITS_KEY = 'processed_edits';
   const TAGS_KEY = 'action_tags';
+  const PENDING_ACTIONS_KEY = 'pending_actions';
 
   function updateEditingCounterUI() {
     chrome.storage.local.get([EDITING_STATS_KEY, PROCESSED_EDITS_KEY, TAGS_KEY], (result) => {
@@ -82,9 +87,8 @@ document.addEventListener('DOMContentLoaded', () => {
         editingCountEl.textContent = todayTotalFromDetails;
       }
 
-      // Новая логика отрисовки
       renderEditingHistory(history, processed, tags, editingHistoryContainer);
-      renderDetails(todayProcessed, editingDetailsContainer, tags, todayISO); // Для актуальных деталей
+      renderDetails(todayProcessed, editingDetailsContainer, tags, todayISO);
     });
   }
   
@@ -133,7 +137,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
       let hasHistory = false;
       dates.forEach(date => {
-        if (date === todayDate) return; // Не показывать сегодня в истории
+        if (date === todayDate) return;
 
         if (history[date] > 0) {
           hasHistory = true;
@@ -166,6 +170,39 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!hasHistory) {
           container.innerHTML = '<div class="history-item" style="justify-content: center; opacity: 0.7;">История пуста</div>';
       }
+  }
+
+  function renderPendingActions() {
+    chrome.storage.local.get([PENDING_ACTIONS_KEY, TAGS_KEY], (result) => {
+        const pending = result[PENDING_ACTIONS_KEY] || [];
+        const tags = result[TAGS_KEY] || {};
+
+        pendingActionsContainer.innerHTML = '';
+
+        if (pending.length === 0) {
+            pendingActionsTitle.style.display = 'none';
+            return;
+        }
+
+        pendingActionsTitle.style.display = 'block';
+
+        pending.forEach(action => {
+            const { path, edocid } = action;
+            const name = tags[path] || path;
+            const uniqueId = `pending-${path.replace(/[^a-zA-Z0-9]/g, '')}-${edocid}`;
+            
+            const div = document.createElement('div');
+            div.className = 'details-item';
+            div.id = uniqueId;
+            div.innerHTML = `
+                <span class="details-item-name" title="${path}">${name}</span>
+                <strong title="ID документа: ${edocid}">...${String(edocid).slice(-4)}</strong>
+                <button class="ctrl-btn approve-btn" data-path="${path}" data-edocid="${edocid}" title="Сохранить">✔️</button>
+                <button class="ctrl-btn block-btn" data-path="${path}" data-edocid="${edocid}" title="Заблокировать">❌</button>
+            `;
+            pendingActionsContainer.appendChild(div);
+        });
+    });
   }
 
   function convertDateToISO(dateString) {
@@ -210,7 +247,8 @@ document.addEventListener('DOMContentLoaded', () => {
       const path = target.dataset.path;
       const dateISO = target.dataset.date;
 
-      // --- TAG ---
+      if (!path || !dateISO) return;
+
       if (target.classList.contains('tag-btn')) {
           chrome.storage.local.get(TAGS_KEY, (result) => {
               const tags = result[TAGS_KEY] || {};
@@ -225,7 +263,6 @@ document.addEventListener('DOMContentLoaded', () => {
           return;
       }
 
-      // --- DELETE ---
       if (target.classList.contains('delete-btn')) {
           if (confirm(`Удалить запись "${path}" за ${dateISO}?`)) {
               chrome.storage.local.get([EDITING_STATS_KEY, PROCESSED_EDITS_KEY], (result) => {
@@ -241,7 +278,6 @@ document.addEventListener('DOMContentLoaded', () => {
           return;
       }
 
-      // --- EDIT ---
       if (target.classList.contains('edit-btn')) {
           const countSpan = document.getElementById(`count-${dateISO}-${path}`);
           if (!countSpan) return;
@@ -274,26 +310,43 @@ document.addEventListener('DOMContentLoaded', () => {
                       if (processed[dateISO]) {
                           processed[dateISO][path] = newCount;
                           recalculateTotals(processed, history, dateISO);
-                          chrome.storage.local.set({ [EDITING_STATS_KEY]: history, [PROCESSED_EDITS_KEY]: processed }, () => {
-                              // Manually revert UI without waiting for storage listener
-                              countSpan.textContent = newCount;
-                              container.replaceChild(countSpan, input);
-                              container.replaceChild(editBtn, saveBtn);
-                          });
+                          chrome.storage.local.set({ [EDITING_STATS_KEY]: history, [PROCESSED_EDITS_KEY]: processed });
                       }
                   });
               } else {
-                 // On invalid input, just revert
                  container.replaceChild(countSpan, input);
                  container.replaceChild(editBtn, saveBtn);
               }
           };
 
           saveBtn.addEventListener('click', saveChanges);
-          input.addEventListener('blur', saveChanges);
+          input.addEventListener('blur', saveChanges, { once: true });
           input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') saveChanges(); });
       }
   }
+
+  pendingActionsContainer.addEventListener('click', (e) => {
+    const target = e.target.closest('.ctrl-btn');
+    if (!target) return;
+
+    const { path, edocid } = target.dataset;
+    if (!path || !edocid) return;
+
+    if (target.classList.contains('approve-btn')) {
+        const newTag = prompt(`Введите тег для нового действия:\n${path}`, '');
+        // Если пользователь нажал "Отмена", newTag будет null. Пустая строка - это валидный ввод.
+        if (newTag !== null) {
+            chrome.runtime.sendMessage({ 
+                action: 'approve_action', 
+                data: { path, edocid, tag: newTag.trim() } 
+            });
+        }
+    }
+
+    if (target.classList.contains('block-btn')) {
+        chrome.runtime.sendMessage({ action: 'block_action', data: { path, edocid } });
+    }
+  });
 
   btnEditingPlus.addEventListener('click', () => modifyEditingCounter(1));
   btnEditingMinus.addEventListener('click', (e) => {
@@ -347,33 +400,28 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // === БЛОК НАСТРОЕК И ПОИСКА ДУБЛИКАТОВ ===
-
+  // (Код этого блока оставлен без изменений)
   const inputsSearch = ['list_DebtID', 'list_EDocID', 'list_AccAddress_AccountNumber', 'list_Individual_FullName', 'list_CaseNumber', 'list_EDNumber'];
   const inputsStrict = ['strict_CaseNumber', 'strict_EDNumber'];
   const copyModeToggle = document.getElementById('setting_copy_mode');
   const highlightModeToggle = document.getElementById('setting_highlight_mode');
   
   chrome.storage.local.get(null, (items) => {
-    // 1. Настройка режима копирования (включен по умолчанию)
     if (copyModeToggle) {
       if (items['setting_copy_mode'] === undefined) {
-        copyModeToggle.checked = true; // Включаем по умолчанию
+        copyModeToggle.checked = true;
         chrome.storage.local.set({ 'setting_copy_mode': true });
       } else {
         copyModeToggle.checked = items['setting_copy_mode'];
       }
     }
-
-    // 2. Настройка режима подсветки дублей
     if (highlightModeToggle) {
         highlightModeToggle.checked = items['setting_highlight_mode'] || false;
     }
-
-    // 3. Настройка чекбоксов для полей поиска (сохраняем состояние)
     inputsSearch.forEach(id => {
       const el = document.getElementById(id);
       if (el) {
-        if (items[id] === undefined) el.checked = true; // По умолчанию включены
+        if (items[id] === undefined) el.checked = true;
         else el.checked = items[id];
       }
     });
@@ -383,7 +431,6 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
-  // Сохранение настроек при их изменении
   if (copyModeToggle) {
     copyModeToggle.addEventListener('change', (e) => {
       chrome.storage.local.set({ 'setting_copy_mode': e.target.checked });
@@ -398,13 +445,11 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
   
-  // Сохраняем состояние чекбоксов полей при их изменении
   [...inputsSearch, ...inputsStrict].forEach(id => {
       const el = document.getElementById(id);
       if (el) {
           el.addEventListener('change', (e) => {
               chrome.storage.local.set({ [id]: e.target.checked });
-              // Если режим подсветки уже включен, сразу пере-подсвечиваем с новыми параметрами
               if (highlightModeToggle && highlightModeToggle.checked) {
                   runSearch('highlight');
               }
@@ -447,9 +492,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function updateLogsUI(logs) {
     if (!logContainer) return;
-    
-    logContainer.innerHTML = ''; // Очищаем контейнер
-
+    logContainer.innerHTML = '';
     if (logs && logs.length > 0) {
       logs.forEach(logMsg => {
         const logItem = document.createElement('div');
@@ -477,22 +520,22 @@ document.addEventListener('DOMContentLoaded', () => {
   // === ПЕРВИЧНАЯ ЗАГРУЗКА И СЛУШАТЕЛИ ===
   updateCounterUI();
   updateEditingCounterUI();
+  renderPendingActions();
   loadLogs();
   
-  // Слушатель изменений в хранилище для обновления UI
   chrome.storage.onChanged.addListener((changes) => {
     if (changes.stats_history) updateCounterUI();
-    // Реагируем на изменения новых ключей
-    if (changes[EDITING_STATS_KEY] || changes[PROCESSED_EDITS_KEY] || changes[TAGS_KEY]) {
+    if (changes[EDITING_STATS_KEY] || changes[PROCESSED_EDITS_KEY] || changes[TAGS_KEY] || changes[PENDING_ACTIONS_KEY]) {
         updateEditingCounterUI();
+        renderPendingActions();
     }
     if (changes[LOG_KEY]) updateLogsUI(changes[LOG_KEY].newValue);
   });
 
-  // Слушатель сообщений от background скрипта
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.action === "updateEditingCounter") {
+    if (message.action === "updateEditingCounter" || message.action === "pendingActionsUpdated") {
         updateEditingCounterUI();
+        renderPendingActions();
     }
   });
 });
