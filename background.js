@@ -46,6 +46,11 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     addLog(`Вкладка ${tabId} закрыта, удаляю ожидающий edocid: ${pendingEdocids[tabId]}`);
     delete pendingEdocids[tabId];
   }
+  // Также очищаем для нового счетчика
+  if (pendingEditingActions[tabId]) {
+    addLog(`Вкладка ${tabId} закрыта, удаляю ожидающее действие: ${JSON.stringify(pendingEditingActions[tabId])}`);
+    delete pendingEditingActions[tabId];
+  }
 });
 
 // --- ЭТАП 1: Слушаем ОТКРЫТИЕ формы (событие onCompleted) ---
@@ -58,10 +63,10 @@ chrome.webRequest.onCompleted.addListener((details) => {
             // Убеждаемся, что edocid действительно есть в параметрах
             if (edocid) {
                 pendingEdocids[details.tabId] = edocid;
-                addLog(`Открытие формы. Запомнил edocid: ${edocid} для вкл. ${details.tabId}`);
+                addLog(`Анализ. Открытие формы. Запомнил edocid: ${edocid} для вкл. ${details.tabId}`);
             }
         } catch(e) {
-            addLog(`Ошибка на этапе 1: ${e.message}`);
+            addLog(`Анализ. Ошибка на этапе 1: ${e.message}`);
         }
     }
 }, {
@@ -77,18 +82,18 @@ chrome.webRequest.onBeforeRedirect.addListener((details) => {
         const url = new URL(details.url);
         // Убеждаемся, что это наш URL сохранения (без параметров)
         if (url.pathname.includes("/ovzid/actions/execution-analysis") && url.search === '') {
-            addLog(`Сохранение (редирект). Ищу edocid для вкл. ${details.tabId}`);
+            addLog(`Анализ. Сохранение (редирект). Ищу edocid для вкл. ${details.tabId}`);
             const edocidToProcess = pendingEdocids[details.tabId];
 
             if (edocidToProcess) {
                 // Запускаем основную логику счетчика
                 processCounterLogic(edocidToProcess, details.tabId);
             } else {
-                addLog(`-> Для вкл. ${details.tabId} нет ожидающего edocid. Пропущено.`);
+                addLog(`Анализ. -> Для вкл. ${details.tabId} нет ожидающего edocid. Пропущено.`);
             }
         }
     } catch(e) {
-        addLog(`Ошибка на этапе 2: ${e.message}`);
+        addLog(`Анализ. Ошибка на этапе 2: ${e.message}`);
     }
 }, {
     urls: ["*://*/ovzid/actions/execution-analysis"] // Фильтр только для URL БЕЗ параметров
@@ -96,7 +101,7 @@ chrome.webRequest.onBeforeRedirect.addListener((details) => {
 
 // Основная функция, которая проверяет дубликаты за день и увеличивает счетчик.
 function processCounterLogic(edocid, tabId) {
-    addLog(`-> Обработка edocid: ${edocid}`);
+    addLog(`Анализ. -> Обработка edocid: ${edocid}`);
     // Сразу удаляем из ожидания, чтобы избежать двойного срабатывания.
     delete pendingEdocids[tabId];
 
@@ -111,10 +116,10 @@ function processCounterLogic(edocid, tabId) {
             processed[todayForProcessed] = [];
         }
 
-        addLog(`-> Проверка в списке [${todayForProcessed}]: [${processed[todayForProcessed].join(', ')}]`);
+        addLog(`Анализ. -> Проверка в списке [${todayForProcessed}]: [${processed[todayForProcessed].join(', ')}]`);
 
         if (processed[todayForProcessed].includes(edocid)) {
-            addLog(`-> УЖЕ ЕСТЬ. Счетчик НЕ увеличен.`);
+            addLog(`Анализ. -> УЖЕ ЕСТЬ. Счетчик НЕ увеличен.`);
             return;
         }
         
@@ -126,7 +131,7 @@ function processCounterLogic(edocid, tabId) {
             'processed_edocids': processed 
         }, () => {
             const newCount = history[todayForHistory];
-            addLog(`-> ДОБАВЛЕН. Счетчик: ${newCount}.`);
+            addLog(`Анализ. -> ДОБАВЛЕН. Счетчик: ${newCount}.`);
 
             // Показываем уведомление
             chrome.notifications.create({
@@ -139,5 +144,155 @@ function processCounterLogic(edocid, tabId) {
         });
     });
 }
+
+// --- Логика счетчика "Редактирование/Маркировка" ---
+
+let pendingEditingActions = {};
+
+// Паттерны для URL, которые мы отслеживаем.
+// 1. Все, что внутри /ovzid/actions/, кроме /markers_ovzid
+// 2. Все, что внутри /ordz/
+// 3. Добавлен updateWorkPlaceForm/manual для специфичного случая
+const editingUrlPatterns = [
+    /ovzid\/actions\/(?!markers_ovzid).*/,
+    /ordz\/.*/,
+    /ovzid\/updateWorkPlaceForm\/manual.*/
+];
+
+// Гибкая функция для извлечения ID документа из URL.
+// Ищет любой ключ, начинающийся с "edoc" (без учета регистра) и возвращает его значение.
+function getEdocIdFromUrl(url) {
+    for (const [key, value] of url.searchParams.entries()) {
+        if (key.toLowerCase().startsWith('edoc')) {
+            return value;
+        }
+    }
+    return null;
+}
+
+
+// ЭТАП 1: Слушаем открытие формы (GET-запрос с edocId)
+// Это "взводит" механизм для данной вкладки.
+chrome.webRequest.onCompleted.addListener((details) => {
+    if (details.method !== "GET" || details.statusCode < 200 || details.statusCode >= 300) return;
+
+    try {
+        const url = new URL(details.url);
+        const path = url.pathname;
+
+        // Проверяем, соответствует ли URL нашим паттернам.
+        const isMatch = editingUrlPatterns.some(pattern => pattern.test(path));
+        if (!isMatch) return;
+
+        const edocid = getEdocIdFromUrl(url);
+
+        if (edocid) {
+            // Запоминаем, какую страницу мы открыли в этой вкладке.
+            // Используем сам path как ключ для статистики.
+            pendingEditingActions[details.tabId] = { id: edocid, path: path };
+            addLog(`Редакт. Открытие. Запомнил: ${JSON.stringify(pendingEditingActions[details.tabId])} для вкл. ${details.tabId}`);
+        }
+    } catch (e) {
+        addLog(`Редакт. Ошибка на этапе 1 (GET): ${e.message}`);
+    }
+}, {
+    urls: ["<all_urls>"],
+    types: ["main_frame", "sub_frame", "xmlhttprequest"] // Добавлен xmlhttprequest
+});
+
+
+// ЭТАП 2: Слушаем сохранение (POST-запрос, который вызывает редирект)
+// Это "спускает курок" и засчитывает действие.
+chrome.webRequest.onBeforeRedirect.addListener((details) => {
+    // Убедимся, что это успешный POST-запрос.
+    if (details.method !== 'POST' || details.statusCode < 300 || details.statusCode >= 400) return;
+    
+    try {
+        const postUrl = new URL(details.url);
+        const path = postUrl.pathname;
+        
+        // Проверяем, что URL сохранения также соответствует паттернам.
+        const isMatch = editingUrlPatterns.some(pattern => pattern.test(path));
+        if (!isMatch) return;
+        
+        addLog(`Редакт. Сохранение (POST редирект в ${path}). Ищу действие для вкл. ${details.tabId}`);
+        const actionToProcess = pendingEditingActions[details.tabId];
+
+        // Если для этой вкладки есть "взведенное" действие, засчитываем его.
+        if (actionToProcess) {
+            // Используем ID и путь, сохраненные на этапе 1.
+            processEditingCounterLogic(actionToProcess.id, actionToProcess.path, details.tabId);
+        } else {
+            addLog(`Редакт. -> Для вкл. ${details.tabId} нет ожидающего действия. Пропущено.`);
+        }
+    } catch (e) {
+        addLog(`Редакт. Ошибка на этапе 2 (POST): ${e.message}`);
+    }
+}, {
+    urls: ["<all_urls>"] // Слушаем все и фильтруем внутри
+});
+
+
+function processEditingCounterLogic(edocid, path, tabId) {
+    addLog(`Редакт. -> Обработка: path=${path}, edocid=${edocid}`);
+    // Сразу удаляем, чтобы избежать двойного срабатывания при обновлении страницы.
+    if (pendingEditingActions[tabId]) {
+        delete pendingEditingActions[tabId];
+    }
+
+    const todayForHistory = new Date().toLocaleDateString('ru-RU');
+    const todayForProcessed = new Date().toISOString().split('T')[0];
+    
+    const historyKey = 'editing_stats';
+    const processedKey = 'processed_edits';
+
+    chrome.storage.local.get([historyKey, processedKey], (result) => {
+        let history = result[historyKey] || {};
+        let processed = result[processedKey] || {};
+
+        if (!processed[todayForProcessed]) {
+            processed[todayForProcessed] = {};
+        }
+        if (!processed[todayForProcessed][path]) {
+            processed[todayForProcessed][path] = [];
+        }
+
+        if (processed[todayForProcessed][path].includes(edocid)) {
+            addLog(`Редакт. -> УЖЕ ЕСТЬ (${path} - ${edocid}). Счетчик НЕ увеличен.`);
+            return;
+        }
+        
+        // Увеличиваем общий счетчик за день
+        const currentTotal = history[todayForHistory]?.total || 0;
+        history[todayForHistory] = { ...history[todayForHistory], total: currentTotal + 1 };
+        
+        // Увеличиваем счетчик для конкретного действия
+        const currentPathCount = history[todayForHistory]?.[path] || 0;
+        history[todayForHistory][path] = currentPathCount + 1;
+
+        processed[todayForProcessed][path].push(edocid);
+
+        let dataToSet = {};
+        dataToSet[historyKey] = history;
+        dataToSet[processedKey] = processed;
+
+        chrome.storage.local.set(dataToSet, () => {
+            const newTotalCount = history[todayForHistory].total;
+            addLog(`Редакт. -> ДОБАВЛЕН. Общий счетчик: ${newTotalCount}.`);
+
+            // Отправляем сообщение во все части расширения (например, в popup)
+            chrome.runtime.sendMessage({ action: "updateEditingCounter" });
+
+            chrome.notifications.create({
+                type: 'basic',
+                iconUrl: 'icon.png',
+                title: 'Счетчик обновлен',
+                message: `Редактирование засчитано! Сегодня: ${newTotalCount} шт.`,
+                silent: true
+            });
+        });
+    });
+}
+
 
 addLog("Background скрипт запущен.");
