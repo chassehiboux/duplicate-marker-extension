@@ -5,140 +5,154 @@
   <style>
     body { width: 300px; font-family: sans-serif; padding: 12px; }
     
-    /* СЧЕТЧИК */
-    .counter-wrapper {
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      color: white;
-      padding: 15px;
-      border-radius: 8px;
-      margin-bottom: 15px;
-      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-      position: relative;
-      text-align: center;
+    /* СТИЛЬ ДЛЯ ПЕРЕКЛЮЧАТЕЛЕЙ */
+    .switch { position: relative; display: inline-block; width: 40px; height: 22px; flex-shrink: 0; }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .slider {
+      position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0;
+      background-color: #ccc; transition: .4s;
     }
-    .counter-header { font-size: 12px; opacity: 0.9; margin-bottom: 10px; }
-    
-    /* Управление счетчиком */
-    .counter-controls {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 15px;
+    .slider:before {
+      position: absolute; content: ""; height: 16px; width: 16px; left: 3px; bottom: 3px;
+      background-color: white; transition: .4s;
     }
-    .counter-value { font-size: 36px; font-weight: bold; line-height: 1; min-width: 60px; }
-    
-    .ctrl-btn {
-      width: 30px; height: 30px;
-      border: 1px solid rgba(255,255,255,0.4);
-      background: rgba(255,255,255,0.1);
-      color: white;
-      border-radius: 50%;
-      cursor: pointer;
-      font-size: 18px;
-      display: flex; align-items: center; justify-content: center;
-      transition: background 0.2s;
-      user-select: none;
-    }
-    .ctrl-btn:hover { background: rgba(255,255,255,0.3); }
-    .ctrl-btn:active { transform: scale(0.95); }
+    input:checked + .slider { background-color: #2196F3; }
+    input:focus + .slider { box-shadow: 0 0 1px #2196F3; }
+    input:checked + .slider:before { transform: translateX(18px); }
+    .slider.round { border-radius: 22px; }
+    .slider.round:before { border-radius: 50%; }
 
-    .history-btn {
-      position: absolute;
-      top: 10px; right: 10px;
-      background: transparent; border: none; color: white;
+    /* СЧЕТЧИКИ */
+    .counter-wrapper {
+      background: linear-gradient(135deg, #a9b354 0%, #337c29 100%);
+      color: white; padding: 15px; border-radius: 8px; margin-bottom: 15px;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.1); position: relative; text-align: center;
+    }
+    .counter-wrapper.editing { background: linear-gradient(135deg, #54a2b3 0%, #295c7c 100%); }
+    .counter-header { font-size: 12px; opacity: 0.9; margin-bottom: 10px; }
+    .counter-controls { display: flex; align-items: center; justify-content: center; gap: 15px; }
+    .counter-value { font-size: 36px; font-weight: bold; line-height: 1; min-width: 60px; }
+    .ctrl-btn {
+      width: 30px; height: 30px; border: 1px solid rgba(255,255,255,0.4); background: rgba(255,255,255,0.1);
+      color: white; border-radius: 50%; cursor: pointer; font-size: 18px;
+      display: flex; align-items: center; justify-content: center; transition: background 0.2s; user-select: none;
+    }
+    .history-btn, .details-btn {
+      position: absolute; top: 10px; background: transparent; border: none; color: white;
       cursor: pointer; font-size: 16px; opacity: 0.7;
     }
-    .history-btn:hover { opacity: 1; }
-
-    #history-container {
-      display: none; margin-top: 10px;
-      background: rgba(0,0,0,0.2); border-radius: 4px; padding: 5px;
-      max-height: 100px; overflow-y: auto; text-align: left;
+    .history-btn { right: 10px; }
+    .details-btn { left: 10px; }
+    #history-container, #editing-history-container, #editing-details-container {
+      display: none; margin-top: 10px; background: rgba(0,0,0,0.2); border-radius: 4px; padding: 5px;
+      max-height: 140px; overflow-y: auto; text-align: left;
     }
-    .history-item {
-      display: flex; justify-content: space-between;
+    .history-item, .details-item {
+      display: flex; justify-content: space-between; align-items: center;
       font-size: 12px; padding: 4px 8px; border-bottom: 1px solid rgba(255,255,255,0.1);
     }
+    .details-item-name { flex-grow: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-right: 8px; }
+    .tag-btn {
+      background: rgba(255,255,255,0.2); border: none; color: white; border-radius: 3px; cursor: pointer;
+      font-size: 10px; padding: 2px 5px; margin-left: 8px; flex-shrink: 0;
+    }
 
-    /* ОБЩИЕ СТИЛИ ЭЛЕМЕНТОВ УПРАВЛЕНИЯ */
-    h3 { margin-top: 0; margin-bottom: 10px; font-size: 16px; }
+    /* ОБЩИЕ СТИЛИ */
+    .settings-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+      padding: 10px;
+    }
+    .settings-row.boxed {
+      background-color: #e8f5e9;
+      border-radius: 6px;
+      border: 1px solid #c8e6c9;
+    }
+    .settings-row .settings-label { font-size: 14px; font-weight: bold; }
+    
     .row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
     .option { cursor: pointer; user-select: none; display: flex; align-items: center; }
     .strict-opt { 
-      font-size: 11px; color: #555; background: #f0f0f0; 
-      padding: 2px 6px; border-radius: 4px; border: 1px solid #ddd;
+      font-size: 11px; color: #555; background: #f0f0f0; padding: 2px 6px;
+      border-radius: 4px; border: 1px solid #ddd;
     }
     .strict-opt input { margin-right: 4px; }
-    .section-title { font-size: 14px; font-weight: bold; margin-bottom: 8px; color: #333; }
-    .copy-mode-wrapper {
-      background-color: #e8f5e9; padding: 10px; border-radius: 6px; border: 1px solid #c8e6c9; margin-bottom: 15px; text-align: left;
-    }
-    .copy-label { font-weight: bold; color: #2e7d32; gap: 8px; margin-bottom: 5px; }
-    .help-text { font-size: 11px; color: #555; line-height: 1.5; margin-left: 24px; }
+    
+    .help-text { font-size: 11px; color: #555; line-height: 1.5; margin-top: 5px; }
     .key-hint { background: #fff; padding: 0 3px; border-radius: 3px; border: 1px solid #ccc; font-weight: bold; font-family: monospace; }
-    hr { border: 0; border-top: 1px solid #ddd; margin: 10px 0; }
-    .btn-group { margin-top: 15px; display: flex; gap: 10px; }
-    button { flex: 1; padding: 8px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; }
-    #btn-check { background-color: #2196F3; color: white; }
-    #btn-check:hover { background-color: #1976D2; }
-    #btn-clear { background-color: #f44336; color: white; }
-    #btn-clear:hover { background-color: #d32f2f; }
-
-    /* Стили для лога */
+    hr { border: 0; border-top: 1px solid #ddd; margin: 15px 0; }
     .log-wrapper { margin-top: 15px; }
-    .log-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-    #btn-clear-log { border: none; background: transparent; cursor: pointer; font-size: 16px; padding: 0; opacity: 0.6; }
-    #btn-clear-log:hover { opacity: 1; }
+    
+    /* Стили для лога */
     #log-container {
-      background-color: #f5f5f5;
-      border: 1px solid #ddd;
-      border-radius: 4px;
-      height: 150px;
-      overflow-y: auto;
-      padding: 8px;
-      font-family: monospace;
-      font-size: 11px;
-      line-height: 1.4;
-      color: #333;
-      white-space: pre-wrap;
-      word-wrap: break-word;
+      background-color: #f5f5f5; border: 1px solid #ddd; border-radius: 4px; height: 150px;
+      overflow-y: auto; padding: 8px; font-family: monospace;
+      word-wrap: break-word; /* Старое свойство, оставляем для совместимости */
+      font-size: 10px; /* Базовый размер шрифта для контейнера */
+    }
+    .log-entry {
+      font-size: 10px; /* Явный и читаемый мелкий шрифт */
+      line-height: 1.4; /* Улучшенный интервал для читаемости */
+      padding-bottom: 3px;
+      white-space: pre-wrap; /* ГЛАВНОЕ: Уважаем переносы строк и переносим длинный текст */
+      word-break: break-word; /* Принудительно разрываем очень длинные слова/ссылки без пробелов */
     }
   </style>
 </head>
 <body>
 
   <div class="counter-wrapper">
-    <div class="counter-header">Анализ исполнения (Сегодня)</div>
-    
+    <div class="counter-header">Анализ исполнения</div>
     <div class="counter-controls">
       <div class="ctrl-btn" id="btn-minus">–</div>
       <div class="counter-value" id="today-count">0</div>
       <div class="ctrl-btn" id="btn-plus">+</div>
     </div>
-
     <button class="history-btn" id="btn-show-history" title="История">🕒</button>
-    
     <div id="history-container"></div>
   </div>
-
-  <div class="copy-mode-wrapper">
-    <label class="option copy-label">
-      <input type="checkbox" id="setting_copy_mode"> 
-      ⚡ Турбо-режим
-    </label>
-    <div class="help-text">
-      ЯЧЕЙКА: <span class="key-hint">ПКМ</span> — Копировать<br>
-      ПОИСК: <span class="key-hint">ПКМ</span> — Вставить
+  
+  <div class="counter-wrapper editing">
+    <div class="counter-header">Редактирование/Маркировка</div>
+    <div class="counter-controls">
+      <div class="ctrl-btn" id="btn-editing-minus">–</div>
+      <div class="counter-value" id="editing-count">0</div>
+      <div class="ctrl-btn" id="btn-editing-plus">+</div>
     </div>
+    <button class="details-btn" id="btn-show-editing-details" title="Детали">📊</button>
+    <button class="history-btn" id="btn-show-editing-history" title="История">🕒</button>
+    <div id="editing-history-container"></div>
+    <div id="editing-details-container"></div>
   </div>
 
-  <div class="section-title">🔍 Искать дубликаты:</div>
+  <div class="settings-row boxed">
+    <div>
+      <span class="settings-label" style="color: #2e7d32;">⚡ Режим быстрого копирования</span>
+      <div class="help-text">
+        <span class="key-hint">ПКМ</span> на ячейке - Копировать<br>
+        <span class="key-hint">ПКМ</span> на фильтре - Вставить
+      </div>
+    </div>
+    <label class="switch">
+      <input type="checkbox" id="setting_copy_mode">
+      <span class="slider round"></span>
+    </label>
+  </div>
+
+  <div class="settings-row" style="padding-top: 0; padding-bottom: 0;">
+    <span class="settings-label">🔍 Поиск дубликатов</span>
+    <label class="switch">
+      <input type="checkbox" id="setting_highlight_mode">
+      <span class="slider round"></span>
+    </label>
+  </div>
   
   <div class="row"><label class="option"><input type="checkbox" id="list_DebtID"> DebtID</label></div>
   <div class="row"><label class="option"><input type="checkbox" id="list_EDocID"> EdocID</label></div>
   <div class="row"><label class="option"><input type="checkbox" id="list_AccAddress_AccountNumber"> ЛС</label></div>
   <div class="row"><label class="option"><input type="checkbox" id="list_Individual_FullName"> ФИО</label></div>
-
   <hr>
   <div class="row">
     <label class="option"><input type="checkbox" id="list_CaseNumber"> Номер дела</label>
@@ -149,16 +163,12 @@
     <label class="strict-opt"><input type="checkbox" id="strict_EDNumber"> +ЛС</label>
   </div>
 
-  <div class="btn-group">
-    <button id="btn-check">Найти</button>
-    <button id="btn-clear">Сброс</button>
-  </div>
-
   <hr>
+
   <div class="log-wrapper">
-    <div class="log-header">
-      <span class="section-title">Журнал действий</span>
-      <button id="btn-clear-log" title="Очистить журнал">🗑️</button>
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+      <span class="settings-label">Журнал действий</span>
+      <button id="btn-clear-log" title="Очистить журнал" style="background:transparent; border: none; font-size:16px; cursor:pointer; opacity: 0.6;">🗑️</button>
     </div>
     <div id="log-container">Журнал пуст.</div>
   </div>
