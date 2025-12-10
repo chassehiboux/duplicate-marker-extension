@@ -130,11 +130,11 @@ chrome.webRequest.onCompleted.addListener((details) => {
     if (details.statusCode >= 200 && details.statusCode < 300) {
         try {
             const url = new URL(details.url);
-            const edocid = url.searchParams.get('edocid');
-            // Убеждаемся, что edocid действительно есть в параметрах
-            if (edocid) {
-                pendingEdocids[details.tabId] = edocid;
-                addLog(`Анализ. Открытие формы. Запомнил edocid: ${edocid} для вкл. ${details.tabId}`);
+            const edocids = getEdocIdFromUrl(url);
+            // Убеждаемся, что edocids действительно есть в параметрах
+            if (edocids.length > 0) {
+                pendingEdocids[details.tabId] = edocids;
+                addLog(`Анализ. Открытие формы. Запомнил edocids: ${JSON.stringify(edocids)} для вкл. ${details.tabId}`);
             }
         } catch(e) {
             addLog(`Анализ. Ошибка на этапе 1: ${e.message}`);
@@ -171,8 +171,8 @@ chrome.webRequest.onBeforeRedirect.addListener((details) => {
 });
 
 // Основная функция, которая проверяет дубликаты за день и увеличивает счетчик.
-function processCounterLogic(edocid, tabId) {
-    addLog(`Анализ. -> Обработка edocid: ${edocid}`);
+function processCounterLogic(edocids, tabId) { // Change parameter name
+    addLog(`Анализ. -> Обработка edocids: ${JSON.stringify(edocids)}`); // Log array
     // Сразу удаляем из ожидания, чтобы избежать двойного срабатывания.
     delete pendingEdocids[tabId];
 
@@ -187,29 +187,37 @@ function processCounterLogic(edocid, tabId) {
             processed[todayForProcessed] = [];
         }
 
-        addLog(`Анализ. -> Проверка в списке [${todayForProcessed}]: [${processed[todayForProcessed].join(', ')}]`);
+        let newlyProcessedCount = 0; // New variable to track how many were actually added
+        const processedToday = processed[todayForProcessed]; // Reference to the array for today
 
-        if (processed[todayForProcessed].includes(edocid)) {
-            addLog(`Анализ. -> УЖЕ ЕСТЬ. Счетчик НЕ увеличен.`);
+        edocids.forEach(edocid => { // Iterate over the array
+            if (!processedToday.includes(edocid)) {
+                processedToday.push(edocid);
+                newlyProcessedCount++;
+            } else {
+                addLog(`Анализ. -> edocid ${edocid} УЖЕ ЕСТЬ. Пропущено.`);
+            }
+        });
+
+        if (newlyProcessedCount === 0) {
+            addLog(`Анализ. -> Все edocids уже были. Счетчик НЕ увеличен.`);
             return;
         }
         
-        history[todayForHistory] = (history[todayForHistory] || 0) + 1;
-        processed[todayForProcessed].push(edocid);
-
+        history[todayForHistory] = (history[todayForHistory] || 0) + newlyProcessedCount; // Increment by newlyProcessedCount
+        
         chrome.storage.local.set({ 
             'stats_history': history,
             'processed_edocids': processed 
         }, () => {
             const newCount = history[todayForHistory];
-            addLog(`Анализ. -> ДОБАВЛЕН. Счетчик: ${newCount}.`);
+            addLog(`Анализ. -> ДОБАВЛЕНО ${newlyProcessedCount}. Счетчик: ${newCount}.`);
 
-            // Показываем уведомление
             chrome.notifications.create({
                 type: 'basic',
                 iconUrl: 'icon.png',
                 title: 'Счетчик обновлен',
-                message: `Анализ исполнения засчитан! Сегодня: ${newCount} шт.`,
+                message: `Анализ исполнения засчитан! Сегодня: ${newCount} шт. (Новых: ${newlyProcessedCount})`, // Update message
                 silent: true
             });
         });
@@ -235,10 +243,10 @@ const editingUrlPatterns = [
 function getEdocIdFromUrl(url) {
     for (const [key, value] of url.searchParams.entries()) {
         if (key.toLowerCase().startsWith('edoc')) {
-            return value;
+            return value.split(',').map(id => id.trim()).filter(id => id); // Split by comma, trim, and filter empty strings
         }
     }
-    return null;
+    return []; // Return an empty array if no edocid is found
 }
 
 
@@ -254,34 +262,37 @@ chrome.webRequest.onCompleted.addListener((details) => {
         const isMatch = editingUrlPatterns.some(pattern => pattern.test(path));
         if (!isMatch) return;
 
-        const edocid = getEdocIdFromUrl(url);
+        const edocids = getEdocIdFromUrl(url); // This now returns an array
 
-        if (edocid) {
+        if (edocids.length > 0) { // Check if array is not empty
             chrome.storage.local.get(['approved_actions', 'blocked_actions', 'pending_actions'], (result) => {
                 const approved = result.approved_actions || [];
                 const blocked = result.blocked_actions || [];
                 let pending = result.pending_actions || [];
 
-                if (blocked.includes(path)) {
-                    addLog(`Редакт. Открытие. Путь ${path} заблокирован. Игнор.`);
-                    return; 
-                }
-
-                // Всегда запоминаем действие, чтобы поймать POST-запрос на сохранение.
-                pendingEditingActions[details.tabId] = { id: edocid, path: path };
+                // Store the array of edocids for the POST request
+                pendingEditingActions[details.tabId] = { id: edocids, path: path };
                 addLog(`Редакт. Открытие. Запомнил: ${JSON.stringify(pendingEditingActions[details.tabId])} для вкл. ${details.tabId}`);
-                
-                // Если действие не утверждено, проверяем, не ожидает ли оно уже подтверждения.
-                if (!approved.includes(path)) {
-                    const isAlreadyPending = pending.some(p => p.path === path && p.edocid === edocid);
-                    if (!isAlreadyPending) {
-                        addLog(`Редакт. Открытие (новое). Действие '${path}' добавлено в ожидание.`);
-                        pending.push({ path: path, edocid: edocid });
-                        
-                        chrome.storage.local.set({ 'pending_actions': pending }, () => {
-                            chrome.runtime.sendMessage({ action: "pendingActionsUpdated" });
-                        });
+
+                edocids.forEach(singleEdocid => { // Iterate over each edocid
+                    if (blocked.includes(path)) {
+                        addLog(`Редакт. Открытие. Путь ${path} заблокирован. Игнор для edocid ${singleEdocid}.`);
+                        return; // Skip this edocid if path is blocked
                     }
+
+                    if (!approved.includes(path)) { // Only add to pending if the path is not approved
+                        const isAlreadyPending = pending.some(p => p.path === path && p.edocid === singleEdocid);
+                        if (!isAlreadyPending) {
+                            addLog(`Редакт. Открытие (новое). Действие '${path}' для edocid ${singleEdocid} добавлено в ожидание.`);
+                            pending.push({ path: path, edocid: singleEdocid });
+                        }
+                    }
+                });
+
+                if (pending.some(p => edocids.includes(p.edocid) && p.path === path)) { // If any of the edocids were added to pending
+                    chrome.storage.local.set({ 'pending_actions': pending }, () => {
+                        chrome.runtime.sendMessage({ action: "pendingActionsUpdated" });
+                    });
                 }
             });
         }
@@ -328,10 +339,10 @@ chrome.webRequest.onBeforeRedirect.addListener((details) => {
 
 // Упрощенная функция, которая срабатывает при сохранении.
 // Основная логика по добавлению в "pending" уже отработала на этапе GET.
-function processEditingCounterLogic(edocid, path, tabId) {
-    addLog(`Редакт. -> Сохранение для: path=${path}, edocid=${edocid}`);
+function processEditingCounterLogic(edocids, path, tabId) { // Change parameter name to edocids
+    addLog(`Редакт. -> Сохранение для: path=${path}, edocids=${JSON.stringify(edocids)}`); // Log array
     if (pendingEditingActions[tabId]) {
-        delete pendingEditingActions[tabId];
+        delete pendingEditingActions[tabId]; // Corrected typo
     }
 
     chrome.storage.local.get(['approved_actions'], (result) => {
@@ -339,7 +350,9 @@ function processEditingCounterLogic(edocid, path, tabId) {
 
         if (approved.includes(path)) {
             addLog(`Редакт. -> Действие '${path}' утверждено. Засчитываем.`);
-            _incrementEditingCounter(edocid, path);
+            edocids.forEach(singleEdocid => { // Iterate over edocids
+                _incrementEditingCounter(singleEdocid, path); // Call for each single edocid
+            });
         } else {
             addLog(`Редакт. -> Действие '${path}' еще не утверждено. Сохранение проигнорировано (ожидает подтверждения в UI).`);
         }
@@ -404,7 +417,7 @@ function _incrementEditingCounter(edocid, path) {
                 type: 'basic',
                 iconUrl: 'icon.png',
                 title: 'Счетчик обновлен',
-                message: `Действие: ${actionName}\nКол-во: ${actionCount} (Всего за день: ${dayTotal})`,
+                message: `Действие: ${actionName}\nВсего за день: ${dayTotal} (Новых для ${actionName}: ${actionCount})`,
                 silent: true
             });
         });
