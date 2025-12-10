@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Помощник по Пирамиде",
-  "version": "5.5",
+  "version": "5.8",
   "description": "Авто-режим: ПКМ копирует ячейки, ПКМ вставляет в поиск + Дубликаты",
   "permissions": [
     "activeTab",

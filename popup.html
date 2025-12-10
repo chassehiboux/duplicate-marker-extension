@@ -51,6 +51,24 @@
       display: flex; justify-content: space-between; align-items: center;
       font-size: 12px; padding: 4px 8px; border-bottom: 1px solid rgba(255,255,255,0.1);
     }
+    .history-item.summary {
+        cursor: pointer;
+    }
+    .history-item.summary:hover {
+        background: rgba(255,255,255,0.1);
+    }
+    .history-details {
+        padding-left: 15px;
+        border-left: 2px solid rgba(255,255,255,0.2);
+        margin-left: 5px;
+    }
+    .details-item .ctrl-btn {
+        width: 22px; height: 22px; font-size: 14px;
+        margin-left: 5px;
+    }
+    .details-item .tag-btn {
+        height: 22px;
+    }
     .details-item-name { flex-grow: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-right: 8px; }
     .tag-btn {
       background: rgba(255,255,255,0.2); border: none; color: white; border-radius: 3px; cursor: pointer;

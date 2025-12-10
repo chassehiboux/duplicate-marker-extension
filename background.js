@@ -235,7 +235,6 @@ chrome.webRequest.onBeforeRedirect.addListener((details) => {
 
 function processEditingCounterLogic(edocid, path, tabId) {
     addLog(`Редакт. -> Обработка: path=${path}, edocid=${edocid}`);
-    // Сразу удаляем, чтобы избежать двойного срабатывания при обновлении страницы.
     if (pendingEditingActions[tabId]) {
         delete pendingEditingActions[tabId];
     }
@@ -245,16 +244,28 @@ function processEditingCounterLogic(edocid, path, tabId) {
     
     const historyKey = 'editing_stats';
     const processedKey = 'processed_edits';
+    const tagsKey = 'action_tags';
 
-    chrome.storage.local.get([historyKey, processedKey], (result) => {
+    chrome.storage.local.get([historyKey, processedKey, tagsKey], (result) => {
         let history = result[historyKey] || {};
         let processed = result[processedKey] || {};
+        let tags = result[tagsKey] || {};
 
         if (!processed[todayForProcessed]) {
             processed[todayForProcessed] = {};
         }
-        if (!processed[todayForProcessed][path]) {
-            processed[todayForProcessed][path] = [];
+        // Убедимся, что для этого пути существует массив
+        if (!Array.isArray(processed[todayForProcessed][path])) {
+            // Если там не массив (например, число после ручного редактирования),
+            // мы не можем добавить edocid. Логика здесь может быть сложной,
+            // но для простоты мы просто не будем обрабатывать дубликаты для измененных полей.
+            // Если же там ничего нет, создаем массив.
+            if (!processed[todayForProcessed][path]) {
+                processed[todayForProcessed][path] = [];
+            } else {
+                addLog(`Редакт. -> Попытка добавить edocid в поле, которое было отредактировано вручную. Пропущено.`);
+                return;
+            }
         }
 
         if (processed[todayForProcessed][path].includes(edocid)) {
@@ -262,32 +273,38 @@ function processEditingCounterLogic(edocid, path, tabId) {
             return;
         }
         
-        // Увеличиваем общий счетчик за день
-        const currentTotal = history[todayForHistory]?.total || 0;
-        history[todayForHistory] = { ...history[todayForHistory], total: currentTotal + 1 };
-        
-        // Увеличиваем счетчик для конкретного действия
-        const currentPathCount = history[todayForHistory]?.[path] || 0;
-        history[todayForHistory][path] = currentPathCount + 1;
-
         processed[todayForProcessed][path].push(edocid);
+
+        // Пересчитываем общее количество за день
+        let dayTotal = 0;
+        Object.keys(processed[todayForProcessed]).forEach(p => {
+            const item = processed[todayForProcessed][p];
+            dayTotal += typeof item === 'number' ? item : (Array.isArray(item) ? item.length : 0);
+        });
+        
+        history[todayForHistory] = dayTotal;
+        
+        // Получаем количество для конкретного действия
+        const actionCount = processed[todayForProcessed][path].length;
+        const actionName = tags[path] || path;
+
 
         let dataToSet = {};
         dataToSet[historyKey] = history;
         dataToSet[processedKey] = processed;
 
         chrome.storage.local.set(dataToSet, () => {
-            const newTotalCount = history[todayForHistory].total;
-            addLog(`Редакт. -> ДОБАВЛЕН. Общий счетчик: ${newTotalCount}.`);
+            addLog(`Редакт. -> ДОБАВЛЕН. Общий счетчик: ${dayTotal}.`);
 
-            // Отправляем сообщение во все части расширения (например, в popup)
+            // Отправляем сообщение в popup для обновления
             chrome.runtime.sendMessage({ action: "updateEditingCounter" });
 
+            // Создаем улучшенное уведомление
             chrome.notifications.create({
                 type: 'basic',
                 iconUrl: 'icon.png',
                 title: 'Счетчик обновлен',
-                message: `Редактирование засчитано! Сегодня: ${newTotalCount} шт.`,
+                message: `Действие: ${actionName}\nКол-во: ${actionCount} (Всего за день: ${dayTotal})`,
                 silent: true
             });
         });

@@ -72,49 +72,105 @@ document.addEventListener('DOMContentLoaded', () => {
       
       let todayTotalFromDetails = 0;
       Object.keys(todayProcessed).forEach(path => {
-          if (path === MANUAL_KEY) {
-              todayTotalFromDetails += todayProcessed[path] || 0;
-          } else {
-              todayTotalFromDetails += Array.isArray(todayProcessed[path]) ? todayProcessed[path].length : 0;
-          }
+          const item = todayProcessed[path];
+          todayTotalFromDetails += typeof item === 'number' ? item : (Array.isArray(item) ? item.length : 0);
       });
       
-      // Синхронизация, если общий счетчик разошелся с детальным
       if (todayCount !== todayTotalFromDetails) {
         history[todayDate] = todayTotalFromDetails;
         chrome.storage.local.set({[EDITING_STATS_KEY]: history});
         editingCountEl.textContent = todayTotalFromDetails;
       }
 
-      renderHistory(history, editingHistoryContainer, todayDate);
-      renderDetails(todayProcessed, editingDetailsContainer, tags);
+      // Новая логика отрисовки
+      renderEditingHistory(history, processed, tags, editingHistoryContainer);
+      renderDetails(todayProcessed, editingDetailsContainer, tags, todayISO); // Для актуальных деталей
     });
   }
   
-  function renderDetails(processedToday, container, tags) {
+  function renderDetails(processedData, container, tags, dateISO) {
       container.innerHTML = '';
-      const paths = Object.keys(processedToday).sort(); // Сортируем для порядка
-
-      if (paths.length === 0) {
-          container.innerHTML = '<div class="history-item" style="justify-content: center; opacity: 0.7;">Нет данных за сегодня</div>';
+      if (!processedData || Object.keys(processedData).length === 0) {
+          container.innerHTML = '<div class="history-item" style="justify-content: center; opacity: 0.7;">Нет данных</div>';
           return;
       }
 
-      paths.forEach(path => {
-          const count = path === MANUAL_KEY ? processedToday[path] : processedToday[path].length;
-          if (count === 0) return;
+      const paths = Object.keys(processedData).sort();
+      let hasVisibleItems = false;
 
-          const name = tags[path] || (path === MANUAL_KEY ? 'Ручные правки' : path);
+      paths.forEach(path => {
+          const item = processedData[path];
+          const count = typeof item === 'number' ? item : (Array.isArray(item) ? item.length : 0);
           
-          const div = document.createElement('div');
-          div.className = 'details-item';
-          div.innerHTML = `
-              <span class="details-item-name" title="${path}">${name}</span>
-              <strong>${count}</strong>
-              ${path !== MANUAL_KEY ? `<button class="tag-btn" data-path="${path}">Тег</button>` : ''}
-          `;
-          container.appendChild(div);
+          if (count > 0) {
+              hasVisibleItems = true;
+              const name = tags[path] || (path === MANUAL_KEY ? 'Ручные правки' : path);
+              
+              const div = document.createElement('div');
+              div.className = 'details-item';
+              div.innerHTML = `
+                  <span class="details-item-name" title="${path}">${name}</span>
+                  <strong id="count-${dateISO}-${path}">${count}</strong>
+                  <button class="ctrl-btn edit-btn" data-date="${dateISO}" data-path="${path}" title="Изменить">✏️</button>
+                  <button class="ctrl-btn delete-btn" data-date="${dateISO}" data-path="${path}" title="Удалить">🗑️</button>
+                  ${path !== MANUAL_KEY ? `<button class="tag-btn" data-path="${path}" title="Назначить тег">Тег</button>` : ''}
+              `;
+              container.appendChild(div);
+          }
       });
+
+      if (!hasVisibleItems) {
+          container.innerHTML = '<div class="history-item" style="justify-content: center; opacity: 0.7;">Нет данных</div>';
+      }
+  }
+
+  function renderEditingHistory(history, processed, tags, container) {
+      container.innerHTML = '';
+      const dates = Object.keys(history).sort((a, b) => {
+        const [d1, m1, y1] = a.split('.'); const [d2, m2, y2] = b.split('.');
+        return new Date(`${y2}-${m2}-${d2}`) - new Date(`${y1}-${m1}-${d1}`);
+      });
+
+      let hasHistory = false;
+      dates.forEach(date => {
+        if (date === todayDate) return; // Не показывать сегодня в истории
+
+        if (history[date] > 0) {
+          hasHistory = true;
+          const dateISO = convertDateToISO(date);
+          const dayData = processed[dateISO] || {};
+
+          const historyGroup = document.createElement('div');
+          historyGroup.className = 'history-day-group';
+
+          const summary = document.createElement('div');
+          summary.className = 'history-item summary';
+          summary.innerHTML = `<span>${date}</span> <strong>${history[date]} шт.</strong>`;
+          
+          const details = document.createElement('div');
+          details.className = 'history-details';
+          details.style.display = 'none';
+          
+          renderDetails(dayData, details, tags, dateISO);
+
+          summary.addEventListener('click', () => {
+            details.style.display = details.style.display === 'none' ? 'block' : 'none';
+          });
+          
+          historyGroup.appendChild(summary);
+          historyGroup.appendChild(details);
+          container.appendChild(historyGroup);
+        }
+      });
+      
+      if (!hasHistory) {
+          container.innerHTML = '<div class="history-item" style="justify-content: center; opacity: 0.7;">История пуста</div>';
+      }
+  }
+
+  function convertDateToISO(dateString) {
+      const [day, month, year] = dateString.split('.');
+      return `${year}-${month}-${day}`;
   }
 
   function modifyEditingCounter(amount) {
@@ -126,24 +182,117 @@ document.addEventListener('DOMContentLoaded', () => {
           if (typeof processed[todayISO][MANUAL_KEY] !== 'number') processed[todayISO][MANUAL_KEY] = 0;
 
           processed[todayISO][MANUAL_KEY] += amount;
+          if (processed[todayISO][MANUAL_KEY] < 0) processed[todayISO][MANUAL_KEY] = 0;
 
-          let todayTotal = 0;
-          Object.keys(processed[todayISO]).forEach(path => {
-              todayTotal += path === MANUAL_KEY ? processed[todayISO][path] : (processed[todayISO][path].length || 0);
-          });
-          
-          if (todayTotal < 0) {
-            processed[todayISO][MANUAL_KEY] -= todayTotal; // Корректируем ручные, чтобы не уйти в минус
-            todayTotal = 0;
-          }
-          
-          history[todayDate] = todayTotal;
+          recalculateTotals(processed, history, todayISO);
           
           chrome.storage.local.set({
               [EDITING_STATS_KEY]: history,
               [PROCESSED_EDITS_KEY]: processed 
           });
       });
+  }
+
+  function recalculateTotals(processed, history, dateISO) {
+      const dateKey = dateISO.split('-').reverse().join('.');
+      let dayTotal = 0;
+      if (processed[dateISO]) {
+          Object.keys(processed[dateISO]).forEach(path => {
+              const item = processed[dateISO][path];
+              dayTotal += typeof item === 'number' ? item : (Array.isArray(item) ? item.length : 0);
+          });
+      }
+      history[dateKey] = dayTotal;
+  }
+
+  function handleEditingActions(e) {
+      const target = e.target;
+      const path = target.dataset.path;
+      const dateISO = target.dataset.date;
+
+      // --- TAG ---
+      if (target.classList.contains('tag-btn')) {
+          chrome.storage.local.get(TAGS_KEY, (result) => {
+              const tags = result[TAGS_KEY] || {};
+              const currentTag = tags[path] || '';
+              const newTag = prompt(`Введите тег для действия:\n${path}`, currentTag);
+
+              if (newTag !== null) {
+                  tags[path] = newTag.trim();
+                  chrome.storage.local.set({ [TAGS_KEY]: tags });
+              }
+          });
+          return;
+      }
+
+      // --- DELETE ---
+      if (target.classList.contains('delete-btn')) {
+          if (confirm(`Удалить запись "${path}" за ${dateISO}?`)) {
+              chrome.storage.local.get([EDITING_STATS_KEY, PROCESSED_EDITS_KEY], (result) => {
+                  let history = result[EDITING_STATS_KEY] || {};
+                  let processed = result[PROCESSED_EDITS_KEY] || {};
+                  if (processed[dateISO] && processed[dateISO][path] !== undefined) {
+                      delete processed[dateISO][path];
+                      recalculateTotals(processed, history, dateISO);
+                      chrome.storage.local.set({ [EDITING_STATS_KEY]: history, [PROCESSED_EDITS_KEY]: processed });
+                  }
+              });
+          }
+          return;
+      }
+
+      // --- EDIT ---
+      if (target.classList.contains('edit-btn')) {
+          const countSpan = document.getElementById(`count-${dateISO}-${path}`);
+          if (!countSpan) return;
+          
+          const currentCount = parseInt(countSpan.textContent, 10);
+          const editBtn = target;
+
+          const input = document.createElement('input');
+          input.type = 'number';
+          input.value = currentCount;
+          input.className = 'edit-input';
+          input.style.width = '50px';
+
+          const saveBtn = document.createElement('button');
+          saveBtn.textContent = '✔️';
+          saveBtn.className = 'ctrl-btn save-btn';
+
+          const container = countSpan.parentElement;
+          container.replaceChild(input, countSpan);
+          container.replaceChild(saveBtn, editBtn);
+          input.focus();
+          input.select();
+
+          const saveChanges = () => {
+              const newCount = parseInt(input.value, 10);
+              if (!isNaN(newCount) && newCount >= 0) {
+                  chrome.storage.local.get([EDITING_STATS_KEY, PROCESSED_EDITS_KEY], (result) => {
+                      let history = result[EDITING_STATS_KEY] || {};
+                      let processed = result[PROCESSED_EDITS_KEY] || {};
+                      if (processed[dateISO]) {
+                          processed[dateISO][path] = newCount;
+                          recalculateTotals(processed, history, dateISO);
+                          chrome.storage.local.set({ [EDITING_STATS_KEY]: history, [PROCESSED_EDITS_KEY]: processed }, () => {
+                              // Manually revert UI without waiting for storage listener
+                              countSpan.textContent = newCount;
+                              container.replaceChild(countSpan, input);
+                              container.replaceChild(editBtn, saveBtn);
+                          });
+                      }
+                  });
+              } else {
+                 // On invalid input, just revert
+                 container.replaceChild(countSpan, input);
+                 container.replaceChild(editBtn, saveBtn);
+              }
+          };
+
+          saveBtn.addEventListener('click', saveChanges);
+          input.addEventListener('blur', saveChanges);
+          input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') saveChanges(); });
+      }
   }
 
   btnEditingPlus.addEventListener('click', () => modifyEditingCounter(1));
@@ -170,21 +319,8 @@ document.addEventListener('DOMContentLoaded', () => {
       editingDetailsContainer.style.display = (editingDetailsContainer.style.display === 'block') ? 'none' : 'block';
   });
 
-  editingDetailsContainer.addEventListener('click', (e) => {
-      if (e.target.classList.contains('tag-btn')) {
-          const path = e.target.dataset.path;
-          chrome.storage.local.get(TAGS_KEY, (result) => {
-              const tags = result[TAGS_KEY] || {};
-              const currentTag = tags[path] || '';
-              const newTag = prompt(`Введите тег для действия:\n${path}`, currentTag);
-
-              if (newTag !== null) {
-                  tags[path] = newTag.trim();
-                  chrome.storage.local.set({ [TAGS_KEY]: tags });
-              }
-          });
-      }
-  });
+  editingDetailsContainer.addEventListener('click', handleEditingActions);
+  editingHistoryContainer.addEventListener('click', handleEditingActions);
 
   // === ОБЩИЕ ФУНКЦИИ И СЛУШАТЕЛИ ===
   
