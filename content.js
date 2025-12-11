@@ -51,12 +51,18 @@
     '#FDDFDF', '#DEFDE0', '#FCF7DE', '#DEF3FD', '#F0DEFD',
     '#FFC8C8', '#C8FFC8', '#FFF2C8', '#C8E7FF', '#E2C8FF',
   ];
+  // Brighter versions for the outline, chosen to stand out more.
+  const outlinePalette = [
+    '#FF8888', '#88FF88', '#FFFF88', '#88DDFF', '#DD88FF',
+    '#FF8888', '#88FF88', '#FFFF88', '#88DDFF', '#DD88FF',
+  ];
   let colorIndex = 0;
   const colorMap = new Map();
 
   function clearHighlights() {
     document.querySelectorAll(`.${HIGHLIGHT_CLASS}`).forEach(el => {
-      el.style.backgroundColor = ''; el.style.outline = '';
+      el.style.backgroundColor = ''; 
+      el.style.outline = ''; // Clear the outline style
       if (el.dataset.originalTitle) { el.title = el.dataset.originalTitle; delete el.dataset.originalTitle; }
       else if (el.title && el.title.includes('⚠️')) el.removeAttribute('title');
       el.classList.remove(HIGHLIGHT_CLASS);
@@ -67,7 +73,10 @@
 
   function getColorForText(str) {
     if (!colorMap.has(str)) {
-      colorMap.set(str, colorPalette[colorIndex]);
+      colorMap.set(str, {
+        background: colorPalette[colorIndex],
+        outline: outlinePalette[colorIndex]
+      });
       colorIndex = (colorIndex + 1) % colorPalette.length;
     }
     return colorMap.get(str);
@@ -129,7 +138,9 @@
 
         if (counts[key] > 1) {
           el.classList.add(HIGHLIGHT_CLASS);
-          el.style.backgroundColor = getColorForText(key);
+          const colors = getColorForText(key);
+          el.style.backgroundColor = colors.background;
+          el.style.outline = `2px solid ${colors.outline}`;
         }
       });
     });

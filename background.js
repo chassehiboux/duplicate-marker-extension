@@ -217,12 +217,17 @@ function processCounterLogic(edocids, tabId) { // Change parameter name
             const newCount = history[todayForHistory];
             addLog(`Анализ. -> ДОБАВЛЕНО ${newlyProcessedCount}. Счетчик: ${newCount}.`);
 
-            chrome.notifications.create({
-                type: 'basic',
-                iconUrl: 'icon.png',
-                title: 'Счетчик обновлен',
-                message: `Анализ исполнения засчитан! Сегодня: ${newCount} шт. (Новых: ${newlyProcessedCount})`, // Update message
-                silent: true
+            // Проверяем настройку перед отправкой уведомления
+            chrome.storage.local.get('setting_notify_execution', (settings) => {
+                if (settings.setting_notify_execution !== false) {
+                    chrome.notifications.create({
+                        type: 'basic',
+                        iconUrl: 'icon.png',
+                        title: 'Счетчик обновлен',
+                        message: `Анализ исполнения засчитан! Сегодня: ${newCount} шт. (Новых: ${newlyProcessedCount})`,
+                        silent: true
+                    });
+                }
             });
         });
     });
@@ -446,12 +451,17 @@ function _incrementEditingCounter(edocid, path) {
             addLog(`Редакт. -> ДОБАВЛЕН. Общий счетчик: ${dayTotal}.`);
             chrome.runtime.sendMessage({ action: "updateEditingCounter" });
 
-            chrome.notifications.create({
-                type: 'basic',
-                iconUrl: 'icon.png',
-                title: 'Счетчик обновлен',
-                message: `Действие: ${actionName}\nВсего за день: ${dayTotal} (Новых для ${actionName}: ${actionCount})`,
-                silent: true
+            // Проверяем настройку перед отправкой уведомления
+            chrome.storage.local.get('setting_notify_editing', (settings) => {
+                if (settings.setting_notify_editing !== false) {
+                    chrome.notifications.create({
+                        type: 'basic',
+                        iconUrl: 'icon.png',
+                        title: 'Счетчик обновлен',
+                        message: `Действие: ${actionName}\nВсего за день: ${dayTotal} (Новых для ${actionName}: ${actionCount})`,
+                        silent: true
+                    });
+                }
             });
         });
     });

@@ -415,29 +415,52 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // === БЛОК НАСТРОЕК И ПОИСКА ДУБЛИКАТОВ ===
   // (Код этого блока оставлен без изменений)
+  const notifyExecutionToggle = document.getElementById('setting_notify_execution');
+  const notifyEditingToggle = document.getElementById('setting_notify_editing');
   const inputsSearch = ['list_DebtID', 'list_EDocID', 'list_AccAddress_AccountNumber', 'list_Individual_FullName', 'list_CaseNumber', 'list_EDNumber'];
   const inputsStrict = ['strict_CaseNumber', 'strict_EDNumber'];
   const copyModeToggle = document.getElementById('setting_copy_mode');
   const highlightModeToggle = document.getElementById('setting_highlight_mode');
   
-  chrome.storage.local.get(null, (items) => {
-    if (copyModeToggle) {
-      if (items['setting_copy_mode'] === undefined) {
-        copyModeToggle.checked = true;
-        chrome.storage.local.set({ 'setting_copy_mode': true });
-      } else {
-        copyModeToggle.checked = items['setting_copy_mode'];
-      }
+  const allSettings = [
+    ...inputsSearch, 
+    ...inputsStrict, 
+    'setting_copy_mode', 
+    'setting_highlight_mode', 
+    'setting_notify_execution', 
+    'setting_notify_editing'
+  ];
+
+  chrome.storage.local.get(allSettings, (items) => {
+    // Установка значений по умолчанию, если они не определены
+    if (items['setting_copy_mode'] === undefined) {
+      items['setting_copy_mode'] = true;
+      chrome.storage.local.set({ 'setting_copy_mode': true });
     }
-    if (highlightModeToggle) {
-        highlightModeToggle.checked = items['setting_highlight_mode'] || false;
+    if (items['setting_notify_execution'] === undefined) {
+      items['setting_notify_execution'] = true;
+      chrome.storage.local.set({ 'setting_notify_execution': true });
+    }
+    if (items['setting_notify_editing'] === undefined) {
+      items['setting_notify_editing'] = true;
+      chrome.storage.local.set({ 'setting_notify_editing': true });
     }
     inputsSearch.forEach(id => {
-      const el = document.getElementById(id);
-      if (el) {
-        if (items[id] === undefined) el.checked = true;
-        else el.checked = items[id];
+      if (items[id] === undefined) {
+        items[id] = true; // По умолчанию включены
+        chrome.storage.local.set({ [id]: true });
       }
+    });
+
+    // Применение загруженных или установленных по умолчанию значений
+    if (copyModeToggle) copyModeToggle.checked = items['setting_copy_mode'];
+    if (highlightModeToggle) highlightModeToggle.checked = items['setting_highlight_mode'] || false;
+    if (notifyExecutionToggle) notifyExecutionToggle.checked = items['setting_notify_execution'];
+    if (notifyEditingToggle) notifyEditingToggle.checked = items['setting_notify_editing'];
+    
+    inputsSearch.forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.checked = items[id];
     });
     inputsStrict.forEach(id => {
       const el = document.getElementById(id);
@@ -445,16 +468,27 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
-  if (copyModeToggle) {
-    copyModeToggle.addEventListener('change', (e) => {
-      chrome.storage.local.set({ 'setting_copy_mode': e.target.checked });
-    });
+  // Helper для создания слушателя
+  function createSettingChangeListener(settingId) {
+    const element = document.getElementById(settingId);
+    if (element) {
+      element.addEventListener('change', (e) => {
+        const value = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
+        chrome.storage.local.set({ [settingId]: value });
+      });
+    }
   }
+
+  // Применение слушателей
+  createSettingChangeListener('setting_copy_mode');
+  createSettingChangeListener('setting_highlight_mode');
+  createSettingChangeListener('setting_notify_execution');
+  createSettingChangeListener('setting_notify_editing');
 
   if (highlightModeToggle) {
     highlightModeToggle.addEventListener('change', (e) => {
       const isEnabled = e.target.checked;
-      chrome.storage.local.set({ 'setting_highlight_mode': isEnabled });
+      // 'setting_highlight_mode' уже сохраняется через createSettingChangeListener
       runSearch(isEnabled ? 'highlight' : 'clear');
     });
   }

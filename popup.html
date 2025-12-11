@@ -88,7 +88,7 @@
       border-radius: 6px;
       border: 1px solid #c8e6c9;
     }
-    .settings-row .settings-label { font-size: 14px; font-weight: bold; }
+    .settings-row .settings-label { font-size: 14px; }
     
     .row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
     .option { cursor: pointer; user-select: none; display: flex; align-items: center; }
@@ -169,7 +169,7 @@
       <span class="slider round"></span>
     </label>
   </div>
-  
+
   <div class="row"><label class="option"><input type="checkbox" id="list_DebtID"> DebtID</label></div>
   <div class="row"><label class="option"><input type="checkbox" id="list_EDocID"> EdocID</label></div>
   <div class="row"><label class="option"><input type="checkbox" id="list_AccAddress_AccountNumber"> ЛС</label></div>
@@ -192,6 +192,24 @@
       <button id="btn-clear-log" title="Очистить журнал" style="background:transparent; border: none; font-size:16px; cursor:pointer; opacity: 0.6;">🗑️</button>
     </div>
     <div id="log-container">Журнал пуст.</div>
+  </div>
+
+  <div class="settings-row" style="padding-bottom: 0; margin-bottom: 5px; padding-left: 10px; padding-right: 10px; padding-top: 20px;">
+    <span class="settings-label" style="font-weight: bold;">Уведомления от счетчиков</span>
+  </div>
+  <div class="settings-row" style="padding: 2px 10px; margin-bottom: 2px;">
+    <span style="font-size: 12px;">Анализ исполнения</span>
+    <label class="switch">
+      <input type="checkbox" id="setting_notify_execution">
+      <span class="slider round"></span>
+    </label>
+  </div>
+  <div class="settings-row" style="padding: 2px 10px; margin-bottom: 2px;">
+    <span style="font-size: 12px;">Редактирование</span>
+    <label class="switch">
+      <input type="checkbox" id="setting_notify_editing">
+      <span class="slider round"></span>
+    </label>
   </div>
 
   <script src="popup.js"></script>
