@@ -9,7 +9,7 @@
   let isCopyModeEnabled = false;
   let currentHighlightSettings = {};
   const allDuplicateSettingKeys = [
-    'setting_highlight_mode', 'list_DebtID', 'list_EDocID', 'list_AccAddress_AccountNumber',
+    'setting_highlight_mode', 'list_DebtID', 'list_AccAddress_AccountNumber',
     'list_Individual_FullName', 'list_CaseNumber', 'list_EDNumber',
     'strict_CaseNumber', 'strict_EDNumber'
   ];

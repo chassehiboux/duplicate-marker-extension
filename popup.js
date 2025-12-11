@@ -417,7 +417,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // (Код этого блока оставлен без изменений)
   const notifyExecutionToggle = document.getElementById('setting_notify_execution');
   const notifyEditingToggle = document.getElementById('setting_notify_editing');
-  const inputsSearch = ['list_DebtID', 'list_EDocID', 'list_AccAddress_AccountNumber', 'list_Individual_FullName', 'list_CaseNumber', 'list_EDNumber'];
+  const inputsSearch = ['list_DebtID', 'list_AccAddress_AccountNumber', 'list_Individual_FullName', 'list_CaseNumber', 'list_EDNumber'];
   const inputsStrict = ['strict_CaseNumber', 'strict_EDNumber'];
   const copyModeToggle = document.getElementById('setting_copy_mode');
   const highlightModeToggle = document.getElementById('setting_highlight_mode');
