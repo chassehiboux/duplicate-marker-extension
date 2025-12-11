@@ -16,7 +16,6 @@
 
   // --- Утилиты ---
   
-  // "Умное" получение значения из элемента.
   function getSmartValue(el) {
     if (!el) return '';
     if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT') return el.value.trim();
@@ -25,7 +24,6 @@
     return el.textContent.trim();
   }
   
-  // Визуальный отклик для Турбо-режима.
   function showSuccessFeedback(element) {
     const originalBg = element.style.backgroundColor;
     element.style.transition = 'background-color 0.1s ease';
@@ -46,23 +44,16 @@
   }
 
   // --- Логика подсветки дублей ---
-
-  const colorPalette = [
-    '#FDDFDF', '#DEFDE0', '#FCF7DE', '#DEF3FD', '#F0DEFD',
-    '#FFC8C8', '#C8FFC8', '#FFF2C8', '#C8E7FF', '#E2C8FF',
-  ];
-  // Brighter versions for the outline, chosen to stand out more.
-  const outlinePalette = [
-    '#FF8888', '#88FF88', '#FFFF88', '#88DDFF', '#DD88FF',
-    '#FF8888', '#88FF88', '#FFFF88', '#88DDFF', '#DD88FF',
-  ];
+  // (Этот блок оставлен без изменений для краткости)
+  const colorPalette = ['#FDDFDF', '#DEFDE0', '#FCF7DE', '#DEF3FD', '#F0DEFD', '#FFC8C8', '#C8FFC8', '#FFF2C8', '#C8E7FF', '#E2C8FF'];
+  const outlinePalette = ['#FF8888', '#88FF88', '#FFFF88', '#88DDFF', '#DD88FF', '#FF8888', '#88FF88', '#FFFF88', '#88DDFF', '#DD88FF'];
   let colorIndex = 0;
   const colorMap = new Map();
 
   function clearHighlights() {
     document.querySelectorAll(`.${HIGHLIGHT_CLASS}`).forEach(el => {
       el.style.backgroundColor = ''; 
-      el.style.outline = ''; // Clear the outline style
+      el.style.outline = '';
       if (el.dataset.originalTitle) { el.title = el.dataset.originalTitle; delete el.dataset.originalTitle; }
       else if (el.title && el.title.includes('⚠️')) el.removeAttribute('title');
       el.classList.remove(HIGHLIGHT_CLASS);
@@ -73,10 +64,7 @@
 
   function getColorForText(str) {
     if (!colorMap.has(str)) {
-      colorMap.set(str, {
-        background: colorPalette[colorIndex],
-        outline: outlinePalette[colorIndex]
-      });
+      colorMap.set(str, { background: colorPalette[colorIndex], outline: outlinePalette[colorIndex] });
       colorIndex = (colorIndex + 1) % colorPalette.length;
     }
     return colorMap.get(str);
@@ -99,26 +87,16 @@
   }
 
   function runCheck() {
-    // Если режим подсветки выключен, просто очищаем и выходим.
-    if (!currentHighlightSettings.setting_highlight_mode) {
-      clearHighlights();
-      return;
-    }
-
+    if (!currentHighlightSettings.setting_highlight_mode) { clearHighlights(); return; }
     const fieldIds = Object.keys(currentHighlightSettings).filter(k => k.startsWith('list_') && currentHighlightSettings[k]);
     const strictModeOptions = {};
-    Object.keys(currentHighlightSettings)
-      .filter(k => k.startsWith('strict_') && currentHighlightSettings[k])
-      .forEach(k => { strictModeOptions[k.replace('strict_', 'list_')] = true; });
-
-    clearHighlights(); // Очищаем перед новым поиском
-    
+    Object.keys(currentHighlightSettings).filter(k => k.startsWith('strict_') && currentHighlightSettings[k]).forEach(k => { strictModeOptions[k.replace('strict_', 'list_')] = true; });
+    clearHighlights();
     fieldIds.forEach(ariaId => {
       const selector = `td[role="gridcell"][aria-describedby="${ariaId}"]`;
       const elements = document.querySelectorAll(selector);
       const counts = {};
       const useStrictLS = strictModeOptions[ariaId] === true;
-      
       elements.forEach(el => {
         let val = parseSpecialValue(getSmartValue(el), ariaId);
         if (val.length > 0) {
@@ -127,7 +105,6 @@
           counts[key] = (counts[key] || 0) + 1;
         }
       });
-
       elements.forEach(el => {
         let rawVal = getSmartValue(el);
         let val = parseSpecialValue(rawVal, ariaId);
@@ -135,7 +112,6 @@
         let key = val;
         let lsVal = '';
         if (useStrictLS) { lsVal = getLinkedLS(el); key += '___' + lsVal; }
-
         if (counts[key] > 1) {
           el.classList.add(HIGHLIGHT_CLASS);
           const colors = getColorForText(key);
@@ -147,47 +123,81 @@
   }
 
   const debouncedRunCheck = debounce(runCheck, 500);
-
-  // --- Инициализация и слушатели ---
   
   // Загружаем все настройки при старте
   function init() {
     chrome.storage.local.get(['setting_copy_mode', ...allDuplicateSettingKeys], (settings) => {
-      isCopyModeEnabled = settings.setting_copy_mode !== false; // Включен по умолчанию
+      isCopyModeEnabled = settings.setting_copy_mode !== false;
       currentHighlightSettings = settings;
-      runCheck(); // Первый запуск при загрузке страницы
+      runCheck();
     });
   }
 
-  // Слушаем изменения в хранилище (от popup)
+  // --- Логика для управления столбцами ---
+
+  const COLUMN_STORAGE_KEY = 'hidden_columns';
+  let hiddenColumns = [];
+
+  function applyColumnVisibility() {
+    const table = document.getElementById('gview_list');
+    if (!table) return;
+
+    // Сначала показываем все столбцы, которые могли быть скрыты ранее
+    document.querySelectorAll('[data-col-hidden="true"]').forEach(el => {
+      el.style.display = '';
+      el.removeAttribute('data-col-hidden');
+    });
+
+    if (!hiddenColumns || hiddenColumns.length === 0) return;
+
+    // Теперь скрываем те, что должны быть скрыты
+    hiddenColumns.forEach(columnId => {
+      const header = document.getElementById(columnId);
+      if (header) {
+        header.style.display = 'none';
+        header.setAttribute('data-col-hidden', 'true');
+      }
+      const cells = table.querySelectorAll(`td[aria-describedby="${columnId}"]`);
+      cells.forEach(cell => {
+        cell.style.display = 'none';
+        cell.setAttribute('data-col-hidden', 'true');
+      });
+    });
+  }
+
+  async function initColumnVisibility() {
+    const data = await chrome.storage.local.get(COLUMN_STORAGE_KEY);
+    hiddenColumns = data[COLUMN_STORAGE_KEY] || [];
+    applyColumnVisibility();
+  }
+
+  // --- Слушатели ---
+
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
+
+    // Для видимости столбцов
+    if (changes[COLUMN_STORAGE_KEY]) {
+      hiddenColumns = changes[COLUMN_STORAGE_KEY].newValue || [];
+      applyColumnVisibility();
+    }
+
+    // Для подсветки дублей
     let highlightSettingsChanged = false;
     for (let key in changes) {
-      if (key === 'setting_copy_mode') {
-        isCopyModeEnabled = !!changes[key].newValue;
-      }
-      if (allDuplicateSettingKeys.includes(key)) {
-        currentHighlightSettings[key] = changes[key].newValue;
-        highlightSettingsChanged = true;
-      }
+      if (key === 'setting_copy_mode') { isCopyModeEnabled = !!changes[key].newValue; }
+      if (allDuplicateSettingKeys.includes(key)) { currentHighlightSettings[key] = changes[key].newValue; highlightSettingsChanged = true; }
     }
-    if (highlightSettingsChanged) {
-      // Немедленно запускаем проверку, если изменились настройки
-      runCheck();
-    }
+    if (highlightSettingsChanged) { runCheck(); }
   });
 
-  // Запускаем проверку при изменениях на странице (динамический контент)
   const observer = new MutationObserver(() => {
-    if (currentHighlightSettings.setting_highlight_mode) {
-      debouncedRunCheck();
-    }
+    if (currentHighlightSettings.setting_highlight_mode) { debouncedRunCheck(); }
+    applyColumnVisibility();
   });
   observer.observe(document.body, { childList: true, subtree: true });
 
-
-  // --- Турбо-режим (без изменений) ---
+  // --- Турбо-режим ---
   document.addEventListener('contextmenu', async function(e) {
     if (!isCopyModeEnabled) return;
     const searchInput = e.target.closest('input[role="search"]');
@@ -216,11 +226,34 @@
     if (searchInput) searchInput.select();
   }, true);
   
-  // --- Подсветка строк/колонок в Google Sheets (без изменений) ---
-  if (window.location.hostname === 'docs.google.com' && window.location.pathname.includes('/spreadsheets/')) {
-    // ... (код без изменений)
-  }
-
-  // Запуск
+  // --- Общий слушатель сообщений ---
+  chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (request.action === 'getColumns') {
+      const columnThs = document.querySelectorAll('th[id^="list_"]');
+      const columns = Array.from(columnThs).map(th => {
+        const id = th.id;
+        const nameDiv = th.querySelector(`div[id="jqgh_${id}"]`);
+        let name = id;
+        if (nameDiv) {
+            const nameNode = Array.from(nameDiv.childNodes).find(node => node.nodeType === Node.TEXT_NODE);
+            if (nameNode && nameNode.textContent.trim()) { name = nameNode.textContent.trim(); }
+        }
+        return { id, name };
+      }).filter(col => col.id !== 'list_cb' && col.id !== 'list_rn' && col.id !== 'list_undefined');
+      sendResponse(columns);
+      return true;
+    }
+    // Этот слушатель нужен для немедленной реакции от popup.js
+    if (request.action === 'updateColumnVisibility') {
+      hiddenColumns = request.hiddenColumns || [];
+      applyColumnVisibility();
+      sendResponse({success: true});
+      return true;
+    }
+  });
+  
+  // --- Финальный запуск ---
   init();
+  initColumnVisibility();
+
 })();

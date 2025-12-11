@@ -469,3 +469,4 @@ function _incrementEditingCounter(edocid, path) {
 
 
 addLog("Background скрипт запущен.");
+
