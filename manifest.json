@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Помощник по Пирамиде",
-  "version": "1.1.6",
-  "description": "Авто-режим: ПКМ копирует ячейки, ПКМ вставляет в поиск + Дубликаты",
+  "version": "1.2.0",
+  "description": "Авто-режим: ПКМ копирует ячейки, ПКМ вставляет в поиск + Дубликаты + Управление столбцами",
   "permissions": [
     "activeTab",
     "scripting",
@@ -37,7 +37,8 @@
         "<all_urls>"
       ],
       "js": [
-        "content.js"
+        "content.js",
+        "column_manager.js"
       ],
       "run_at": "document_end",
       "all_frames": false
