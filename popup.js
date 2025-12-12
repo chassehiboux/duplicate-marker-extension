@@ -52,10 +52,21 @@ document.addEventListener('DOMContentLoaded', () => {
   const editingDetailsContainer = document.getElementById('editing-details-container');
   const btnEditingPlus = document.getElementById('btn-editing-plus');
   const btnEditingMinus = document.getElementById('btn-editing-minus');
+  // Новые элементы для списка всех действий
+  const allActionsContainer = document.getElementById('all-actions-container');
+  const btnShowActionsList = document.getElementById('btn-show-actions-list');
   
   // Новые элементы для ожидающих действий
   const pendingActionsContainer = document.getElementById('pending-actions-container');
   const pendingActionsTitle = document.getElementById('pending-actions-title');
+  
+  // === ЭЛЕМЕНТЫ МОДАЛЬНОГО ОКНА ===
+  const modal = document.getElementById('confirmation-modal');
+  const modalActionText = document.getElementById('modal-action-text');
+  const modalTagInput = document.getElementById('modal-tag-input');
+  const modalBtnSave = document.getElementById('modal-btn-save');
+  const modalBtnCancel = document.getElementById('modal-btn-cancel');
+  const modalBtnBlock = document.getElementById('modal-btn-block');
 
   const MANUAL_KEY = '_manual';
   
@@ -63,6 +74,44 @@ document.addEventListener('DOMContentLoaded', () => {
   const PROCESSED_EDITS_KEY = 'processed_edits';
   const TAGS_KEY = 'action_tags';
   const PENDING_ACTIONS_KEY = 'pending_actions';
+  const APPROVED_ACTIONS_KEY = 'approved_actions';
+  const BLOCKED_ACTIONS_KEY = 'blocked_actions';
+
+  // --- Функция для отображения модального окна ---
+  function showConfirmationModal(path, edocid) {
+    modalActionText.textContent = `Подтвердите действие: ${path}`;
+    modalTagInput.value = '';
+    modal.style.display = 'flex';
+
+    // Очищаем старые обработчики, чтобы избежать двойных срабатываний
+    const newSaveBtn = modalBtnSave.cloneNode(true);
+    modalBtnSave.parentNode.replaceChild(newSaveBtn, modalBtnSave);
+    
+    const newCancelBtn = modalBtnCancel.cloneNode(true);
+    modalBtnCancel.parentNode.replaceChild(newCancelBtn, modalBtnCancel);
+
+    const newBlockBtn = modalBtnBlock.cloneNode(true);
+    modalBtnBlock.parentNode.replaceChild(newBlockBtn, modalBtnBlock);
+
+    // Назначаем новые обработчики
+    newSaveBtn.addEventListener('click', () => {
+      const tag = modalTagInput.value.trim();
+      chrome.runtime.sendMessage({ 
+          action: 'approve_action', 
+          data: { path, edocid, tag } 
+      });
+      modal.style.display = 'none';
+    });
+
+    newBlockBtn.addEventListener('click', () => {
+      chrome.runtime.sendMessage({ action: 'block_action', data: { path, edocid } });
+      modal.style.display = 'none';
+    });
+
+    newCancelBtn.addEventListener('click', () => {
+      modal.style.display = 'none';
+    });
+  }
 
   function updateEditingCounterUI() {
     chrome.storage.local.get([EDITING_STATS_KEY, PROCESSED_EDITS_KEY, TAGS_KEY], (result) => {
@@ -178,6 +227,39 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!hasHistory) {
           container.innerHTML = '<div class="history-item" style="justify-content: center; opacity: 0.7;">История пуста</div>';
       }
+  }
+
+  function renderAllActions() {
+    chrome.storage.local.get([APPROVED_ACTIONS_KEY, BLOCKED_ACTIONS_KEY, TAGS_KEY], (result) => {
+      const approved = result[APPROVED_ACTIONS_KEY] || [];
+      const blocked = result[BLOCKED_ACTIONS_KEY] || [];
+      const tags = result[TAGS_KEY] || {};
+
+      allActionsContainer.innerHTML = '';
+      const allActions = [
+        ...approved.map(path => ({ path, status: 'approved' })),
+        ...blocked.map(path => ({ path, status: 'blocked' }))
+      ];
+
+      if (allActions.length === 0) {
+        allActionsContainer.innerHTML = '<div class="history-item" style="justify-content: center; opacity: 0.7;">Нет сохраненных действий</div>';
+        return;
+      }
+      
+      // Сортировка по имени тега или пути
+      allActions.sort((a, b) => (tags[a.path] || a.path).localeCompare(tags[b.path] || b.path));
+
+      allActions.forEach(({ path, status }) => {
+        const name = tags[path] || path;
+        const div = document.createElement('div');
+        div.className = 'action-item';
+        div.innerHTML = `
+          <span class="action-item-name" title="${path}">${name}</span>
+          <span class="action-status" data-path="${path}" data-status="${status}" title="Изменить статус">${status === 'approved' ? '✔️' : '❌'}</span>
+        `;
+        allActionsContainer.appendChild(div);
+      });
+    });
   }
 
   function renderPendingActions() {
@@ -345,21 +427,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const { path, edocid } = target.dataset;
     if (!path || !edocid) return;
-
-    if (target.classList.contains('approve-btn')) {
-        const newTag = prompt(`Введите тег для нового действия:\n${path}`, '');
-        // Если пользователь нажал "Отмена", newTag будет null. Пустая строка - это валидный ввод.
-        if (newTag !== null) {
-            chrome.runtime.sendMessage({ 
-                action: 'approve_action', 
-                data: { path, edocid, tag: newTag.trim() } 
-            });
-        }
-    }
-
-    if (target.classList.contains('block-btn')) {
-        chrome.runtime.sendMessage({ action: 'block_action', data: { path, edocid } });
-    }
+    
+    // Для любого действия (одобрить или блокировать) открываем модальное окно
+    showConfirmationModal(path, edocid);
   });
 
   btnEditingPlus.addEventListener('click', () => modifyEditingCounter(1));
@@ -378,16 +448,38 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   editingHistoryBtn.addEventListener('click', () => {
-      editingDetailsContainer.style.display = 'none';
-      editingHistoryContainer.style.display = (editingHistoryContainer.style.display === 'block') ? 'none' : 'block';
+    editingDetailsContainer.style.display = 'none';
+    allActionsContainer.style.display = 'none';
+    editingHistoryContainer.style.display = (editingHistoryContainer.style.display === 'block') ? 'none' : 'block';
   });
+
   editingDetailsBtn.addEventListener('click', () => {
-      editingHistoryContainer.style.display = 'none';
-      editingDetailsContainer.style.display = (editingDetailsContainer.style.display === 'block') ? 'none' : 'block';
+    editingHistoryContainer.style.display = 'none';
+    allActionsContainer.style.display = 'none';
+    editingDetailsContainer.style.display = (editingDetailsContainer.style.display === 'block') ? 'none' : 'block';
+  });
+
+  btnShowActionsList.addEventListener('click', () => {
+    editingHistoryContainer.style.display = 'none';
+    editingDetailsContainer.style.display = 'none';
+    allActionsContainer.style.display = (allActionsContainer.style.display === 'block') ? 'none' : 'block';
   });
 
   editingDetailsContainer.addEventListener('click', handleEditingActions);
   editingHistoryContainer.addEventListener('click', handleEditingActions);
+  
+  allActionsContainer.addEventListener('click', (e) => {
+    const target = e.target.closest('.action-status');
+    if (!target) return;
+    
+    const { path, status } = target.dataset;
+    if (!path || !status) return;
+
+    chrome.runtime.sendMessage({
+      action: 'toggle_action_status',
+      data: { path, currentStatus: status }
+    });
+  });
 
   // === ОБЩИЕ ФУНКЦИИ И СЛУШАТЕЛИ ===
   
@@ -569,13 +661,15 @@ document.addEventListener('DOMContentLoaded', () => {
   updateCounterUI();
   updateEditingCounterUI();
   renderPendingActions();
+  renderAllActions();
   loadLogs();
   
   chrome.storage.onChanged.addListener((changes) => {
     if (changes.stats_history) updateCounterUI();
-    if (changes[EDITING_STATS_KEY] || changes[PROCESSED_EDITS_KEY] || changes[TAGS_KEY] || changes[PENDING_ACTIONS_KEY]) {
+    if (changes[EDITING_STATS_KEY] || changes[PROCESSED_EDITS_KEY] || changes[TAGS_KEY] || changes[PENDING_ACTIONS_KEY] || changes[APPROVED_ACTIONS_KEY] || changes[BLOCKED_ACTIONS_KEY]) {
         updateEditingCounterUI();
         renderPendingActions();
+        renderAllActions();
     }
     if (changes[LOG_KEY]) updateLogsUI(changes[LOG_KEY].newValue);
   });

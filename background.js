@@ -97,6 +97,39 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             });
             return true; // для асинхронного ответа
         }
+
+        case 'toggle_action_status': {
+            const { path, currentStatus } = request.data;
+            addLog(`Получен запрос на смену статуса для '${path}' с '${currentStatus}'`);
+
+            chrome.storage.local.get(['approved_actions', 'blocked_actions'], (result) => {
+                let approved = result.approved_actions || [];
+                let blocked = result.blocked_actions || [];
+
+                if (currentStatus === 'approved') {
+                    // Убираем из одобренных, добавляем в заблокированные
+                    approved = approved.filter(p => p !== path);
+                    if (!blocked.includes(path)) {
+                        blocked.push(path);
+                    }
+                } else { // currentStatus === 'blocked'
+                    // Убираем из заблокированных, добавляем в одобренные
+                    blocked = blocked.filter(p => p !== path);
+                    if (!approved.includes(path)) {
+                        approved.push(path);
+                    }
+                }
+                
+                chrome.storage.local.set({ 
+                    'approved_actions': approved, 
+                    'blocked_actions': blocked 
+                }, () => {
+                    addLog(`Статус для '${path}' изменен.`);
+                    // UI обновится автоматически через `storage.onChanged`
+                });
+            });
+            return true;
+        }
     }
 });
 
