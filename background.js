@@ -77,20 +77,29 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         }
         
         case 'block_action': {
-            const { path, edocid } = request.data;
-            addLog(`Получена блокировка для '${path}'`);
-            chrome.storage.local.get(['blocked_actions', 'pending_actions'], (result) => {
+            const { path, edocid, tag } = request.data;
+            addLog(`Получена блокировка для '${path}' с тегом '${tag || ''}'`);
+            chrome.storage.local.get(['blocked_actions', 'pending_actions', 'action_tags'], (result) => {
                 let blocked = result.blocked_actions || [];
                 let pending = result.pending_actions || [];
+                let tags = result.action_tags || {};
 
                 if (!blocked.includes(path)) {
                     blocked.push(path);
+                }
+                
+                if (tag) {
+                    tags[path] = tag;
                 }
 
                 // Удаляем все ожидающие действия с этим путем
                 const newPending = pending.filter(p => p.path !== path);
 
-                chrome.storage.local.set({ 'blocked_actions': blocked, 'pending_actions': newPending }, () => {
+                chrome.storage.local.set({ 
+                    'blocked_actions': blocked, 
+                    'pending_actions': newPending,
+                    'action_tags': tags
+                }, () => {
                     sendResponse({ success: true });
                     chrome.runtime.sendMessage({ action: "pendingActionsUpdated" }); // Уведомить об изменении
                 });
@@ -129,6 +138,27 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 });
             });
             return true;
+        }
+
+        case 'cancel_pending_action': {
+            const { path, edocid } = request.data;
+            addLog(`Получена отмена для '${path}' edocid: ${edocid}`);
+            chrome.storage.local.get(['pending_actions'], (result) => {
+                let pending = result.pending_actions || [];
+                const newPending = pending.filter(p => !(p.path === path && p.edocid === edocid));
+
+                if (pending.length !== newPending.length) {
+                    chrome.storage.local.set({ 'pending_actions': newPending }, () => {
+                        addLog(`Ожидающее действие для '${path}' edocid: ${edocid} удалено.`);
+                        sendResponse({ success: true });
+                        chrome.runtime.sendMessage({ action: "pendingActionsUpdated" });
+                    });
+                } else {
+                    addLog(`Ожидающее действие для '${path}' edocid: ${edocid} не найдено.`);
+                    sendResponse({ success: false, message: "Action not found" });
+                }
+            });
+            return true; // для асинхронного ответа
         }
     }
 });
@@ -326,20 +356,15 @@ chrome.webRequest.onCompleted.addListener((details) => {
                         return; // Skip this edocid if path is blocked
                     }
 
-                    if (!approved.includes(path)) { // Only add to pending if the path is not approved
-                        const isAlreadyPending = pending.some(p => p.path === path && p.edocid === singleEdocid);
-                        if (!isAlreadyPending) {
-                            addLog(`Редакт. Открытие (новое). Действие '${path}' для edocid ${singleEdocid} добавлено в ожидание.`);
-                            pending.push({ path: path, edocid: singleEdocid });
-                        }
+                    if (!approved.includes(path)) { // Only if the path is not yet approved
+                        addLog(`Редакт. Открытие (новое). Принудительный вызов модалки для '${path}' edocid ${singleEdocid}.`);
+                        // Immediately trigger the modal in the content script
+                        chrome.tabs.sendMessage(details.tabId, {
+                            action: 'show_confirmation_modal_in_tab',
+                            data: { path: path, edocid: singleEdocid }
+                        });
                     }
                 });
-
-                if (pending.some(p => edocids.includes(p.edocid) && p.path === path)) { // If any of the edocids were added to pending
-                    chrome.storage.local.set({ 'pending_actions': pending }, () => {
-                        chrome.runtime.sendMessage({ action: "pendingActionsUpdated" });
-                    });
-                }
             });
         }
     } catch (e) {

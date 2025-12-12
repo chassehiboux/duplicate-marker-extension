@@ -152,6 +152,15 @@
       white-space: pre-wrap; /* ГЛАВНОЕ: Уважаем переносы строк и переносим длинный текст */
       word-break: break-word; /* Принудительно разрываем очень длинные слова/ссылки без пробелов */
     }
+    
+    .data-btn {
+        padding: 6px 12px;
+        border: 1px solid #ccc;
+        border-radius: 5px;
+        cursor: pointer;
+        background-color: #f0f0f0;
+        font-size: 12px;
+    }
   </style>
 </head>
 <body>
@@ -180,9 +189,6 @@
     <div id="editing-history-container"></div>
     <div id="editing-details-container"></div>
     <div id="all-actions-container" style="display: none;"></div>
-
-    <div id="pending-actions-title" style="display: none; text-align: center; font-size: 12px; opacity: 0.9; margin-top: 10px;">Новые действия на подтверждение:</div>
-    <div id="pending-actions-container"></div>
   </div>
 
   <div class="settings-row boxed">
@@ -230,7 +236,9 @@
     <div id="log-container">Журнал пуст.</div>
   </div>
 
-  <div class="settings-row" style="padding-bottom: 0; margin-bottom: 5px; padding-left: 10px; padding-right: 10px; padding-top: 20px;">
+  <hr>
+
+  <div class="settings-row" style="padding-bottom: 0; margin-bottom: 5px; padding-left: 10px; padding-right: 10px; padding-top: 10px;">
     <span class="settings-label" style="font-weight: bold;">Уведомления от счетчиков</span>
   </div>
   <div class="settings-row" style="padding: 2px 10px; margin-bottom: 2px;">
@@ -248,20 +256,19 @@
     </label>
   </div>
 
-  <script src="popup.js"></script>
+  <hr>
 
-  <!-- МОДАЛЬНОЕ ОКНО ПОДТВЕРЖДЕНИЯ -->
-  <div id="confirmation-modal" class="modal-overlay">
-    <div class="modal-content">
-      <p id="modal-action-text">Подтвердите действие:</p>
-      <input type="text" id="modal-tag-input" placeholder="Введите тег (необязательно)">
-      <div class="modal-buttons">
-        <button id="modal-btn-save" class="modal-btn save">Сохранить</button>
-        <button id="modal-btn-cancel" class="modal-btn cancel">Отмена</button>
-        <button id="modal-btn-block" class="modal-btn block">Заблокировать</button>
-      </div>
+  <div class="data-management-wrapper">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+      <span class="settings-label">Управление данными</span>
+    </div>
+    <div style="display: flex; justify-content: space-around;">
+      <button id="btn-export-data" class="data-btn">Экспорт в JSON</button>
+      <button id="btn-import-data" class="data-btn">Импорт из JSON</button>
     </div>
   </div>
+
+  <script src="popup.js"></script>
 
 </body>
 </html>

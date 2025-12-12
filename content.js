@@ -223,4 +223,126 @@
 
   // Запуск
   init();
+
+  // --- Логика модального окна для подтверждения действий ---
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+      if (message.action === 'show_confirmation_modal_in_tab') {
+          // Удаляем старые модалки, если они есть
+          const existingModal = document.getElementById('extension-confirmation-modal-container');
+          if (existingModal) {
+              existingModal.remove();
+          }
+          const existingOverlay = document.getElementById('extension-confirmation-overlay');
+          if (existingOverlay) {
+              existingOverlay.remove();
+          }
+
+          const { path, edocid } = message.data;
+
+          // Создаем элементы модального окна
+          const modalOverlay = document.createElement('div');
+          modalOverlay.id = 'extension-confirmation-overlay';
+          modalOverlay.style.cssText = `
+              position: fixed;
+              top: 0;
+              left: 0;
+              width: 100vw;
+              height: 100vh;
+              background-color: rgba(0, 0, 0, 0.5);
+              z-index: 2147483646 !important;
+          `;
+
+          const modalContainer = document.createElement('div');
+          modalContainer.id = 'extension-confirmation-modal-container';
+          modalContainer.style.cssText = `
+              position: fixed;
+              top: 50%;
+              left: 50%;
+              transform: translate(-50%, -50%);
+              z-index: 2147483647 !important;
+              background-color: #fff;
+              padding: 20px;
+              border-radius: 8px;
+              box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+              width: 400px;
+              max-width: 90%;
+              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+          `;
+
+          const modalText = document.createElement('p');
+          modalText.textContent = `Вы хотите разрешить счётчику учитывать действие данной кнопки?\nДействие: ${path}`;
+          modalText.style.margin = '0 0 15px 0';
+          modalText.style.wordBreak = 'break-word';
+
+          const buttonContainer = document.createElement('div');
+          buttonContainer.style.cssText = 'display: flex; justify-content: flex-end; gap: 10px;';
+
+          const createButton = (text, type = 'primary') => {
+              const button = document.createElement('button');
+              button.textContent = text;
+              button.style.cssText = `
+                  padding: 8px 15px;
+                  border: 1px solid #ccc;
+                  border-radius: 5px;
+                  cursor: pointer;
+                  background-color: ${type === 'primary' ? '#007bff' : (type === 'danger' ? '#dc3545' : '#f8f9fa')};
+                  color: ${type === 'primary' || type === 'danger' ? '#fff' : '#212529'};
+                  border-color: ${type === 'primary' ? '#007bff' : (type === 'danger' ? '#dc3545' : '#ccc')};
+              `;
+              return button;
+          };
+          
+          const removeModals = () => {
+              modalOverlay.remove();
+              modalContainer.remove();
+          }
+
+          const saveButton = createButton('Сохранить', 'primary');
+          const blockButton = createButton('Заблокировать', 'danger');
+          const cancelButton = createButton('Пропустить', 'secondary');
+
+          // Обработчики кнопок
+          saveButton.addEventListener('click', () => {
+              removeModals(); // Сначала убираем нашу модалку
+              const tag = prompt('Придумайте понятное название для этого действия (например, "Сохранить отчет"):', '');
+              // Если пользователь нажал "ОК" (даже с пустым полем), а не "Отмена"
+              if (tag !== null) {
+                  chrome.runtime.sendMessage({
+                      action: 'approve_action',
+                      data: { path, edocid, tag: tag.trim() }
+                  });
+              }
+          });
+
+          blockButton.addEventListener('click', () => {
+              removeModals(); // Сначала убираем нашу модалку
+              const tag = prompt('Придумайте название для этого заблокированного действия (необязательно):', '');
+               // Если пользователь нажал "ОК", а не "Отмена"
+              if (tag !== null) {
+                  chrome.runtime.sendMessage({ 
+                      action: 'block_action', 
+                      data: { path, edocid, tag: tag.trim() } 
+                  });
+              }
+          });
+
+          cancelButton.addEventListener('click', () => {
+              chrome.runtime.sendMessage({
+                  action: 'cancel_pending_action',
+                  data: { path, edocid }
+              });
+              removeModals();
+          });
+
+          // Собираем модальное окно
+          buttonContainer.append(cancelButton, blockButton, saveButton);
+          modalContainer.append(modalText, buttonContainer);
+          
+          document.body.appendChild(modalOverlay);
+          document.body.appendChild(modalContainer);
+
+          sendResponse({ success: true });
+      }
+      return true; // Keep the message channel open for async response
+  });
 })();

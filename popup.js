@@ -56,61 +56,29 @@ document.addEventListener('DOMContentLoaded', () => {
   const allActionsContainer = document.getElementById('all-actions-container');
   const btnShowActionsList = document.getElementById('btn-show-actions-list');
   
-  // Новые элементы для ожидающих действий
-  const pendingActionsContainer = document.getElementById('pending-actions-container');
-  const pendingActionsTitle = document.getElementById('pending-actions-title');
-  
-  // === ЭЛЕМЕНТЫ МОДАЛЬНОГО ОКНА ===
-  const modal = document.getElementById('confirmation-modal');
-  const modalActionText = document.getElementById('modal-action-text');
-  const modalTagInput = document.getElementById('modal-tag-input');
-  const modalBtnSave = document.getElementById('modal-btn-save');
-  const modalBtnCancel = document.getElementById('modal-btn-cancel');
-  const modalBtnBlock = document.getElementById('modal-btn-block');
-
   const MANUAL_KEY = '_manual';
   
   const EDITING_STATS_KEY = 'editing_stats';
   const PROCESSED_EDITS_KEY = 'processed_edits';
   const TAGS_KEY = 'action_tags';
-  const PENDING_ACTIONS_KEY = 'pending_actions';
   const APPROVED_ACTIONS_KEY = 'approved_actions';
   const BLOCKED_ACTIONS_KEY = 'blocked_actions';
 
-  // --- Функция для отображения модального окна ---
-  function showConfirmationModal(path, edocid) {
-    modalActionText.textContent = `Подтвердите действие: ${path}`;
-    modalTagInput.value = '';
-    modal.style.display = 'flex';
-
-    // Очищаем старые обработчики, чтобы избежать двойных срабатываний
-    const newSaveBtn = modalBtnSave.cloneNode(true);
-    modalBtnSave.parentNode.replaceChild(newSaveBtn, modalBtnSave);
-    
-    const newCancelBtn = modalBtnCancel.cloneNode(true);
-    modalBtnCancel.parentNode.replaceChild(newCancelBtn, modalBtnCancel);
-
-    const newBlockBtn = modalBtnBlock.cloneNode(true);
-    modalBtnBlock.parentNode.replaceChild(newBlockBtn, modalBtnBlock);
-
-    // Назначаем новые обработчики
-    newSaveBtn.addEventListener('click', () => {
-      const tag = modalTagInput.value.trim();
-      chrome.runtime.sendMessage({ 
-          action: 'approve_action', 
-          data: { path, edocid, tag } 
-      });
-      modal.style.display = 'none';
-    });
-
-    newBlockBtn.addEventListener('click', () => {
-      chrome.runtime.sendMessage({ action: 'block_action', data: { path, edocid } });
-      modal.style.display = 'none';
-    });
-
-    newCancelBtn.addEventListener('click', () => {
-      modal.style.display = 'none';
-    });
+  // --- Функция для отображения модального окна в активной вкладке ---
+  async function showConfirmationModal(path, edocid) {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (tab && tab.id) {
+        chrome.tabs.sendMessage(tab.id, {
+          action: 'show_confirmation_modal_in_tab',
+          data: { path, edocid }
+        });
+      } else {
+        console.error("Не удалось найти активную вкладку для отображения модального окна.");
+      }
+    } catch (error) {
+      console.error("Ошибка при отправке сообщения в content.js:", error);
+    }
   }
 
   function updateEditingCounterUI() {
@@ -262,39 +230,6 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  function renderPendingActions() {
-    chrome.storage.local.get([PENDING_ACTIONS_KEY, TAGS_KEY], (result) => {
-        const pending = result[PENDING_ACTIONS_KEY] || [];
-        const tags = result[TAGS_KEY] || {};
-
-        pendingActionsContainer.innerHTML = '';
-
-        if (pending.length === 0) {
-            pendingActionsTitle.style.display = 'none';
-            return;
-        }
-
-        pendingActionsTitle.style.display = 'block';
-
-        pending.forEach(action => {
-            const { path, edocid } = action;
-            const name = tags[path] || path;
-            const uniqueId = `pending-${path.replace(/[^a-zA-Z0-9]/g, '')}-${edocid}`;
-            
-            const div = document.createElement('div');
-            div.className = 'details-item';
-            div.id = uniqueId;
-            div.innerHTML = `
-                <span class="details-item-name" title="${path}">${name}</span>
-                <strong title="ID документа: ${edocid}">...${String(edocid).slice(-4)}</strong>
-                <button class="ctrl-btn approve-btn" data-path="${path}" data-edocid="${edocid}" title="Сохранить">✔️</button>
-                <button class="ctrl-btn block-btn" data-path="${path}" data-edocid="${edocid}" title="Заблокировать">❌</button>
-            `;
-            pendingActionsContainer.appendChild(div);
-        });
-    });
-  }
-
   function convertDateToISO(dateString) {
       const [day, month, year] = dateString.split('.');
       return `${year}-${month}-${day}`;
@@ -420,17 +355,6 @@ document.addEventListener('DOMContentLoaded', () => {
           input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') saveChanges(); });
       }
   }
-
-  pendingActionsContainer.addEventListener('click', (e) => {
-    const target = e.target.closest('.ctrl-btn');
-    if (!target) return;
-
-    const { path, edocid } = target.dataset;
-    if (!path || !edocid) return;
-    
-    // Для любого действия (одобрить или блокировать) открываем модальное окно
-    showConfirmationModal(path, edocid);
-  });
 
   btnEditingPlus.addEventListener('click', () => modifyEditingCounter(1));
   btnEditingMinus.addEventListener('click', (e) => {
@@ -657,27 +581,86 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
   
+  // === БЛОК УПРАВЛЕНИЯ ДАННЫМИ ===
+  const btnExport = document.getElementById('btn-export-data');
+  const btnImport = document.getElementById('btn-import-data');
+
+  if (btnExport) {
+    btnExport.addEventListener('click', () => {
+      chrome.storage.local.get(null, (data) => {
+        // Исключаем лог из экспорта для чистоты
+        delete data.extension_logs;
+
+        const jsonString = JSON.stringify(data, null, 2);
+        const blob = new Blob([jsonString], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        
+        const a = document.createElement('a');
+        a.href = url;
+        const date = new Date().toISOString().slice(0, 10);
+        a.download = `extension-backup-${date}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      });
+    });
+  }
+
+  if (btnImport) {
+    btnImport.addEventListener('click', () => {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = 'application/json';
+      
+      input.onchange = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          try {
+            const importedData = JSON.parse(event.target.result);
+            
+            if (confirm("Вы уверены, что хотите импортировать данные? Все текущие настройки и история счетчиков будут ПЕРЕЗАПИСАНЫ. Это действие необратимо.")) {
+              // Важно: сначала очищаем, потом устанавливаем новые данные
+              chrome.storage.local.clear(() => {
+                chrome.storage.local.set(importedData, () => {
+                  alert('Импорт успешно завершен!');
+                  // UI обновится автоматически благодаря chrome.storage.onChanged
+                });
+              });
+            }
+          } catch (error) {
+            alert('Ошибка! Не удалось прочитать или обработать файл. Убедитесь, что это корректный JSON файл, созданный этим расширением.');
+            console.error("Ошибка импорта:", error);
+          }
+        };
+        reader.readAsText(file);
+      };
+      
+      input.click();
+    });
+  }
+
   // === ПЕРВИЧНАЯ ЗАГРУЗКА И СЛУШАТЕЛИ ===
   updateCounterUI();
   updateEditingCounterUI();
-  renderPendingActions();
   renderAllActions();
   loadLogs();
   
   chrome.storage.onChanged.addListener((changes) => {
     if (changes.stats_history) updateCounterUI();
-    if (changes[EDITING_STATS_KEY] || changes[PROCESSED_EDITS_KEY] || changes[TAGS_KEY] || changes[PENDING_ACTIONS_KEY] || changes[APPROVED_ACTIONS_KEY] || changes[BLOCKED_ACTIONS_KEY]) {
+    if (changes[EDITING_STATS_KEY] || changes[PROCESSED_EDITS_KEY] || changes[TAGS_KEY] || changes[APPROVED_ACTIONS_KEY] || changes[BLOCKED_ACTIONS_KEY]) {
         updateEditingCounterUI();
-        renderPendingActions();
         renderAllActions();
     }
     if (changes[LOG_KEY]) updateLogsUI(changes[LOG_KEY].newValue);
   });
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.action === "updateEditingCounter" || message.action === "pendingActionsUpdated") {
+    if (message.action === "updateEditingCounter") {
         updateEditingCounterUI();
-        renderPendingActions();
     }
   });
 });
