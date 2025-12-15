@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Помощник по Пирамиде",
-  "version": "1.2.3",
+  "version": "1.2.4",
   "description": "Авто-режим: ПКМ копирует ячейки, ПКМ вставляет в поиск + Дубликаты + Управление столбцами",
   "permissions": [
     "activeTab",
@@ -42,6 +42,18 @@
       ],
       "run_at": "document_end",
       "all_frames": false
+    },
+    {
+      "matches": [
+        "*://*.pyramid.vostok-electra.ru/*"
+      ],
+      "css": [
+        "PyramidNewYear/pyramid_christmas.css"
+      ],
+      "js": [
+        "PyramidNewYear/pyramid_christmas.js"
+      ],
+      "run_at": "document_end"
     }
   ]
 }
