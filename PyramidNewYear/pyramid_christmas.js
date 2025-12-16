@@ -79,12 +79,14 @@
             const switchWrapper = document.createElement('div');
             switchWrapper.className = 'ny-header-item'; // Обертка
             
-            // Вставляем label ВНУТРЬ блока с классом material-switch-dmartSwicher, ПЕРЕД input
+            // Вставляем label и переключатель
             switchWrapper.innerHTML = `
-                <div class="material-switch-dmartSwicher" style="display:flex; align-items:center;">
+                <div style="display: flex; flex-direction: column; align-items: center;">
                     <span class="ny-label">Новый год</span>
-                    <input id="nySwicher" type="checkbox">
-                    <label for="nySwicher" class="label-danger" style="background: #b71c1c; margin-bottom:0;"></label>
+                    <div class="material-switch-newYear">
+                        <input id="nySwicher" type="checkbox">
+                        <label for="nySwicher" class="label-danger"></label>
+                    </div>
                 </div>
             `;
 

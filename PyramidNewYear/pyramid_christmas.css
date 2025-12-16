@@ -113,8 +113,65 @@ body.ny-active .ui-dialog-titlebar { overflow: hidden !important; border-bottom:
 .ny-label { 
     font-size: 14px; 
     color: rgb(51, 51, 51); 
-    font-weight: bold; /* или bold, если нужно пожирнее, но вы просили обычный */
-    margin-right: 8px; /* Отступ до переключателя */
+    font-weight: bold;
+    margin-bottom: 8px; /* Отступ до переключателя */
     white-space: nowrap;
-    line-height: 1;
+}
+
+/* USER-PROVIDED SWITCH STYLES */
+.material-switch-newYear > input[type="checkbox"] {
+    display: none;
+}
+.material-switch-newYear > label {
+    cursor: pointer;
+    height: 0px;
+    position: relative;
+    width: 30px;
+}
+.material-switch-newYear > label::before {
+    background: rgb(0, 0, 0);
+    box-shadow: inset 0px 0px 10px rgba(0, 0, 0, 0.5);
+    border-radius: 8px;
+    content: '';
+    height: 12px;
+    margin-top: -8px;
+    position: absolute;
+    opacity: 0.3;
+    transition: all 0.2s ease-in-out;
+    width: 30px;
+}
+.material-switch-newYear > label::after {
+    background: rgb(255, 255, 255);
+    border-radius: 16px;
+    box-shadow: 0px 0px 5px rgba(0, 0, 0, 0.3);
+    content: '';
+    height: 20px;
+    width: 20px;
+    left: -4px;
+    margin-top: -8px;
+    position: absolute;
+    top: -4px;
+    transition: all 0.2s ease-in-out;
+}
+.material-switch-newYear > input[type="checkbox"]:checked + label::before {
+    background: inherit;
+    opacity: 0.5;
+}
+.material-switch-newYear > input[type="checkbox"]:checked + label::after {
+    background: inherit;
+    left: 20px;
+}
+.material-switch-newYear > input[type="checkbox"]:disabled + label::before,
+.material-switch-newYear > input[type="checkbox"][readonly] + label::before {
+    filter: saturate(0);
+}
+.material-switch-newYear > input[type="checkbox"]:disabled + label::after,
+.material-switch-newYear > input[type="checkbox"][readonly] + label::after {
+    filter: saturate(0);
+}
+.material-switch-newYear > input[type="checkbox"][readonly] + label::before {
+    pointer-events: none;
+}
+.material-switch-newYear > input[type="checkbox"][readonly] + label::after {
+    pointer-events: none;
 }
