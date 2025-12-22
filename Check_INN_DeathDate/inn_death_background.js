@@ -3,88 +3,229 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         processFullCheck(request.data, sendResponse);
         return true; 
     }
+    if (request.action === "start_batch_check") {
+        processBatchCheck(request, sender.tab.id);
+        return true;
+    }
 });
 
+// ========= SINGLE CHECK LOGIC =========
+
 async function processFullCheck(data, sendResponse) {
+    try {
+        const results = await getCheckResults(data);
+        sendResponse({ success: true, ...results });
+    } catch (err) {
+        console.error("BG Error in processFullCheck:", err);
+        sendResponse({ success: false, error: err.message });
+    }
+}
+
+// ========= BATCH CHECK LOGIC =========
+
+async function processBatchCheck(request, senderTabId) {
+    const { ids, origin } = request;
+    const allResults = [];
+
+    for (const id of ids) {
+        let personData;
+        const url = `${origin}/ovzid/fullcard/${id}`;
+        let tab; // Declare tab here to access it in finally block
+
+        try {
+            tab = await chrome.tabs.create({ url, active: false });
+            
+            // Inject a script to parse the person's data from the full card
+            const scriptResults = await chrome.scripting.executeScript({
+                target: { tabId: tab.id },
+                func: getPersonDataFromCard,
+            });
+
+            personData = scriptResults && scriptResults[0] ? scriptResults[0].result : null;
+            
+            if (personData && personData.surname && personData.birthDate) {
+                const checkResult = await getCheckResults(personData);
+                allResults.push({ id, ...checkResult });
+            } else {
+                allResults.push({ id, error: 'Не удалось получить данные со страницы' });
+            }
+
+        } catch (e) {
+            console.error(`Error processing ID ${id}:`, e);
+            allResults.push({ id, error: e.message });
+        } finally {
+            if (tab) await chrome.tabs.remove(tab.id);
+        }
+    }
+
+    // Send the compiled results back to the original tab
+    chrome.tabs.sendMessage(senderTabId, {
+        action: "batch_check_complete",
+        results: allResults
+    });
+}
+
+
+// ========= CORE CHECKING LOGIC =========
+
+async function getCheckResults(data) {
     try {
         const existingInn = data.existingInn; 
         let foundInn = null;
         
-        // 1. Поиск ИНН (Фоновый режим)
         foundInn = await findInn(data);
 
         let foundDeath = null;
         let existingDeath = null;
         let probateCaseDeath = null;
 
-        // 2. Проверка смерти (по найденному)
+        // Run checks in parallel to speed things up
+        const promises = [];
         if (foundInn) {
-            foundDeath = await checkDeathDate(foundInn);
+            promises.push(checkDeathDate(foundInn).then(r => foundDeath = r));
         }
-
-        // 3. Проверка смерти (по существующему), если отличается
         if (existingInn && existingInn !== foundInn) {
-            existingDeath = await checkDeathDate(existingInn);
-        } else if (existingInn && existingInn === foundInn) {
+            promises.push(checkDeathDate(existingInn).then(r => existingDeath = r));
+        }
+        // Always check probate cases
+        promises.push(checkProbateCase(data).then(r => probateCaseDeath = r));
+
+        await Promise.all(promises);
+        
+        if (existingInn && existingInn === foundInn) {
             existingDeath = foundDeath;
         }
 
-        // 4. Проверка Реестра наследственных дел
-        probateCaseDeath = await checkProbateCase(data);
-
-        sendResponse({ 
-            success: true, 
-            foundInn: foundInn,
-            existingInn: existingInn,
-            foundDeath: foundDeath,
-            existingDeath: existingDeath,
-            probateCaseDeath: probateCaseDeath
-        });
+        return { 
+            surname: data.surname,
+            name: data.name,
+            foundInn,
+            existingInn,
+            foundDeath,
+            existingDeath,
+            probateCaseDeath
+        };
 
     } catch (err) {
-        console.error("BG Error:", err);
-        sendResponse({ success: false, error: err.message });
+        console.error("BG Error in getCheckResults:", err);
+        return { error: err.message };
     }
 }
 
+
 // --- УПРАВЛЕНИЕ ВКЛАДКАМИ (active: false) ---
 async function findInn(personData) {
+    if (!personData || !personData.surname || !personData.birthDate || !personData.docNumber) return null;
     const tab = await chrome.tabs.create({ url: "https://service.nalog.ru/inn.do", active: false });
-    const result = await executeScriptInTab(tab.id, injectInnSearchLogic, [personData]);
-    chrome.tabs.remove(tab.id);
-    return result;
+    try {
+        return await executeScriptInTab(tab.id, injectInnSearchLogic, [personData]);
+    } finally {
+        await chrome.tabs.remove(tab.id);
+    }
 }
 
 async function checkDeathDate(inn) {
+    if (!inn) return null;
     const tab = await chrome.tabs.create({ url: "https://service.nalog.ru/invalid-inn-fl.html", active: false });
-    const result = await executeScriptInTab(tab.id, injectDeathCheckLogic, [inn]);
-    chrome.tabs.remove(tab.id);
-    return result;
+    try {
+        return await executeScriptInTab(tab.id, injectDeathCheckLogic, [inn]);
+    } finally {
+        await chrome.tabs.remove(tab.id);
+    }
 }
 
 async function checkProbateCase(personData) {
+    if (!personData || !personData.surname || !personData.birthDate) return null;
     const tab = await chrome.tabs.create({ url: "https://notariat.ru/ru-ru/help/probate-cases/", active: false });
-    const result = await executeScriptInTab(tab.id, injectProbateCaseLogic, [personData]);
-    chrome.tabs.remove(tab.id);
-    return result;
+    try {
+        return await executeScriptInTab(tab.id, injectProbateCaseLogic, [personData]);
+    } finally {
+        await chrome.tabs.remove(tab.id);
+    }
 }
 
 function executeScriptInTab(tabId, func, args) {
-    return new Promise((resolve) => {
-        chrome.tabs.onUpdated.addListener(function listener(tid, changeInfo) {
-            if (tid === tabId && changeInfo.status === 'complete') {
+    return new Promise((resolve, reject) => {
+        let fulfilled = false;
+        const listener = (tid, changeInfo, tab) => {
+            if (tid === tabId && changeInfo.status === 'complete' && tab.url.startsWith('http')) {
+                if (fulfilled) return;
+                fulfilled = true;
+
                 chrome.tabs.onUpdated.removeListener(listener);
-                chrome.scripting.executeScript({
+                
+                setTimeout(() => chrome.scripting.executeScript({
                     target: { tabId: tabId },
                     func: func,
                     args: args
                 }, (results) => {
-                    if (chrome.runtime.lastError) resolve(null);
-                    else resolve(results && results[0] ? results[0].result : null);
-                });
+                    if (chrome.runtime.lastError) {
+                        reject(new Error(chrome.runtime.lastError.message));
+                    } else {
+                        resolve(results && results[0] ? results[0].result : null);
+                    }
+                }), 500); // Small delay to ensure scripts on page have run
             }
-        });
+        };
+        chrome.tabs.onUpdated.addListener(listener);
+        // Timeout to prevent hanging
+        setTimeout(() => {
+            if (!fulfilled) {
+                fulfilled = true;
+                chrome.tabs.onUpdated.removeListener(listener);
+                reject(new Error(`Tab ${tabId} timed out`));
+            }
+        }, 30000); // 30 second timeout
     });
+}
+
+
+// ========= INJECTABLE SCRIPT LOGIC =========
+
+// === СКРИПТ: ПОЛУЧЕНИЕ ДАННЫХ С КАРТОЧКИ ===
+function getPersonDataFromCard() {
+    const headerNode = Array.from(document.querySelectorAll('h4')).find(h => h.innerText.includes('Реквизиты ИД'));
+    if (!headerNode) return null;
+    
+    try {
+        let container = headerNode.nextElementSibling;
+        let table = null;
+        for(let i=0; i<3; i++) {
+            if(!container) break;
+            table = container.querySelector ? container.querySelector('table') : null;
+            if(table) break;
+            if(container.tagName === 'TABLE') { table = container; break; }
+            container = container.nextElementSibling;
+        }
+
+        if (!table) return null;
+        const tr = table.querySelector('tbody tr');
+        if (!tr) return null;
+        const tds = tr.querySelectorAll(':scope > td');
+        const fio = tds[0].innerText.trim();
+        const fioParts = fio.split(/\s+/);
+        let bdate = '', passport = '', inn = '';
+        
+        const allInnerRows = tr.querySelectorAll('table tr');
+        allInnerRows.forEach(r => {
+            const txt = r.innerText.toLowerCase();
+            const cells = r.querySelectorAll('td');
+            const val = cells[1] ? cells[1].innerText.trim() : '';
+            if (txt.includes('др должника')) bdate = val;
+            if (txt.includes('серия документа')) passport += val + ' ';
+            if (txt.includes('номер документа')) passport += val;
+            if (txt.includes('инн') && /^\d+$/.test(val)) inn = val;
+        });
+
+        return {
+            surname: fioParts[0],
+            name: fioParts[1],
+            patronymic: fioParts.slice(2).join(' '),
+            birthDate: bdate,
+            docNumber: passport.trim(),
+            existingInn: inn
+        };
+    } catch (e) { return null; }
 }
 
 // === СКРИПТ: ПОИСК ИНН ===

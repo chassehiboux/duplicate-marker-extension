@@ -228,4 +228,121 @@ function checkAndInject() {
         }
     });
 }
-setInterval(checkAndInject, 1000);
+function injectToolbarButton() {
+    const toolbar = document.querySelector('.ui-pg-table.navtable');
+    if (toolbar && !toolbar.querySelector('#batch-inn-check-btn')) {
+        const btn = document.createElement('div');
+        btn.className = 'btn btn-xs ui-pg-button';
+        btn.id = 'batch-inn-check-btn';
+        btn.title = 'Проверить ИНН/Смерть для выбранных';
+        btn.style.cursor = 'pointer';
+        
+        btn.innerHTML = `
+            <div class="ui-pg-div">
+                <span class="fa fa-lg fa-fw fa-user-secret"></span>
+                <span class="ui-pg-button-text">Проверить ИНН/Смерть</span>
+            </div>
+        `;
+
+        btn.onclick = () => {
+            if (btn.classList.contains('ui-jqgrid-disablePointerEvents')) return;
+
+            const selectedRows = document.querySelectorAll('#list tr.jqgrow[aria-selected="true"]');
+            if (selectedRows.length === 0) {
+                showToast('Пожалуйста, выберите хотя бы одну строку для проверки.', 'warning');
+                return;
+            }
+
+            const ids = Array.from(selectedRows).map(row => row.id);
+            showToast(`Запущена проверка для ${ids.length} записей...`, 'info');
+
+            btn.classList.add('ui-jqgrid-disablePointerEvents');
+            const btnText = btn.querySelector('.ui-pg-button-text');
+            if(btnText) btnText.textContent = 'Проверка...';
+
+            // Pass the origin for the background script to construct URLs
+            chrome.runtime.sendMessage({ 
+                action: "start_batch_check", 
+                ids: ids,
+                origin: window.location.origin 
+            });
+        };
+
+        const refreshBtn = toolbar.querySelector('#refresh_list');
+        if (refreshBtn) {
+            refreshBtn.insertAdjacentElement('afterend', btn);
+        } else {
+            toolbar.appendChild(btn);
+        }
+    }
+}
+
+// --- MAIN EXECUTION & LISTENERS ---
+setInterval(() => {
+    checkAndInject();
+    injectToolbarButton();
+}, 1000);
+
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (request.action === "batch_check_complete") {
+        const btn = document.querySelector('#batch-inn-check-btn');
+        if(btn) {
+            btn.classList.remove('ui-jqgrid-disablePointerEvents');
+            const btnText = btn.querySelector('.ui-pg-button-text');
+            if(btnText) btnText.textContent = 'Проверить ИНН/Смерть';
+        }
+
+        // Build the detailed HTML for the toast
+        let html = `<div class="toast-header">Результаты массовой проверки</div>`;
+        let overallType = 'success';
+
+        request.results.forEach(res => {
+            const { id, surname, name, foundInn, existingInn, foundDeath, existingDeath, probateCaseDeath, error } = res;
+
+            html += `<div style="padding: 8px; margin-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.1);">`;
+            html += `<div style="font-weight: bold; margin-bottom: 5px;">EdocID: ${id} (${surname} ${name})</div>`;
+            
+            if (error) {
+                html += `<div style="color: #ff8a80;">Ошибка: ${error}</div>`;
+                overallType = 'warning';
+            } else {
+                const isDead = foundDeath || existingDeath || probateCaseDeath;
+                const isInnDoubtful = probateCaseDeath && (!foundDeath || (foundDeath && foundDeath !== probateCaseDeath));
+
+                if (foundInn) {
+                    html += `<div>ИНН: <span class="badge-success">${foundInn}</span></div>`;
+                    if (isInnDoubtful) {
+                         html += `<div style="color:#ffcc80; font-size: 11px;">(ИНН под сомнением)</div>`;
+                         if (overallType !== 'death') overallType = 'warning';
+                    }
+                } else {
+                     html += `<div>ИНН: <span class="badge-warn">Не найден</span></div>`;
+                     if (overallType !== 'death' && overallType !== 'warning') overallType = 'warning';
+                }
+
+                if (isDead) {
+                    let deadInfo = '';
+                    if (foundDeath) deadInfo += `<div><span style="opacity: 0.8">ИНН ФНС:</span> ${foundDeath}</div>`;
+                    if (probateCaseDeath) deadInfo += `<div><span style="opacity: 0.8">Насл. дела:</span> ${probateCaseDeath}</div>`;
+                    html += `<div class="dead-alert" style="margin-top:5px; padding: 5px;">${deadInfo}</div>`;
+                    overallType = 'death';
+                }
+            }
+            html += `</div>`;
+        });
+        
+        // Make toast wider for batch results
+        const styleEl = document.createElement('style');
+        styleEl.id = 'dynamic-toast-style';
+        styleEl.textContent = `.inn-check-toast { max-width: 600px !important; max-height: 80vh; overflow-y: auto; }`;
+        document.head.appendChild(styleEl);
+
+        showToast(html, overallType);
+
+        // Clean up the style override after toast disappears
+        setTimeout(() => {
+            const el = document.getElementById('dynamic-toast-style');
+            if (el) el.remove();
+        }, 10000);
+    }
+});
