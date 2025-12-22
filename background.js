@@ -1,5 +1,5 @@
 // Этот скрипт обрабатывает фоновые операции расширения.
-
+importScripts('Check_INN_DeathDate/inn_death_background.js');
 // --- Утилита для логирования ---
 const LOG_KEY = 'extension_logs'; // Ключ для хранения логов в chrome.storage
 const MAX_LOG_ENTRIES = 100; // Максимальное количество записей в логе

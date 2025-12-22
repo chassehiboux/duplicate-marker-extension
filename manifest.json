@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Помощник по Пирамиде",
-  "version": "1.2.5",
-  "description": "Авто-режим: ПКМ копирует ячейки, ПКМ вставляет в поиск + Дубликаты + Управление столбцами",
+  "version": "1.2.7",
+  "description": "Авто-режим + Проверка ИНН/Смерти",
   "permissions": [
     "activeTab",
     "scripting",
@@ -11,7 +11,8 @@
     "clipboardRead",
     "sidePanel",
     "webRequest",
-    "notifications"
+    "notifications",
+    "tabs"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -42,6 +43,16 @@
       ],
       "run_at": "document_end",
       "all_frames": false
+    },
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "Check_INN_DeathDate/inn_death_content.js"
+      ],
+      "run_at": "document_end",
+      "all_frames": true
     },
     {
       "matches": [

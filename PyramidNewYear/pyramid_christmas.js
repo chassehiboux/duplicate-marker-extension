@@ -98,18 +98,25 @@
             }
             
             const checkbox = document.getElementById('nySwicher');
-            const isEnabled = localStorage.getItem(STORAGE_KEY) === 'true';
-            checkbox.checked = isEnabled;
-            if(isEnabled) document.body.classList.add('ny-active');
 
-            checkbox.addEventListener('change', (e) => {
-                if (e.target.checked) {
+            // Загружаем состояние из chrome.storage
+            chrome.storage.local.get([STORAGE_KEY], (result) => {
+                const isEnabled = result[STORAGE_KEY] === true;
+                checkbox.checked = isEnabled;
+                if (isEnabled) {
                     document.body.classList.add('ny-active');
-                    localStorage.setItem(STORAGE_KEY, 'true');
+                }
+            });
+
+            // Сохраняем состояние при изменении
+            checkbox.addEventListener('change', (e) => {
+                const isEnabled = e.target.checked;
+                if (isEnabled) {
+                    document.body.classList.add('ny-active');
                 } else {
                     document.body.classList.remove('ny-active');
-                    localStorage.setItem(STORAGE_KEY, 'false');
                 }
+                chrome.storage.local.set({ [STORAGE_KEY]: isEnabled });
             });
         }
     }
