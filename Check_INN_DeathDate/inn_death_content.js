@@ -158,10 +158,13 @@ function checkAndInject() {
                         return;
                     }
 
-                    const { foundInn, foundDeath, existingInn, existingDeath } = resp;
+                    const { foundInn, foundDeath, existingInn, existingDeath, probateCaseDeath } = resp;
                     
                     let html = `<div class="toast-header">Результат проверки</div>`;
                     let type = 'success';
+
+                    // --- Новая логика проверки ИНН ---
+                    const isInnDoubtful = probateCaseDeath && (!foundDeath || (foundDeath && foundDeath !== probateCaseDeath));
 
                     // 1. ЛОГИКА ИНН
                     if (foundInn && existingInn) {
@@ -183,6 +186,12 @@ function checkAndInject() {
                         html += `<div class="toast-row">⛔️ ИНН не найден.</div>`;
                         type = 'death';
                     }
+                    
+                    if (foundInn && isInnDoubtful) {
+                        html += `<div class="toast-row" style="color:#ffcc80; font-weight: bold;">⚠️ ИНН может быть неверным!</div><div style="font-size: 11px; opacity: 0.8;">(Дата смерти по ИНН и в реестре наслед. дел не совпадают)</div>`;
+                        type = 'warning';
+                    }
+
 
                     // 2. ЛОГИКА СМЕРТИ
                     // Собираем всё в кучу, чтобы понять умер или нет
@@ -199,6 +208,10 @@ function checkAndInject() {
                         if (!foundDeath || (foundDeath && existingDeath !== foundDeath)) {
                             deadInfo += `<div style="font-weight:bold; color:#ff8a80">💀 По ИНН из базы: ${existingDeath}</div>`;
                         }
+                    }
+                    if (probateCaseDeath) {
+                        isDead = true;
+                        deadInfo += `<div style="font-weight:bold; color:#ff8a80">💀 В реестре наслед. дел: ${probateCaseDeath}</div>`;
                     }
 
                     if (isDead) {

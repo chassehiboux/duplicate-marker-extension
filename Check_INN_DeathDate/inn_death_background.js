@@ -15,6 +15,7 @@ async function processFullCheck(data, sendResponse) {
 
         let foundDeath = null;
         let existingDeath = null;
+        let probateCaseDeath = null;
 
         // 2. Проверка смерти (по найденному)
         if (foundInn) {
@@ -28,12 +29,16 @@ async function processFullCheck(data, sendResponse) {
             existingDeath = foundDeath;
         }
 
+        // 4. Проверка Реестра наследственных дел
+        probateCaseDeath = await checkProbateCase(data);
+
         sendResponse({ 
             success: true, 
             foundInn: foundInn,
             existingInn: existingInn,
             foundDeath: foundDeath,
-            existingDeath: existingDeath
+            existingDeath: existingDeath,
+            probateCaseDeath: probateCaseDeath
         });
 
     } catch (err) {
@@ -53,6 +58,13 @@ async function findInn(personData) {
 async function checkDeathDate(inn) {
     const tab = await chrome.tabs.create({ url: "https://service.nalog.ru/invalid-inn-fl.html", active: false });
     const result = await executeScriptInTab(tab.id, injectDeathCheckLogic, [inn]);
+    chrome.tabs.remove(tab.id);
+    return result;
+}
+
+async function checkProbateCase(personData) {
+    const tab = await chrome.tabs.create({ url: "https://notariat.ru/ru-ru/help/probate-cases/", active: false });
+    const result = await executeScriptInTab(tab.id, injectProbateCaseLogic, [personData]);
     chrome.tabs.remove(tab.id);
     return result;
 }
@@ -124,13 +136,17 @@ async function injectInnSearchLogic(data) {
             const resEl = document.querySelector('#resultInn');
             if (resEl && resEl.innerText.trim()) return resEl.innerText.trim();
 
+            // Улучшенная проверка "не найдено"
+            const paneHeaders = document.querySelectorAll('.pane-header');
+            for (const header of paneHeaders) {
+                if (header.innerText.includes('Информация об ИНН не найдена')) {
+                    return null; // Явное сообщение "не найдено"
+                }
+            }
+            
             const noDataEl = document.querySelector('.msg-no-data');
             if (noDataEl && noDataEl.offsetParent !== null) return null;
 
-            const pnlHeader = document.querySelector('.pane-header');
-            if (pnlHeader && pnlHeader.innerText.includes('Результаты поиска') && !resEl) {
-                 if (document.body.innerText.includes('не найдена')) return null;
-            }
             await sleep(300);
         }
         return null;
@@ -190,4 +206,83 @@ async function injectDeathCheckLogic(inn) {
         }
         return null;
     } catch (e) { return null; }
+}
+
+// === СКРИПТ: ПРОВЕРКА РЕЕСТРА НАСЛЕДСТВЕННЫХ ДЕЛ ===
+async function injectProbateCaseLogic(data) {
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    const waitReady = async () => {
+        for (let i=0; i<80; i++) { 
+            if (document.readyState === 'complete') return true;
+            await sleep(200);
+        }
+        return false;
+    };
+
+    try {
+        await waitReady();
+        
+        const fullName = `${data.surname} ${data.name} ${data.patronymic}`.trim();
+        const [day, month, year] = data.birthDate.split('.');
+
+        const fill = (sel, val) => {
+            const el = document.querySelector(sel);
+            if (el) {
+                el.value = val;
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+        };
+        
+        const select = (sel, val) => {
+             const el = document.querySelector(sel);
+             if (el) {
+                el.value = val;
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+             }
+        }
+
+        fill('input[name="name"]', fullName);
+        select('select[name="b-day"]', day);
+        select('select[name="b-month"]', month);
+        fill('input[name="b-year"]', year);
+        
+        await sleep(500);
+
+        const btn = document.querySelector('.js-probate-cases__submit');
+        if (btn) {
+            btn.click();
+        }
+
+        for (let i = 0; i < 50; i++) {
+            await sleep(300);
+            const resultBlock = document.querySelector('.probate-cases__result');
+            if (resultBlock && resultBlock.style.display !== 'none') {
+                const header = resultBlock.querySelector('.probate-cases__result-header');
+                if (header && header.innerHTML.includes('<b>0</b>')) {
+                    return null; // Явное сообщение "0 дел найдено"
+                }
+                if (resultBlock.innerText.includes('К сожалению, по вашему запросу ничего не найдено')) {
+                    return null;
+                }
+                
+                const resultItem = resultBlock.querySelector('.probate-cases__result-item');
+                if (resultItem) {
+                    const text = resultItem.innerText;
+                    const match = text.match(/Дата смерти: (\d{2}\.\d{2}\.\d{4})/);
+                    if (match && match[1]) {
+                        return match[1];
+                    }
+                }
+            }
+            if (document.body.innerText.includes('К сожалению, по вашему запросу ничего не найдено')) {
+                return null;
+            }
+        }
+        return null;
+
+    } catch (e) {
+        console.error('Probate case script error:', e);
+        return null;
+    }
 }
