@@ -1,3 +1,5 @@
+let isBatchCheckCancelled = false;
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "start_check") {
         processFullCheck(request.data, sendResponse);
@@ -5,6 +7,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
     if (request.action === "start_batch_check") {
         processBatchCheck(request, sender.tab.id);
+        return true;
+    }
+    if (request.action === "cancel_batch_check") {
+        isBatchCheckCancelled = true;
+        console.log("Batch check cancellation received.");
         return true;
     }
 });
@@ -22,12 +29,18 @@ async function processFullCheck(data, sendResponse) {
 
 // ========= BATCH CHECK =========
 async function processBatchCheck(request, senderTabId) {
+    isBatchCheckCancelled = false; // Reset flag on new batch start
     const { ids, origin } = request;
     const total = ids.length;
 
     chrome.tabs.sendMessage(senderTabId, { action: "batch_progress", current: 0, total: total });
 
     for (let i = 0; i < total; i++) {
+        if (isBatchCheckCancelled) {
+            console.log("Batch check cancelled by user.");
+            break; // Exit the loop if cancelled
+        }
+
         const id = ids[i];
         chrome.tabs.sendMessage(senderTabId, { action: "batch_progress", current: i + 1, total: total });
 
@@ -53,6 +66,9 @@ async function processBatchCheck(request, senderTabId) {
             } else {
                 resultPayload = { id, error: 'Не удалось получить данные со страницы' };
             }
+            
+            // Check again in case cancellation happened during the async check
+            if (isBatchCheckCancelled) break;
 
             chrome.tabs.sendMessage(senderTabId, { 
                 action: "batch_item_result", 
@@ -61,6 +77,7 @@ async function processBatchCheck(request, senderTabId) {
 
         } catch (e) {
             console.error(`Error processing ID ${id}:`, e);
+            if (isBatchCheckCancelled) break;
             chrome.tabs.sendMessage(senderTabId, { 
                 action: "batch_item_result", 
                 result: { id, error: e.message } 
@@ -302,6 +319,8 @@ async function injectDeathCheckLogic(inn) {
         if (btn && !btn.disabled) btn.click();
         else { const f = document.querySelector('form'); if(f) f.submit(); }
 
+        await sleep(1500); // Даем больше времени на отработку в фоне
+
         for (let i=0; i<40; i++) {
             await sleep(600);
             
@@ -313,9 +332,9 @@ async function injectDeathCheckLogic(inn) {
             const cells = document.querySelectorAll('#pnlResult td');
             for (let c of cells) { if (c.innerText.match(/^\d{2}\.\d{2}\.\d{4}$/)) return c.innerText; }
             
-            // 3. Поиск по тексту "Дата смерти"
+            // 3. Поиск по тексту "Дата смерти" или "Дата признания недействительным"
             const bodyText = document.body.innerText;
-            const dateMatch = bodyText.match(/Дата смерти.*(\d{2}\.\d{2}\.\d{4})/);
+            const dateMatch = bodyText.match(/(?:Дата смерти|Дата признания недействительным).*?(\d{2}\.\d{2}\.\d{4})/);
             if (dateMatch && dateMatch[1]) return dateMatch[1];
 
             // 4. Отрицательный результат

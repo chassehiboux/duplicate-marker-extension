@@ -228,6 +228,7 @@ function getModal() {
         const closeFunc = () => {
             overlay.style.display = 'none';
             document.getElementById('inn-modal-body').innerHTML = ''; 
+            chrome.runtime.sendMessage({ action: "cancel_batch_check" });
         };
         document.getElementById('inn-modal-close-btn').onclick = closeFunc;
     }

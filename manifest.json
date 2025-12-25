@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Помощник по Пирамиде",
-  "version": "1.2.7",
-  "description": "Авто-режим + Проверка ИНН/Смерти",
+  "version": "1.2.8",
+  "description": "Авто-режим + Проверка ИНН/Смерти + Redirect",
   "permissions": [
     "activeTab",
     "scripting",
@@ -11,6 +11,7 @@
     "clipboardRead",
     "sidePanel",
     "webRequest",
+    "declarativeNetRequest",
     "notifications",
     "tabs"
   ],
@@ -19,6 +20,15 @@
   ],
   "background": {
     "service_worker": "background.js"
+  },
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "pyramid_redirects",
+        "enabled": true,
+        "path": "redirector/redirect_rules.json"
+      }
+    ]
   },
   "icons": {
     "16": "icon.png",
