@@ -1,0 +1,54 @@
+/* StageTimer/timer_styles.css */
+
+#pyramid-stage-timer {
+    position: fixed;
+    /* Размещаем чуть ниже верхнего края справа, чтобы не перекрывать меню */
+    top: 80px; 
+    right: 20px;
+    
+    background: rgba(44, 62, 80, 0.95); /* Темно-синий фон */
+    color: #ecf0f1; /* Светлый текст */
+    
+    padding: 10px 15px;
+    border-radius: 8px;
+    z-index: 9999999; /* Поверх всего */
+    
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    font-size: 14px;
+    font-weight: 500;
+    
+    box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+    border-left: 4px solid #3498db; /* Синяя полоска слева (статус: загрузка) */
+    
+    transition: opacity 0.5s ease, transform 0.5s ease;
+    pointer-events: none; /* Пропускать клики сквозь плашку */
+}
+
+/* Статус: Завершено */
+#pyramid-stage-timer.finished {
+    border-left-color: #2ecc71; /* Зеленая полоска */
+    background: rgba(30, 43, 55, 0.95);
+}
+
+/* Анимация крутилки */
+.timer-spinner {
+    width: 16px;
+    height: 16px;
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    border-top: 2px solid #3498db; /* Синий верх */
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+#pyramid-stage-timer.finished .timer-spinner {
+    display: none; /* Скрываем спиннер, когда готово */
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}

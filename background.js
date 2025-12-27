@@ -1,5 +1,16 @@
 // Этот скрипт обрабатывает фоновые операции расширения.
-importScripts('Check_INN_DeathDate/inn_death_background.js');
+
+// --- Подключение модулей ---
+try {
+    importScripts('Check_INN_DeathDate/inn_death_background.js');
+    // importScripts('StageTimer/telemetry_background.js'); // Логика интегрирована внутрь
+} catch (e) {
+    console.error("Ошибка импорта скриптов в background.js:", e);
+}
+
+// === КОНФИГУРАЦИЯ GOOGLE ТАБЛИЦЫ ===
+const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzkP1L4n2Qc_GR1RigdEnX1kiG4Hw4eE5V3cDNrm3VV4ZYT8db8yTUUKLng1Pvj4Cp7/exec';
+
 // --- Утилита для логирования ---
 const LOG_KEY = 'extension_logs'; // Ключ для хранения логов в chrome.storage
 const MAX_LOG_ENTRIES = 100; // Максимальное количество записей в логе
@@ -44,6 +55,50 @@ chrome.runtime.onInstalled.addListener(() => {
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     switch (request.action) {
+        
+        // === ТЕЛЕМЕТРИЯ ===
+        case 'LOG_STAGE_TIME': {
+            const d = request.data;
+            
+            if (GOOGLE_SCRIPT_URL) {
+                // Добавляем статус к имени стадии или отдельным полем
+                // Чтобы не ломать структуру таблицы, я допишу статус к названию стадии,
+                // если это "ПРЕРВАНО".
+                let stageInfo = d.stageName;
+                if (d.status === "ПРЕРВАНО") {
+                    stageInfo = `[ОТМЕНА] ${stageInfo}`;
+                }
+
+                const params = new URLSearchParams({
+                    baseName: d.baseName,
+                    stageName: stageInfo, // Передаем модифицированное название
+                    userName: d.userName,
+                    duration: d.duration.toString(),
+                    timestamp: d.timestamp
+                }).toString();
+
+                const finalUrl = `${GOOGLE_SCRIPT_URL}?${params}`;
+
+                fetch(finalUrl, {
+                    method: 'GET',
+                    mode: 'no-cors',
+                    credentials: 'omit',
+                    cache: 'no-store'
+                }).catch(err => console.error("[TELEMETRY] Err:", err));
+            }
+
+            // Локальный лог
+            const storageKey = `logs_${d.baseName}`;
+            chrome.storage.local.get([storageKey], (res) => {
+                let logs = res[storageKey] || "";
+                logs += d.logLine + "\n";
+                chrome.storage.local.set({ [storageKey]: logs });
+            });
+
+            return true; 
+        }
+
+        // === ДЕЙСТВИЯ ПАНЕЛИ УПРАВЛЕНИЯ ===
         case 'approve_action': {
             const { path, edocid, tag } = request.data;
             addLog(`Получено утверждение для '${path}' с тегом '${tag || ''}'`);
@@ -527,4 +582,3 @@ function _incrementEditingCounter(edocid, path) {
 
 
 addLog("Background скрипт запущен.");
-

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Помощник по Пирамиде",
-  "version": "1.2.8",
-  "description": "Авто-режим + Проверка ИНН/Смерти + Redirect",
+  "version": "1.2.10",
+  "description": "Авто-режим + Проверка ИНН/Смерти + Мониторинг скорости стадий",
   "permissions": [
     "activeTab",
     "scripting",
@@ -63,6 +63,20 @@
       ],
       "run_at": "document_end",
       "all_frames": true
+    },
+    {
+      "matches": [
+        "*://*.pyramid.vostok-electra.ru/*",
+        "*://*.pyramid-vostok.electra.ru/*"
+      ],
+      "css": [
+        "StageTimer/timer_styles.css"
+      ],
+      "js": [
+        "StageTimer/timer_content.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": false
     },
     {
       "matches": [
