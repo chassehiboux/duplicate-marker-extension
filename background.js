@@ -61,20 +61,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             const d = request.data;
             
             if (GOOGLE_SCRIPT_URL) {
-                // Добавляем статус к имени стадии или отдельным полем
-                // Чтобы не ломать структуру таблицы, я допишу статус к названию стадии,
-                // если это "ПРЕРВАНО".
-                let stageInfo = d.stageName;
-                if (d.status === "ПРЕРВАНО") {
-                    stageInfo = `[ОТМЕНА] ${stageInfo}`;
-                }
-
                 const params = new URLSearchParams({
                     baseName: d.baseName,
-                    stageName: stageInfo, // Передаем модифицированное название
+                    stageName: d.stageName,
                     userName: d.userName,
                     duration: d.duration.toString(),
-                    timestamp: d.timestamp
+                    timestamp: d.timestamp,
+                    status: d.status,        // <--- Исправлено: Статус отдельно
+                    sessionId: d.sessionId   // <--- Добавлено: ID сессии
                 }).toString();
 
                 const finalUrl = `${GOOGLE_SCRIPT_URL}?${params}`;
@@ -87,13 +81,19 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 }).catch(err => console.error("[TELEMETRY] Err:", err));
             }
 
-            // Локальный лог
-            const storageKey = `logs_${d.baseName}`;
-            chrome.storage.local.get([storageKey], (res) => {
-                let logs = res[storageKey] || "";
-                logs += d.logLine + "\n";
-                chrome.storage.local.set({ [storageKey]: logs });
-            });
+            // Локальный лог (пишем только финальные статусы, чтобы не спамить ОЖИДАНИЕМ)
+            if (d.status !== "ОЖИДАНИЕ") {
+                const storageKey = `logs_${d.baseName}`;
+                chrome.storage.local.get([storageKey], (res) => {
+                    let logs = res[storageKey] || "";
+                    // Добавляем статус в текст лога для читаемости
+                    let logEntry = d.logLine;
+                    if (d.status !== "УСПЕШНО") logEntry += ` [${d.status}]`;
+                    
+                    logs += logEntry + "\n";
+                    chrome.storage.local.set({ [storageKey]: logs });
+                });
+            }
 
             return true; 
         }

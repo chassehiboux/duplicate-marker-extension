@@ -10,20 +10,30 @@
 
     if (window.location.pathname.includes("/login")) return;
 
-    // 2. Инициализация
+    // --- НОВОЕ: Генерируем ID сессии (чтобы обновлять одну и ту же строку в таблице) ---
+    const sessionId = Date.now().toString(36) + Math.random().toString(36).substr(2);
+
+    // 2. Инициализация переменных
     let isFinished = false;
     const startTime = performance.now();
     let timerInterval = null;
     let hasLoaderAppeared = false; 
+    
+    // Флаги для периодической отправки
+    let hasSentInitialReport = false;
+    let lastReportTime = 0;
 
-    // 3. UI (Тост)
+    // 3. Создаем UI Таймера (Toast)
     const toast = document.createElement("div");
     toast.id = "pyramid-stage-timer";
     toast.innerHTML = `<div class="timer-spinner"></div><span id="timer-val">Ожидание...</span>`;
     
     function injectToast() {
-        if (document.body) document.body.appendChild(toast);
-        else requestAnimationFrame(injectToast);
+        if (document.body) {
+            document.body.appendChild(toast);
+        } else {
+            requestAnimationFrame(injectToast);
+        }
     }
     injectToast();
 
@@ -43,7 +53,10 @@
                 .map(node => node.textContent.trim())
                 .filter(text => text.length > 0)
                 .join(" ");
-            if (!stageName) stageName = stageElem.innerText.split('\n')[0].trim();
+            
+            if (!stageName) {
+                stageName = stageElem.innerText.split('\n')[0].trim();
+            }
         } else {
             stageName = document.title.replace(" - Пирамида 2.0", "").trim();
         }
@@ -58,13 +71,14 @@
         return true;
     }
 
-    // 4. Основной цикл (100ms)
+    // 4. Основной цикл проверки (каждые 100мс)
     timerInterval = setInterval(() => {
         if (isFinished) return;
 
         const now = performance.now();
         const elapsed = ((now - startTime) / 1000).toFixed(2);
         
+        // Обновляем цифры на экране
         const valSpan = document.getElementById("timer-val");
         if (valSpan) valSpan.innerText = elapsed + "s";
 
@@ -73,7 +87,6 @@
         let isLoaderVisible = false;
         
         if (loader) {
-            // Проверяем честно через ComputedStyle
             const style = window.getComputedStyle(loader);
             isLoaderVisible = (style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0");
         }
@@ -84,30 +97,39 @@
             toast.style.borderColor = "#f1c40f"; // Желтый (грузится)
         }
 
-        // Собираем данные
         const currentData = scrapeData();
         const dataReady = isDataValid(currentData);
 
-        // --- УСЛОВИЯ ЗАВЕРШЕНИЯ ---
+        // --- ЛОГИКА ОТПРАВКИ ПРОМЕЖУТОЧНЫХ ОТЧЕТОВ ---
+        
+        // 1. Быстрая отправка "ОЖИДАНИЕ" (если прошло > 1 сек и данные валидны)
+        if (!hasSentInitialReport && elapsed > 1.0 && dataReady) {
+            sendToBackground("ОЖИДАНИЕ", elapsed, currentData);
+            hasSentInitialReport = true;
+            lastReportTime = parseFloat(elapsed);
+        }
+
+        // 2. Периодическое обновление каждые 30 сек
+        if (hasSentInitialReport && (elapsed - lastReportTime) >= 30) {
+            sendToBackground("ОЖИДАНИЕ", elapsed, currentData);
+            lastReportTime = parseFloat(elapsed);
+            // Если долго грузится - красим в оранжевый
+            toast.style.borderColor = "#e67e22"; 
+        }
+
+        // --- УСЛОВИЯ ЗАВЕРШЕНИЯ (Твоя оригинальная логика) ---
 
         if (loader) {
-            // Если элемент лоадера СУЩЕСТВУЕТ на странице (обычный случай для Пирамиды):
-            
-            // Завершаем ТОЛЬКО если он появлялся И теперь исчез
-            if (hasLoaderAppeared && !isLoaderVisible) {
-                // И ждем, пока подтянутся данные (ФИО/Заголовок)
-                if (dataReady) {
-                    finishTiming("SUCCESS", elapsed, currentData);
-                }
-                // Если лоадер исчез, но данные еще "Не определен", мы продолжаем ждать (цикл крутится)
+            // Если элемент лоадера СУЩЕСТВУЕТ на странице
+            // Завершаем ТОЛЬКО если он появлялся И теперь исчез И данные готовы
+            if (hasLoaderAppeared && !isLoaderVisible && dataReady) {
+                finishTiming("УСПЕШНО", elapsed, currentData);
             }
-            // ВАЖНО: Мы НЕ используем тайм-аут, пока элемент существует. 
-            // Будем ждать "Загрузка..." хоть 100 секунд, пока он не появится и не исчезнет.
         } else {
-            // Редкий случай: элемента #load_list вообще нет в HTML (другая страница?)
-            // Тут оставляем старый фолбек: если ничего нет 3 сек, то завершаем.
+            // Редкий случай: элемента #load_list вообще нет
+            // Фолбек: если ничего нет 3 сек, то завершаем
             if (now > 3000 && dataReady) {
-                finishTiming("SUCCESS", elapsed, currentData);
+                finishTiming("УСПЕШНО", elapsed, currentData);
             }
         }
 
@@ -118,62 +140,63 @@
         if (!isFinished) {
             const now = performance.now();
             const elapsed = ((now - startTime) / 1000).toFixed(2);
-            const currentData = scrapeData();
             
-            // Отправляем синхронно или "на прощание"
-            finishTiming("CANCELED", elapsed, currentData);
+            // Отправляем ОТМЕНУ только если мы уже успели отправить "ОЖИДАНИЕ"
+            // или если прошло достаточно времени (> 1.5 сек)
+            if (hasSentInitialReport || elapsed > 1.5) {
+                sendToBackground("ОТМЕНА", elapsed, scrapeData());
+            }
         }
     });
 
     // 6. Функция финиша
     function finishTiming(status, finalTime, data) {
-        if (isFinished) return; // Чтобы не сработать дважды (таймер + unload)
+        if (isFinished) return; 
         isFinished = true;
         clearInterval(timerInterval);
 
-        // UI (только если мы остались на странице)
-        if (status === "SUCCESS") {
+        // Финальная отправка (обновит статус в таблице)
+        sendToBackground(status, finalTime, data);
+
+        // UI
+        if (status === "УСПЕШНО") {
             toast.classList.add("finished");
             toast.style.borderColor = "#2ecc71"; // Зеленый
             const valSpan = document.getElementById("timer-val");
             if (valSpan) valSpan.innerText = `Готово: ${finalTime}s`;
-        } else {
-            // Если canceled, тост скорее всего исчезнет вместе со страницей, но на всякий случай
-            toast.style.borderColor = "#e74c3c"; // Красный
+            
+            // Скрываем тост через 4 секунды
+            setTimeout(() => {
+                toast.style.opacity = "0";
+                setTimeout(() => toast.remove(), 1000);
+            }, 4000);
         }
+    }
 
+    // Универсальная функция отправки
+    function sendToBackground(status, time, data) {
         const timestamp = new Date().toLocaleString("ru-RU");
-        const statusText = status === "SUCCESS" ? "УСПЕШНО" : "ПРЕРВАНО";
         
-        // Формируем сообщение
         const payload = {
             baseName: baseName,
             stageName: data.stageName,
             userName: data.userName,
-            duration: finalTime,
+            duration: time,
             timestamp: timestamp,
-            status: statusText, // <-- Новый параметр
-            logLine: `[${timestamp}] [${statusText}] [${data.userName}] ${data.stageName} — ${finalTime}s`
+            status: status,
+            sessionId: sessionId, // <-- Уникальный ID для связки
+            logLine: `[${timestamp}] [${status}] [${data.userName}] ${data.stageName} — ${time}s`
         };
 
-        console.log(`[PyramidTimer] Завершено (${status}):`, payload);
+        // console.log(`[PyramidTimer] Sending ${status}:`, payload);
 
-        // Отправка
         try {
             chrome.runtime.sendMessage({
                 action: "LOG_STAGE_TIME",
                 data: payload
             });
         } catch (e) {
-            // Игнорируем ошибки extension context invalidated при закрытии вкладки
-        }
-
-        // Скрываем тост
-        if (status === "SUCCESS") {
-            setTimeout(() => {
-                toast.style.opacity = "0";
-                setTimeout(() => toast.remove(), 1000);
-            }, 4000);
+            // Игнор ошибок при закрытии вкладки
         }
     }
 })();
