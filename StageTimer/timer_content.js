@@ -2,42 +2,38 @@
 
 (function() {
     // 1. Определение базы
-    const hostname = window.location.hostname;
-    let baseName = "Основная";
-    if (hostname.includes("kgn.pyramid")) baseName = "Курган";
-    else if (hostname.includes("yuric.pyramid")) baseName = "ЮРИЦ";
-    else if (hostname.startsWith("81.pyramid")) baseName = "ЧЭС";
+    function getBaseName() {
+        const h = window.location.hostname.toLowerCase();
+        if (h.startsWith("kgn.")) return "Курган";
+        if (h.startsWith("yuric.")) return "ЮРИЦ";
+        if (h.startsWith("81.")) return "ЧЭС";
+        if (h.includes("pyramid.vostok-electra.ru")) return "Основная";
+        return "Основная";
+    }
+
+    const baseName = getBaseName();
 
     if (window.location.pathname.includes("/login")) return;
 
-    // --- НОВОЕ: Генерируем ID сессии (чтобы обновлять одну и ту же строку в таблице) ---
-    const sessionId = Date.now().toString(36) + Math.random().toString(36).substr(2);
-
-    // 2. Инициализация переменных
-    let isFinished = false;
-    const startTime = performance.now();
+    let sessionId = null;
+    let isTracking = false;      
+    let startTime = 0;           
     let timerInterval = null;
-    let hasLoaderAppeared = false; 
-    
-    // Флаги для периодической отправки
-    let hasSentInitialReport = false;
-    let lastReportTime = 0;
+    let lastReportTime = 0;      
+    let hasSentInitial = false;  
 
-    // 3. Создаем UI Таймера (Toast)
+    // UI
     const toast = document.createElement("div");
     toast.id = "pyramid-stage-timer";
-    toast.innerHTML = `<div class="timer-spinner"></div><span id="timer-val">Ожидание...</span>`;
+    toast.innerHTML = `<div class="timer-spinner"></div><span id="timer-val">0.00s</span>`;
     
     function injectToast() {
-        if (document.body) {
-            document.body.appendChild(toast);
-        } else {
-            requestAnimationFrame(injectToast);
-        }
+        if (document.body) document.body.appendChild(toast);
+        else requestAnimationFrame(injectToast);
     }
     injectToast();
 
-    // Вспомогательная: Сбор данных
+    // Сбор данных
     function scrapeData() {
         let userName = "Не определен";
         const fioElem = document.querySelector(".fio"); 
@@ -45,158 +41,179 @@
             userName = fioElem.innerText.trim();
         }
 
-        let stageName = "Неизвестная стадия";
+        let stageName = "ПК Пирамида"; 
         const stageElem = document.querySelector(".ui-jqgrid-title");
+        
         if (stageElem) {
-            stageName = Array.from(stageElem.childNodes)
-                .filter(node => node.nodeType === Node.TEXT_NODE)
-                .map(node => node.textContent.trim())
-                .filter(text => text.length > 0)
+            let text = Array.from(stageElem.childNodes)
+                .filter(n => n.nodeType === Node.TEXT_NODE)
+                .map(n => n.textContent.trim())
                 .join(" ");
             
-            if (!stageName) {
-                stageName = stageElem.innerText.split('\n')[0].trim();
-            }
+            if (!text) text = stageElem.innerText.split('\n')[0].trim();
+            if (text) stageName = text;
         } else {
-            stageName = document.title.replace(" - Пирамида 2.0", "").trim();
+            let title = document.title.replace(" - Пирамида 2.0", "").trim();
+            if (title) stageName = title;
         }
         return { userName, stageName };
     }
 
-    // Вспомогательная: Валидация данных
     function isDataValid(data) {
         if (!data.userName || data.userName === "Не определен") return false;
-        const s = data.stageName;
-        if (!s || s === "ПК Пирамида" || s === "Пирамида 2.0" || s === "Неизвестная стадия") return false;
+        if (!data.stageName || data.stageName === "ПК Пирамида" || data.stageName === "Пирамида 2.0") return false;
         return true;
     }
 
-    // 4. Основной цикл проверки (каждые 100мс)
+    // === ГЛАВНЫЙ ЦИКЛ ПРОВЕРКИ (50мс для быстрой реакции) ===
     timerInterval = setInterval(() => {
-        if (isFinished) return;
+        const loader = document.getElementById("load_list");
+        let isVisible = false;
+
+        // ЖЕЛЕЗОБЕТОННАЯ ПРОВЕРКА
+        if (loader) {
+            // getComputedStyle дает реальный стиль элемента, даже если он задан в CSS классе
+            const style = window.getComputedStyle(loader);
+            
+            // Считаем видимым только если он реально занимает место и виден
+            if (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
+                isVisible = true;
+            }
+        }
 
         const now = performance.now();
-        const elapsed = ((now - startTime) / 1000).toFixed(2);
+
+        // СЦЕНАРИЙ 1: Лоадер появился -> СТАРТ
+        if (isVisible && !isTracking) {
+            startTracking(now);
+        }
+
+        // СЦЕНАРИЙ 2: Лоадер висит -> ОБНОВЛЕНИЕ
+        if (isVisible && isTracking) {
+            updateTracking(now);
+        }
+
+        // СЦЕНАРИЙ 3: Лоадер исчез -> СТОП
+        if (!isVisible && isTracking) {
+            stopTracking(now);
+        }
         
-        // Обновляем цифры на экране
+        // ВАЖНО: Убраны все условия "else", которые запускали таймер по таймауту.
+        // Если лоадера нет - скрипт просто спит.
+
+    }, 50);
+
+    function startTracking(now) {
+        isTracking = true;
+        startTime = now;
+        sessionId = Date.now().toString(36) + Math.random().toString(36).substr(2);
+        hasSentInitial = false;
+        lastReportTime = 0;
+
+        // Показываем тост
+        toast.style.opacity = "1";
+        toast.style.borderColor = "#f1c40f"; // Желтый
+        toast.querySelector("#timer-val").innerText = "0.00s";
+        toast.classList.remove("finished");
+    }
+
+    function updateTracking(now) {
+        const elapsed = ((now - startTime) / 1000).toFixed(2);
         const valSpan = document.getElementById("timer-val");
         if (valSpan) valSpan.innerText = elapsed + "s";
-
-        // --- ПРОВЕРКА ЛОАДЕРА ---
-        const loader = document.getElementById("load_list");
-        let isLoaderVisible = false;
-        
-        if (loader) {
-            const style = window.getComputedStyle(loader);
-            isLoaderVisible = (style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0");
-        }
-
-        // Если лоадер виден прямо сейчас — запоминаем
-        if (isLoaderVisible) {
-            hasLoaderAppeared = true;
-            toast.style.borderColor = "#f1c40f"; // Желтый (грузится)
-        }
 
         const currentData = scrapeData();
         const dataReady = isDataValid(currentData);
 
-        // --- ЛОГИКА ОТПРАВКИ ПРОМЕЖУТОЧНЫХ ОТЧЕТОВ ---
-        
-        // 1. Быстрая отправка "ОЖИДАНИЕ" (если прошло > 1 сек и данные валидны)
-        if (!hasSentInitialReport && elapsed > 1.0 && dataReady) {
+        // 1. Быстрая фиксация "ОЖИДАНИЕ" (через 1 сек)
+        if (!hasSentInitial && elapsed > 1.0 && dataReady) {
             sendToBackground("ОЖИДАНИЕ", elapsed, currentData);
-            hasSentInitialReport = true;
+            hasSentInitial = true;
             lastReportTime = parseFloat(elapsed);
         }
 
-        // 2. Периодическое обновление каждые 30 сек
-        if (hasSentInitialReport && (elapsed - lastReportTime) >= 30) {
+        // 2. Периодическое обновление (каждые 30 сек)
+        if (hasSentInitial && (elapsed - lastReportTime) >= 30) {
             sendToBackground("ОЖИДАНИЕ", elapsed, currentData);
             lastReportTime = parseFloat(elapsed);
-            // Если долго грузится - красим в оранжевый
-            toast.style.borderColor = "#e67e22"; 
+            toast.style.borderColor = "#e67e22"; // Оранжевый
         }
+    }
 
-        // --- УСЛОВИЯ ЗАВЕРШЕНИЯ (Твоя оригинальная логика) ---
+    function stopTracking(now) {
+        // Небольшая задержка, чтобы JS на странице успел отрисовать заголовок/ФИО
+        setTimeout(() => {
+            const finalTime = ((now - startTime) / 1000).toFixed(2);
+            const data = scrapeData();
 
-        if (loader) {
-            // Если элемент лоадера СУЩЕСТВУЕТ на странице
-            // Завершаем ТОЛЬКО если он появлялся И теперь исчез И данные готовы
-            if (hasLoaderAppeared && !isLoaderVisible && dataReady) {
-                finishTiming("УСПЕШНО", elapsed, currentData);
+            // ФИЛЬТР: Если после загрузки данные все еще "ПК Пирамида" / "Не определен"
+            if (!isDataValid(data)) {
+                // Если мы уже успели отправить "ОЖИДАНИЕ", закрываем его отменой
+                if (hasSentInitial) {
+                    sendToBackground("ОТМЕНА", finalTime, data);
+                }
+                // Иначе просто тихо выключаемся (это был технический спиннер)
+                resetUI();
+                isTracking = false;
+                return;
             }
-        } else {
-            // Редкий случай: элемента #load_list вообще нет
-            // Фолбек: если ничего нет 3 сек, то завершаем
-            if (now > 3000 && dataReady) {
-                finishTiming("УСПЕШНО", elapsed, currentData);
-            }
-        }
 
-    }, 100);
+            // УСПЕХ
+            sendToBackground("УСПЕШНО", finalTime, data);
+            
+            const valSpan = document.getElementById("timer-val");
+            if (valSpan) valSpan.innerText = `Готово: ${finalTime}s`;
+            toast.classList.add("finished");
+            toast.style.borderColor = "#2ecc71"; // Зеленый
 
-    // 5. Обработка ухода со страницы (ПРЕРВАНО)
+            isTracking = false;
+
+            setTimeout(() => {
+                if (!isTracking) toast.style.opacity = "0";
+            }, 4000);
+
+        }, 200);
+    }
+
+    function resetUI() {
+        toast.style.opacity = "0";
+        setTimeout(() => toast.classList.remove("finished"), 500);
+    }
+
+    // Если закрыли вкладку ВО ВРЕМЯ того, как крутился лоадер
     window.addEventListener("beforeunload", () => {
-        if (!isFinished) {
+        if (isTracking) {
             const now = performance.now();
             const elapsed = ((now - startTime) / 1000).toFixed(2);
             
-            // Отправляем ОТМЕНУ только если мы уже успели отправить "ОЖИДАНИЕ"
-            // или если прошло достаточно времени (> 1.5 сек)
-            if (hasSentInitialReport || elapsed > 1.5) {
-                sendToBackground("ОТМЕНА", elapsed, scrapeData());
+            // Шлем отмену, если таймер реально работал какое-то время
+            if (hasSentInitial || elapsed > 1.5) {
+                const data = scrapeData();
+                sendToBackground("ОТМЕНА", elapsed, data);
             }
         }
     });
 
-    // 6. Функция финиша
-    function finishTiming(status, finalTime, data) {
-        if (isFinished) return; 
-        isFinished = true;
-        clearInterval(timerInterval);
-
-        // Финальная отправка (обновит статус в таблице)
-        sendToBackground(status, finalTime, data);
-
-        // UI
-        if (status === "УСПЕШНО") {
-            toast.classList.add("finished");
-            toast.style.borderColor = "#2ecc71"; // Зеленый
-            const valSpan = document.getElementById("timer-val");
-            if (valSpan) valSpan.innerText = `Готово: ${finalTime}s`;
-            
-            // Скрываем тост через 4 секунды
-            setTimeout(() => {
-                toast.style.opacity = "0";
-                setTimeout(() => toast.remove(), 1000);
-            }, 4000);
-        }
-    }
-
-    // Универсальная функция отправки
     function sendToBackground(status, time, data) {
         const timestamp = new Date().toLocaleString("ru-RU");
         
         const payload = {
-            baseName: baseName,
+            baseName: baseName, 
             stageName: data.stageName,
             userName: data.userName,
             duration: time,
             timestamp: timestamp,
             status: status,
-            sessionId: sessionId, // <-- Уникальный ID для связки
-            logLine: `[${timestamp}] [${status}] [${data.userName}] ${data.stageName} — ${time}s`
+            sessionId: sessionId,
+            logLine: `[${timestamp}] [${status}] [${baseName}] [${data.userName}] ${data.stageName} — ${time}s`
         };
-
-        // console.log(`[PyramidTimer] Sending ${status}:`, payload);
 
         try {
             chrome.runtime.sendMessage({
                 action: "LOG_STAGE_TIME",
                 data: payload
             });
-        } catch (e) {
-            // Игнор ошибок при закрытии вкладки
-        }
+        } catch (e) {}
     }
+
 })();
