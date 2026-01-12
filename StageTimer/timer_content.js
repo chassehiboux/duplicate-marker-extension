@@ -17,6 +17,7 @@
 
     let sessionId = null;
     let isTracking = false;      
+    let isStopping = false; // <--- НОВЫЙ ФЛАГ: защита от повторного завершения
     let startTime = 0;           
     let timerInterval = null;
     let lastReportTime = 0;      
@@ -65,17 +66,14 @@
         return true;
     }
 
-    // === ГЛАВНЫЙ ЦИКЛ ПРОВЕРКИ (50мс для быстрой реакции) ===
+    // === ГЛАВНЫЙ ЦИКЛ ПРОВЕРКИ (50мс) ===
     timerInterval = setInterval(() => {
         const loader = document.getElementById("load_list");
         let isVisible = false;
 
-        // ЖЕЛЕЗОБЕТОННАЯ ПРОВЕРКА
         if (loader) {
-            // getComputedStyle дает реальный стиль элемента, даже если он задан в CSS классе
             const style = window.getComputedStyle(loader);
-            
-            // Считаем видимым только если он реально занимает место и виден
+            // Строгая проверка видимости
             if (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
                 isVisible = true;
             }
@@ -83,36 +81,35 @@
 
         const now = performance.now();
 
-        // СЦЕНАРИЙ 1: Лоадер появился -> СТАРТ
-        if (isVisible && !isTracking) {
+        // 1. СТАРТ (Лоадер появился, мы еще не следим и не завершаем предыдущее)
+        if (isVisible && !isTracking && !isStopping) {
             startTracking(now);
         }
 
-        // СЦЕНАРИЙ 2: Лоадер висит -> ОБНОВЛЕНИЕ
-        if (isVisible && isTracking) {
+        // 2. ПРОЦЕСС
+        if (isTracking && isVisible) {
             updateTracking(now);
         }
 
-        // СЦЕНАРИЙ 3: Лоадер исчез -> СТОП
-        if (!isVisible && isTracking) {
+        // 3. СТОП (Лоадер исчез, мы следили и еще не начали процесс остановки)
+        if (!isVisible && isTracking && !isStopping) {
+            // МГНОВЕННО ставим флаг остановки, чтобы следующий тик таймера сюда не зашел
+            isStopping = true; 
             stopTracking(now);
         }
-        
-        // ВАЖНО: Убраны все условия "else", которые запускали таймер по таймауту.
-        // Если лоадера нет - скрипт просто спит.
 
     }, 50);
 
     function startTracking(now) {
         isTracking = true;
+        isStopping = false; // Сброс флага
         startTime = now;
         sessionId = Date.now().toString(36) + Math.random().toString(36).substr(2);
         hasSentInitial = false;
         lastReportTime = 0;
 
-        // Показываем тост
         toast.style.opacity = "1";
-        toast.style.borderColor = "#f1c40f"; // Желтый
+        toast.style.borderColor = "#f1c40f"; 
         toast.querySelector("#timer-val").innerText = "0.00s";
         toast.classList.remove("finished");
     }
@@ -125,50 +122,58 @@
         const currentData = scrapeData();
         const dataReady = isDataValid(currentData);
 
-        // 1. Быстрая фиксация "ОЖИДАНИЕ" (через 1 сек)
+        // Быстрая фиксация "ОЖИДАНИЕ" (через 1 сек)
         if (!hasSentInitial && elapsed > 1.0 && dataReady) {
             sendToBackground("ОЖИДАНИЕ", elapsed, currentData);
             hasSentInitial = true;
             lastReportTime = parseFloat(elapsed);
         }
 
-        // 2. Периодическое обновление (каждые 30 сек)
+        // Периодическое обновление (каждые 30 сек)
         if (hasSentInitial && (elapsed - lastReportTime) >= 30) {
             sendToBackground("ОЖИДАНИЕ", elapsed, currentData);
             lastReportTime = parseFloat(elapsed);
-            toast.style.borderColor = "#e67e22"; // Оранжевый
+            toast.style.borderColor = "#e67e22"; 
         }
     }
 
     function stopTracking(now) {
-        // Небольшая задержка, чтобы JS на странице успел отрисовать заголовок/ФИО
+        // Мы уже выставили isStopping=true снаружи, поэтому этот код выполнится ровно 1 раз.
+        
+        // Ждем 200мс, чтобы DOM обновился (сменился заголовок)
         setTimeout(() => {
             const finalTime = ((now - startTime) / 1000).toFixed(2);
             const data = scrapeData();
 
-            // ФИЛЬТР: Если после загрузки данные все еще "ПК Пирамида" / "Не определен"
+            // ФИЛЬТР: Данные мусорные?
             if (!isDataValid(data)) {
-                // Если мы уже успели отправить "ОЖИДАНИЕ", закрываем его отменой
+                // Если мы уже "засветились" в таблице, надо закрыть сессию
                 if (hasSentInitial) {
                     sendToBackground("ОТМЕНА", finalTime, data);
                 }
-                // Иначе просто тихо выключаемся (это был технический спиннер)
-                resetUI();
+                // Полный сброс
                 isTracking = false;
+                isStopping = false;
+                resetUI();
                 return;
             }
 
-            // УСПЕХ
+            // УСПЕХ - Отправляем ОДИН раз
             sendToBackground("УСПЕШНО", finalTime, data);
             
+            // UI
             const valSpan = document.getElementById("timer-val");
             if (valSpan) valSpan.innerText = `Готово: ${finalTime}s`;
             toast.classList.add("finished");
-            toast.style.borderColor = "#2ecc71"; // Зеленый
+            toast.style.borderColor = "#2ecc71"; 
 
+            // Сброс флагов
             isTracking = false;
+            isStopping = false;
 
+            // Прячем тост
             setTimeout(() => {
+                // Проверяем, не началась ли уже новая загрузка
                 if (!isTracking) toast.style.opacity = "0";
             }, 4000);
 
@@ -180,13 +185,11 @@
         setTimeout(() => toast.classList.remove("finished"), 500);
     }
 
-    // Если закрыли вкладку ВО ВРЕМЯ того, как крутился лоадер
     window.addEventListener("beforeunload", () => {
         if (isTracking) {
             const now = performance.now();
             const elapsed = ((now - startTime) / 1000).toFixed(2);
             
-            // Шлем отмену, если таймер реально работал какое-то время
             if (hasSentInitial || elapsed > 1.5) {
                 const data = scrapeData();
                 sendToBackground("ОТМЕНА", elapsed, data);

@@ -67,29 +67,33 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     userName: d.userName,
                     duration: d.duration.toString(),
                     timestamp: d.timestamp,
-                    status: d.status,        // <--- Исправлено: Статус отдельно
-                    sessionId: d.sessionId   // <--- Добавлено: ID сессии
+                    status: d.status,
+                    sessionId: d.sessionId
                 }).toString();
 
                 const finalUrl = `${GOOGLE_SCRIPT_URL}?${params}`;
 
-                fetch(finalUrl, {
-                    method: 'GET',
-                    mode: 'no-cors',
-                    credentials: 'omit',
-                    cache: 'no-store'
-                }).catch(err => console.error("[TELEMETRY] Err:", err));
+                // --- ИСПРАВЛЕНИЕ ---
+                // Мы убрали mode: 'no-cors'. 
+                // Расширение имеет права <all_urls>, поэтому может делать обычные запросы.
+                // Это позволяет корректно обрабатывать редиректы Google Script (302 -> 200).
+                fetch(finalUrl, { method: 'GET' })
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    console.log(`[TELEMETRY] Успешно отправлено: ${d.stageName}`);
+                })
+                .catch(err => console.error("[TELEMETRY] Ошибка отправки:", err));
             }
 
-            // Локальный лог (пишем только финальные статусы, чтобы не спамить ОЖИДАНИЕМ)
+            // Локальный лог
             if (d.status !== "ОЖИДАНИЕ") {
                 const storageKey = `logs_${d.baseName}`;
                 chrome.storage.local.get([storageKey], (res) => {
                     let logs = res[storageKey] || "";
-                    // Добавляем статус в текст лога для читаемости
                     let logEntry = d.logLine;
                     if (d.status !== "УСПЕШНО") logEntry += ` [${d.status}]`;
-                    
                     logs += logEntry + "\n";
                     chrome.storage.local.set({ [storageKey]: logs });
                 });
