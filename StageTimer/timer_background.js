@@ -1,6 +1,6 @@
 // StageTimer/timer_background.js
 // Этот скрипт обрабатывает только логику отправки данных для StageTimer.
-
+// НЕОБХОДИМО ОБЯЗАТЕЛЬНО ОБНОВЛЯТЬ ОБЫЧНЫЙ ФАЙЛ background.js в корне проекта
 // === КОНФИГУРАЦИЯ GOOGLE ТАБЛИЦЫ ===
 const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzkP1L4n2Qc_GR1RigdEnX1kiG4Hw4eE5V3cDNrm3VV4ZYT8db8yTUUKLng1Pvj4Cp7/exec';
 
@@ -23,7 +23,7 @@ async function sendWithRetry(url, payload, retries = 3) {
             }
 
             const text = await response.text();
-            
+
             // Если сервер говорит "Busy" (мы настроили это в GAS), пробуем снова
             if (text.includes("Busy")) {
                 console.warn(`[StageTimer] Server busy. Retry ${i + 1}/${retries}`);
@@ -50,7 +50,7 @@ async function sendWithRetry(url, payload, retries = 3) {
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'LOG_STAGE_TIME') {
         const d = request.data;
-        
+
         if (!GOOGLE_SCRIPT_URL) {
             console.error("[StageTimer] URL для отправки данных не задан.");
             return false;
@@ -70,7 +70,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         // Запускаем отправку (не ждем завершения, так как это fire-and-forget)
         sendWithRetry(GOOGLE_SCRIPT_URL, payload);
 
-        return true; 
+        return true;
     }
     return false;
 });

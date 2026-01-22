@@ -3,7 +3,7 @@ const SPREADSHEET_ID = '1jhqGwRJuZBDIwGsPTTW1rm2HODT_dgtHQzLko1wvDY0';
 const TELEGRAM_BOT_TOKEN = '8598364240:AAGL_8euP_L5zXVoSYEZ08HWoxBZOJgsIlE';
 
 const SHEET_SETTINGS = 'НАСТРОЙКИ_И_ДАШБОРД';
-const ROW_LIMIT_FOR_ARCHIVE = 50000; // Лимит строк для архивации
+const ROW_LIMIT_FOR_ARCHIVE = 50000; 
 
 // ================= 0. МЕНЮ =================
 function onOpen() {
@@ -18,15 +18,32 @@ function onOpen() {
 }
 
 // ================= 1. ПРИЕМ ДАННЫХ (API) =================
-function doGet(e) { return handleRequest(e); }
-function doPost(e) { return handleRequest(e); }
+// Обработка GET (для ручных тестов и легаси)
+function doGet(e) { 
+  return handleRequest(e.parameter); 
+}
 
-function handleRequest(e) {
+// Обработка POST (основной метод для расширения)
+function doPost(e) { 
+  var data = {};
+  try {
+    // Пытаемся распарсить JSON из тела запроса
+    if (e.postData && e.postData.contents) {
+      data = JSON.parse(e.postData.contents);
+    }
+  } catch (err) {
+    // Если пришел не JSON, пробуем взять параметры (fallback)
+    data = e.parameter || {};
+  }
+  return handleRequest(data); 
+}
+
+function handleRequest(p) {
+  // Увеличили время ожидания блокировки до 30 секунд
   var lock = LockService.getScriptLock();
-  if (lock.tryLock(10000)) {
+  if (lock.tryLock(30000)) { 
     try {
       var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
-      var p = e.parameter;
       var baseName = p.baseName || "Неизвестная";
 
       if (baseName === SHEET_SETTINGS || baseName.startsWith("Архив_")) baseName += "_Data";
@@ -43,8 +60,11 @@ function handleRequest(e) {
       var durationVal = p.duration || "0";
       var durationStr = durationVal.toString().replace(/\./g, ',');
 
+      // Форматируем дату, если она пришла текстом, или берем текущую
+      var timestamp = p.timestamp ? p.timestamp : new Date();
+
       sheet.appendRow([
-        new Date(), 
+        new Date(), // Всегда пишем серверное время получения для сортировки
         p.stageName || "Unknown",
         p.userName || "Guest",
         durationStr, 
@@ -52,13 +72,14 @@ function handleRequest(e) {
         p.sessionId || ""
       ]);
 
-      return ContentService.createTextOutput("РАСШИРЕНИЕ УСТАНОВЛЕНО УСПЕШНО! МОЖЕТЕ ЗАКРЫТЬ ДАННУЮ ВКЛАДКУ").setMimeType(ContentService.MimeType.TEXT);
+      return ContentService.createTextOutput("SUCCESS").setMimeType(ContentService.MimeType.TEXT);
     } catch (error) {
       return ContentService.createTextOutput("Error: " + error.toString());
     } finally {
       lock.releaseLock();
     }
   } else {
+    // Если скрипт занят более 30 секунд
     return ContentService.createTextOutput("Busy").setMimeType(ContentService.MimeType.TEXT);
   }
 }
