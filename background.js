@@ -85,8 +85,8 @@ chrome.webRequest.onBeforeRequest.addListener((details) => {
     let loadType = "Загрузка стадии";
 
     if (url.pathname.includes("/actions/editedoc")) {
-        // Игнорируем AJAX (открытие окна jquery), ловим только отправку формы/навигацию
-        if (details.type === "xmlhttprequest") return; 
+        // Ловим только POST запросы (сохранение), игнорируем GET (открытие формы)
+        if (details.method !== "POST") return;
         loadType = "Редактирование информации";
     } else {
         const searchParam = url.searchParams.get("_search");
