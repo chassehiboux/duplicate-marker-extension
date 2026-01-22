@@ -47,7 +47,7 @@ async function sendWithRetry(url, payload, retries = 3) {
 
 // === STAGE TIMER LOGIC (NETWORK BASED) ===
 // Отслеживаем загрузку данных (GET) для таймера стадий
-const STAGE_URL_PATTERN = "*://*/ovzid/status/data/all?*"; 
+const STAGE_URL_PATTERN = "*://*/ovzid/*/data*"; 
 let stageRequests = {}; // requestId -> { startTime, tabId, loadType }
 
 chrome.webRequest.onBeforeRequest.addListener((details) => {
