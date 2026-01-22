@@ -52,8 +52,8 @@ function handleRequest(p) {
       
       if (!sheet) {
         sheet = ss.insertSheet(baseName);
-        sheet.appendRow(["Дата/Время", "Стадия", "Пользователь", "Время (сек)", "Статус", "SessionID"]);
-        sheet.getRange(1, 1, 1, 6).setFontWeight("bold").setBackground("#d9ead3");
+        sheet.appendRow(["Дата/Время", "Стадия", "Пользователь", "Время (сек)", "Статус", "SessionID", "Тип загрузки"]);
+        sheet.getRange(1, 1, 1, 7).setFontWeight("bold").setBackground("#d9ead3");
         sheet.setFrozenRows(1);
       }
 
@@ -69,7 +69,8 @@ function handleRequest(p) {
         p.userName || "Guest",
         durationStr, 
         p.status || "УСПЕШНО",
-        p.sessionId || ""
+        p.sessionId || "",
+        p.loadType || ""
       ]);
 
       return ContentService.createTextOutput("SUCCESS").setMimeType(ContentService.MimeType.TEXT);
@@ -583,7 +584,7 @@ function performCleanup() {
 function compactSheet(sheet) {
   var lastRow = sheet.getLastRow();
   if (lastRow < 2) return;
-  var range = sheet.getRange(2, 1, lastRow - 1, 6);
+  var range = sheet.getRange(2, 1, lastRow - 1, 7);
   var data = range.getValues();
   if (data.length == 0) return;
 
@@ -618,7 +619,7 @@ function compactSheet(sheet) {
 
   if (cleanData.length < data.length) {
     range.clearContent();
-    if (cleanData.length > 0) sheet.getRange(2, 1, cleanData.length, 6).setValues(cleanData);
+    if (cleanData.length > 0) sheet.getRange(2, 1, cleanData.length, 7).setValues(cleanData);
   }
 }
 

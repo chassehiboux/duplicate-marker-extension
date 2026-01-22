@@ -16,17 +16,12 @@
     if (window.location.pathname.includes("/login")) return;
 
     let sessionId = null;
-    let isTracking = false;      
-    let isStopping = false; // <--- НОВЫЙ ФЛАГ: защита от повторного завершения
-    let startTime = 0;           
-    let timerInterval = null;
-    let lastReportTime = 0;      
-    let hasSentInitial = false;  
+    let toastTimeout = null;
 
     // UI
     const toast = document.createElement("div");
     toast.id = "pyramid-stage-timer";
-    toast.innerHTML = `<div class="timer-spinner"></div><span id="timer-val">0.00s</span>`;
+    toast.innerHTML = `<div class="timer-spinner"></div><span id="timer-val">Загрузка...</span>`;
     
     function injectToast() {
         if (document.body) document.body.appendChild(toast);
@@ -60,144 +55,70 @@
         return { userName, stageName };
     }
 
-    function isDataValid(data) {
-        if (!data.userName || data.userName === "Не определен") return false;
-        if (!data.stageName || data.stageName === "ПК Пирамида" || data.stageName === "Пирамида 2.0") return false;
-        return true;
-    }
-
-    // === ГЛАВНЫЙ ЦИКЛ ПРОВЕРКИ (50мс) ===
-    timerInterval = setInterval(() => {
-        const loader = document.getElementById("load_list");
-        let isVisible = false;
-
-        if (loader) {
-            const style = window.getComputedStyle(loader);
-            // Строгая проверка видимости
-            if (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
-                isVisible = true;
-            }
-        }
-
-        const now = performance.now();
-
-        // 1. СТАРТ (Лоадер появился, мы еще не следим и не завершаем предыдущее)
-        if (isVisible && !isTracking && !isStopping) {
-            startTracking(now);
-        }
-
-        // 2. ПРОЦЕСС
-        if (isTracking && isVisible) {
-            updateTracking(now);
-        }
-
-        // 3. СТОП (Лоадер исчез, мы следили и еще не начали процесс остановки)
-        if (!isVisible && isTracking && !isStopping) {
-            // МГНОВЕННО ставим флаг остановки, чтобы следующий тик таймера сюда не зашел
-            isStopping = true; 
-            stopTracking(now);
-        }
-
-    }, 50);
-
-    function startTracking(now) {
-        isTracking = true;
-        isStopping = false; // Сброс флага
-        startTime = now;
-        sessionId = Date.now().toString(36) + Math.random().toString(36).substr(2);
-        hasSentInitial = false;
-        lastReportTime = 0;
-
-        toast.style.opacity = "1";
-        toast.style.borderColor = "#f1c40f"; 
-        toast.querySelector("#timer-val").innerText = "0.00s";
-        toast.classList.remove("finished");
-    }
-
-    function updateTracking(now) {
-        const elapsed = ((now - startTime) / 1000).toFixed(2);
-        const valSpan = document.getElementById("timer-val");
-        if (valSpan) valSpan.innerText = elapsed + "s";
-
-        const currentData = scrapeData();
-        const dataReady = isDataValid(currentData);
-
-        // Быстрая фиксация "ОЖИДАНИЕ" (через 1 сек)
-        if (!hasSentInitial && elapsed > 1.0 && dataReady) {
-            sendToBackground("ОЖИДАНИЕ", elapsed, currentData);
-            hasSentInitial = true;
-            lastReportTime = parseFloat(elapsed);
-        }
-
-        // Периодическое обновление (каждые 30 сек)
-        if (hasSentInitial && (elapsed - lastReportTime) >= 30) {
-            sendToBackground("ОЖИДАНИЕ", elapsed, currentData);
-            lastReportTime = parseFloat(elapsed);
-            toast.style.borderColor = "#e67e22"; 
-        }
-    }
-
-    function stopTracking(now) {
-        // Мы уже выставили isStopping=true снаружи, поэтому этот код выполнится ровно 1 раз.
-        
-        // Ждем 200мс, чтобы DOM обновился (сменился заголовок)
-        setTimeout(() => {
-            const finalTime = ((now - startTime) / 1000).toFixed(2);
-            const data = scrapeData();
-
-            // ФИЛЬТР: Данные мусорные?
-            if (!isDataValid(data)) {
-                // Если мы уже "засветились" в таблице, надо закрыть сессию
-                if (hasSentInitial) {
-                    sendToBackground("ОТМЕНА", finalTime, data);
-                }
-                // Полный сброс
-                isTracking = false;
-                isStopping = false;
-                resetUI();
-                return;
-            }
-
-            // УСПЕХ - Отправляем ОДИН раз
-            sendToBackground("УСПЕШНО", finalTime, data);
-            
-            // UI
-            const valSpan = document.getElementById("timer-val");
-            if (valSpan) valSpan.innerText = `Готово: ${finalTime}s`;
-            toast.classList.add("finished");
-            toast.style.borderColor = "#2ecc71"; 
-
-            // Сброс флагов
-            isTracking = false;
-            isStopping = false;
-
-            // Прячем тост
-            setTimeout(() => {
-                // Проверяем, не началась ли уже новая загрузка
-                if (!isTracking) toast.style.opacity = "0";
-            }, 4000);
-
-        }, 200);
-    }
-
-    function resetUI() {
-        toast.style.opacity = "0";
-        setTimeout(() => toast.classList.remove("finished"), 500);
-    }
-
-    window.addEventListener("beforeunload", () => {
-        if (isTracking) {
-            const now = performance.now();
-            const elapsed = ((now - startTime) / 1000).toFixed(2);
-            
-            if (hasSentInitial || elapsed > 1.5) {
-                const data = scrapeData();
-                sendToBackground("ОТМЕНА", elapsed, data);
-            }
+    // Слушатель сообщений от Background (Network Events)
+    chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+        if (request.action === 'STAGE_TIMER_START') {
+            handleStart(request.data);
+        } else if (request.action === 'STAGE_TIMER_STOP') {
+            handleStop(request.data);
+        } else if (request.action === 'STAGE_TIMER_ERROR') {
+            handleError(request.data);
         }
     });
 
-    function sendToBackground(status, time, data) {
+    function handleStart(data) {
+        // Сброс и показ UI
+        sessionId = Date.now().toString(36) + Math.random().toString(36).substr(2);
+        
+        toast.style.opacity = "1";
+        toast.style.borderColor = "#f1c40f"; 
+        toast.querySelector("#timer-val").innerText = "Загрузка...";
+        toast.classList.remove("finished");
+        
+        if (toastTimeout) clearTimeout(toastTimeout);
+    }
+
+    function handleStop(data) {
+        // data: { duration (ms), loadType } 
+        
+        // Ждем немного, чтобы DOM обновился (Grid отрисовался после получения данных)
+        setTimeout(() => {
+            const scraped = scrapeData();
+            
+            // Если данные совсем плохие, можно пропустить, но пользователь просил считать GET.
+            // Если GET прошел, значит данные получены.
+            
+            const durationSec = (data.duration / 1000).toFixed(2);
+            
+            // UI Update
+            const valSpan = document.getElementById("timer-val");
+            if (valSpan) valSpan.innerText = `Готово: ${durationSec}s`;
+            toast.classList.add("finished");
+            toast.style.borderColor = "#2ecc71"; 
+
+            // Отправка лога
+            sendToBackground("УСПЕШНО", durationSec, scraped, data.loadType);
+
+            // Скрыть через 4 сек
+            toastTimeout = setTimeout(() => {
+                toast.style.opacity = "0";
+            }, 4000);
+
+        }, 100); // Небольшая задержка для рендеринга
+    }
+
+    function handleError(data) {
+        const valSpan = document.getElementById("timer-val");
+        if (valSpan) valSpan.innerText = `Ошибка`;
+        toast.style.borderColor = "#e74c3c";
+        
+        // Скрыть быстрее
+        toastTimeout = setTimeout(() => {
+            toast.style.opacity = "0";
+        }, 2000);
+    }
+
+    function sendToBackground(status, time, data, loadType) {
         const timestamp = new Date().toLocaleString("ru-RU");
         
         const payload = {
@@ -208,7 +129,8 @@
             timestamp: timestamp,
             status: status,
             sessionId: sessionId,
-            logLine: `[${timestamp}] [${status}] [${baseName}] [${data.userName}] ${data.stageName} — ${time}s`
+            loadType: loadType, // Новое поле
+            logLine: `[${timestamp}] [${status}] [${baseName}] [${data.userName}] ${data.stageName} — ${time}s (${loadType})`
         };
 
         try {

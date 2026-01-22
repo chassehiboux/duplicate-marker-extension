@@ -45,6 +45,64 @@ async function sendWithRetry(url, payload, retries = 3) {
     console.error(`[StageTimer] Failed to send data after ${retries} attempts.`);
 }
 
+// === STAGE TIMER LOGIC (NETWORK BASED) ===
+// Отслеживаем загрузку данных (GET) для таймера стадий
+const STAGE_URL_PATTERN = "*://*/ovzid/status/data/all?*"; 
+let stageRequests = {}; // requestId -> { startTime, tabId, loadType }
+
+chrome.webRequest.onBeforeRequest.addListener((details) => {
+    if (details.type !== "xmlhttprequest") return;
+    
+    const url = new URL(details.url);
+    const searchParam = url.searchParams.get("_search");
+    
+    // Определяем тип загрузки
+    let loadType = "Загрузка стадии";
+    if (searchParam === "true") {
+        loadType = "Фильтрация стадии";
+    }
+    
+    stageRequests[details.requestId] = {
+        startTime: performance.now(),
+        tabId: details.tabId,
+        loadType: loadType
+    };
+    
+    // Сообщаем контент скрипту: "Покажи спиннер"
+    chrome.tabs.sendMessage(details.tabId, {
+        action: "STAGE_TIMER_START",
+        data: { loadType: loadType }
+    }).catch(() => {}); 
+    
+}, { urls: [STAGE_URL_PATTERN] });
+
+chrome.webRequest.onCompleted.addListener((details) => {
+    const req = stageRequests[details.requestId];
+    if (req) {
+        const duration = performance.now() - req.startTime;
+        
+        // Сообщаем контент скрипту: "Готово, вот время"
+        chrome.tabs.sendMessage(req.tabId, {
+            action: "STAGE_TIMER_STOP",
+            data: { 
+                duration: duration,
+                loadType: req.loadType
+            }
+        }).catch(() => {});
+        
+        delete stageRequests[details.requestId];
+    }
+}, { urls: [STAGE_URL_PATTERN] });
+
+chrome.webRequest.onErrorOccurred.addListener((details) => {
+    if (stageRequests[details.requestId]) {
+        chrome.tabs.sendMessage(details.tabId, {
+            action: "STAGE_TIMER_ERROR"
+        }).catch(() => {});
+        delete stageRequests[details.requestId];
+    }
+}, { urls: [STAGE_URL_PATTERN] });
+
 
 // --- Основной обработчик сообщений ---
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -64,7 +122,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             duration: d.duration.toString(),
             timestamp: d.timestamp,
             status: d.status,
-            sessionId: d.sessionId
+            sessionId: d.sessionId,
+            loadType: d.loadType
         };
 
         // Запускаем отправку (не ждем завершения, так как это fire-and-forget)
@@ -75,4 +134,4 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return false;
 });
 
-console.log("Фоновый скрипт StageTimer (v2 POST) запущен.");
+console.log("Фоновый скрипт StageTimer (v2 POST + Network Monitor) запущен.");
