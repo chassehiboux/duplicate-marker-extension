@@ -23,7 +23,7 @@
     // UI
     const toast = document.createElement("div");
     toast.id = "pyramid-stage-timer";
-    toast.innerHTML = `<div class="timer-spinner"></div><span id="timer-val">0.00s</span>`;
+    toast.innerHTML = `<div class="timer-spinner"></div><span id="timer-type" style="margin-right:8px; font-weight:normal; font-size: 13px; opacity: 0.9;"></span><span id="timer-val">0.00s</span>`;
     
     function injectToast() {
         if (document.body) document.body.appendChild(toast);
@@ -74,6 +74,10 @@
         
         toast.style.opacity = "1";
         toast.style.borderColor = "#f1c40f"; 
+        
+        const typeSpan = toast.querySelector("#timer-type");
+        if (typeSpan) typeSpan.innerText = data.loadType || "Загрузка";
+
         toast.querySelector("#timer-val").innerText = "0.00s";
         toast.classList.remove("finished");
         
