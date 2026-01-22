@@ -216,7 +216,9 @@
                 action: "LOG_STAGE_TIME",
                 data: payload
             });
-        } catch (e) {}
+        } catch (e) {
+            console.error("[StageTimer] Ошибка отправки сообщения фоновому скрипту:", e);
+        }
     }
 
 })();

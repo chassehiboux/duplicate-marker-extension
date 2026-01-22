@@ -33,6 +33,45 @@ const addLog = (message) => {
   }
 };
 
+// --- Функция надежной отправки (POST + Retry) ---
+async function sendWithRetry(url, payload, retries = 3) {
+    for (let i = 0; i < retries; i++) {
+        try {
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'text/plain;charset=utf-8'
+                },
+                body: JSON.stringify(payload),
+                keepalive: true, 
+                credentials: 'omit'
+            });
+
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+
+            const text = await response.text();
+            
+            if (text.includes("Busy")) {
+                console.warn(`[TELEMETRY] Server busy. Retry ${i + 1}/${retries}`);
+                await new Promise(r => setTimeout(r, 2000 * (i + 1))); 
+                continue;
+            }
+
+            console.log(`[TELEMETRY] Success: ${payload.stageName}`);
+            return;
+
+        } catch (err) {
+            console.error(`[TELEMETRY] Attempt ${i + 1} failed:`, err);
+            if (i < retries - 1) {
+                await new Promise(r => setTimeout(r, 2000 * (i + 1)));
+            }
+        }
+    }
+    console.error(`[TELEMETRY] Failed to send data after ${retries} attempts.`);
+}
+
 
 // --- Логика боковой панели ---
 chrome.runtime.onInstalled.addListener(() => {
@@ -56,12 +95,12 @@ chrome.runtime.onInstalled.addListener(() => {
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     switch (request.action) {
         
-        // === ТЕЛЕМЕТРИЯ ===
+        // === ТЕЛЕМЕТРИЯ (ОБНОВЛЕННАЯ ВЕРСИЯ) ===
         case 'LOG_STAGE_TIME': {
             const d = request.data;
             
             if (GOOGLE_SCRIPT_URL) {
-                const params = new URLSearchParams({
+                const payload = {
                     baseName: d.baseName,
                     stageName: d.stageName,
                     userName: d.userName,
@@ -69,22 +108,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     timestamp: d.timestamp,
                     status: d.status,
                     sessionId: d.sessionId
-                }).toString();
+                };
 
-                const finalUrl = `${GOOGLE_SCRIPT_URL}?${params}`;
-
-                // --- ИСПРАВЛЕНИЕ ---
-                // Мы убрали mode: 'no-cors'. 
-                // Расширение имеет права <all_urls>, поэтому может делать обычные запросы.
-                // Это позволяет корректно обрабатывать редиректы Google Script (302 -> 200).
-                fetch(finalUrl, { method: 'GET' })
-                .then(response => {
-                    if (!response.ok) {
-                        throw new Error(`HTTP error! status: ${response.status}`);
-                    }
-                    console.log(`[TELEMETRY] Успешно отправлено: ${d.stageName}`);
-                })
-                .catch(err => console.error("[TELEMETRY] Ошибка отправки:", err));
+                // Используем новую надежную функцию отправки
+                sendWithRetry(GOOGLE_SCRIPT_URL, payload);
             }
 
             // Локальный лог
