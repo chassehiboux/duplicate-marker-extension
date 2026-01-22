@@ -75,19 +75,22 @@ async function sendWithRetry(url, payload, retries = 3) {
 
 // === STAGE TIMER LOGIC (NETWORK BASED) ===
 // Отслеживаем загрузку данных (GET) для таймера стадий
-const STAGE_URL_PATTERN = "*://*/ovzid/*/data*"; 
+const STAGE_URL_PATTERNS = ["*://*/ovzid/*/data*", "*://*/ovzid/actions/editedoc*"]; 
 let stageRequests = {}; // requestId -> { startTime, tabId, loadType }
 
 chrome.webRequest.onBeforeRequest.addListener((details) => {
     if (details.type !== "xmlhttprequest") return;
     
     const url = new URL(details.url);
-    const searchParam = url.searchParams.get("_search");
-    
-    // Определяем тип загрузки
     let loadType = "Загрузка стадии";
-    if (searchParam === "true") {
-        loadType = "Фильтрация стадии";
+
+    if (url.pathname.includes("/actions/editedoc")) {
+        loadType = "Редактирование информации";
+    } else {
+        const searchParam = url.searchParams.get("_search");
+        if (searchParam === "true") {
+            loadType = "Фильтрация стадии";
+        }
     }
     
     stageRequests[details.requestId] = {
@@ -102,7 +105,7 @@ chrome.webRequest.onBeforeRequest.addListener((details) => {
         data: { loadType: loadType }
     }).catch(() => {}); 
     
-}, { urls: [STAGE_URL_PATTERN] });
+}, { urls: STAGE_URL_PATTERNS });
 
 chrome.webRequest.onCompleted.addListener((details) => {
     const req = stageRequests[details.requestId];
@@ -120,7 +123,7 @@ chrome.webRequest.onCompleted.addListener((details) => {
         
         delete stageRequests[details.requestId];
     }
-}, { urls: [STAGE_URL_PATTERN] });
+}, { urls: STAGE_URL_PATTERNS });
 
 chrome.webRequest.onErrorOccurred.addListener((details) => {
     if (stageRequests[details.requestId]) {
@@ -129,7 +132,7 @@ chrome.webRequest.onErrorOccurred.addListener((details) => {
         }).catch(() => {});
         delete stageRequests[details.requestId];
     }
-}, { urls: [STAGE_URL_PATTERN] });
+}, { urls: STAGE_URL_PATTERNS });
 
 
 // --- Логика боковой панели ---
