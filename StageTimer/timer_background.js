@@ -51,7 +51,7 @@ const STAGE_URL_PATTERNS = ["*://*/ovzid/*/data*", "*://*/ovzid/actions/editedoc
 let stageRequests = {}; // requestId -> { startTime, tabId, loadType }
 
 chrome.webRequest.onBeforeRequest.addListener((details) => {
-    if (details.type !== "xmlhttprequest") return;
+    // Убрали проверку details.type, чтобы ловить все запросы (XHR, Form Submit, etc.) по нашим паттернам
     
     const url = new URL(details.url);
     let loadType = "Загрузка стадии";
