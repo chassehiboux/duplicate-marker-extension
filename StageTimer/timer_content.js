@@ -17,11 +17,13 @@
 
     let sessionId = null;
     let toastTimeout = null;
+    let timerInterval = null;
+    let startTime = 0;
 
     // UI
     const toast = document.createElement("div");
     toast.id = "pyramid-stage-timer";
-    toast.innerHTML = `<div class="timer-spinner"></div><span id="timer-val">Загрузка...</span>`;
+    toast.innerHTML = `<div class="timer-spinner"></div><span id="timer-val">0.00s</span>`;
     
     function injectToast() {
         if (document.body) document.body.appendChild(toast);
@@ -72,15 +74,29 @@
         
         toast.style.opacity = "1";
         toast.style.borderColor = "#f1c40f"; 
-        toast.querySelector("#timer-val").innerText = "Загрузка...";
+        toast.querySelector("#timer-val").innerText = "0.00s";
         toast.classList.remove("finished");
         
         if (toastTimeout) clearTimeout(toastTimeout);
+        if (timerInterval) clearInterval(timerInterval);
+
+        startTime = performance.now();
+        
+        // Запускаем тиканье таймера
+        timerInterval = setInterval(() => {
+            const now = performance.now();
+            const elapsed = ((now - startTime) / 1000).toFixed(2);
+            const valSpan = document.getElementById("timer-val");
+            if (valSpan) valSpan.innerText = elapsed + "s";
+        }, 50); // Обновление каждые 50мс
     }
 
     function handleStop(data) {
         // data: { duration (ms), loadType } 
         
+        // Останавливаем тиканье
+        if (timerInterval) clearInterval(timerInterval);
+
         // Ждем немного, чтобы DOM обновился (Grid отрисовался после получения данных)
         setTimeout(() => {
             const scraped = scrapeData();
@@ -108,6 +124,8 @@
     }
 
     function handleError(data) {
+        if (timerInterval) clearInterval(timerInterval);
+
         const valSpan = document.getElementById("timer-val");
         if (valSpan) valSpan.innerText = `Ошибка`;
         toast.style.borderColor = "#e74c3c";
