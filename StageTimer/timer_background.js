@@ -47,7 +47,7 @@ async function sendWithRetry(url, payload, retries = 3) {
 
 // === STAGE TIMER LOGIC (NETWORK BASED) ===
 // Отслеживаем загрузку данных (GET) для таймера стадий
-const STAGE_URL_PATTERNS = ["*://*/ovzid/*/data*", "*://*/ovzid/actions/editedoc*", "*://*/ovzid/claim/execution*"]; 
+const STAGE_URL_PATTERNS = ["*://*/ovzid/*/data*", "*://*/ovzid/actions/editedoc*", "*://*/ovzid/claim/execution*", "*://*/ovzid/claims/fssp*"]; 
 let stageRequests = {}; // requestId -> { startTime, tabId, loadType }
 
 chrome.webRequest.onBeforeRequest.addListener((details) => {
@@ -64,6 +64,10 @@ chrome.webRequest.onBeforeRequest.addListener((details) => {
         // Ловим только POST запросы (запуск формирования)
         if (details.method !== "POST") return;
         loadType = "Формирования заявления";
+    } else if (url.pathname.includes("/claims/fssp")) {
+        // Ловим только POST запросы
+        if (details.method !== "POST") return;
+        loadType = "Формирование уведомлений/заявлений";
     } else {
         const searchParam = url.searchParams.get("_search");
         if (searchParam === "true") {
