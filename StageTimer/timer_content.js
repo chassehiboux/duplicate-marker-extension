@@ -18,44 +18,10 @@
     let sessionId = null;
     let toastTimeout = null;
     let timerInterval = null;
+    let heartbeatInterval = null;
     let startTime = 0;
 
-    // UI
-    const toast = document.createElement("div");
-    toast.id = "pyramid-stage-timer";
-    toast.innerHTML = `<div class="timer-spinner"></div><span id="timer-type" style="margin-right:8px; font-weight:normal; font-size: 13px; opacity: 0.9;"></span><span id="timer-val">0.00s</span>`;
-    
-    function injectToast() {
-        if (document.body) document.body.appendChild(toast);
-        else requestAnimationFrame(injectToast);
-    }
-    injectToast();
-
-    // Сбор данных
-    function scrapeData() {
-        let userName = "Не определен";
-        const fioElem = document.querySelector(".fio"); 
-        if (fioElem && fioElem.innerText.trim().length > 0) {
-            userName = fioElem.innerText.trim();
-        }
-
-        let stageName = "ПК Пирамида"; 
-        const stageElem = document.querySelector(".ui-jqgrid-title");
-        
-        if (stageElem) {
-            let text = Array.from(stageElem.childNodes)
-                .filter(n => n.nodeType === Node.TEXT_NODE)
-                .map(n => n.textContent.trim())
-                .join(" ");
-            
-            if (!text) text = stageElem.innerText.split('\n')[0].trim();
-            if (text) stageName = text;
-        } else {
-            let title = document.title.replace(" - Пирамида 2.0", "").trim();
-            if (title) stageName = title;
-        }
-        return { userName, stageName };
-    }
+    // ... (UI code remains same) ...
 
     // Слушатель сообщений от Background (Network Events)
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -83,29 +49,34 @@
         
         if (toastTimeout) clearTimeout(toastTimeout);
         if (timerInterval) clearInterval(timerInterval);
+        if (heartbeatInterval) clearInterval(heartbeatInterval);
 
         startTime = performance.now();
         
-        // ОТПРАВКА СТАТУСА ОЖИДАНИЯ (чтобы монитор видел процесс в реальном времени)
+        // ОТПРАВКА СТАТУСА ОЖИДАНИЯ (первичная)
         const scraped = scrapeData();
         sendToBackground("ОЖИДАНИЕ", 0, scraped, data.loadType);
 
-        // Запускаем тиканье таймера
+        // Запускаем тиканье таймера (UI)
         timerInterval = setInterval(() => {
             const now = performance.now();
             const elapsed = ((now - startTime) / 1000).toFixed(2);
             const valSpan = document.getElementById("timer-val");
             if (valSpan) valSpan.innerText = elapsed + "s";
-        }, 50); // Обновление каждые 50мс
+        }, 50);
+
+        // ОТПРАВКА СТАТУСА ОЖИДАНИЯ (каждые 30 сек для мониторинга)
+        heartbeatInterval = setInterval(() => {
+            const elapsedSec = ((performance.now() - startTime) / 1000).toFixed(2);
+            const currentScraped = scrapeData();
+            sendToBackground("ОЖИДАНИЕ", elapsedSec, currentScraped, data.loadType);
+        }, 30000);
     }
 
     function handleStop(data) {
-        // data: { duration (ms), loadType } 
-        
-        // Останавливаем тиканье
         if (timerInterval) clearInterval(timerInterval);
+        if (heartbeatInterval) clearInterval(heartbeatInterval);
 
-        // Ждем немного, чтобы DOM обновился (Grid отрисовался после получения данных)
         setTimeout(() => {
             const scraped = scrapeData();
             

@@ -210,4 +210,25 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return false;
 });
 
+// === АВТООБНОВЛЕНИЕ (Для распакованных версий) ===
+// Проверяет изменение версии в manifest.json на диске
+setInterval(async () => {
+    try {
+        // Добавляем timestamp, чтобы избежать кэширования браузером
+        const url = chrome.runtime.getURL('manifest.json') + `?t=${Date.now()}`;
+        const response = await fetch(url);
+        const data = await response.json();
+        
+        const diskVersion = data.version;
+        const runningVersion = chrome.runtime.getManifest().version;
+
+        if (diskVersion !== runningVersion) {
+            console.log(`[AutoUpdate] Обнаружена новая версия: ${diskVersion} (Текущая: ${runningVersion}). Перезагрузка...`);
+            chrome.runtime.reload();
+        }
+    } catch (e) {
+        // Ошибки игнорируем, чтобы не спамить в консоль
+    }
+}, 60 * 1000); // Проверка каждую минуту
+
 console.log("Фоновый скрипт StageTimer (v2 POST + Network Monitor) запущен.");

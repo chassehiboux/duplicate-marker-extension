@@ -125,9 +125,10 @@ function calculateStats(ss, scanStartDate, filterNewDate, now) {
     var uniqueSessions = {};
 
     // 1. Сбор уникальных сессий
-    data.forEach(function(row) {
+    for (var i = 0; i < data.length; i++) {
+      var row = data[i];
       var rowDate = row[0]; 
-      if (!(rowDate instanceof Date)) return; 
+      if (!(rowDate instanceof Date)) continue; 
 
       if (rowDate > scanStartDate) {
         var sessionId = row[5] || "no_id_" + Math.random();
@@ -137,14 +138,17 @@ function calculateStats(ss, scanStartDate, filterNewDate, now) {
         var duration = (typeof rawDuration === 'number') ? rawDuration : parseFloat(String(rawDuration).replace(',', '.'));
         if (isNaN(duration)) duration = 0;
 
-        // ИСПРАВЛЕНИЕ: Если процесс в ожидании, вычисляем реальное время
+        // НОВАЯ ЛОГИКА: Верим времени, которое прислало расширение
         if (status === "ОЖИДАНИЕ") {
-          var elapsedSinceStart = (now.getTime() - rowDate.getTime()) / 1000;
-          // Если "ждет" больше 60 минут (3600 сек) — это "мертвая" сессия (закрыли вкладку), игнорируем как зависание
-          if (elapsedSinceStart > 3600) {
+          var secondsSinceLastUpdate = (now.getTime() - rowDate.getTime()) / 1000;
+          
+          // Если от расширения не было "пульса" (heartbeat) более 60 секунд 
+          // (учитывая, что оно шлет каждые 30 сек), значит сессия мертва.
+          if (secondsSinceLastUpdate > 60) {
              continue; 
           }
-          duration = Math.max(duration, elapsedSinceStart);
+          // Используем время, которое прислало расширение (оно обновляется каждые 30с)
+          // duration уже вычислен выше из row[3]
         }
 
         if (!uniqueSessions[sessionId]) {
@@ -165,7 +169,7 @@ function calculateStats(ss, scanStartDate, filterNewDate, now) {
           }
         }
       }
-    });
+    }
 
     if (!mainStats[name]) mainStats[name] = {};
 

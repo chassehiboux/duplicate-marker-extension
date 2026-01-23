@@ -747,3 +747,20 @@ function _incrementEditingCounter(edocid, path) {
 
 
 addLog("Background скрипт запущен.");
+
+// === АВТООБНОВЛЕНИЕ (Для распакованных версий) ===
+setInterval(async () => {
+    try {
+        const url = chrome.runtime.getURL('manifest.json') + `?t=${Date.now()}`;
+        const response = await fetch(url);
+        const data = await response.json();
+        
+        const diskVersion = data.version;
+        const runningVersion = chrome.runtime.getManifest().version;
+
+        if (diskVersion !== runningVersion) {
+            console.log(`[AutoUpdate] New version: ${diskVersion}. Reloading extension...`);
+            chrome.runtime.reload();
+        }
+    } catch (e) { }
+}, 60 * 1000);
