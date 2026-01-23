@@ -1,6 +1,7 @@
 // StageTimer/timer_background.js
 // Этот скрипт обрабатывает только логику отправки данных для StageTimer.
 // НЕОБХОДИМО ОБЯЗАТЕЛЬНО ОБНОВЛЯТЬ ОБЫЧНЫЙ ФАЙЛ background.js в корне проекта
+// НЕОБХОДИМО ОБЯЗАТЕЛЬНО ОБНОВЛЯТЬ deploy_VZID.js
 // === КОНФИГУРАЦИЯ GOOGLE ТАБЛИЦЫ ===
 const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzkP1L4n2Qc_GR1RigdEnX1kiG4Hw4eE5V3cDNrm3VV4ZYT8db8yTUUKLng1Pvj4Cp7/exec';
 
@@ -47,45 +48,101 @@ async function sendWithRetry(url, payload, retries = 3) {
 
 // === STAGE TIMER LOGIC (NETWORK BASED) ===
 // Отслеживаем загрузку данных (GET) для таймера стадий
-const STAGE_URL_PATTERNS = ["*://*/ovzid/*/data*", "*://*/ovzid/actions/editedoc*", "*://*/ovzid/claim/execution*", "*://*/ovzid/claims/fssp*"]; 
+const STAGE_URL_PATTERNS = [
+    "*://*/ovzid/*/data*", 
+    "*://*/ovzid/actions/editedoc*", 
+    "*://*/ovzid/claims/execution*",
+    "*://*/pu/ReestrSendToOVZID*",
+    "*://*/datagrids/slowsearch*"
+]; 
+
+const EXECUTION_MAP = {
+    "execution-fssp": "Формирование заявление (ФССП)",
+    "execution-fsspd": "Формирование заявление (ФССП умершие)",
+    "execution-fsspb": "Формирование заявление (ФССП банкроты)",
+    "execution-pf": "Формирование заявление (ПФ)",
+    "execution-ku": "Формирование заявление (Заявление в банк)",
+    "execution-buh": "Формирование заявление (Бухгалтерия)",
+    "execution-zpbank": "Формирование заявление (ЗП в банк)",
+    "execution-bo": "Формирование заявление (Бюджетные организации)",
+    "execution-ozon": "Формирование заявление (OZON)",
+    "execution-tinkoff": "Формирование заявление (Заявление в ТБанк)"
+};
+
 let stageRequests = {}; // requestId -> { startTime, tabId, loadType }
 
 chrome.webRequest.onBeforeRequest.addListener((details) => {
-    // Убрали проверку details.type, чтобы ловить все запросы (XHR, Form Submit, etc.) по нашим паттернам
-    
     const url = new URL(details.url);
+    // console.log("[StageTimer] Intercepted:", details.method, url.pathname); // Debug log
+
     let loadType = "Загрузка стадии";
+    let isTargetRequest = false;
 
     if (url.pathname.includes("/actions/editedoc")) {
-        // Ловим только POST запросы (сохранение), игнорируем GET (открытие формы)
-        if (details.method !== "POST") return;
-        loadType = "Редактирование информации";
-    } else if (url.pathname.includes("/claim/execution")) {
-        // Ловим только POST запросы (запуск формирования)
-        if (details.method !== "POST") return;
-        loadType = "Формирования заявления";
-    } else if (url.pathname.includes("/claims/fssp")) {
-        // Ловим только POST запросы
-        if (details.method !== "POST") return;
-        loadType = "Формирование уведомлений/заявлений";
-    } else {
+        // Редактирование (POST)
+        if (details.method === "POST") {
+            loadType = "Редактирование информации";
+            isTargetRequest = true;
+        }
+    } 
+    else if (url.pathname.includes("/claims/execution")) {
+        // Формирование заявлений (POST)
+        if (details.method === "POST") {
+            // Пытаемся найти точное совпадение по суффиксу
+            // url.pathname может быть ".../ovzid/claims/execution-fssp"
+            const pathParts = url.pathname.split('/');
+            const lastPart = pathParts[pathParts.length - 1]; // "execution-fssp"
+            
+            if (EXECUTION_MAP[lastPart]) {
+                loadType = EXECUTION_MAP[lastPart];
+            } else {
+                loadType = "Формирование заявления (Прочее)";
+            }
+            isTargetRequest = true;
+        }
+    }
+    else if (url.pathname.includes("/data")) {
+        // Загрузка грида (обычно GET, но *data* паттерн ловит)
         const searchParam = url.searchParams.get("_search");
         if (searchParam === "true") {
             loadType = "Фильтрация стадии";
         }
+        isTargetRequest = true;
     }
-    
-    stageRequests[details.requestId] = {
-        startTime: performance.now(),
-        tabId: details.tabId,
-        loadType: loadType
-    };
-    
-    // Сообщаем контент скрипту: "Покажи спиннер"
-    chrome.tabs.sendMessage(details.tabId, {
-        action: "STAGE_TIMER_START",
-        data: { loadType: loadType }
-    }).catch(() => {}); 
+    else if (url.pathname.includes("/pu/ReestrSendToOVZID")) {
+        // Загрузка реестра для ОВЗИД
+        const searchParam = url.searchParams.get("search");
+        if (searchParam === "true") {
+            loadType = "Фильтрация стадии";
+        } else {
+             loadType = "Загрузка стадии";
+        }
+        isTargetRequest = true;
+    }
+    else if (url.pathname.includes("/datagrids/slowsearch")) {
+        // Медленный поиск/загрузка в гридах
+        const searchParam = url.searchParams.get("search");
+        if (searchParam === "true") {
+            loadType = "Фильтрация стадии";
+        } else {
+             loadType = "Загрузка стадии";
+        }
+        isTargetRequest = true;
+    }
+
+    if (isTargetRequest) {
+        stageRequests[details.requestId] = {
+            startTime: performance.now(),
+            tabId: details.tabId,
+            loadType: loadType
+        };
+        
+        // Сообщаем контент скрипту: "Покажи спиннер"
+        chrome.tabs.sendMessage(details.tabId, {
+            action: "STAGE_TIMER_START",
+            data: { loadType: loadType }
+        }).catch(() => {}); 
+    }
     
 }, { urls: STAGE_URL_PATTERNS });
 

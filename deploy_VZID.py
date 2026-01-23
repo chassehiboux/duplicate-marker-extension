@@ -46,8 +46,13 @@ def create_minimal_manifest(version):
         "background": {
             "service_worker": "StageTimer/timer_background.js"
         },
+        "permissions": [
+            "webRequest"
+        ],
         "host_permissions": [
-            "https://script.google.com/*"
+            "https://script.google.com/*",
+            "*://*.pyramid.vostok-electra.ru/*",
+            "*://*.pyramid-vostok.electra.ru/*"
         ],
         "content_scripts": [
             {
