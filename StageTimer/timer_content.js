@@ -18,63 +18,43 @@
     let sessionId = null;
     let toastTimeout = null;
     let timerInterval = null;
-    let heartbeatInterval = null;
     let startTime = 0;
-    let toast = null;
 
-    // --- UI ИНИЦИАЛИЗАЦИЯ ---
-    function initUI() {
-        if (toast) return; // Уже создан
-        
-        toast = document.createElement('div');
-        toast.id = 'pyramid-stage-timer';
-        toast.style.opacity = "0"; // Скрыт по умолчанию
-        toast.innerHTML = `
-            <div class="timer-spinner"></div>
-            <span id="timer-type">Загрузка</span>
-            <span id="timer-val" style="font-weight:bold; margin-left:5px;">0.00s</span>
-        `;
-        
-        // Безопасное добавление в body
-        if (document.body) {
-            document.body.appendChild(toast);
-        } else {
-            // Если body еще нет (скрипт запущен в document_start), ждем
-            document.addEventListener('DOMContentLoaded', () => {
-                if (!document.getElementById('pyramid-stage-timer')) {
-                    document.body.appendChild(toast);
-                }
-            });
-        }
+    // UI
+    const toast = document.createElement("div");
+    toast.id = "pyramid-stage-timer";
+    toast.innerHTML = `<div class="timer-spinner"></div><span id="timer-type" style="margin-right:8px; font-weight:normal; font-size: 13px; opacity: 0.9;"></span><span id="timer-val">0.00s</span>`;
+    
+    function injectToast() {
+        if (document.body) document.body.appendChild(toast);
+        else requestAnimationFrame(injectToast);
     }
+    injectToast();
 
-    // Запускаем инициализацию UI при загрузке скрипта (попытка)
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', initUI);
-    } else {
-        initUI();
-    }
-
-    // --- ФУНКЦИЯ СБОРА ДАННЫХ (SCRAPE) ---
+    // Сбор данных
     function scrapeData() {
-        let user = "Guest";
-        let stage = document.title || "Unknown Stage";
+        let userName = "Не определен";
+        const fioElem = document.querySelector(".fio"); 
+        if (fioElem && fioElem.innerText.trim().length > 0) {
+            userName = fioElem.innerText.trim();
+        }
 
-        // Попытка найти имя пользователя (Generic)
-        const userEl = document.querySelector('.user-name') || 
-                       document.querySelector('#userName') || 
-                       document.querySelector('.navbar-user') ||
-                       document.querySelector('a[href*="/user/profile"]');
-        if (userEl) user = userEl.innerText.trim();
-
-        // Попытка найти заголовок страницы
-        const headerEl = document.querySelector('h1') || document.querySelector('.page-header');
-        if (headerEl) stage = headerEl.innerText.trim();
-
-        return {
-            userName: user,
-            stageName: stage
-        };
+        let stageName = "ПК Пирамида"; 
+        const stageElem = document.querySelector(".ui-jqgrid-title");
+        
+        if (stageElem) {
+            let text = Array.from(stageElem.childNodes)
+                .filter(n => n.nodeType === Node.TEXT_NODE)
+                .map(n => n.textContent.trim())
+                .join(" ");
+            
+            if (!text) text = stageElem.innerText.split('\n')[0].trim();
+            if (text) stageName = text;
+        } else {
+            let title = document.title.replace(" - Пирамида 2.0", "").trim();
+            if (title) stageName = title;
+        }
+        return { userName, stageName };
     }
 
     // Слушатель сообщений от Background (Network Events)
@@ -89,19 +69,6 @@
     });
 
     function handleStart(data) {
-        // Убедимся, что UI существует
-        if (!toast) initUI();
-        if (!toast || !toast.parentNode) {
-            // Если все еще нет (очень ранний старт), пробуем отложить
-             if (document.body) {
-                 if (!toast) initUI();
-             } else {
-                 // Критический случай: запрос пришел до body
-                 console.warn("[StageTimer] Start request received before DOM ready");
-                 return;
-             }
-        }
-
         // Сброс и показ UI
         sessionId = Date.now().toString(36) + Math.random().toString(36).substr(2);
         
@@ -111,44 +78,36 @@
         const typeSpan = toast.querySelector("#timer-type");
         if (typeSpan) typeSpan.innerText = data.loadType || "Загрузка";
 
-        const valSpan = toast.querySelector("#timer-val");
-        if (valSpan) valSpan.innerText = "0.00s";
-        
+        toast.querySelector("#timer-val").innerText = "0.00s";
         toast.classList.remove("finished");
         
         if (toastTimeout) clearTimeout(toastTimeout);
         if (timerInterval) clearInterval(timerInterval);
-        if (heartbeatInterval) clearInterval(heartbeatInterval);
 
         startTime = performance.now();
         
-        // ОТПРАВКА СТАТУСА ОЖИДАНИЯ (первичная)
-        const scraped = scrapeData();
-        sendToBackground("ОЖИДАНИЕ", 0, scraped, data.loadType);
-
-        // Запускаем тиканье таймера (UI)
+        // Запускаем тиканье таймера
         timerInterval = setInterval(() => {
             const now = performance.now();
             const elapsed = ((now - startTime) / 1000).toFixed(2);
+            const valSpan = document.getElementById("timer-val");
             if (valSpan) valSpan.innerText = elapsed + "s";
-        }, 50);
-
-        // ОТПРАВКА СТАТУСА ОЖИДАНИЯ (каждые 30 сек для мониторинга)
-        heartbeatInterval = setInterval(() => {
-            const elapsedSec = ((performance.now() - startTime) / 1000).toFixed(2);
-            const currentScraped = scrapeData();
-            sendToBackground("ОЖИДАНИЕ", elapsedSec, currentScraped, data.loadType);
-        }, 30000);
+        }, 50); // Обновление каждые 50мс
     }
 
     function handleStop(data) {
-        if (timerInterval) clearInterval(timerInterval);
-        if (heartbeatInterval) clearInterval(heartbeatInterval);
+        // data: { duration (ms), loadType } 
         
-        if (!toast) return;
+        // Останавливаем тиканье
+        if (timerInterval) clearInterval(timerInterval);
 
+        // Ждем немного, чтобы DOM обновился (Grid отрисовался после получения данных)
         setTimeout(() => {
             const scraped = scrapeData();
+            
+            // Если данные совсем плохие, можно пропустить, но пользователь просил считать GET.
+            // Если GET прошел, значит данные получены.
+            
             const durationSec = (data.duration / 1000).toFixed(2);
             
             // UI Update
@@ -165,14 +124,11 @@
                 toast.style.opacity = "0";
             }, 4000);
 
-        }, 100); 
+        }, 100); // Небольшая задержка для рендеринга
     }
 
     function handleError(data) {
         if (timerInterval) clearInterval(timerInterval);
-        if (heartbeatInterval) clearInterval(heartbeatInterval);
-
-        if (!toast) return;
 
         const valSpan = document.getElementById("timer-val");
         if (valSpan) valSpan.innerText = `Ошибка`;

@@ -53,8 +53,7 @@ const STAGE_URL_PATTERNS = [
     "*://*/ovzid/actions/editedoc*", 
     "*://*/ovzid/claims/execution*",
     "*://*/pu/ReestrSendToOVZID*",
-    "*://*/datagrids/slowsearch*",
-    "*://*/bus/globalsearch*"
+    "*://*/datagrids/slowsearch*"
 ]; 
 
 const EXECUTION_MAP = {
@@ -128,11 +127,6 @@ chrome.webRequest.onBeforeRequest.addListener((details) => {
         } else {
              loadType = "Загрузка стадии";
         }
-        isTargetRequest = true;
-    }
-    else if (url.pathname.includes("/bus/globalsearch")) {
-        // Глобальный поиск (всегда считаем загрузкой стадии по просьбе пользователя)
-        loadType = "Загрузка стадии";
         isTargetRequest = true;
     }
 
@@ -209,26 +203,5 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
     return false;
 });
-
-// === АВТООБНОВЛЕНИЕ (Для распакованных версий) ===
-// Проверяет изменение версии в manifest.json на диске
-setInterval(async () => {
-    try {
-        // Добавляем timestamp, чтобы избежать кэширования браузером
-        const url = chrome.runtime.getURL('manifest.json') + `?t=${Date.now()}`;
-        const response = await fetch(url);
-        const data = await response.json();
-        
-        const diskVersion = data.version;
-        const runningVersion = chrome.runtime.getManifest().version;
-
-        if (diskVersion !== runningVersion) {
-            console.log(`[AutoUpdate] Обнаружена новая версия: ${diskVersion} (Текущая: ${runningVersion}). Перезагрузка...`);
-            chrome.runtime.reload();
-        }
-    } catch (e) {
-        // Ошибки игнорируем, чтобы не спамить в консоль
-    }
-}, 60 * 1000); // Проверка каждую минуту
 
 console.log("Фоновый скрипт StageTimer (v2 POST + Network Monitor) запущен.");

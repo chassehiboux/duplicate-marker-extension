@@ -80,8 +80,7 @@ const STAGE_URL_PATTERNS = [
     "*://*/ovzid/actions/editedoc*", 
     "*://*/ovzid/claims/execution*",
     "*://*/pu/ReestrSendToOVZID*",
-    "*://*/datagrids/slowsearch*",
-    "*://*/bus/globalsearch*"
+    "*://*/datagrids/slowsearch*"
 ]; 
 
 const EXECUTION_MAP = {
@@ -154,11 +153,6 @@ chrome.webRequest.onBeforeRequest.addListener((details) => {
         } else {
              loadType = "Загрузка стадии";
         }
-        isTargetRequest = true;
-    }
-    else if (url.pathname.includes("/bus/globalsearch")) {
-        // Глобальный поиск (всегда считаем загрузкой стадии по просьбе пользователя)
-        loadType = "Загрузка стадии";
         isTargetRequest = true;
     }
 
@@ -747,20 +741,3 @@ function _incrementEditingCounter(edocid, path) {
 
 
 addLog("Background скрипт запущен.");
-
-// === АВТООБНОВЛЕНИЕ (Для распакованных версий) ===
-setInterval(async () => {
-    try {
-        const url = chrome.runtime.getURL('manifest.json') + `?t=${Date.now()}`;
-        const response = await fetch(url);
-        const data = await response.json();
-        
-        const diskVersion = data.version;
-        const runningVersion = chrome.runtime.getManifest().version;
-
-        if (diskVersion !== runningVersion) {
-            console.log(`[AutoUpdate] New version: ${diskVersion}. Reloading extension...`);
-            chrome.runtime.reload();
-        }
-    } catch (e) { }
-}, 60 * 1000);
