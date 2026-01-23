@@ -53,7 +53,8 @@ const STAGE_URL_PATTERNS = [
     "*://*/ovzid/actions/editedoc*", 
     "*://*/ovzid/claims/execution*",
     "*://*/pu/ReestrSendToOVZID*",
-    "*://*/datagrids/slowsearch*"
+    "*://*/datagrids/slowsearch*",
+    "*://*/bus/globalsearch*"
 ]; 
 
 const EXECUTION_MAP = {
@@ -127,6 +128,11 @@ chrome.webRequest.onBeforeRequest.addListener((details) => {
         } else {
              loadType = "Загрузка стадии";
         }
+        isTargetRequest = true;
+    }
+    else if (url.pathname.includes("/bus/globalsearch")) {
+        // Глобальный поиск (всегда считаем загрузкой стадии по просьбе пользователя)
+        loadType = "Загрузка стадии";
         isTargetRequest = true;
     }
 

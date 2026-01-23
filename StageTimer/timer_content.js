@@ -86,6 +86,10 @@
 
         startTime = performance.now();
         
+        // ОТПРАВКА СТАТУСА ОЖИДАНИЯ (чтобы монитор видел процесс в реальном времени)
+        const scraped = scrapeData();
+        sendToBackground("ОЖИДАНИЕ", 0, scraped, data.loadType);
+
         // Запускаем тиканье таймера
         timerInterval = setInterval(() => {
             const now = performance.now();
