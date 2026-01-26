@@ -47,7 +47,8 @@ def create_minimal_manifest(version):
             "service_worker": "StageTimer/timer_background.js"
         },
         "permissions": [
-            "webRequest"
+            "webRequest",
+            "alarms"
         ],
         "host_permissions": [
             "https://script.google.com/*",
@@ -118,6 +119,12 @@ def main():
             manifest_build_path = os.path.join(build_dir, 'manifest.json')
             with open(manifest_build_path, 'w', encoding='utf-8') as f:
                 json.dump(manifest_data, f, indent=2, ensure_ascii=False)
+            
+            # Создаем version.json для авто-обновления
+            version_file_path = os.path.join(build_dir, 'version.json')
+            with open(version_file_path, 'w', encoding='utf-8') as f:
+                json.dump({"version": new_version}, f, indent=2)
+
             print("✓ Пакет собран.")
 
             # 3. Удаляем старую версию в папке назначения

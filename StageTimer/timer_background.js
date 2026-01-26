@@ -205,3 +205,33 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 });
 
 console.log("Фоновый скрипт StageTimer (v2 POST + Network Monitor) запущен.");
+
+// === ЛОГИКА АВТО-ОБНОВЛЕНИЯ (RELOAD) ===
+async function checkForLocalUpdate() {
+    try {
+        const manifest = chrome.runtime.getManifest();
+        const currentVersion = manifest.version;
+
+        const response = await fetch(chrome.runtime.getURL('version.json') + '?t=' + Date.now());
+        const data = await response.json();
+        const folderVersion = data.version;
+
+        if (folderVersion !== currentVersion) {
+            console.log(`[UPDATE] Обнаружена новая версия в папке: ${folderVersion}. Перезагрузка...`);
+            setTimeout(() => {
+                chrome.runtime.reload();
+            }, 1000);
+        }
+    } catch (e) {
+        // Файл может отсутствовать при первой установке
+    }
+}
+
+// Проверка раз в 15 минут
+chrome.alarms.create("CheckFolderUpdate", { periodInMinutes: 1 });
+chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === "CheckFolderUpdate") checkForLocalUpdate();
+});
+
+// Проверка при запуске
+setTimeout(checkForLocalUpdate, 5000);

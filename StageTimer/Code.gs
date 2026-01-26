@@ -75,6 +75,10 @@ function handleRequest(p) {
 function monitorPerformance() {
   console.log("=== ЗАПУСК МОНИТОРИНГА ===");
   var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  
+  // 1. Сначала удаляем зависшие "ОЖИДАНИЯ" (старше 2 мин)
+  cleanupStaleWaitingRows(ss);
+
   var settingsSheet = ss.getSheetByName(SHEET_SETTINGS);
   var timeZone = ss.getSpreadsheetTimeZone();
   
@@ -572,7 +576,58 @@ function smartArchiver() {
   }
 }
 
+// ================= 4. УДАЛЕНИЕ ЗАВИСШИХ СЕССИЙ =================
+function cleanupStaleWaitingRows(ss) {
+  var sheets = ss.getSheets();
+  var now = new Date();
+  var thresholdTime = now.getTime() - 2 * 60 * 1000; // 2 минуты назад
+
+  sheets.forEach(function(sheet) {
+    var name = sheet.getName();
+    if (name === SHEET_SETTINGS || name.startsWith("Архив_")) return;
+
+    var lastRow = sheet.getLastRow();
+    if (lastRow < 2) return;
+
+    // Читаем только нужные колонки: A (Дата) и E (Статус)
+    // A=1, B=2, C=3, D=4, E=5. Берем range от A2 до E_lastRow
+    var range = sheet.getRange(2, 1, lastRow - 1, 5);
+    var values = range.getValues();
+    var rowsToDelete = [];
+
+    // Проходим с конца, чтобы индексы не съезжали при удалении (хотя deleteRow делает это за нас, но собирать лучше так)
+    // Но удалять через API по одному долго. Лучше собрать индексы.
+    
+    // В Google Apps Script удаление строк по одной ОЧЕНЬ медленное.
+    // Если "висяков" много, скрипт упадет по таймауту.
+    // Оптимизация: Собираем диапазоны или удаляем с конца.
+    
+    for (var i = values.length - 1; i >= 0; i--) {
+      var rowDate = values[i][0];
+      var status = values[i][4];
+
+      if (status === "ОЖИДАНИЕ" && rowDate instanceof Date) {
+        if (rowDate.getTime() < thresholdTime) {
+           // +2 потому что массив с 0, а лист со 2-й строки
+           rowsToDelete.push(i + 2);
+        }
+      }
+    }
+
+    // Удаляем
+    rowsToDelete.forEach(function(rowIndex) {
+      sheet.deleteRow(rowIndex);
+    });
+    
+    if (rowsToDelete.length > 0) {
+      console.log("Удалено зависших строк на листе " + name + ": " + rowsToDelete.length);
+    }
+  });
+}
+
+// ... (Cleanup, Setup - без изменений) ...
 function performCleanup() {
+
   var lock = LockService.getScriptLock();
   if (lock.tryLock(45000)) { 
     try {

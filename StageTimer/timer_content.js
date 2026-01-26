@@ -86,12 +86,38 @@
 
         startTime = performance.now();
         
+        let lastReportTime = 0;
+        let hasSentInitial = false;
+
         // Запускаем тиканье таймера
         timerInterval = setInterval(() => {
             const now = performance.now();
-            const elapsed = ((now - startTime) / 1000).toFixed(2);
+            const elapsed = parseFloat(((now - startTime) / 1000).toFixed(2));
             const valSpan = document.getElementById("timer-val");
             if (valSpan) valSpan.innerText = elapsed + "s";
+
+            // --- ЛОГИКА ПРОМЕЖУТОЧНЫХ ОТПРАВОК (HEARTBEAT) ---
+            
+            // 1. Попытка отправить "ОЖИДАНИЕ" через 1 сек
+            if (!hasSentInitial && elapsed > 1.0) {
+                const currentData = scrapeData();
+                // Проверяем, удалось ли считать имя/стадию (иногда DOM еще не готов)
+                if (currentData.userName !== "Не определен" && currentData.stageName !== "ПК Пирамида") {
+                    sendToBackground("ОЖИДАНИЕ", elapsed.toString(), currentData, data.loadType);
+                    hasSentInitial = true;
+                    lastReportTime = elapsed;
+                }
+            }
+
+            // 2. Периодический "ПУЛЬС" каждые 30 секунд
+            if (hasSentInitial && (elapsed - lastReportTime) >= 30) {
+                const currentData = scrapeData();
+                sendToBackground("ОЖИДАНИЕ", elapsed.toString(), currentData, data.loadType);
+                lastReportTime = elapsed;
+                // Визуальная индикация пульса (потемнее желтый)
+                toast.style.borderColor = "#e67e22"; 
+            }
+
         }, 50); // Обновление каждые 50мс
     }
 

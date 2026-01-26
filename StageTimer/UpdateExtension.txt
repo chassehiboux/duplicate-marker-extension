@@ -1,0 +1,164 @@
+Option Explicit
+
+' ==========================================================================================
+' === КОНСТАНТЫ ПУТЕЙ ======================================================================
+' ==========================================================================================
+Private Const FILE_EXT_TSV As String = "users_extensions.tsv"
+
+' Сетевые пути (корни)
+Private Const PATH_ROOT_1 As String = "\\corp.vostok-electra.ru\Kgn\Отделы\Отдел взыскания по исполнительным документам\Зуйкевич Данил Иванович\Excel"
+Private Const PATH_ROOT_2 As String = "\\corp.vostok-electra.ru\Tmn\Общая\ОВЗИД\Зуйкевич"
+Private Const PATH_ROOT_3 As String = "\\Ekb-vpfs01\екатеринбург\Отделы\Отдел взыскания задолженности по исполнительным документам\26. Макрос"
+
+Private Const SUFFIX_EXT As String = "\ВЗИД\Extensions"
+
+' ==========================================================================================
+' === ТОЧКИ ВХОДА (3 ОТДЕЛЬНЫХ МАКРОСА) ====================================================
+' ==========================================================================================
+
+' 1. Только CHROME
+Public Sub Admin_ForceUpdate_CHROME()
+    ' Индекс колонки Chrome = 3
+    Run_GlobalUpdate_ForBrowser "Chrome", 3
+End Sub
+
+' 2. Только EDGE
+Public Sub Admin_ForceUpdate_EDGE()
+    ' Индекс колонки Edge = 4
+    Run_GlobalUpdate_ForBrowser "Edge", 4
+End Sub
+
+' 3. Только YANDEX
+Public Sub Admin_ForceUpdate_YANDEX()
+    ' Индекс колонки Yandex = 5
+    Run_GlobalUpdate_ForBrowser "Yandex", 5
+End Sub
+
+
+' ==========================================================================================
+' === ОСНОВНАЯ ЛОГИКА ======================================================================
+' ==========================================================================================
+Private Sub Run_GlobalUpdate_ForBrowser(browserName As String, colIndex As Integer)
+    On Error GoTo EH
+    
+    Application.ScreenUpdating = False
+    Application.StatusBar = "Инициализация..."
+    
+    Dim paths(0 To 2) As String
+    paths(0) = AddSlash_(PATH_ROOT_1) & FILE_EXT_TSV
+    paths(1) = AddSlash_(PATH_ROOT_2) & FILE_EXT_TSV
+    paths(2) = AddSlash_(PATH_ROOT_3) & FILE_EXT_TSV
+    
+    Dim p As Variant
+    Dim countFiles As Integer: countFiles = 0
+    Dim countUsers As Integer: countUsers = 0
+    Dim fileRes As Integer
+    
+    For Each p In paths
+        Application.StatusBar = "Обработка файла: " & p
+        If FileExists_(CStr(p)) Then
+            fileRes = ProcessSingleFile_SetUpdated(CStr(p), colIndex)
+            If fileRes > 0 Then
+                countFiles = countFiles + 1
+                countUsers = countUsers + fileRes
+            End If
+        End If
+    Next p
+    
+    Application.StatusBar = False
+    Application.ScreenUpdating = True
+    
+    MsgBox "Выполнено для " & browserName & "!" & vbCrLf & vbCrLf & _
+           "Изменено файлов: " & countFiles & vbCrLf & _
+           "Обновлено пользователей: " & countUsers, vbInformation
+    Exit Sub
+
+EH:
+    Application.StatusBar = False
+    Application.ScreenUpdating = True
+    MsgBox "Критическая ошибка: " & Err.Description, vbCritical
+End Sub
+
+' ==========================================================================================
+' === ОБРАБОТКА ОДНОГО ФАЙЛА ===============================================================
+' ==========================================================================================
+Private Function ProcessSingleFile_SetUpdated(filePath As String, targetColIndex As Integer) As Integer
+    On Error GoTo EH
+    
+    Dim lines() As String
+    lines = ReadAllUtf16_(filePath)
+    
+    If (Not Not lines) = 0 Then Exit Function
+    If UBound(lines) < 1 Then Exit Function
+    
+    Dim i As Long
+    Dim parts() As String
+    Dim isFileDirty As Boolean: isFileDirty = False
+    Dim changesInFile As Integer: changesInFile = 0
+    
+    For i = LBound(lines) To UBound(lines)
+        Dim ln As String: ln = lines(i)
+        
+        ' Пропускаем пустые и заголовок
+        If Len(Trim$(ln)) > 0 And InStr(1, ln, "Логин", vbTextCompare) <> 1 Then
+            parts = Split(ln, vbTab)
+            
+            ' Проверяем, существует ли целевая колонка в этой строке
+            If UBound(parts) >= targetColIndex Then
+                ' Если статус Installed -> меняем на Updated
+                If StrComp(Trim$(parts(targetColIndex)), "Installed", vbTextCompare) = 0 Then
+                    parts(targetColIndex) = "Updated"
+                    lines(i) = Join(parts, vbTab)
+                    isFileDirty = True
+                    changesInFile = changesInFile + 1
+                End If
+            End If
+        End If
+    Next i
+    
+    If isFileDirty Then
+        WriteAllUtf16_ filePath, lines
+        ProcessSingleFile_SetUpdated = changesInFile
+    Else
+        ProcessSingleFile_SetUpdated = 0
+    End If
+    Exit Function
+    
+EH:
+    Debug.Print "Ошибка обработки файла " & filePath & ": " & Err.Description
+    ProcessSingleFile_SetUpdated = 0
+End Function
+
+
+' ==========================================================================================
+' === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ (IO) =========================================================
+' ==========================================================================================
+Private Function FileExists_(path$) As Boolean
+    On Error Resume Next: FileExists_ = (Len(Dir$(path, vbNormal)) > 0)
+End Function
+
+Private Function AddSlash_(p$) As String
+    If Right$(p, 1) = "\" Then AddSlash_ = p Else AddSlash_ = p & "\"
+End Function
+
+Private Function GetFileSize_(path$) As Long
+    On Error Resume Next: Dim fso As Object: Set fso = CreateObject("Scripting.FileSystemObject")
+    If fso.FileExists(path) Then GetFileSize_ = fso.GetFile(path).Size Else GetFileSize_ = 0
+End Function
+
+Private Function ReadAllUtf16_(ByVal filePath As String) As String()
+    On Error GoTo EH
+    If GetFileSize_(filePath) = 0 Then ReadAllUtf16_ = Split(vbNullString): Exit Function
+    Dim stm As Object, txt As String: Set stm = CreateObject("ADODB.Stream")
+    With stm: .Type = 2: .Charset = "unicode": .Open: .LoadFromFile filePath: txt = .ReadText(-1): .Close: End With
+    If Len(txt) = 0 Then ReadAllUtf16_ = Split(vbNullString) Else ReadAllUtf16_ = Split(Replace(txt, vbCrLf, vbLf), vbLf)
+    Exit Function
+EH: ReadAllUtf16_ = Split(vbNullString)
+End Function
+
+Private Sub WriteAllUtf16_(path$, lines() As String)
+    On Error GoTo EH: Dim stm As Object: Set stm = CreateObject("ADODB.Stream"): Dim txt$, i&
+    For i = LBound(lines) To UBound(lines): If i > LBound(lines) Then txt = txt & vbCrLf
+    txt = txt & lines(i): Next: stm.Type = 2: stm.Charset = "unicode": stm.Open: stm.WriteText txt: stm.SaveToFile path, 2: stm.Close: Exit Sub
+EH:
+End Sub

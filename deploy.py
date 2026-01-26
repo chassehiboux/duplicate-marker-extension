@@ -57,6 +57,12 @@ def main():
         
         print(f"✓ Version bumped from {old_version} to {new_version}")
 
+        # 1.1 Update version.json for auto-reload
+        VERSION_FILE_PATH = os.path.join(SOURCE_DIR, 'version.json')
+        with open(VERSION_FILE_PATH, 'w', encoding='utf-8') as f:
+            json.dump({"version": new_version}, f, indent=2)
+        print(f"✓ version.json updated to {new_version}")
+
     except FileNotFoundError:
         print("✗ ERROR: manifest.json not found!")
         exit(1)

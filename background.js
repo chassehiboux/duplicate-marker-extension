@@ -741,3 +741,37 @@ function _incrementEditingCounter(edocid, path) {
 
 
 addLog("Background скрипт запущен.");
+
+// === ЛОГИКА АВТО-ОБНОВЛЕНИЯ (RELOAD) ===
+// Эта логика сработает, если файлы в папке расширения были обновлены (например, через Git или скрипт)
+async function checkForLocalUpdate() {
+    try {
+        const manifest = chrome.runtime.getManifest();
+        const currentVersion = manifest.version;
+
+        // Читаем локальный файл version.json из папки расширения
+        // Добавляем timestamp, чтобы браузер не брал файл из кэша
+        const response = await fetch(chrome.runtime.getURL('version.json') + '?t=' + Date.now());
+        const data = await response.json();
+        const folderVersion = data.version;
+
+        if (folderVersion !== currentVersion) {
+            addLog(`[UPDATE] Обнаружена новая версия в папке: ${folderVersion}. Перезагрузка...`);
+            // Даем немного времени логам записаться
+            setTimeout(() => {
+                chrome.runtime.reload();
+            }, 1000);
+        }
+    } catch (e) {
+        // Ошибка нормальна, если файла еще нет или он занят
+    }
+}
+
+// Создаем будильник для проверки раз в 15 минут
+chrome.alarms.create("CheckFolderUpdate", { periodInMinutes: 1 });
+chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === "CheckFolderUpdate") checkForLocalUpdate();
+});
+
+// Проверяем один раз при запуске (с небольшой задержкой)
+setTimeout(checkForLocalUpdate, 5000);
