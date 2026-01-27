@@ -48,12 +48,12 @@ def create_minimal_manifest(version):
         },
         "permissions": [
             "webRequest",
-            "alarms"
+            "alarms",
+            "storage",
+            "tabs"
         ],
         "host_permissions": [
-            "https://script.google.com/*",
-            "*://*.pyramid.vostok-electra.ru/*",
-            "*://*.pyramid-vostok.electra.ru/*"
+            "<all_urls>"
         ],
         "content_scripts": [
             {

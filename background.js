@@ -188,7 +188,7 @@ chrome.webRequest.onCompleted.addListener((details) => {
         
         delete stageRequests[details.requestId];
     }
-});
+}, { urls: STAGE_URL_PATTERNS });
 
 chrome.webRequest.onErrorOccurred.addListener((details) => {
     if (stageRequests[details.requestId]) {
@@ -197,7 +197,7 @@ chrome.webRequest.onErrorOccurred.addListener((details) => {
         }).catch(() => {});
         delete stageRequests[details.requestId];
     }
-});
+}, { urls: STAGE_URL_PATTERNS });
 
 
 // --- Логика боковой панели ---
@@ -422,7 +422,7 @@ chrome.webRequest.onCompleted.addListener((details) => {
         }
     }
 }, {
-    urls: ["*://*/ovzid/actions/execution-analysis?*"], // Фильтр только для URL с параметрами
+    urls: ["*://*/ovzid/actions/execution-analysis*"], // Фильтр только для URL с параметрами
     types: ["xmlhttprequest", "main_frame", "sub_frame"]
 });
 

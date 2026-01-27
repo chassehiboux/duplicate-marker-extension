@@ -24,7 +24,6 @@
     const toast = document.createElement("div");
     toast.id = "pyramid-stage-timer";
     toast.innerHTML = `<div class="timer-spinner"></div><span id="timer-type" style="margin-right:8px; font-weight:normal; font-size: 13px; opacity: 0.9;"></span><span id="timer-val">0.00s</span>`;
-    const timerValSpan = toast.querySelector("#timer-val"); // <--- Ищем элемент локально и заранее
     
     function injectToast() {
         if (document.body) document.body.appendChild(toast);
@@ -79,7 +78,7 @@
         const typeSpan = toast.querySelector("#timer-type");
         if (typeSpan) typeSpan.innerText = data.loadType || "Загрузка";
 
-        if (timerValSpan) timerValSpan.innerText = "0.00s";
+        toast.querySelector("#timer-val").innerText = "0.00s";
         toast.classList.remove("finished");
         
         if (toastTimeout) clearTimeout(toastTimeout);
@@ -94,8 +93,8 @@
         timerInterval = setInterval(() => {
             const now = performance.now();
             const elapsed = parseFloat(((now - startTime) / 1000).toFixed(2));
-            
-            if (timerValSpan) timerValSpan.innerText = elapsed + "s";
+            const valSpan = document.getElementById("timer-val");
+            if (valSpan) valSpan.innerText = elapsed + "s";
 
             // --- ЛОГИКА ПРОМЕЖУТОЧНЫХ ОТПРАВОК (HEARTBEAT) ---
             
@@ -138,7 +137,8 @@
             const durationSec = (data.duration / 1000).toFixed(2);
             
             // UI Update
-            if (timerValSpan) timerValSpan.innerText = `Готово: ${durationSec}s`;
+            const valSpan = document.getElementById("timer-val");
+            if (valSpan) valSpan.innerText = `Готово: ${durationSec}s`;
             toast.classList.add("finished");
             toast.style.borderColor = "#2ecc71"; 
 
@@ -156,7 +156,8 @@
     function handleError(data) {
         if (timerInterval) clearInterval(timerInterval);
 
-        if (timerValSpan) timerValSpan.innerText = `Ошибка`;
+        const valSpan = document.getElementById("timer-val");
+        if (valSpan) valSpan.innerText = `Ошибка`;
         toast.style.borderColor = "#e74c3c";
         
         // Скрыть быстрее
