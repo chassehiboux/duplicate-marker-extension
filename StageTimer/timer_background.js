@@ -162,7 +162,7 @@ chrome.webRequest.onCompleted.addListener((details) => {
         
         delete stageRequests[details.requestId];
     }
-}, { urls: STAGE_URL_PATTERNS });
+});
 
 chrome.webRequest.onErrorOccurred.addListener((details) => {
     if (stageRequests[details.requestId]) {
@@ -171,7 +171,7 @@ chrome.webRequest.onErrorOccurred.addListener((details) => {
         }).catch(() => {});
         delete stageRequests[details.requestId];
     }
-}, { urls: STAGE_URL_PATTERNS });
+});
 
 
 // --- Основной обработчик сообщений ---
