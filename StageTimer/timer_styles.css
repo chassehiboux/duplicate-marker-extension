@@ -20,12 +20,14 @@
     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
     font-size: 14px;
     font-weight: 500;
+    font-variant-numeric: tabular-nums;
     
     box-shadow: 0 4px 15px rgba(0,0,0,0.3);
     border-left: 4px solid #3498db; /* Синяя полоска слева (статус: загрузка) */
     
     transition: opacity 0.5s ease, transform 0.5s ease;
     pointer-events: none; /* Пропускать клики сквозь плашку */
+    opacity: 0; /* Скрыт по умолчанию */
 }
 
 /* Статус: Завершено */
@@ -46,6 +48,12 @@
 
 #pyramid-stage-timer.finished .timer-spinner {
     display: none; /* Скрываем спиннер, когда готово */
+}
+
+#timer-val {
+    min-width: 45px;
+    display: inline-block;
+    text-align: right;
 }
 
 @keyframes spin {

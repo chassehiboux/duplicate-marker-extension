@@ -43,17 +43,25 @@
         const stageElem = document.querySelector(".ui-jqgrid-title");
         
         if (stageElem) {
-            let text = Array.from(stageElem.childNodes)
-                .filter(n => n.nodeType === Node.TEXT_NODE)
-                .map(n => n.textContent.trim())
-                .join(" ");
-            
-            if (!text) text = stageElem.innerText.split('\n')[0].trim();
-            if (text) stageName = text;
+            // Берем полный текст, включая дочерние элементы (например, <a>)
+            let text = stageElem.innerText.trim();
+            // Убираем переносы строк и лишние пробелы
+            if (text) stageName = text.replace(/\s+/g, ' ');
         } else {
             let title = document.title.replace(" - Пирамида 2.0", "").trim();
             if (title) stageName = title;
         }
+
+        // --- Пост-обработка названия стадии ---
+        // 1. Замена для Крупных должников
+        if (stageName.includes("Крупные должники:")) {
+            stageName = stageName.replace("Крупные должники:", "КЛС/").trim();
+        }
+        // 2. Убираем лишний слеш в начале, если есть (бывает "/ Реестр...")
+        if (stageName.startsWith("/") || stageName.startsWith(" /")) {
+            stageName = stageName.replace(/^[\s\/]+/, "").trim();
+        }
+
         return { userName, stageName };
     }
 
@@ -69,6 +77,14 @@
     });
 
     function handleStart(data) {
+        // Игнорируем обычную загрузку на страницах глобального/медленного поиска
+        // Таймер включаем только если это явная фильтрация (поиск)
+        if (window.location.pathname.includes("/bus/slowsearch/") || window.location.pathname.includes("/bus/globalsearch/")) {
+            if (data.loadType !== "Фильтрация стадии") {
+                return;
+            }
+        }
+
         // Сброс и показ UI
         sessionId = Date.now().toString(36) + Math.random().toString(36).substr(2);
         
@@ -126,6 +142,11 @@
         
         // Останавливаем тиканье
         if (timerInterval) clearInterval(timerInterval);
+
+        // СТРАХОВКА: Если sessionId нет (например, таймер не успел стартануть или был сброс), генерируем новый
+        if (!sessionId) {
+            sessionId = "rec" + Date.now().toString(36);
+        }
 
         // Ждем немного, чтобы DOM обновился (Grid отрисовался после получения данных)
         setTimeout(() => {

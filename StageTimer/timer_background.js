@@ -53,7 +53,9 @@ const STAGE_URL_PATTERNS = [
     "*://*/ovzid/actions/editedoc*", 
     "*://*/ovzid/claims/execution*",
     "*://*/pu/ReestrSendToOVZID*",
-    "*://*/datagrids/slowsearch*"
+    "*://*/datagrids/slowsearch*",
+    "*://*/grid-data*",
+    "*://*/big-debtors/grid-data*"
 ]; 
 
 const EXECUTION_MAP = {
@@ -67,6 +69,18 @@ const EXECUTION_MAP = {
     "execution-bo": "Формирование заявление (Бюджетные организации)",
     "execution-ozon": "Формирование заявление (OZON)",
     "execution-tinkoff": "Формирование заявление (Заявление в ТБанк)"
+};
+
+const BIG_DEBTORS_MAP = {
+    "search": "Поиск",
+    "queue": "ЛС в очереди",
+    "work": "ЛС в работе",
+    "category_approved": "ЛС с категорией",
+    "archive": "ЛС в Архиве",
+    "early_execution": "На досрочную проверку",
+    "category_approval_wait": "Ожидание присвоения категории",
+    "expired_employee": "Пропущен срок сотрудника",
+    "expired_boss": "Пропущен срок руководителя"
 };
 
 let stageRequests = {}; // requestId -> { startTime, tabId, loadType }
@@ -101,7 +115,7 @@ chrome.webRequest.onBeforeRequest.addListener((details) => {
             isTargetRequest = true;
         }
     }
-    else if (url.pathname.includes("/data")) {
+    else if (url.pathname.includes("/data") && !url.pathname.includes("grid-data")) { // Исключаем grid-data здесь, он обработан отдельно
         // Загрузка грида (обычно GET, но *data* паттерн ловит)
         const searchParam = url.searchParams.get("_search");
         if (searchParam === "true") {
@@ -121,13 +135,41 @@ chrome.webRequest.onBeforeRequest.addListener((details) => {
     }
     else if (url.pathname.includes("/datagrids/slowsearch")) {
         // Медленный поиск/загрузка в гридах
-        const searchParam = url.searchParams.get("search");
+        // Срабатывает ТОЛЬКО если есть _search=true
+        const searchParam = url.searchParams.get("_search");
         if (searchParam === "true") {
             loadType = "Фильтрация стадии";
+            isTargetRequest = true;
         } else {
-             loadType = "Загрузка стадии";
+             // Игнорируем обычный slowsearch (чтобы не вешать таймер на пустых страницах)
+             isTargetRequest = false;
         }
-        isTargetRequest = true;
+    }
+    else if (url.pathname.includes("grid-data")) {
+        // Фильтрация (Крупные должники и др.)
+        const searchVal = url.searchParams.get("_search") || url.searchParams.get("search");
+
+        if (url.pathname.includes("big-debtors")) {
+             // Для крупных должников таймер включаем ТОЛЬКО если есть параметры поиска (true или false)
+             if (!searchVal) {
+                 isTargetRequest = false;
+             } else {
+                 if (searchVal === "true") {
+                     loadType = "Фильтрация стадии";
+                 } else {
+                     loadType = "Загрузка стадии";
+                 }
+                 isTargetRequest = true;
+             }
+        } else {
+            // Обычный грид
+            if (searchVal) { // Есть search или _search (неважно true/false)
+                loadType = "Фильтрация стадии";
+            } else {
+                loadType = "Загрузка стадии";
+            }
+            isTargetRequest = true;
+        }
     }
 
     if (isTargetRequest) {
