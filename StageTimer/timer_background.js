@@ -221,6 +221,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'LOG_STAGE_TIME') {
         const d = request.data;
 
+        // Игнорируем отправку, если пользователь не определен
+        if (d.userName === "Не определен") {
+            console.log("[StageTimer] Запись пропущена: Пользователь не определен.");
+            return false;
+        }
+
         if (!GOOGLE_SCRIPT_URL) {
             console.error("[StageTimer] URL для отправки данных не задан.");
             return false;

@@ -268,6 +268,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         case 'LOG_STAGE_TIME': {
             const d = request.data;
             
+            // Игнорируем отправку, если пользователь не определен
+            if (d.userName === "Не определен") {
+                console.log("[TELEMETRY] Запись пропущена: Пользователь не определен.");
+                return false;
+            }
+
             if (GOOGLE_SCRIPT_URL) {
                 const payload = {
                     baseName: d.baseName,
