@@ -241,7 +241,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             timestamp: d.timestamp,
             status: d.status,
             sessionId: d.sessionId,
-            loadType: d.loadType
+            loadType: d.loadType,
+            version: d.version // <-- ДОБАВЛЕНО
         };
 
         // Запускаем отправку (не ждем завершения, так как это fire-and-forget)

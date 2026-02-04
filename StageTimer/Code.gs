@@ -38,16 +38,23 @@ function handleRequest(p) {
 
       var sheet = ss.getSheetByName(baseName);
       
+      // Если листа нет, создаем его с 8 колонками
       if (!sheet) {
         sheet = ss.insertSheet(baseName);
-        sheet.appendRow(["Дата/Время", "Стадия", "Пользователь", "Время (сек)", "Статус", "SessionID", "Тип загрузки"]);
-        sheet.getRange(1, 1, 1, 7).setFontWeight("bold").setBackground("#d9ead3");
+        sheet.appendRow(["Дата/Время", "Стадия", "Пользователь", "Время (сек)", "Статус", "SessionID", "Тип загрузки", "Версия"]);
+        sheet.getRange(1, 1, 1, 8).setFontWeight("bold").setBackground("#d9ead3");
         sheet.setFrozenRows(1);
       }
 
       var durationVal = p.duration || "0";
       var durationStr = durationVal.toString().replace(/\./g, ',');
       var timestamp = p.timestamp ? p.timestamp : new Date();
+      
+      // Безопасное получение версии
+      var userVersion = "";
+      if (p.version) {
+        userVersion = String(p.version);
+      }
 
       sheet.appendRow([
         new Date(), 
@@ -56,11 +63,14 @@ function handleRequest(p) {
         durationStr, 
         p.status || "УСПЕШНО",
         p.sessionId || "",
-        p.loadType || "Прочее"
+        p.loadType || "Прочее",
+        userVersion // 8-я колонка
       ]);
 
-      return ContentService.createTextOutput("SUCCESS").setMimeType(ContentService.MimeType.TEXT);
+      return ContentService.createTextOutput("Установка прошла успешно! Данные приняты.").setMimeType(ContentService.MimeType.TEXT);
     } catch (error) {
+      // Логируем ошибку, чтобы понять, что пошло не так
+      console.error("HandleRequest Error: " + error.toString());
       return ContentService.createTextOutput("Error: " + error.toString());
     } finally {
       lock.releaseLock();
@@ -76,7 +86,6 @@ function monitorPerformance() {
   console.log("=== ЗАПУСК МОНИТОРИНГА ===");
   var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
   
-  // 1. Сначала удаляем зависшие "ОЖИДАНИЯ" (старше 2 мин)
   cleanupStaleWaitingRows(ss);
 
   var settingsSheet = ss.getSheetByName(SHEET_SETTINGS);
@@ -93,23 +102,19 @@ function monitorPerformance() {
   var periodStr = Utilities.formatDate(filterFromDate, timeZone, "HH:mm") + " — " + 
                   Utilities.formatDate(now, timeZone, "HH:mm");
 
-  // Расчет статистик
   var result = calculateStats(ss, lookBackDate, filterFromDate, now);
   var dayStats = calculateDayAnalysis(ss, new Date(new Date().setHours(0,0,0,0)));
 
-  // Отрисовка
   updateMainDashboard(settingsSheet, result.mainStats, periodStr);
   updateUserDashboard(settingsSheet, result.userStats, periodStr);
   updateDayAnalysisDashboard(settingsSheet, dayStats, Utilities.formatDate(now, timeZone, "dd.MM.yyyy"));
   
-  // Алерты
   checkAlerts(settingsSheet, result.mainStats, timeZone);
 
   lastUpdateCell.setValue(now).setNumberFormat("dd.MM.yyyy HH:mm:ss");
   console.log("=== ЗАВЕРШЕНО ===");
 }
 
-// Новая структура: MainStats[base][loadType][stage]
 function calculateStats(ss, scanStartDate, filterNewDate, now) {
   var sheets = ss.getSheets();
   var mainStats = {}; 
@@ -123,12 +128,11 @@ function calculateStats(ss, scanStartDate, filterNewDate, now) {
     if (lastRow < 2) return;
 
     var startRow = Math.max(2, lastRow - 3000); 
-    // Читаем 7 колонок
+    // Читаем 7 колонок (данные для анализа), даже если их 8
     var data = sheet.getRange(startRow, 1, lastRow - startRow + 1, 7).getValues(); 
 
     var uniqueSessions = {};
 
-    // 1. Сбор уникальных сессий
     for (var i = 0; i < data.length; i++) {
       var row = data[i];
       var rowDate = row[0]; 
@@ -142,17 +146,11 @@ function calculateStats(ss, scanStartDate, filterNewDate, now) {
         var duration = (typeof rawDuration === 'number') ? rawDuration : parseFloat(String(rawDuration).replace(',', '.'));
         if (isNaN(duration)) duration = 0;
 
-        // НОВАЯ ЛОГИКА: Верим времени, которое прислало расширение
         if (status === "ОЖИДАНИЕ") {
           var secondsSinceLastUpdate = (now.getTime() - rowDate.getTime()) / 1000;
-          
-          // Если от расширения не было "пульса" (heartbeat) более 60 секунд 
-          // (учитывая, что оно шлет каждые 30 сек), значит сессия мертва.
           if (secondsSinceLastUpdate > 60) {
              continue; 
           }
-          // Используем время, которое прислало расширение (оно обновляется каждые 30с)
-          // duration уже вычислен выше из row[3]
         }
 
         if (!uniqueSessions[sessionId]) {
@@ -161,7 +159,6 @@ function calculateStats(ss, scanStartDate, filterNewDate, now) {
           var existing = uniqueSessions[sessionId];
           var existingStatus = existing.row[4];
 
-          // Логика обновления: Ожидание заменяем ожиданием (если дольше), Финал заменяет ожидание
           if (status !== "ОЖИДАНИЕ" && existingStatus === "ОЖИДАНИЕ") {
             uniqueSessions[sessionId] = { row: row, duration: duration };
           }
@@ -177,7 +174,6 @@ function calculateStats(ss, scanStartDate, filterNewDate, now) {
 
     if (!mainStats[name]) mainStats[name] = {};
 
-    // 2. Агрегация
     for (var sid in uniqueSessions) {
       var entry = uniqueSessions[sid];
       var row = entry.row;
@@ -196,7 +192,6 @@ function calculateStats(ss, scanStartDate, filterNewDate, now) {
       var isNewFinished = (rowDate > filterNewDate);
 
       if (isWaiting || isNewFinished) {
-        // Инициализация структуры: Base -> LoadType -> Stage
         if (!mainStats[name][loadType]) mainStats[name][loadType] = {};
         if (!mainStats[name][loadType][stage]) {
           mainStats[name][loadType][stage] = { 
@@ -221,7 +216,6 @@ function calculateStats(ss, scanStartDate, filterNewDate, now) {
         } 
         else { ms.errors++; }
 
-        // UserStats: User -> Base -> LoadType -> Stage
         if (!userStats[user]) userStats[user] = {};
         if (!userStats[user][name]) userStats[user][name] = {};
         if (!userStats[user][name][loadType]) userStats[user][name][loadType] = {};
@@ -293,10 +287,10 @@ function calculateDayAnalysis(ss, startOfDay) {
 }
 
 
-// ---------------- ОТРИСОВКА (ОБНОВЛЕННАЯ СТРУКТУРА) ----------------
+// ---------------- ОТРИСОВКА ----------------
 
 function updateMainDashboard(sheet, stats, periodStr) {
-  sheet.getRange("A10:I200").clearContent(); // Расширили до I
+  sheet.getRange("A10:I200").clearContent(); 
   sheet.getRange("A8").setValue("СВОДНЫЙ ДАШБОРД (Период: " + periodStr + ")");
   var headers = [["База", "Тип загрузки", "Стадия", "Всего", "В работе", "Ошиб/Отм", "Ср. время", "Макс", "Медл (>10с)"]];
   sheet.getRange("A9:I9").setValues(headers).setBackground("#4a86e8").setFontColor("white").setFontWeight("bold");
@@ -311,19 +305,18 @@ function updateMainDashboard(sheet, stats, periodStr) {
       }
     }
   }
-  // Сортировка: В работе DESC, Ошибки DESC, Среднее DESC
   output.sort((a, b) => b[4] - a[4] || b[5] - a[5] || b[6] - a[6]); 
 
   if (output.length > 0) {
     sheet.getRange(10, 1, output.length, 9).setValues(output);
-    sheet.getRange(10, 7, output.length, 2).setNumberFormat("0.00"); // Формат для Ср.время и Макс
+    sheet.getRange(10, 7, output.length, 2).setNumberFormat("0.00"); 
   } else {
     sheet.getRange("A10").setValue("Нет активных данных");
   }
 }
 
 function updateUserDashboard(sheet, userStats, periodStr) {
-  sheet.getRange("J10:P300").clearContent(); // Расширили до P
+  sheet.getRange("J10:P300").clearContent();
   sheet.getRange("J8").setValue("ПОЛЬЗОВАТЕЛИ (Период: " + periodStr + ")");
   var headers = [["Пользователь", "База", "Тип загрузки", "Стадия", "Кол-во", "Ср. Время", "Макс"]];
   sheet.getRange("J9:P9").setValues(headers).setBackground("#6aa84f").setFontColor("white").setFontWeight("bold");
@@ -351,7 +344,7 @@ function updateUserDashboard(sheet, userStats, periodStr) {
 }
 
 function updateDayAnalysisDashboard(sheet, dayStats, dateStr) {
-  sheet.getRange("R10:W300").clearContent(); // Сдвинули на R (было Q), расширили
+  sheet.getRange("R10:W300").clearContent(); 
   sheet.getRange("R8").setValue("АНАЛИЗ ДНЯ (" + dateStr + ")");
   var headers = [["База", "Тип загрузки", "Стадия", "Худший час (Ср.)", "Общее среднее", "Лучший час (Ср.)"]];
   sheet.getRange("R9:W9").setValues(headers).setBackground("#e06666").setFontColor("white").setFontWeight("bold");
@@ -392,7 +385,7 @@ function updateDayAnalysisDashboard(sheet, dayStats, dateStr) {
 }
 
 
-// ---------------- АЛЕРТЫ (С ГРУППИРОВКОЙ) ----------------
+// ---------------- АЛЕРТЫ ----------------
 function checkAlerts(sheet, stats, timeZone) {
   var configsRange = sheet.getRange("A4:F20");
   var configs = configsRange.getValues();
@@ -408,26 +401,24 @@ function checkAlerts(sheet, stats, timeZone) {
 
     if (!baseTarget || !limit || !chatId || isActive !== true) continue;
 
-    var alertBlocks = []; // Собираем блоки для одной базы
+    var alertBlocks = []; 
 
     for (var baseName in stats) {
       if (baseTarget !== "*" && baseName !== baseTarget) continue;
       
-      var baseAlerts = []; // Алерты конкретной базы
+      var baseAlerts = []; 
 
       for (var loadType in stats[baseName]) {
-        var loadTypeAlerts = []; // Алерты внутри типа загрузки
+        var loadTypeAlerts = []; 
 
         for (var stageName in stats[baseName][loadType]) {
           var s = stats[baseName][loadType][stageName];
           if (s.count === 0) continue; 
 
           var avgTime = (s.timeSum / s.count);
-          // Условие: Среднее превышено ИЛИ Кто-то висит дольше лимита
           var isAlertCondition = (avgTime > limit) || (s.maxWaiting > limit);
 
           if (isAlertCondition) {
-            var uniqueUserCount = Object.keys(s.uniqueUsers).length;
             var topSlowest = s.loads.sort((a, b) => b.time - a.time).slice(0, 3);
             
             var top3Msg = "";
@@ -474,7 +465,6 @@ function checkAlerts(sheet, stats, timeZone) {
     }
 
     var newMsgId = null;    
-    // ЛОГИКА ТЕЛЕГРАМ (без изменений)
     if (currentStatus !== lastStatus) {
       if (lastMsgId) deleteTelegramMessage(chatId, lastMsgId);
       var silent = (currentStatus === "OK");
@@ -504,7 +494,6 @@ function checkAlerts(sheet, stats, timeZone) {
   }
 }
 
-// ... (Остальные функции Telegram и архивации без изменений) ...
 function sendTelegram(chatId, text, silent) {
   var url = "https://api.telegram.org/bot" + TELEGRAM_BOT_TOKEN + "/sendMessage";
   var payload = { 'chat_id': chatId, 'text': text, 'parse_mode': 'HTML', 'disable_notification': silent };
@@ -565,8 +554,8 @@ function smartArchiver() {
 
           sheet.setName(finalName);
           var newSheet = ss.insertSheet(name);
-          newSheet.appendRow(["Дата/Время", "Стадия", "Пользователь", "Время (сек)", "Статус", "SessionID", "Тип загрузки"]);
-          newSheet.getRange(1, 1, 1, 7).setFontWeight("bold").setBackground("#d9ead3");
+          newSheet.appendRow(["Дата/Время", "Стадия", "Пользователь", "Время (сек)", "Статус", "SessionID", "Тип загрузки", "Версия"]);
+          newSheet.getRange(1, 1, 1, 8).setFontWeight("bold").setBackground("#d9ead3");
           newSheet.setFrozenRows(1);
         }
       });
@@ -576,11 +565,10 @@ function smartArchiver() {
   }
 }
 
-// ================= 4. УДАЛЕНИЕ ЗАВИСШИХ СЕССИЙ =================
 function cleanupStaleWaitingRows(ss) {
   var sheets = ss.getSheets();
   var now = new Date();
-  var thresholdTime = now.getTime() - 2 * 60 * 1000; // 2 минуты назад
+  var thresholdTime = now.getTime() - 2 * 60 * 1000; 
 
   sheets.forEach(function(sheet) {
     var name = sheet.getName();
@@ -589,45 +577,28 @@ function cleanupStaleWaitingRows(ss) {
     var lastRow = sheet.getLastRow();
     if (lastRow < 2) return;
 
-    // Читаем только нужные колонки: A (Дата) и E (Статус)
-    // A=1, B=2, C=3, D=4, E=5. Берем range от A2 до E_lastRow
     var range = sheet.getRange(2, 1, lastRow - 1, 5);
     var values = range.getValues();
     var rowsToDelete = [];
 
-    // Проходим с конца, чтобы индексы не съезжали при удалении (хотя deleteRow делает это за нас, но собирать лучше так)
-    // Но удалять через API по одному долго. Лучше собрать индексы.
-    
-    // В Google Apps Script удаление строк по одной ОЧЕНЬ медленное.
-    // Если "висяков" много, скрипт упадет по таймауту.
-    // Оптимизация: Собираем диапазоны или удаляем с конца.
-    
     for (var i = values.length - 1; i >= 0; i--) {
       var rowDate = values[i][0];
       var status = values[i][4];
 
       if (status === "ОЖИДАНИЕ" && rowDate instanceof Date) {
         if (rowDate.getTime() < thresholdTime) {
-           // +2 потому что массив с 0, а лист со 2-й строки
            rowsToDelete.push(i + 2);
         }
       }
     }
 
-    // Удаляем
     rowsToDelete.forEach(function(rowIndex) {
       sheet.deleteRow(rowIndex);
     });
-    
-    if (rowsToDelete.length > 0) {
-      console.log("Удалено зависших строк на листе " + name + ": " + rowsToDelete.length);
-    }
   });
 }
 
-// ... (Cleanup, Setup - без изменений) ...
 function performCleanup() {
-
   var lock = LockService.getScriptLock();
   if (lock.tryLock(45000)) { 
     try {
@@ -647,7 +618,8 @@ function performCleanup() {
 function compactSheet(sheet) {
   var lastRow = sheet.getLastRow();
   if (lastRow < 2) return;
-  var range = sheet.getRange(2, 1, lastRow - 1, 7);
+  // Берем 8 колонок для компакт-режима (чтобы не потерять версию)
+  var range = sheet.getRange(2, 1, lastRow - 1, 8);
   var data = range.getValues();
   if (data.length == 0) return;
 
@@ -680,7 +652,7 @@ function compactSheet(sheet) {
 
   if (cleanData.length < data.length) {
     range.clearContent();
-    if (cleanData.length > 0) sheet.getRange(2, 1, cleanData.length, 7).setValues(cleanData);
+    if (cleanData.length > 0) sheet.getRange(2, 1, cleanData.length, 8).setValues(cleanData);
   }
 }
 
@@ -702,9 +674,4 @@ function setupDashboard() {
   updateMainDashboard(sheet, {}, "Ожидание");
   updateUserDashboard(sheet, {}, "Ожидание");
   updateDayAnalysisDashboard(sheet, {}, "Ожидание");
-}
-
-function getUpdatesInLog() {
-  var url = "https://api.telegram.org/bot" + TELEGRAM_BOT_TOKEN + "/getUpdates";
-  console.log(UrlFetchApp.fetch(url).getContentText());
 }

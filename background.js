@@ -283,7 +283,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     timestamp: d.timestamp,
                     status: d.status,
                     sessionId: d.sessionId,
-                    loadType: d.loadType
+                    loadType: d.loadType,
+                    version: d.version // <-- ДОБАВЛЕНО
                 };
 
                 // Используем новую надежную функцию отправки

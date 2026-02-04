@@ -12,6 +12,8 @@
     }
 
     const baseName = getBaseName();
+    // Получаем версию расширения
+    const extVersion = chrome.runtime.getManifest().version;
 
     if (window.location.pathname.includes("/login")) return;
 
@@ -43,9 +45,7 @@
         const stageElem = document.querySelector(".ui-jqgrid-title");
         
         if (stageElem) {
-            // Берем полный текст, включая дочерние элементы (например, <a>)
             let text = stageElem.innerText.trim();
-            // Убираем переносы строк и лишние пробелы
             if (text) stageName = text.replace(/\s+/g, ' ');
         } else {
             let title = document.title.replace(" - Пирамида 2.0", "").trim();
@@ -53,11 +53,9 @@
         }
 
         // --- Пост-обработка названия стадии ---
-        // 1. Замена для Крупных должников
         if (stageName.includes("Крупные должники:")) {
             stageName = stageName.replace("Крупные должники:", "КЛС/").trim();
         }
-        // 2. Убираем лишний слеш в начале, если есть (бывает "/ Реестр...")
         if (stageName.startsWith("/") || stageName.startsWith(" /")) {
             stageName = stageName.replace(/^[\s\/]+/, "").trim();
         }
@@ -65,7 +63,7 @@
         return { userName, stageName };
     }
 
-    // Слушатель сообщений от Background (Network Events)
+    // Слушатель сообщений от Background
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         if (request.action === 'STAGE_TIMER_START') {
             handleStart(request.data);
@@ -77,8 +75,6 @@
     });
 
     function handleStart(data) {
-        // Игнорируем обычную загрузку на страницах глобального/медленного поиска
-        // Таймер включаем только если это явная фильтрация (поиск)
         if (window.location.pathname.includes("/bus/slowsearch/") || window.location.pathname.includes("/bus/globalsearch/")) {
             if (data.loadType !== "Фильтрация стадии") {
                 return;
@@ -112,12 +108,9 @@
             const valSpan = document.getElementById("timer-val");
             if (valSpan) valSpan.innerText = elapsed + "s";
 
-            // --- ЛОГИКА ПРОМЕЖУТОЧНЫХ ОТПРАВОК (HEARTBEAT) ---
-            
             // 1. Попытка отправить "ОЖИДАНИЕ" через 1 сек
             if (!hasSentInitial && elapsed > 1.0) {
                 const currentData = scrapeData();
-                // Проверяем, удалось ли считать имя/стадию (иногда DOM еще не готов)
                 if (currentData.userName !== "Не определен" && currentData.stageName !== "ПК Пирамида") {
                     sendToBackground("ОЖИДАНИЕ", elapsed.toString(), currentData, data.loadType);
                     hasSentInitial = true;
@@ -130,31 +123,30 @@
                 const currentData = scrapeData();
                 sendToBackground("ОЖИДАНИЕ", elapsed.toString(), currentData, data.loadType);
                 lastReportTime = elapsed;
-                // Визуальная индикация пульса (потемнее желтый)
                 toast.style.borderColor = "#e67e22"; 
             }
 
-        }, 50); // Обновление каждые 50мс
+        }, 50); 
     }
 
     function handleStop(data) {
-        // data: { duration (ms), loadType } 
-        
-        // Останавливаем тиканье
+        // --- ЗАЩИТА ОТ ДУБЛЕЙ И "ПРИЗРАЧНЫХ" ЗАПРОСОВ ---
+        // Если сетевой запрос длился дольше, чем работает наш таймер (+ зазор 5с),
+        // значит это хвост от предыдущей активности. Игнорируем.
+        const localElapsedMs = performance.now() - startTime;
+        if (data.duration > (localElapsedMs + 5000)) {
+            // console.warn(`[StageTimer] Ignored stale request. Network: ${data.duration}, Local: ${localElapsedMs}`);
+            return;
+        }
+
         if (timerInterval) clearInterval(timerInterval);
 
-        // СТРАХОВКА: Если sessionId нет (например, таймер не успел стартануть или был сброс), генерируем новый
         if (!sessionId) {
             sessionId = "rec" + Date.now().toString(36);
         }
 
-        // Ждем немного, чтобы DOM обновился (Grid отрисовался после получения данных)
         setTimeout(() => {
             const scraped = scrapeData();
-            
-            // Если данные совсем плохие, можно пропустить, но пользователь просил считать GET.
-            // Если GET прошел, значит данные получены.
-            
             const durationSec = (data.duration / 1000).toFixed(2);
             
             // UI Update
@@ -171,17 +163,14 @@
                 toast.style.opacity = "0";
             }, 4000);
 
-        }, 100); // Небольшая задержка для рендеринга
+        }, 100); 
     }
 
     function handleError(data) {
         if (timerInterval) clearInterval(timerInterval);
-
         const valSpan = document.getElementById("timer-val");
         if (valSpan) valSpan.innerText = `Ошибка`;
         toast.style.borderColor = "#e74c3c";
-        
-        // Скрыть быстрее
         toastTimeout = setTimeout(() => {
             toast.style.opacity = "0";
         }, 2000);
@@ -198,7 +187,8 @@
             timestamp: timestamp,
             status: status,
             sessionId: sessionId,
-            loadType: loadType, // Новое поле
+            loadType: loadType,
+            version: extVersion, // <-- Передаем версию
             logLine: `[${timestamp}] [${status}] [${baseName}] [${data.userName}] ${data.stageName} — ${time}s (${loadType})`
         };
 
@@ -208,7 +198,7 @@
                 data: payload
             });
         } catch (e) {
-            console.error("[StageTimer] Ошибка отправки сообщения фоновому скрипту:", e);
+            console.error("[StageTimer] Ошибка отправки:", e);
         }
     }
 
