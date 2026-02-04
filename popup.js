@@ -1,4 +1,25 @@
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+  const defaultRoot = document.getElementById('default-popup-root');
+  const supportRoot = document.getElementById('support-reminder-root');
+
+  let activeTab = null;
+  try {
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    activeTab = tabs && tabs.length ? tabs[0] : null;
+  } catch (error) {
+    console.error('Failed to read active tab for sidepanel mode switch:', error);
+  }
+
+  const activeUrl = activeTab && activeTab.url ? String(activeTab.url) : '';
+  const isSupportTab = /^https?:\/\/support\.vostok-electra\.ru\//i.test(activeUrl);
+
+  if (isSupportTab && supportRoot && typeof window.initSupportSidePanel === 'function') {
+    if (defaultRoot) defaultRoot.style.display = 'none';
+    supportRoot.style.display = 'block';
+    window.initSupportSidePanel({ root: supportRoot, activeTab });
+    return;
+  }
+
   const todayDate = new Date().toLocaleDateString('ru-RU');
   const todayISO = new Date().toISOString().split('T')[0];
 

@@ -90,6 +90,16 @@
         "PyramidNewYear/pyramid_christmas.js"
       ],
       "run_at": "document_end"
+    },
+    {
+      "matches": [
+        "*://support.vostok-electra.ru/*"
+      ],
+      "js": [
+        "support/support_content.js"
+      ],
+      "run_at": "document_end",
+      "all_frames": false
     }
   ]
 }

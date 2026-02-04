@@ -3,6 +3,7 @@
 // --- Подключение модулей ---
 try {
     importScripts('Check_INN_DeathDate/inn_death_background.js');
+    importScripts('support/support_background.js');
     // importScripts('StageTimer/telemetry_background.js'); // Логика интегрирована внутрь
 } catch (e) {
     console.error("Ошибка импорта скриптов в background.js:", e);
