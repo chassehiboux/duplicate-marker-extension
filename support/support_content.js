@@ -229,7 +229,7 @@
 
     periodicSyncTimer = setInterval(() => {
       refresh(true);
-    }, 15000);
+    }, 5000);
   }
 
   init();

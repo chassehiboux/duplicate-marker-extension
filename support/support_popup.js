@@ -2,6 +2,7 @@
   const STORAGE_KEY = 'support_reminders_state_v1';
   const SUPPORT_HOST = 'support.vostok-electra.ru';
   const DEFAULT_STAGE_LABEL = '2.4 Подтверждение решения и закрытие Запроса';
+  const AUTO_REFRESH_MS = 5000;
 
   function escapeHtml(value) {
     return String(value || '')
@@ -27,11 +28,11 @@
           return;
         }
         if (!response) {
-          reject(new Error('No response from background.'));
+          reject(new Error('Нет ответа от background-скрипта.'));
           return;
         }
         if (response.success === false) {
-          reject(new Error(response.error || 'Unknown background error.'));
+          reject(new Error(response.error || 'Неизвестная ошибка background-скрипта.'));
           return;
         }
         resolve(response);
@@ -47,11 +48,11 @@
           return;
         }
         if (!response) {
-          reject(new Error('No response from tab content script.'));
+          reject(new Error('Нет ответа от content-скрипта вкладки.'));
           return;
         }
         if (response.success === false) {
-          reject(new Error(response.error || 'Unknown tab error.'));
+          reject(new Error(response.error || 'Неизвестная ошибка вкладки.'));
           return;
         }
         resolve(response);
@@ -130,15 +131,58 @@
         overflow: hidden;
       }
 
+      .support-section.open-requests {
+        border-color: #b8ddc6;
+        background: #f2fcf5;
+      }
+
+      .support-section.open-requests .support-section-title {
+        background: #dff4e7;
+        color: #215f39;
+      }
+
+      .support-section.reminder-panel {
+        border-color: #bfd0ea;
+        background: #f5f8ff;
+      }
+
+      .support-section.reminder-panel .support-section-title {
+        background: #e5ecfb;
+        color: #24456f;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+      }
+
       .support-section-title {
-        background: #f4f8fc;
         font-size: 12px;
         font-weight: bold;
         padding: 6px 8px;
       }
 
+      .support-tabs {
+        display: flex;
+        gap: 6px;
+      }
+
+      .support-tab {
+        border: 1px solid #b8c9de;
+        background: #f5f8ff;
+        border-radius: 12px;
+        padding: 2px 8px;
+        font-size: 11px;
+        cursor: pointer;
+      }
+
+      .support-tab.active {
+        border-color: #2e6bd9;
+        background: #2e6bd9;
+        color: #fff;
+      }
+
       .support-list {
-        max-height: 220px;
+        max-height: 260px;
         overflow-y: auto;
       }
 
@@ -209,39 +253,46 @@
         </div>
         <div class="support-status" id="support-status">Загрузка...</div>
 
-        <div class="support-section">
+        <div class="support-section open-requests">
           <div class="support-section-title">Открытые обращения</div>
           <div class="support-list" id="support-open-list"></div>
         </div>
 
-        <div class="support-section">
-          <div class="support-section-title">Активные напоминания</div>
-          <div class="support-list" id="support-active-list"></div>
-        </div>
-
-        <div class="support-section">
-          <div class="support-section-title">Архив</div>
-          <div class="support-list" id="support-archive-list"></div>
+        <div class="support-section reminder-panel">
+          <div class="support-section-title">
+            <span id="support-reminder-title">Активные напоминания</span>
+            <div class="support-tabs">
+              <button class="support-tab active" data-switch-tab="active">Активные</button>
+              <button class="support-tab" data-switch-tab="archive">Архив</button>
+            </div>
+          </div>
+          <div class="support-list" id="support-reminder-list"></div>
         </div>
       </div>
     `;
 
     const statusNode = root.querySelector('#support-status');
     const openListNode = root.querySelector('#support-open-list');
-    const activeListNode = root.querySelector('#support-active-list');
-    const archiveListNode = root.querySelector('#support-archive-list');
+    const reminderTitleNode = root.querySelector('#support-reminder-title');
+    const reminderListNode = root.querySelector('#support-reminder-list');
     const refreshButton = root.querySelector('#support-refresh-btn');
 
     const state = {
       tabId: activeTab && typeof activeTab.id === 'number' ? activeTab.id : null,
+      isSupportTab: false,
       targetStage: DEFAULT_STAGE_LABEL,
       openFilterActive: false,
       openRequests: [],
       activeReminders: [],
       archivedReminders: [],
       remindersById: {},
-      archiveById: {}
+      archiveById: {},
+      reminderTab: 'active'
     };
+
+    let isLoading = false;
+    let queuedReload = false;
+    let queuedShowSuccess = false;
 
     function setStatus(text, mode) {
       statusNode.textContent = text;
@@ -250,14 +301,28 @@
       if (mode === 'ok') statusNode.classList.add('ok');
     }
 
+    function statusSummary() {
+      return `Активных: ${state.activeReminders.length}, в архиве: ${state.archivedReminders.length}. Целевой этап: ${state.targetStage}.`;
+    }
+
+    function switchReminderTab(tabName) {
+      state.reminderTab = tabName === 'archive' ? 'archive' : 'active';
+      root.querySelectorAll('button[data-switch-tab]').forEach((button) => {
+        const isActive = button.dataset.switchTab === state.reminderTab;
+        button.classList.toggle('active', isActive);
+      });
+      reminderTitleNode.textContent = state.reminderTab === 'archive' ? 'Архивные напоминания' : 'Активные напоминания';
+      renderReminderList();
+    }
+
     function renderOpenRequests() {
       if (!state.tabId) {
-        openListNode.innerHTML = '<div class="support-empty">Активная вкладка не найдена.</div>';
+        openListNode.innerHTML = '<div class="support-empty">Активная вкладка недоступна.</div>';
         return;
       }
 
       if (!state.openFilterActive) {
-        openListNode.innerHTML = '<div class="support-empty">Откройте вкладку "Открытые обращения" на сайте support.vostok-electra.ru.</div>';
+        openListNode.innerHTML = '<div class="support-empty">Откройте фильтр "Открытые обращения" на support.vostok-electra.ru.</div>';
         return;
       }
 
@@ -268,9 +333,7 @@
 
       openListNode.innerHTML = state.openRequests.map((request) => {
         const reminder = state.remindersById[request.requestId];
-        const reminderBlock = reminder
-          ? `<div class="support-item-note">${escapeHtml(reminder.note)}</div>`
-          : '';
+        const reminderBlock = reminder ? `<div class="support-item-note">${escapeHtml(reminder.note)}</div>` : '';
         const addOrEditAction = reminder ? 'edit-open' : 'add-open';
         const addOrEditLabel = reminder ? 'Изменить' : 'Добавить';
         const deleteButton = reminder
@@ -294,11 +357,10 @@
 
     function renderActiveReminders() {
       if (!state.activeReminders.length) {
-        activeListNode.innerHTML = '<div class="support-empty">Активных напоминаний пока нет.</div>';
-        return;
+        return '<div class="support-empty">Активных напоминаний пока нет.</div>';
       }
 
-      activeListNode.innerHTML = state.activeReminders.map((reminder) => {
+      return state.activeReminders.map((reminder) => {
         const known = reminder.lastKnown || {};
         return `
           <div class="support-item">
@@ -317,11 +379,10 @@
 
     function renderArchiveReminders() {
       if (!state.archivedReminders.length) {
-        archiveListNode.innerHTML = '<div class="support-empty">Архив пуст.</div>';
-        return;
+        return '<div class="support-empty">Архив пуст.</div>';
       }
 
-      archiveListNode.innerHTML = state.archivedReminders.map((archive) => {
+      return state.archivedReminders.map((archive) => {
         const known = archive.lastKnown || {};
         return `
           <div class="support-item">
@@ -337,10 +398,23 @@
       }).join('');
     }
 
+    function renderReminderList() {
+      reminderListNode.innerHTML = state.reminderTab === 'archive'
+        ? renderArchiveReminders()
+        : renderActiveReminders();
+    }
+
     function renderAll() {
       renderOpenRequests();
-      renderActiveReminders();
-      renderArchiveReminders();
+      renderReminderList();
+    }
+
+    function applyBackgroundState(response) {
+      state.targetStage = response.targetStage || DEFAULT_STAGE_LABEL;
+      state.activeReminders = Array.isArray(response.activeReminders) ? response.activeReminders : [];
+      state.archivedReminders = Array.isArray(response.archivedReminders) ? response.archivedReminders : [];
+      state.remindersById = response.remindersById || {};
+      state.archiveById = response.archiveById || {};
     }
 
     function findOpenRequest(requestId) {
@@ -390,44 +464,77 @@
       await sendRuntimeMessage('SUPPORT_DELETE_ARCHIVE', { requestId });
     }
 
-    async function loadAll(showSuccessStatus) {
-      try {
-        const stateResponse = await sendRuntimeMessage('SUPPORT_GET_STATE');
-        state.targetStage = stateResponse.targetStage || DEFAULT_STAGE_LABEL;
-        state.activeReminders = Array.isArray(stateResponse.activeReminders) ? stateResponse.activeReminders : [];
-        state.archivedReminders = Array.isArray(stateResponse.archivedReminders) ? stateResponse.archivedReminders : [];
-        state.remindersById = stateResponse.remindersById || {};
-        state.archiveById = stateResponse.archiveById || {};
+    async function syncFromActiveTab() {
+      if (!state.tabId || !state.isSupportTab) {
+        state.openFilterActive = false;
+        state.openRequests = [];
+        return null;
+      }
 
-        if (state.tabId) {
-          try {
-            const tabResponse = await sendTabMessage(state.tabId, 'SUPPORT_GET_OPEN_REQUESTS');
-            state.openFilterActive = !!tabResponse.openFilterActive;
-            state.openRequests = Array.isArray(tabResponse.requests) ? tabResponse.requests : [];
-          } catch (tabError) {
-            state.openFilterActive = false;
-            state.openRequests = [];
-            setStatus(`Не удалось получить список заявок из вкладки: ${tabError.message}`, 'error');
-          }
-        } else {
+      const tabResponse = await sendTabMessage(state.tabId, 'SUPPORT_GET_OPEN_REQUESTS');
+      state.openFilterActive = !!tabResponse.openFilterActive;
+      state.openRequests = Array.isArray(tabResponse.requests) ? tabResponse.requests : [];
+
+      await sendRuntimeMessage('SUPPORT_SYNC_OPEN_REQUESTS', {
+        openFilterActive: state.openFilterActive,
+        requests: state.openRequests
+      });
+
+      return null;
+    }
+
+    async function loadAll(showSuccessStatus) {
+      if (isLoading) {
+        queuedReload = true;
+        queuedShowSuccess = queuedShowSuccess || !!showSuccessStatus;
+        return;
+      }
+
+      isLoading = true;
+      try {
+        let tabSyncError = null;
+        try {
+          await syncFromActiveTab();
+        } catch (error) {
+          tabSyncError = error;
           state.openFilterActive = false;
           state.openRequests = [];
         }
 
+        const stateResponse = await sendRuntimeMessage('SUPPORT_GET_STATE');
+        applyBackgroundState(stateResponse);
+
         renderAll();
 
-        if (showSuccessStatus) {
-          setStatus(
-            `Активных: ${state.activeReminders.length}, в архиве: ${state.archivedReminders.length}. Целевой этап: ${state.targetStage}.`,
-            'ok'
-          );
+        if (!state.isSupportTab) {
+          setStatus(`Откройте ${SUPPORT_HOST} и выберите "Открытые обращения". ${statusSummary()}`, 'error');
+        } else if (tabSyncError) {
+          setStatus(`Не удалось получить список открытых обращений из вкладки: ${tabSyncError.message}. ${statusSummary()}`, 'error');
+        } else if (!state.openFilterActive) {
+          setStatus(`Выберите "Открытые обращения" для синхронизации. ${statusSummary()}`);
+        } else {
+          setStatus(statusSummary(), showSuccessStatus ? 'ok' : null);
         }
       } catch (error) {
         setStatus(`Ошибка загрузки данных: ${error.message}`, 'error');
+      } finally {
+        isLoading = false;
+        if (queuedReload) {
+          const reloadWithSuccess = queuedShowSuccess;
+          queuedReload = false;
+          queuedShowSuccess = false;
+          loadAll(reloadWithSuccess);
+        }
       }
     }
 
     async function handleAction(event) {
+      const tabButton = event.target.closest('button[data-switch-tab]');
+      if (tabButton) {
+        switchReminderTab(tabButton.dataset.switchTab || 'active');
+        return;
+      }
+
       const button = event.target.closest('button[data-action]');
       if (!button) return;
 
@@ -461,15 +568,13 @@
       loadAll(false);
     });
 
+    const tabUrl = activeTab && activeTab.url ? String(activeTab.url) : '';
+    state.isSupportTab = /^https?:\/\/support\.vostok-electra\.ru\//i.test(tabUrl);
+
+    switchReminderTab('active');
+    loadAll(true);
     setInterval(() => {
       loadAll(false);
-    }, 15000);
-
-    const tabUrl = activeTab && activeTab.url ? String(activeTab.url) : '';
-    if (!tabUrl.includes(SUPPORT_HOST)) {
-      setStatus(`Откройте вкладку ${SUPPORT_HOST}, затем выберите "Открытые обращения".`, 'error');
-    }
-
-    loadAll(true);
+    }, AUTO_REFRESH_MS);
   };
 })();
