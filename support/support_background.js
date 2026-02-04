@@ -223,6 +223,12 @@
     if (!openFilterActive) {
       return { synced: false, reason: 'open_filter_not_active' };
     }
+    const snapshotReady = data && Object.prototype.hasOwnProperty.call(data, 'snapshotReady')
+      ? !!data.snapshotReady
+      : true;
+    if (!snapshotReady) {
+      return { synced: false, reason: 'open_requests_loading' };
+    }
 
     const requestList = Array.isArray(data && data.requests) ? data.requests : [];
     const requestMap = {};

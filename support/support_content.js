@@ -9,6 +9,7 @@
   const REQUESTS_TABLE_ID = 'СписокОбращенийТаблица';
   const REQUESTS_BODY_ID = 'СписокОбращенийТелоТаблицы';
   const HIGHLIGHT_CLASS = 'support-reminder-highlight';
+  const SNAPSHOT_READY_DELAY_MS = 20000;
   const DEFAULT_COLUMNS = {
     createdAt: 1,
     requestNumber: 2,
@@ -23,8 +24,10 @@
   let latestSnapshot = {
     openFilterActive: false,
     requests: [],
-    rowById: new Map()
+    rowById: new Map(),
+    snapshotReady: false
   };
+  const scriptStartedAt = Date.now();
   let refreshTimer = null;
   let periodicSyncTimer = null;
   let lastSyncHash = '';
@@ -108,10 +111,12 @@
     const body = document.getElementById(REQUESTS_BODY_ID);
 
     if (!table || !body) {
+      const elapsed = Date.now() - scriptStartedAt;
       return {
         openFilterActive,
         requests: [],
-        rowById: new Map()
+        rowById: new Map(),
+        snapshotReady: !openFilterActive || elapsed > SNAPSHOT_READY_DELAY_MS
       };
     }
 
@@ -139,12 +144,17 @@
       rowById.set(requestId, row);
     });
 
-    return { openFilterActive, requests, rowById };
+    const elapsed = Date.now() - scriptStartedAt;
+    const snapshotReady = !openFilterActive
+      || requests.length > 0
+      || elapsed > SNAPSHOT_READY_DELAY_MS;
+
+    return { openFilterActive, requests, rowById, snapshotReady };
   }
 
   function getSnapshotHash(snapshot) {
     const requestParts = snapshot.requests.map((item) => `${item.requestId}:${item.stage}`).join('|');
-    return `${snapshot.openFilterActive ? 'open' : 'closed'}|${requestParts}`;
+    return `${snapshot.openFilterActive ? 'open' : 'closed'}|${snapshot.snapshotReady ? 'ready' : 'loading'}|${requestParts}`;
   }
 
   function applyHighlights(snapshot) {
@@ -165,7 +175,8 @@
       action: 'SUPPORT_SYNC_OPEN_REQUESTS',
       data: {
         openFilterActive: snapshot.openFilterActive,
-        requests: snapshot.requests
+        requests: snapshot.requests,
+        snapshotReady: snapshot.snapshotReady
       }
     });
   }
@@ -212,7 +223,8 @@
     sendResponse({
       success: true,
       openFilterActive: snapshot.openFilterActive,
-      requests: snapshot.requests
+      requests: snapshot.requests,
+      snapshotReady: snapshot.snapshotReady
     });
     return true;
   });

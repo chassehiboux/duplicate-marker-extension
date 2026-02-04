@@ -282,6 +282,7 @@
       isSupportTab: false,
       targetStage: DEFAULT_STAGE_LABEL,
       openFilterActive: false,
+      snapshotReady: false,
       openRequests: [],
       activeReminders: [],
       archivedReminders: [],
@@ -323,6 +324,10 @@
 
       if (!state.openFilterActive) {
         openListNode.innerHTML = '<div class="support-empty">Откройте фильтр "Открытые обращения" на support.vostok-electra.ru.</div>';
+        return;
+      }
+      if (!state.snapshotReady) {
+        openListNode.innerHTML = '<div class="support-empty">Список открытых обращений загружается...</div>';
         return;
       }
 
@@ -467,17 +472,20 @@
     async function syncFromActiveTab() {
       if (!state.tabId || !state.isSupportTab) {
         state.openFilterActive = false;
+        state.snapshotReady = false;
         state.openRequests = [];
         return null;
       }
 
       const tabResponse = await sendTabMessage(state.tabId, 'SUPPORT_GET_OPEN_REQUESTS');
       state.openFilterActive = !!tabResponse.openFilterActive;
+      state.snapshotReady = !!tabResponse.snapshotReady;
       state.openRequests = Array.isArray(tabResponse.requests) ? tabResponse.requests : [];
 
       await sendRuntimeMessage('SUPPORT_SYNC_OPEN_REQUESTS', {
         openFilterActive: state.openFilterActive,
-        requests: state.openRequests
+        requests: state.openRequests,
+        snapshotReady: state.snapshotReady
       });
 
       return null;
@@ -498,6 +506,7 @@
         } catch (error) {
           tabSyncError = error;
           state.openFilterActive = false;
+          state.snapshotReady = false;
           state.openRequests = [];
         }
 
@@ -510,6 +519,8 @@
           setStatus(`Откройте ${SUPPORT_HOST} и выберите "Открытые обращения". ${statusSummary()}`, 'error');
         } else if (tabSyncError) {
           setStatus(`Не удалось получить список открытых обращений из вкладки: ${tabSyncError.message}. ${statusSummary()}`, 'error');
+        } else if (!state.snapshotReady) {
+          setStatus(`Ожидаем загрузку списка открытых обращений. ${statusSummary()}`);
         } else if (!state.openFilterActive) {
           setStatus(`Выберите "Открытые обращения" для синхронизации. ${statusSummary()}`);
         } else {
