@@ -84,6 +84,62 @@ const BIG_DEBTORS_MAP = {
 };
 
 let stageRequests = {}; // requestId -> { startTime, tabId, loadType }
+let stageSessions = {}; // tabId -> { sessionId, baseName, userName, stageName, loadType, version, startEpochMs }
+
+function clearStageRequestsForTab(tabId) {
+    if (!Number.isInteger(tabId)) return;
+    Object.keys(stageRequests).forEach((requestId) => {
+        if (stageRequests[requestId] && stageRequests[requestId].tabId === tabId) {
+            delete stageRequests[requestId];
+        }
+    });
+}
+
+function getStageTabId(request, sender) {
+    const tabIdFromSender = sender && sender.tab ? sender.tab.id : null;
+    const tabIdFromRequest = request.data && Number.isInteger(request.data.tabId) ? request.data.tabId : null;
+    return Number.isInteger(tabIdFromRequest) ? tabIdFromRequest : tabIdFromSender;
+}
+
+function upsertStageSession(tabId, data) {
+    if (!Number.isInteger(tabId) || !data) return;
+
+    const existing = stageSessions[tabId] || {};
+    stageSessions[tabId] = {
+        ...existing,
+        tabId: tabId,
+        sessionId: data.sessionId || existing.sessionId || "",
+        baseName: data.baseName || existing.baseName || "Основная",
+        userName: data.userName || existing.userName || "Не определен",
+        stageName: data.stageName || existing.stageName || "ПК Пирамида",
+        loadType: data.loadType || existing.loadType || "Загрузка",
+        version: data.version || existing.version || "",
+        startEpochMs: Number.isFinite(data.startEpochMs) ? data.startEpochMs : (existing.startEpochMs || Date.now())
+    };
+}
+
+function sendStageCancelForClosedTab(tabId) {
+    const session = stageSessions[tabId];
+    if (!session || !session.sessionId) return;
+
+    const durationSec = Math.max(0, (Date.now() - (session.startEpochMs || Date.now())) / 1000).toFixed(2);
+    const payload = {
+        baseName: session.baseName || "Основная",
+        stageName: session.stageName || "ПК Пирамида",
+        userName: session.userName || "Не определен",
+        duration: durationSec,
+        timestamp: new Date().toLocaleString("ru-RU"),
+        status: "ОТМЕНА",
+        sessionId: session.sessionId,
+        loadType: session.loadType || "Загрузка",
+        version: session.version || ""
+    };
+
+    delete stageSessions[tabId];
+
+    if (!GOOGLE_SCRIPT_URL) return;
+    sendWithRetry(GOOGLE_SCRIPT_URL, payload);
+}
 
 chrome.webRequest.onBeforeRequest.addListener((details) => {
     const url = new URL(details.url);
@@ -218,11 +274,37 @@ chrome.webRequest.onErrorOccurred.addListener((details) => {
 
 // --- Основной обработчик сообщений ---
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (request.action === 'STAGE_TIMER_SESSION_START') {
+        const tabId = getStageTabId(request, sender);
+        if (Number.isInteger(tabId)) {
+            upsertStageSession(tabId, request.data || {});
+        }
+        return false;
+    }
+
+    if (request.action === 'STAGE_TIMER_SESSION_UPDATE') {
+        const tabId = getStageTabId(request, sender);
+        if (Number.isInteger(tabId)) {
+            upsertStageSession(tabId, request.data || {});
+        }
+        return false;
+    }
+
+    if (request.action === 'STAGE_TIMER_CANCEL') {
+        const tabId = getStageTabId(request, sender);
+        clearStageRequestsForTab(tabId);
+        return false;
+    }
+
     if (request.action === 'LOG_STAGE_TIME') {
         const d = request.data;
+        const tabId = getStageTabId(request, sender);
+        if (Number.isInteger(tabId)) {
+            upsertStageSession(tabId, d);
+        }
 
         // Игнорируем отправку, если пользователь не определен
-        if (d.userName === "Не определен") {
+        if (d.userName === "Не определен" && d.status !== "ОТМЕНА") {
             console.log("[StageTimer] Запись пропущена: Пользователь не определен.");
             return false;
         }
@@ -248,9 +330,19 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         // Запускаем отправку (не ждем завершения, так как это fire-and-forget)
         sendWithRetry(GOOGLE_SCRIPT_URL, payload);
 
+        if (d.status !== "ОЖИДАНИЕ" && Number.isInteger(tabId)) {
+            delete stageSessions[tabId];
+            clearStageRequestsForTab(tabId);
+        }
+
         return true;
     }
     return false;
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+    sendStageCancelForClosedTab(tabId);
+    clearStageRequestsForTab(tabId);
 });
 
 console.log("Фоновый скрипт StageTimer (v2 POST + Network Monitor) запущен.");

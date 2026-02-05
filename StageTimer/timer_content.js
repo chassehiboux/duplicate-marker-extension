@@ -21,6 +21,11 @@
     let toastTimeout = null;
     let timerInterval = null;
     let startTime = 0;
+    let isTimerActive = false;
+    let activeLoadType = "Загрузка";
+    let sessionStartEpochMs = 0;
+    let sessionStartData = null;
+    let sessionStableData = null;
 
     // UI
     const toast = document.createElement("div");
@@ -63,6 +68,56 @@
         return { userName, stageName };
     }
 
+    function isValidSessionData(data) {
+        return data && data.userName !== "Не определен" && data.stageName !== "ПК Пирамида";
+    }
+
+    function normalizeSessionData(data) {
+        const src = data || {};
+        return {
+            userName: src.userName || "Не определен",
+            stageName: src.stageName || "ПК Пирамида"
+        };
+    }
+
+    function sendSessionEvent(action) {
+        if (!sessionId) return;
+        const current = getResolvedSessionData();
+        try {
+            chrome.runtime.sendMessage({
+                action: action,
+                data: {
+                    sessionId: sessionId,
+                    baseName: baseName,
+                    userName: current.userName,
+                    stageName: current.stageName,
+                    loadType: activeLoadType,
+                    version: extVersion,
+                    startEpochMs: sessionStartEpochMs
+                }
+            });
+        } catch (e) {
+            // ignore
+        }
+    }
+
+    function getResolvedSessionData(fallbackData) {
+        const normalizedFallback = normalizeSessionData(fallbackData);
+
+        if (!sessionStartData) {
+            sessionStartData = normalizedFallback;
+        }
+
+        if (!sessionStableData && isValidSessionData(normalizedFallback)) {
+            sessionStableData = normalizedFallback;
+            sendSessionEvent("STAGE_TIMER_SESSION_UPDATE");
+        }
+
+        if (sessionStableData) return sessionStableData;
+        if (isValidSessionData(sessionStartData)) return sessionStartData;
+        return normalizedFallback;
+    }
+
     // Слушатель сообщений от Background
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         if (request.action === 'STAGE_TIMER_START') {
@@ -73,6 +128,64 @@
             handleError(request.data);
         }
     });
+
+    function hasVisibleGridError() {
+        const errorBars = document.querySelectorAll(".alert.alert-danger.ui-jqgrid-errorbar");
+        for (const errorBar of errorBars) {
+            const style = window.getComputedStyle(errorBar);
+            if (style.display === "none" || style.visibility === "hidden") continue;
+            if (!errorBar.textContent || errorBar.textContent.trim().length === 0) continue;
+            return true;
+        }
+        return false;
+    }
+
+    function notifyStageTimerCanceled() {
+        try {
+            chrome.runtime.sendMessage({ action: "STAGE_TIMER_CANCEL" });
+        } catch (e) {
+            // ignore
+        }
+    }
+
+    function finalizeCanceledSession(uiText, hideDelayMs) {
+        if (!isTimerActive) return;
+
+        isTimerActive = false;
+        if (timerInterval) {
+            clearInterval(timerInterval);
+            timerInterval = null;
+        }
+        notifyStageTimerCanceled();
+
+        if (toastTimeout) clearTimeout(toastTimeout);
+
+        const durationSec = ((performance.now() - startTime) / 1000).toFixed(2);
+        const sessionData = getResolvedSessionData(scrapeData());
+
+        if (uiText) {
+            const valSpan = document.getElementById("timer-val");
+            if (valSpan) valSpan.innerText = uiText;
+            toast.classList.remove("finished");
+            toast.style.borderColor = "#e74c3c";
+        }
+
+        sendToBackground("ОТМЕНА", durationSec, sessionData, activeLoadType);
+
+        if (hideDelayMs > 0) {
+            toastTimeout = setTimeout(() => {
+                toast.style.opacity = "0";
+            }, hideDelayMs);
+        }
+    }
+
+    function cancelByPageError() {
+        finalizeCanceledSession("Отмена: ошибка", 4000);
+    }
+
+    function cancelByPageClose() {
+        finalizeCanceledSession("", 0);
+    }
 
     function handleStart(data) {
         if (window.location.pathname.includes("/bus/slowsearch/") || window.location.pathname.includes("/bus/globalsearch/")) {
@@ -94,15 +207,36 @@
         toast.classList.remove("finished");
         
         if (toastTimeout) clearTimeout(toastTimeout);
-        if (timerInterval) clearInterval(timerInterval);
+        if (timerInterval) {
+            clearInterval(timerInterval);
+            timerInterval = null;
+        }
 
         startTime = performance.now();
+        isTimerActive = true;
+        activeLoadType = data.loadType || "Загрузка";
+        sessionStartEpochMs = Date.now();
+        sessionStartData = normalizeSessionData(scrapeData());
+        sessionStableData = isValidSessionData(sessionStartData) ? sessionStartData : null;
+        sendSessionEvent("STAGE_TIMER_SESSION_START");
+
+        if (hasVisibleGridError()) {
+            cancelByPageError();
+            return;
+        }
         
         let lastReportTime = 0;
         let hasSentInitial = false;
 
         // Запускаем тиканье таймера
         timerInterval = setInterval(() => {
+            if (!isTimerActive) return;
+
+            if (hasVisibleGridError()) {
+                cancelByPageError();
+                return;
+            }
+
             const now = performance.now();
             const elapsed = parseFloat(((now - startTime) / 1000).toFixed(2));
             const valSpan = document.getElementById("timer-val");
@@ -111,8 +245,9 @@
             // 1. Попытка отправить "ОЖИДАНИЕ" через 1 сек
             if (!hasSentInitial && elapsed > 1.0) {
                 const currentData = scrapeData();
-                if (currentData.userName !== "Не определен" && currentData.stageName !== "ПК Пирамида") {
-                    sendToBackground("ОЖИДАНИЕ", elapsed.toString(), currentData, data.loadType);
+                const sessionData = getResolvedSessionData(currentData);
+                if (isValidSessionData(sessionData)) {
+                    sendToBackground("ОЖИДАНИЕ", elapsed.toString(), sessionData, data.loadType);
                     hasSentInitial = true;
                     lastReportTime = elapsed;
                 }
@@ -121,7 +256,8 @@
             // 2. Периодический "ПУЛЬС" каждые 30 секунд
             if (hasSentInitial && (elapsed - lastReportTime) >= 30) {
                 const currentData = scrapeData();
-                sendToBackground("ОЖИДАНИЕ", elapsed.toString(), currentData, data.loadType);
+                const sessionData = getResolvedSessionData(currentData);
+                sendToBackground("ОЖИДАНИЕ", elapsed.toString(), sessionData, data.loadType);
                 lastReportTime = elapsed;
                 toast.style.borderColor = "#e67e22"; 
             }
@@ -130,6 +266,8 @@
     }
 
     function handleStop(data) {
+        if (!isTimerActive) return;
+
         // --- ЗАЩИТА ОТ ДУБЛЕЙ И "ПРИЗРАЧНЫХ" ЗАПРОСОВ ---
         // Если сетевой запрос длился дольше, чем работает наш таймер (+ зазор 5с),
         // значит это хвост от предыдущей активности. Игнорируем.
@@ -139,14 +277,18 @@
             return;
         }
 
-        if (timerInterval) clearInterval(timerInterval);
+        isTimerActive = false;
+        if (timerInterval) {
+            clearInterval(timerInterval);
+            timerInterval = null;
+        }
 
         if (!sessionId) {
             sessionId = "rec" + Date.now().toString(36);
         }
 
         setTimeout(() => {
-            const scraped = scrapeData();
+            const sessionData = getResolvedSessionData(scrapeData());
             const durationSec = (data.duration / 1000).toFixed(2);
             
             // UI Update
@@ -156,7 +298,7 @@
             toast.style.borderColor = "#2ecc71"; 
 
             // Отправка лога
-            sendToBackground("УСПЕШНО", durationSec, scraped, data.loadType);
+            sendToBackground("УСПЕШНО", durationSec, sessionData, data.loadType);
 
             // Скрыть через 4 сек
             toastTimeout = setTimeout(() => {
@@ -167,7 +309,13 @@
     }
 
     function handleError(data) {
-        if (timerInterval) clearInterval(timerInterval);
+        if (!isTimerActive) return;
+
+        isTimerActive = false;
+        if (timerInterval) {
+            clearInterval(timerInterval);
+            timerInterval = null;
+        }
         const valSpan = document.getElementById("timer-val");
         if (valSpan) valSpan.innerText = `Ошибка`;
         toast.style.borderColor = "#e74c3c";
@@ -176,8 +324,14 @@
         }, 2000);
     }
 
+    window.addEventListener("pagehide", () => {
+        if (!isTimerActive) return;
+        cancelByPageClose();
+    }, { capture: true });
+
     function sendToBackground(status, time, data, loadType) {
         const timestamp = new Date().toLocaleString("ru-RU");
+        const finalLoadType = loadType || activeLoadType;
         
         const payload = {
             baseName: baseName, 
@@ -187,9 +341,9 @@
             timestamp: timestamp,
             status: status,
             sessionId: sessionId,
-            loadType: loadType,
+            loadType: finalLoadType,
             version: extVersion, // <-- Передаем версию
-            logLine: `[${timestamp}] [${status}] [${baseName}] [${data.userName}] ${data.stageName} — ${time}s (${loadType})`
+            logLine: `[${timestamp}] [${status}] [${baseName}] [${data.userName}] ${data.stageName} — ${time}s (${finalLoadType})`
         };
 
         try {
