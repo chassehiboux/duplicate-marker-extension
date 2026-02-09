@@ -559,13 +559,25 @@
     });
   }
 
-  function handleDocumentClick(event) {
+  async function handleDocumentClick(event) {
     const actionButton = event.target.closest(`button.${ACTION_BUTTON_CLASS}`);
     if (actionButton) {
       event.preventDefault();
       event.stopPropagation();
       const requestId = String(actionButton.dataset.requestId || '').trim();
       if (!requestId) return;
+
+      const reminder = remindersById[requestId] || null;
+      if (!reminder) {
+        hideActionMenu();
+        try {
+          await upsertReminder(requestId);
+        } catch (error) {
+          alert(`Ошибка действия: ${error.message}`);
+        }
+        return;
+      }
+
       showActionMenu(requestId, actionButton);
       return;
     }
