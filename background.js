@@ -111,8 +111,8 @@ const BIG_DEBTORS_MAP = {
     "expired_boss": "Пропущен срок руководителя"
 };
 
-let stageRequests = {}; // requestId -> { startTime, tabId, loadType }
-let stageSessions = {}; // tabId -> { sessionId, baseName, userName, stageName, loadType, version, startEpochMs }
+let stageRequests = {}; // requestId -> { startTime, tabId, loadType, requestUrl }
+let stageSessions = {}; // tabId -> { sessionId, baseName, userName, stageName, loadType, requestUrl, version, startEpochMs }
 
 function clearStageRequestsForTab(tabId) {
     if (!Number.isInteger(tabId)) return;
@@ -141,6 +141,7 @@ function upsertStageSession(tabId, data) {
         userName: data.userName || existing.userName || "Не определен",
         stageName: data.stageName || existing.stageName || "ПК Пирамида",
         loadType: data.loadType || existing.loadType || "Загрузка",
+        requestUrl: data.requestUrl || existing.requestUrl || "",
         version: data.version || existing.version || "",
         startEpochMs: Number.isFinite(data.startEpochMs) ? data.startEpochMs : (existing.startEpochMs || Date.now())
     };
@@ -160,6 +161,7 @@ function sendStageCancelForClosedTab(tabId) {
         status: "ОТМЕНА",
         sessionId: session.sessionId,
         loadType: session.loadType || "Загрузка",
+        requestUrl: session.requestUrl || "",
         version: session.version || ""
     };
 
@@ -259,13 +261,21 @@ chrome.webRequest.onBeforeRequest.addListener((details) => {
         stageRequests[details.requestId] = {
             startTime: performance.now(),
             tabId: details.tabId,
-            loadType: loadType
+            loadType: loadType,
+            requestUrl: details.url
         };
+
+        if (Number.isInteger(details.tabId)) {
+            upsertStageSession(details.tabId, {
+                loadType: loadType,
+                requestUrl: details.url
+            });
+        }
         
         // Сообщаем контент скрипту: "Покажи спиннер"
         chrome.tabs.sendMessage(details.tabId, {
             action: "STAGE_TIMER_START",
-            data: { loadType: loadType }
+            data: { loadType: loadType, requestUrl: details.url }
         }).catch(() => {}); 
     }
     
@@ -281,7 +291,8 @@ chrome.webRequest.onCompleted.addListener((details) => {
             action: "STAGE_TIMER_STOP",
             data: { 
                 duration: duration,
-                loadType: req.loadType
+                loadType: req.loadType,
+                requestUrl: req.requestUrl
             }
         }).catch(() => {});
         
@@ -357,6 +368,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             }
 
             if (GOOGLE_SCRIPT_URL) {
+                const session = Number.isInteger(tabId) ? stageSessions[tabId] : null;
+                const requestUrl = d.requestUrl || (session && session.requestUrl) || "";
+
                 const payload = {
                     baseName: d.baseName,
                     stageName: d.stageName,
@@ -366,6 +380,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     status: d.status,
                     sessionId: d.sessionId,
                     loadType: d.loadType,
+                    requestUrl: requestUrl,
                     version: d.version // <-- ДОБАВЛЕНО
                 };
 

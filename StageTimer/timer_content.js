@@ -23,6 +23,7 @@
     let startTime = 0;
     let isTimerActive = false;
     let activeLoadType = "Загрузка";
+    let activeRequestUrl = "";
     let sessionStartEpochMs = 0;
     let sessionStartData = null;
     let sessionStableData = null;
@@ -92,6 +93,7 @@
                     userName: current.userName,
                     stageName: current.stageName,
                     loadType: activeLoadType,
+                    requestUrl: activeRequestUrl,
                     version: extVersion,
                     startEpochMs: sessionStartEpochMs
                 }
@@ -170,7 +172,7 @@
             toast.style.borderColor = "#e74c3c";
         }
 
-        sendToBackground("ОТМЕНА", durationSec, sessionData, activeLoadType);
+        sendToBackground("ОТМЕНА", durationSec, sessionData, activeLoadType, activeRequestUrl);
 
         if (hideDelayMs > 0) {
             toastTimeout = setTimeout(() => {
@@ -215,6 +217,7 @@
         startTime = performance.now();
         isTimerActive = true;
         activeLoadType = data.loadType || "Загрузка";
+        activeRequestUrl = data.requestUrl || "";
         sessionStartEpochMs = Date.now();
         sessionStartData = normalizeSessionData(scrapeData());
         sessionStableData = isValidSessionData(sessionStartData) ? sessionStartData : null;
@@ -298,7 +301,8 @@
             toast.style.borderColor = "#2ecc71"; 
 
             // Отправка лога
-            sendToBackground("УСПЕШНО", durationSec, sessionData, data.loadType);
+            const finalRequestUrl = data.requestUrl || activeRequestUrl;
+            sendToBackground("УСПЕШНО", durationSec, sessionData, data.loadType, finalRequestUrl);
 
             // Скрыть через 4 сек
             toastTimeout = setTimeout(() => {
@@ -329,9 +333,10 @@
         cancelByPageClose();
     }, { capture: true });
 
-    function sendToBackground(status, time, data, loadType) {
+    function sendToBackground(status, time, data, loadType, requestUrl) {
         const timestamp = new Date().toLocaleString("ru-RU");
         const finalLoadType = loadType || activeLoadType;
+        const finalRequestUrl = requestUrl || activeRequestUrl || "";
         
         const payload = {
             baseName: baseName, 
@@ -342,6 +347,7 @@
             status: status,
             sessionId: sessionId,
             loadType: finalLoadType,
+            requestUrl: finalRequestUrl,
             version: extVersion, // <-- Передаем версию
             logLine: `[${timestamp}] [${status}] [${baseName}] [${data.userName}] ${data.stageName} — ${time}s (${finalLoadType})`
         };
