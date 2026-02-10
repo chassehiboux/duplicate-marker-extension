@@ -39,6 +39,26 @@
     }
     injectToast();
 
+    function normalizeDepartmentName(value) {
+        const normalized = String(value || "").replace(/\s+/g, " ").trim();
+        return normalized || "Не определен";
+    }
+
+    function scrapeDepartmentName() {
+        const buttonTitleElem = document.querySelector(".btn-cities .title");
+        if (buttonTitleElem && buttonTitleElem.textContent) {
+            const buttonDepartment = normalizeDepartmentName(buttonTitleElem.textContent);
+            if (buttonDepartment !== "Не определен") return buttonDepartment;
+        }
+
+        const activeDepartmentElem = document.querySelector(".department-switch.active");
+        if (activeDepartmentElem && activeDepartmentElem.textContent) {
+            return normalizeDepartmentName(activeDepartmentElem.textContent);
+        }
+
+        return "Не определен";
+    }
+
     // Сбор данных
     function scrapeData() {
         let userName = "Не определен";
@@ -66,24 +86,31 @@
             stageName = stageName.replace(/^[\s\/]+/, "").trim();
         }
 
-        return { userName, stageName };
+        const departmentName = scrapeDepartmentName();
+
+        return { userName, stageName, departmentName };
     }
 
     function isValidSessionData(data) {
         return data && data.userName !== "Не определен" && data.stageName !== "ПК Пирамида";
     }
 
+    function isKnownDepartmentName(departmentName) {
+        return departmentName && departmentName !== "Не определен";
+    }
+
     function normalizeSessionData(data) {
         const src = data || {};
         return {
             userName: src.userName || "Не определен",
-            stageName: src.stageName || "ПК Пирамида"
+            stageName: src.stageName || "ПК Пирамида",
+            departmentName: src.departmentName || "Не определен"
         };
     }
 
-    function sendSessionEvent(action) {
+    function sendSessionEvent(action, explicitData) {
         if (!sessionId) return;
-        const current = getResolvedSessionData();
+        const current = explicitData || getResolvedSessionData();
         try {
             chrome.runtime.sendMessage({
                 action: action,
@@ -92,6 +119,7 @@
                     baseName: baseName,
                     userName: current.userName,
                     stageName: current.stageName,
+                    departmentName: current.departmentName,
                     loadType: activeLoadType,
                     requestUrl: activeRequestUrl,
                     version: extVersion,
@@ -104,20 +132,43 @@
     }
 
     function getResolvedSessionData(fallbackData) {
-        const normalizedFallback = normalizeSessionData(fallbackData);
+        const normalizedFallback = normalizeSessionData(fallbackData || scrapeData());
 
         if (!sessionStartData) {
             sessionStartData = normalizedFallback;
         }
 
-        if (!sessionStableData && isValidSessionData(normalizedFallback)) {
-            sessionStableData = normalizedFallback;
-            sendSessionEvent("STAGE_TIMER_SESSION_UPDATE");
+        let shouldSendSessionUpdate = false;
+
+        if (isKnownDepartmentName(normalizedFallback.departmentName)) {
+            if (sessionStartData.departmentName === "Не определен") {
+                sessionStartData = { ...sessionStartData, departmentName: normalizedFallback.departmentName };
+                shouldSendSessionUpdate = true;
+            }
+
+            if (sessionStableData && sessionStableData.departmentName === "Не определен") {
+                sessionStableData = { ...sessionStableData, departmentName: normalizedFallback.departmentName };
+                shouldSendSessionUpdate = true;
+            }
         }
 
-        if (sessionStableData) return sessionStableData;
-        if (isValidSessionData(sessionStartData)) return sessionStartData;
-        return normalizedFallback;
+        if (!sessionStableData && isValidSessionData(normalizedFallback)) {
+            sessionStableData = {
+                ...normalizedFallback,
+                departmentName: isKnownDepartmentName(normalizedFallback.departmentName)
+                    ? normalizedFallback.departmentName
+                    : (sessionStartData.departmentName || "Не определен")
+            };
+            shouldSendSessionUpdate = true;
+        }
+
+        const resolved = sessionStableData || (isValidSessionData(sessionStartData) ? sessionStartData : normalizedFallback);
+
+        if (shouldSendSessionUpdate && sessionId) {
+            sendSessionEvent("STAGE_TIMER_SESSION_UPDATE", resolved);
+        }
+
+        return resolved;
     }
 
     // Слушатель сообщений от Background
@@ -342,6 +393,7 @@
             baseName: baseName, 
             stageName: data.stageName,
             userName: data.userName,
+            departmentName: data.departmentName || "Не определен",
             duration: time,
             timestamp: timestamp,
             status: status,
@@ -349,7 +401,7 @@
             loadType: finalLoadType,
             requestUrl: finalRequestUrl,
             version: extVersion, // <-- Передаем версию
-            logLine: `[${timestamp}] [${status}] [${baseName}] [${data.userName}] ${data.stageName} — ${time}s (${finalLoadType})`
+            logLine: `[${timestamp}] [${status}] [${baseName}] [${data.departmentName || "Не определен"}] [${data.userName}] ${data.stageName} — ${time}s (${finalLoadType})`
         };
 
         try {

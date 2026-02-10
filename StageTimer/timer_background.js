@@ -84,7 +84,7 @@ const BIG_DEBTORS_MAP = {
 };
 
 let stageRequests = {}; // requestId -> { startTime, tabId, loadType, requestUrl }
-let stageSessions = {}; // tabId -> { sessionId, baseName, userName, stageName, loadType, requestUrl, version, startEpochMs }
+let stageSessions = {}; // tabId -> { sessionId, baseName, userName, departmentName, stageName, loadType, requestUrl, version, startEpochMs }
 
 function clearStageRequestsForTab(tabId) {
     if (!Number.isInteger(tabId)) return;
@@ -111,6 +111,7 @@ function upsertStageSession(tabId, data) {
         sessionId: data.sessionId || existing.sessionId || "",
         baseName: data.baseName || existing.baseName || "Основная",
         userName: data.userName || existing.userName || "Не определен",
+        departmentName: data.departmentName || existing.departmentName || "Не определен",
         stageName: data.stageName || existing.stageName || "ПК Пирамида",
         loadType: data.loadType || existing.loadType || "Загрузка",
         requestUrl: data.requestUrl || existing.requestUrl || "",
@@ -128,6 +129,7 @@ function sendStageCancelForClosedTab(tabId) {
         baseName: session.baseName || "Основная",
         stageName: session.stageName || "ПК Пирамида",
         userName: session.userName || "Не определен",
+        departmentName: session.departmentName || "Не определен",
         duration: durationSec,
         timestamp: new Date().toLocaleString("ru-RU"),
         status: "ОТМЕНА",
@@ -327,12 +329,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
         const session = Number.isInteger(tabId) ? stageSessions[tabId] : null;
         const requestUrl = d.requestUrl || (session && session.requestUrl) || "";
+        const departmentName = d.departmentName || (session && session.departmentName) || "Не определен";
 
         // Формируем payload для POST
         const payload = {
             baseName: d.baseName,
             stageName: d.stageName,
             userName: d.userName,
+            departmentName: departmentName,
             duration: d.duration.toString(),
             timestamp: d.timestamp,
             status: d.status,

@@ -3,7 +3,7 @@ const SPREADSHEET_ID = '1jhqGwRJuZBDIwGsPTTW1rm2HODT_dgtHQzLko1wvDY0';
 const TELEGRAM_BOT_TOKEN = '8598364240:AAGL_8euP_L5zXVoSYEZ08HWoxBZOJgsIlE';
 
 const SHEET_SETTINGS = 'ДАШБОРД'; // Имя главного листа
-const DATA_HEADERS = ["Дата/Время", "Стадия", "Пользователь", "Время (сек)", "Статус", "SessionID", "Тип загрузки", "Версия", "URL Request"];
+const DATA_HEADERS = ["Дата/Время", "Департамент", "Стадия", "Пользователь", "Время (сек)", "Статус", "SessionID", "Тип загрузки", "Версия", "URL Request"];
 
 // ================= 0. МЕНЮ =================
 function onOpen() {
@@ -318,9 +318,11 @@ function handleRequest(p) {
       var rawVer = p.version || "";
       var versionStr = "'" + String(rawVer); 
       var requestUrl = p.requestUrl ? String(p.requestUrl) : "";
+      var departmentName = p.departmentName ? String(p.departmentName) : "Не определен";
 
       sheet.appendRow([
         new Date(), 
+        departmentName,
         p.stageName || "Unknown",
         p.userName || "Guest",
         durationStr, 
@@ -372,6 +374,47 @@ function ensureDataSheetHeader(sheet) {
 
   headerRange.setFontWeight("bold").setBackground("#d9ead3");
   sheet.setFrozenRows(1);
+}
+
+function isKnownStageStatus(status) {
+  return status === "УСПЕШНО" || status === "ОЖИДАНИЕ" || status === "ОТМЕНА" || status === "ОШИБКА";
+}
+
+function parseStageDuration(rawValue) {
+  var parsed = (typeof rawValue === 'number') ? rawValue : parseFloat(String(rawValue).replace(',', '.'));
+  return isNaN(parsed) ? 0 : parsed;
+}
+
+function getStageRowModel(row) {
+  var isNewFormat = isKnownStageStatus(row[5]);
+
+  if (isNewFormat) {
+    return {
+      rowDate: row[0],
+      department: row[1] || "Не определен",
+      stage: row[2] || "Unknown",
+      user: row[3] || "Guest",
+      rawDuration: row[4],
+      status: row[5] || "",
+      sessionId: row[6] || "",
+      loadType: row[7] || "Прочее",
+      version: row[8] || "",
+      requestUrl: row[9] || ""
+    };
+  }
+
+  return {
+    rowDate: row[0],
+    department: "Не определен",
+    stage: row[1] || "Unknown",
+    user: row[2] || "Guest",
+    rawDuration: row[3],
+    status: row[4] || "",
+    sessionId: row[5] || "",
+    loadType: row[6] || "Прочее",
+    version: row[7] || "",
+    requestUrl: row[8] || ""
+  };
 }
 
 // ================= 2. МОНИТОРИНГ И ДАШБОРД =================
@@ -426,17 +469,18 @@ function calculateStatsAndUsers(ss, scanStartDate, filterNewDate, now) {
     if (lastRow < 2) return;
 
     var startRow = Math.max(2, lastRow - 3000); 
-    var data = sheet.getRange(startRow, 1, lastRow - startRow + 1, 8).getValues(); 
+    var data = sheet.getRange(startRow, 1, lastRow - startRow + 1, DATA_HEADERS.length).getValues(); 
 
     var uniqueSessions = {};
 
     for (var i = 0; i < data.length; i++) {
       var row = data[i];
-      var rowDate = row[0]; 
+      var rowModel = getStageRowModel(row);
+      var rowDate = rowModel.rowDate; 
       if (!(rowDate instanceof Date)) continue; 
 
-      var user = row[2] || "Guest";
-      var ver = row[7] || "";
+      var user = rowModel.user || "Guest";
+      var ver = rowModel.version || "";
 
       if (!globalUsers[user]) {
         globalUsers[user] = { lastDate: rowDate, version: ver };
@@ -448,12 +492,9 @@ function calculateStatsAndUsers(ss, scanStartDate, filterNewDate, now) {
       }
 
       if (rowDate > scanStartDate) {
-        var sessionId = row[5] || "no_id_" + Math.random();
-        var status = row[4];
-        
-        var rawDuration = row[3];
-        var duration = (typeof rawDuration === 'number') ? rawDuration : parseFloat(String(rawDuration).replace(',', '.'));
-        if (isNaN(duration)) duration = 0;
+        var sessionId = rowModel.sessionId || "no_id_" + Math.random();
+        var status = rowModel.status;
+        var duration = parseStageDuration(rowModel.rawDuration);
 
         if (status === "ОЖИДАНИЕ") {
           var secondsSinceLastUpdate = (now.getTime() - rowDate.getTime()) / 1000;
@@ -461,19 +502,19 @@ function calculateStatsAndUsers(ss, scanStartDate, filterNewDate, now) {
         }
 
         if (!uniqueSessions[sessionId]) {
-          uniqueSessions[sessionId] = { row: row, duration: duration };
+          uniqueSessions[sessionId] = { model: rowModel, duration: duration };
         } else {
           var existing = uniqueSessions[sessionId];
-          var existingStatus = existing.row[4];
+          var existingStatus = existing.model.status;
 
           if (status !== "ОЖИДАНИЕ" && existingStatus === "ОЖИДАНИЕ") {
-            uniqueSessions[sessionId] = { row: row, duration: duration };
+            uniqueSessions[sessionId] = { model: rowModel, duration: duration };
           }
           else if (status === "ОЖИДАНИЕ" && existingStatus === "ОЖИДАНИЕ") {
-            if (duration > existing.duration) uniqueSessions[sessionId] = { row: row, duration: duration };
+            if (duration > existing.duration) uniqueSessions[sessionId] = { model: rowModel, duration: duration };
           }
           else if (status !== "ОЖИДАНИЕ" && existingStatus !== "ОЖИДАНИЕ") {
-             if (duration > existing.duration) uniqueSessions[sessionId] = { row: row, duration: duration };
+             if (duration > existing.duration) uniqueSessions[sessionId] = { model: rowModel, duration: duration };
           }
         }
       }
@@ -483,14 +524,14 @@ function calculateStatsAndUsers(ss, scanStartDate, filterNewDate, now) {
 
     for (var sid in uniqueSessions) {
       var entry = uniqueSessions[sid];
-      var row = entry.row;
+      var rowModel = entry.model;
       var duration = entry.duration;
       
-      var rowDate = row[0];
-      var stage = row[1] || "Unknown";
-      var user = row[2] || "Unknown";
-      var status = row[4];
-      var loadType = row[6] || "Прочее";
+      var rowDate = rowModel.rowDate;
+      var stage = rowModel.stage || "Unknown";
+      var user = rowModel.user || "Unknown";
+      var status = rowModel.status;
+      var loadType = rowModel.loadType || "Прочее";
 
       if (status !== "УСПЕШНО" && status !== "ОЖИДАНИЕ" && duration < 5) continue;
 
@@ -551,24 +592,23 @@ function calculateDayAnalysis(ss, startOfDay) {
     if (lastRow < 2) return;
 
     var startRow = Math.max(2, lastRow - 5000); 
-    var data = sheet.getRange(startRow, 1, lastRow - startRow + 1, 7).getValues();
+    var data = sheet.getRange(startRow, 1, lastRow - startRow + 1, DATA_HEADERS.length).getValues();
 
     if (!stats[name]) stats[name] = {};
 
     data.forEach(function(row) {
-      var rowDate = row[0];
+      var rowModel = getStageRowModel(row);
+      var rowDate = rowModel.rowDate;
       if (!(rowDate instanceof Date)) return;
 
       if (rowDate >= startOfDay) {
-        var status = row[4];
-        var rawDur = row[3];
-        var duration = (typeof rawDur === 'number') ? rawDur : parseFloat(String(rawDur).replace(',', '.'));
-        if (isNaN(duration)) duration = 0;
+        var status = rowModel.status;
+        var duration = parseStageDuration(rowModel.rawDuration);
 
         if (status !== "УСПЕШНО" && duration < 5) return;
 
-        var stage = row[1] || "Unknown";
-        var loadType = row[6] || "Прочее";
+        var stage = rowModel.stage || "Unknown";
+        var loadType = rowModel.loadType || "Прочее";
         
         if (!stats[name][loadType]) stats[name][loadType] = {};
         if (!stats[name][loadType][stage]) {
@@ -869,13 +909,14 @@ function cleanupStaleWaitingRows(ss) {
     if (lastRow < 2) return;
 
     var checkRows = Math.min(lastRow - 1, 500);
-    var range = sheet.getRange(2, 1, checkRows, 5);
+    var range = sheet.getRange(2, 1, checkRows, DATA_HEADERS.length);
     var values = range.getValues();
     var rowsToDelete = [];
 
     for (var i = values.length - 1; i >= 0; i--) {
-      var rowDate = values[i][0];
-      var status = values[i][4];
+      var rowModel = getStageRowModel(values[i]);
+      var rowDate = rowModel.rowDate;
+      var status = rowModel.status;
 
       if (status === "ОЖИДАНИЕ" && rowDate instanceof Date) {
         if (rowDate.getTime() < thresholdTime) {
@@ -951,25 +992,26 @@ function compactSheet(sheet, todayInt, timeZone) {
 
     if (rowDateInt > 0 && rowDateInt < todayInt) return;
 
-    var sessionId = row[5] || "unk_" + Math.random();
-    var status = row[4];
-    var duration = Number(String(row[3]).replace(",", ".")) || 0;
+    var rowModel = getStageRowModel(row);
+    var sessionId = rowModel.sessionId || "unk_" + Math.random();
+    var status = rowModel.status;
+    var duration = parseStageDuration(rowModel.rawDuration);
 
     if (!uniqueMap[sessionId]) {
-      uniqueMap[sessionId] = { row: row, duration: duration };
+      uniqueMap[sessionId] = { row: row, model: rowModel, duration: duration };
     } else {
       var existing = uniqueMap[sessionId];
-      var existingStatus = existing.row[4];
+      var existingStatus = existing.model.status;
       
       var isNewWait = (status === "ОЖИДАНИЕ");
       var isOldWait = (existingStatus === "ОЖИДАНИЕ");
 
       if (!isNewWait && isOldWait) {
-        uniqueMap[sessionId] = { row: row, duration: duration };
+        uniqueMap[sessionId] = { row: row, model: rowModel, duration: duration };
       } 
       else if (isNewWait === isOldWait) {
         if (duration > existing.duration) {
-          uniqueMap[sessionId] = { row: row, duration: duration };
+          uniqueMap[sessionId] = { row: row, model: rowModel, duration: duration };
         }
       }
     }
