@@ -4,9 +4,12 @@
 // НЕОБХОДИМО ОБЯЗАТЕЛЬНО ОБНОВЛЯТЬ deploy_VZID.js
 // === КОНФИГУРАЦИЯ GOOGLE ТАБЛИЦЫ ===
 const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzkP1L4n2Qc_GR1RigdEnX1kiG4Hw4eE5V3cDNrm3VV4ZYT8db8yTUUKLng1Pvj4Cp7/exec';
+const TELEMETRY_RETRIES = 3;
+const telemetryQueue = [];
+let isTelemetryQueueRunning = false;
 
 // Функция отправки с повторами
-async function sendWithRetry(url, payload, retries = 3) {
+async function sendWithRetry(url, payload, retries = TELEMETRY_RETRIES) {
     for (let i = 0; i < retries; i++) {
         try {
             const response = await fetch(url, {
@@ -34,7 +37,7 @@ async function sendWithRetry(url, payload, retries = 3) {
 
             // Успех
             console.log(`[StageTimer] Success: ${payload.stageName} [${payload.status}]`);
-            return;
+            return true;
 
         } catch (err) {
             console.error(`[StageTimer] Attempt ${i + 1} failed:`, err);
@@ -44,6 +47,39 @@ async function sendWithRetry(url, payload, retries = 3) {
         }
     }
     console.error(`[StageTimer] Failed to send data after ${retries} attempts.`);
+    return false;
+}
+
+function enqueueTelemetry(payload) {
+    if (!payload) return;
+    if (!GOOGLE_SCRIPT_URL) {
+        console.error("[StageTimer] URL для отправки данных не задан.");
+        return;
+    }
+    telemetryQueue.push(payload);
+    if (!isTelemetryQueueRunning) {
+        processTelemetryQueue().catch((err) => {
+            console.error("[StageTimer] Telemetry queue crash:", err);
+        });
+    }
+}
+
+async function processTelemetryQueue() {
+    if (isTelemetryQueueRunning) return;
+    isTelemetryQueueRunning = true;
+    try {
+        while (telemetryQueue.length > 0) {
+            const payload = telemetryQueue.shift();
+            await sendWithRetry(GOOGLE_SCRIPT_URL, payload, TELEMETRY_RETRIES);
+        }
+    } finally {
+        isTelemetryQueueRunning = false;
+        if (telemetryQueue.length > 0) {
+            processTelemetryQueue().catch((err) => {
+                console.error("[StageTimer] Telemetry queue restart error:", err);
+            });
+        }
+    }
 }
 
 // === STAGE TIMER LOGIC (NETWORK BASED) ===
@@ -141,8 +177,7 @@ function sendStageCancelForClosedTab(tabId) {
 
     delete stageSessions[tabId];
 
-    if (!GOOGLE_SCRIPT_URL) return;
-    sendWithRetry(GOOGLE_SCRIPT_URL, payload);
+    enqueueTelemetry(payload);
 }
 
 chrome.webRequest.onBeforeRequest.addListener((details) => {
@@ -322,11 +357,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             return false;
         }
 
-        if (!GOOGLE_SCRIPT_URL) {
-            console.error("[StageTimer] URL для отправки данных не задан.");
-            return false;
-        }
-
         const session = Number.isInteger(tabId) ? stageSessions[tabId] : null;
         const requestUrl = d.requestUrl || (session && session.requestUrl) || "";
         const departmentName = d.departmentName || (session && session.departmentName) || "Не определен";
@@ -347,7 +377,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         };
 
         // Запускаем отправку (не ждем завершения, так как это fire-and-forget)
-        sendWithRetry(GOOGLE_SCRIPT_URL, payload);
+        enqueueTelemetry(payload);
 
         if (d.status !== "ОЖИДАНИЕ" && Number.isInteger(tabId)) {
             delete stageSessions[tabId];

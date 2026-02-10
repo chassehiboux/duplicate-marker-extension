@@ -4,6 +4,10 @@ const TELEGRAM_BOT_TOKEN = '8598364240:AAGL_8euP_L5zXVoSYEZ08HWoxBZOJgsIlE';
 
 const SHEET_SETTINGS = 'ДАШБОРД'; // Имя главного листа
 const DATA_HEADERS = ["Дата/Время", "Департамент", "Стадия", "Пользователь", "Время (сек)", "Статус", "SessionID", "Тип загрузки", "Версия", "URL Request"];
+const WAITING_ENTRY_FRESHNESS_SEC = 180; // ОЖИДАНИЕ считаем актуальным 3 минуты (а не 1), чтобы не флапать при задержках доставки
+const WAITING_ROW_CLEANUP_SEC = 300; // Удаляем "зависшие" ОЖИДАНИЕ спустя 5 минут
+const ALERT_RECOVERY_HOLD_SEC = 180; // После последнего ALERT держим статус ALERT еще 3 минуты
+const ALERT_OK_CONFIRM_CYCLES = 2; // Дополнительно требуем 2 спокойных цикла monitorPerformance перед OK
 
 // ================= 0. МЕНЮ =================
 function onOpen() {
@@ -295,54 +299,102 @@ function doPost(e) {
 }
 
 function handleRequest(p) {
-  var lock = LockService.getScriptLock();
-  if (lock.tryLock(30000)) { 
-    try {
-      var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
-      var baseName = p.baseName || "Неизвестная";
-
-      if (baseName === SHEET_SETTINGS || baseName.startsWith("Архив_")) baseName += "_Data";
-
-      var sheet = ss.getSheetByName(baseName);
-      
-      if (!sheet) {
-        sheet = ss.insertSheet(baseName);
-        initializeDataSheet(sheet);
-      } else {
-        ensureDataSheetHeader(sheet);
-      }
-
-      var durationVal = p.duration || "0";
-      var durationStr = durationVal.toString().replace(/\./g, ',');
-      
-      var rawVer = p.version || "";
-      var versionStr = "'" + String(rawVer); 
-      var requestUrl = p.requestUrl ? String(p.requestUrl) : "";
-      var departmentName = p.departmentName ? String(p.departmentName) : "Не определен";
-
-      sheet.appendRow([
-        new Date(), 
-        departmentName,
-        p.stageName || "Unknown",
-        p.userName || "Guest",
-        durationStr, 
-        p.status || "УСПЕШНО",
-        p.sessionId || "",
-        p.loadType || "Прочее",
-        versionStr,
-        requestUrl
-      ]);
-
-      return ContentService.createTextOutput("OK").setMimeType(ContentService.MimeType.TEXT);
-    } catch (error) {
-      console.error("API Error: " + error.toString());
-      return ContentService.createTextOutput("Error: " + error.toString());
-    } finally {
-      lock.releaseLock();
+  try {
+    var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+    var baseName = normalizeBaseName(p.baseName);
+    var sheet = getOrCreateDataSheet(ss, baseName);
+    if (!sheet) {
+      return ContentService.createTextOutput("Busy").setMimeType(ContentService.MimeType.TEXT);
     }
-  } else {
-    return ContentService.createTextOutput("Busy").setMimeType(ContentService.MimeType.TEXT);
+
+    var durationVal = p.duration || "0";
+    var durationStr = durationVal.toString().replace(/\./g, ',');
+
+    var rawVer = p.version || "";
+    var versionStr = "'" + String(rawVer);
+    var requestUrl = p.requestUrl ? String(p.requestUrl) : "";
+    var departmentName = p.departmentName ? String(p.departmentName) : "Не определен";
+    var eventDate = parseIncomingTimestamp(p.timestamp);
+
+    sheet.appendRow([
+      eventDate,
+      departmentName,
+      p.stageName || "Unknown",
+      p.userName || "Guest",
+      durationStr,
+      p.status || "УСПЕШНО",
+      p.sessionId || "",
+      p.loadType || "Прочее",
+      versionStr,
+      requestUrl
+    ]);
+
+    return ContentService.createTextOutput("OK").setMimeType(ContentService.MimeType.TEXT);
+  } catch (error) {
+    console.error("API Error: " + error.toString());
+    return ContentService.createTextOutput("Error: " + error.toString());
   }
+}
+
+function normalizeBaseName(rawBaseName) {
+  var baseName = rawBaseName || "Неизвестная";
+  if (baseName === SHEET_SETTINGS || baseName.startsWith("Архив_")) baseName += "_Data";
+  return baseName;
+}
+
+function getOrCreateDataSheet(ss, baseName) {
+  var sheet = ss.getSheetByName(baseName);
+  if (sheet) {
+    if (sheet.getLastRow() < 1) {
+      initializeDataSheet(sheet);
+    }
+    return sheet;
+  }
+
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) {
+    return null;
+  }
+
+  try {
+    sheet = ss.getSheetByName(baseName);
+    if (!sheet) {
+      sheet = ss.insertSheet(baseName);
+      initializeDataSheet(sheet);
+    } else if (sheet.getLastRow() < 1) {
+      initializeDataSheet(sheet);
+    } else {
+      ensureDataSheetHeader(sheet);
+    }
+    return sheet;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function parseIncomingTimestamp(rawTimestamp) {
+  if (!rawTimestamp) return new Date();
+
+  var raw = String(rawTimestamp).trim();
+  if (!raw) return new Date();
+
+  var normalized = raw.replace(",", " ").replace(/\s+/g, " ").trim();
+  var m = normalized.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})(?:\s+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?$/);
+  if (m) {
+    var day = parseInt(m[1], 10);
+    var month = parseInt(m[2], 10) - 1;
+    var year = parseInt(m[3], 10);
+    var hours = parseInt(m[4] || "0", 10);
+    var minutes = parseInt(m[5] || "0", 10);
+    var seconds = parseInt(m[6] || "0", 10);
+
+    return new Date(year, month, day, hours, minutes, seconds);
+  }
+
+  var direct = new Date(raw);
+  if (!isNaN(direct.getTime())) return direct;
+
+  return new Date();
 }
 
 function initializeDataSheet(sheet) {
@@ -498,7 +550,7 @@ function calculateStatsAndUsers(ss, scanStartDate, filterNewDate, now) {
 
         if (status === "ОЖИДАНИЕ") {
           var secondsSinceLastUpdate = (now.getTime() - rowDate.getTime()) / 1000;
-          if (secondsSinceLastUpdate > 60) continue; 
+          if (secondsSinceLastUpdate > WAITING_ENTRY_FRESHNESS_SEC) continue;
         }
 
         if (!uniqueSessions[sessionId]) {
@@ -756,6 +808,10 @@ function updateDayAnalysisDashboard(sheet, dayStats, dateStr) {
 function checkAlerts(sheet, stats, timeZone) {
   var configsRange = sheet.getRange("A4:F6");
   var configs = configsRange.getValues();
+  var props = PropertiesService.getScriptProperties();
+  var nowMs = Date.now();
+  var recoveryHoldMs = ALERT_RECOVERY_HOLD_SEC * 1000;
+  var extraConfirmCycles = Math.max(1, ALERT_OK_CONFIRM_CYCLES) - 1;
 
   for (var i = 0; i < configs.length; i++) {
     var row = configs[i];
@@ -815,21 +871,58 @@ function checkAlerts(sheet, stats, timeZone) {
       }
     }
 
+    var stateKey = getAlertStateKey(baseTarget, chatId, i);
+    var alertState = loadAlertState(props, stateKey);
+    var previousStatus = alertState.status || lastStatus || "OK";
     var currentTime = Utilities.formatDate(new Date(), timeZone, "HH:mm");
     var finalMessage = "";
-    var currentStatus = "OK"; 
+    var currentStatus = "OK";
 
     if (alertBlocks.length > 0) {
       currentStatus = "ALERT";
+      alertState.lastAlertAtMs = nowMs;
+      alertState.okStreak = 0;
+      alertState.status = "ALERT";
       finalMessage = `⚠️ <b>ОБНАРУЖЕНО ЗАМЕДЛЕНИЕ</b>\n\n` + 
                      alertBlocks.join("\n\n====================\n\n") + 
                      `\n\n🕒 <i>Обновлено: ${currentTime}</i>`;
     } else {
-      currentStatus = "OK";
-      finalMessage = `🟢 <b>Система работает стабильно</b>\n` +
-                     `Зависаний по критериям не обнаружено.\n` + 
-                     `🕒 <i>Обновлено: ${currentTime}</i>`;
+      var withinRecoveryHold = alertState.lastAlertAtMs > 0 && ((nowMs - alertState.lastAlertAtMs) < recoveryHoldMs);
+
+      if (previousStatus === "ALERT" && (withinRecoveryHold || alertState.okStreak < extraConfirmCycles)) {
+        currentStatus = "ALERT";
+        if (!withinRecoveryHold) {
+          alertState.okStreak++;
+        }
+
+        var holdLeftSec = alertState.lastAlertAtMs > 0
+          ? Math.max(0, Math.ceil((recoveryHoldMs - (nowMs - alertState.lastAlertAtMs)) / 1000))
+          : 0;
+
+        var reason = "";
+        if (holdLeftSec > 0) {
+          reason = `Идет удержание ALERT после последнего события: ещё ${holdLeftSec}с.`;
+        } else if (extraConfirmCycles > 0) {
+          reason = `Подтверждение нормализации: ${alertState.okStreak}/${extraConfirmCycles}.`;
+        } else {
+          reason = "Ожидаем следующий цикл для подтверждения нормализации.";
+        }
+
+        finalMessage = `🟡 <b>ОЖИДАНИЕ ПОДТВЕРЖДЕНИЯ НОРМАЛИЗАЦИИ</b>\n` +
+                       `${reason}\n` +
+                       `🕒 <i>Обновлено: ${currentTime}</i>`;
+      } else {
+        currentStatus = "OK";
+        alertState.okStreak = 0;
+        finalMessage = `🟢 <b>Система работает стабильно</b>\n` +
+                       `Зависаний по критериям не обнаружено.\n` +
+                       `🕒 <i>Обновлено: ${currentTime}</i>`;
+      }
+
+      alertState.status = currentStatus;
     }
+
+    saveAlertState(props, stateKey, alertState);
 
     var newMsgId = null;    
     if (currentStatus !== lastStatus) {
@@ -856,7 +949,47 @@ function checkAlerts(sheet, stats, timeZone) {
 
     if (newMsgId) {
       sheet.getRange(4 + i, 5).setValue(newMsgId);
-      sheet.getRange(4 + i, 6).setValue(currentStatus);
+    }
+    sheet.getRange(4 + i, 6).setValue(currentStatus);
+  }
+}
+
+function getAlertStateKey(baseTarget, chatId, rowIndex) {
+  return "alert_state|" + rowIndex + "|" + String(baseTarget) + "|" + String(chatId);
+}
+
+function loadAlertState(props, key) {
+  var raw = props.getProperty(key);
+  if (!raw) {
+    return { status: "OK", okStreak: 0, lastAlertAtMs: 0 };
+  }
+  try {
+    var parsed = JSON.parse(raw);
+    return {
+      status: parsed.status || "OK",
+      okStreak: Number(parsed.okStreak) || 0,
+      lastAlertAtMs: Number(parsed.lastAlertAtMs) || 0
+    };
+  } catch (e) {
+    return { status: "OK", okStreak: 0, lastAlertAtMs: 0 };
+  }
+}
+
+function saveAlertState(props, key, state) {
+  var payload = {
+    status: state.status || "OK",
+    okStreak: Number(state.okStreak) || 0,
+    lastAlertAtMs: Number(state.lastAlertAtMs) || 0
+  };
+  props.setProperty(key, JSON.stringify(payload));
+}
+
+function clearAlertStateCache() {
+  var props = PropertiesService.getScriptProperties();
+  var all = props.getProperties();
+  for (var key in all) {
+    if (key.indexOf("alert_state|") === 0) {
+      props.deleteProperty(key);
     }
   }
 }
@@ -899,7 +1032,7 @@ function deleteTelegramMessage(chatId, messageId) {
 function cleanupStaleWaitingRows(ss) {
   var sheets = ss.getSheets();
   var now = new Date();
-  var thresholdTime = now.getTime() - 2 * 60 * 1000; 
+  var thresholdTime = now.getTime() - WAITING_ROW_CLEANUP_SEC * 1000;
 
   sheets.forEach(function(sheet) {
     var name = sheet.getName();
@@ -1037,6 +1170,7 @@ function setupDashboard() {
   var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
   var sheet = ss.getSheetByName(SHEET_SETTINGS);
   if (!sheet) sheet = ss.insertSheet(SHEET_SETTINGS);
+  clearAlertStateCache();
   
   sheet.clear();
   sheet.getRange("A1").setValue("НАСТРОЙКИ МОНИТОРИНГА").setFontSize(14).setFontWeight("bold");

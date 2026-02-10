@@ -279,6 +279,7 @@
             return;
         }
         
+        const pulseIntervalSec = 30;
         let lastReportTime = 0;
         let hasSentInitial = false;
 
@@ -301,18 +302,23 @@
                 const currentData = scrapeData();
                 const sessionData = getResolvedSessionData(currentData);
                 if (isValidSessionData(sessionData)) {
-                    sendToBackground("ОЖИДАНИЕ", elapsed.toString(), sessionData, data.loadType);
+                    const initialTimestampMs = sessionStartEpochMs + Math.round(elapsed * 1000);
+                    sendToBackground("ОЖИДАНИЕ", elapsed.toString(), sessionData, data.loadType, undefined, initialTimestampMs);
                     hasSentInitial = true;
                     lastReportTime = elapsed;
                 }
             }
 
             // 2. Периодический "ПУЛЬС" каждые 30 секунд
-            if (hasSentInitial && (elapsed - lastReportTime) >= 30) {
+            if (hasSentInitial && (elapsed - lastReportTime) >= pulseIntervalSec) {
                 const currentData = scrapeData();
                 const sessionData = getResolvedSessionData(currentData);
-                sendToBackground("ОЖИДАНИЕ", elapsed.toString(), sessionData, data.loadType);
-                lastReportTime = elapsed;
+                while ((elapsed - lastReportTime) >= pulseIntervalSec) {
+                    const pulseElapsed = parseFloat((lastReportTime + pulseIntervalSec).toFixed(2));
+                    const pulseTimestampMs = sessionStartEpochMs + Math.round(pulseElapsed * 1000);
+                    sendToBackground("ОЖИДАНИЕ", pulseElapsed.toString(), sessionData, data.loadType, undefined, pulseTimestampMs);
+                    lastReportTime = pulseElapsed;
+                }
                 toast.style.borderColor = "#e67e22"; 
             }
 
@@ -384,8 +390,9 @@
         cancelByPageClose();
     }, { capture: true });
 
-    function sendToBackground(status, time, data, loadType, requestUrl) {
-        const timestamp = new Date().toLocaleString("ru-RU");
+    function sendToBackground(status, time, data, loadType, requestUrl, eventTimestampMs) {
+        const eventDate = Number.isFinite(eventTimestampMs) ? new Date(eventTimestampMs) : new Date();
+        const timestamp = eventDate.toLocaleString("ru-RU");
         const finalLoadType = loadType || activeLoadType;
         const finalRequestUrl = requestUrl || activeRequestUrl || "";
         

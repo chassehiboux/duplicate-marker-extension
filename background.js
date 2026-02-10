@@ -11,6 +11,9 @@ try {
 
 // === КОНФИГУРАЦИЯ GOOGLE ТАБЛИЦЫ ===
 const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzkP1L4n2Qc_GR1RigdEnX1kiG4Hw4eE5V3cDNrm3VV4ZYT8db8yTUUKLng1Pvj4Cp7/exec';
+const TELEMETRY_RETRIES = 3;
+const telemetryQueue = [];
+let isTelemetryQueueRunning = false;
 
 // --- Утилита для логирования ---
 const LOG_KEY = 'extension_logs'; // Ключ для хранения логов в chrome.storage
@@ -35,7 +38,7 @@ const addLog = (message) => {
 };
 
 // --- Функция надежной отправки (POST + Retry) ---
-async function sendWithRetry(url, payload, retries = 3) {
+async function sendWithRetry(url, payload, retries = TELEMETRY_RETRIES) {
     for (let i = 0; i < retries; i++) {
         try {
             const response = await fetch(url, {
@@ -61,7 +64,7 @@ async function sendWithRetry(url, payload, retries = 3) {
             }
 
             console.log(`[TELEMETRY] Success: ${payload.stageName}`);
-            return;
+            return true;
 
         } catch (err) {
             console.error(`[TELEMETRY] Attempt ${i + 1} failed:`, err);
@@ -71,6 +74,39 @@ async function sendWithRetry(url, payload, retries = 3) {
         }
     }
     console.error(`[TELEMETRY] Failed to send data after ${retries} attempts.`);
+    return false;
+}
+
+function enqueueTelemetry(payload) {
+    if (!payload) return;
+    if (!GOOGLE_SCRIPT_URL) {
+        console.error("[TELEMETRY] URL для отправки данных не задан.");
+        return;
+    }
+    telemetryQueue.push(payload);
+    if (!isTelemetryQueueRunning) {
+        processTelemetryQueue().catch((err) => {
+            console.error("[TELEMETRY] Telemetry queue crash:", err);
+        });
+    }
+}
+
+async function processTelemetryQueue() {
+    if (isTelemetryQueueRunning) return;
+    isTelemetryQueueRunning = true;
+    try {
+        while (telemetryQueue.length > 0) {
+            const payload = telemetryQueue.shift();
+            await sendWithRetry(GOOGLE_SCRIPT_URL, payload, TELEMETRY_RETRIES);
+        }
+    } finally {
+        isTelemetryQueueRunning = false;
+        if (telemetryQueue.length > 0) {
+            processTelemetryQueue().catch((err) => {
+                console.error("[TELEMETRY] Telemetry queue restart error:", err);
+            });
+        }
+    }
 }
 
 
@@ -169,8 +205,7 @@ function sendStageCancelForClosedTab(tabId) {
 
     delete stageSessions[tabId];
 
-    if (!GOOGLE_SCRIPT_URL) return;
-    sendWithRetry(GOOGLE_SCRIPT_URL, payload);
+    enqueueTelemetry(payload);
 }
 
 chrome.webRequest.onBeforeRequest.addListener((details) => {
@@ -369,28 +404,26 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 return false;
             }
 
-            if (GOOGLE_SCRIPT_URL) {
-                const session = Number.isInteger(tabId) ? stageSessions[tabId] : null;
-                const requestUrl = d.requestUrl || (session && session.requestUrl) || "";
-                const departmentName = d.departmentName || (session && session.departmentName) || "Не определен";
+            const session = Number.isInteger(tabId) ? stageSessions[tabId] : null;
+            const requestUrl = d.requestUrl || (session && session.requestUrl) || "";
+            const departmentName = d.departmentName || (session && session.departmentName) || "Не определен";
 
-                const payload = {
-                    baseName: d.baseName,
-                    stageName: d.stageName,
-                    userName: d.userName,
-                    departmentName: departmentName,
-                    duration: d.duration.toString(),
-                    timestamp: d.timestamp,
-                    status: d.status,
-                    sessionId: d.sessionId,
-                    loadType: d.loadType,
-                    requestUrl: requestUrl,
-                    version: d.version // <-- ДОБАВЛЕНО
-                };
+            const payload = {
+                baseName: d.baseName,
+                stageName: d.stageName,
+                userName: d.userName,
+                departmentName: departmentName,
+                duration: d.duration.toString(),
+                timestamp: d.timestamp,
+                status: d.status,
+                sessionId: d.sessionId,
+                loadType: d.loadType,
+                requestUrl: requestUrl,
+                version: d.version // <-- ДОБАВЛЕНО
+            };
 
-                // Используем новую надежную функцию отправки
-                sendWithRetry(GOOGLE_SCRIPT_URL, payload);
-            }
+            // Отправка через последовательную очередь, без наложения параллельных POST.
+            enqueueTelemetry(payload);
 
             // Локальный лог
             if (d.status !== "ОЖИДАНИЕ") {
