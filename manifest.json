@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Помощник по Пирамиде",
-  "version": "2.0.28",
+  "version": "2.0.29",
   "description": "Авто-режим + Проверка ИНН/Смерти + Мониторинг скорости стадий",
   "permissions": [
     "activeTab",
