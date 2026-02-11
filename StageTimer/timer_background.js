@@ -119,8 +119,20 @@ const BIG_DEBTORS_MAP = {
     "expired_boss": "Пропущен срок руководителя"
 };
 
+const STAGE_MAX_WAITING_SEC = 2 * 60 * 60; // Жесткий лимит ожидания стадии: 2 часа.
 let stageRequests = {}; // requestId -> { startTime, tabId, loadType, requestUrl }
 let stageSessions = {}; // tabId -> { sessionId, baseName, userName, departmentName, stageName, loadType, requestUrl, version, startEpochMs }
+
+function parseStageDurationSec(rawDuration) {
+    if (rawDuration === undefined || rawDuration === null || rawDuration === "") return null;
+    const parsed = Number(String(rawDuration).replace(",", "."));
+    return Number.isFinite(parsed) ? parsed : null;
+}
+
+function clampStageDurationSec(durationSec) {
+    if (!Number.isFinite(durationSec)) return 0;
+    return Math.min(STAGE_MAX_WAITING_SEC, Math.max(0, durationSec));
+}
 
 function clearStageRequestsForTab(tabId) {
     if (!Number.isInteger(tabId)) return;
@@ -141,6 +153,7 @@ function upsertStageSession(tabId, data) {
     if (!Number.isInteger(tabId) || !data) return;
 
     const existing = stageSessions[tabId] || {};
+    const incomingDurationSec = parseStageDurationSec(data.duration);
     stageSessions[tabId] = {
         ...existing,
         tabId: tabId,
@@ -152,7 +165,11 @@ function upsertStageSession(tabId, data) {
         loadType: data.loadType || existing.loadType || "Загрузка",
         requestUrl: data.requestUrl || existing.requestUrl || "",
         version: data.version || existing.version || "",
-        startEpochMs: Number.isFinite(data.startEpochMs) ? data.startEpochMs : (existing.startEpochMs || Date.now())
+        startEpochMs: Number.isFinite(data.startEpochMs) ? data.startEpochMs : (existing.startEpochMs || Date.now()),
+        lastDurationSec: incomingDurationSec !== null
+            ? clampStageDurationSec(incomingDurationSec)
+            : (Number.isFinite(existing.lastDurationSec) ? existing.lastDurationSec : 0),
+        lastEventEpochMs: Date.now()
     };
 }
 
@@ -160,7 +177,11 @@ function sendStageCancelForClosedTab(tabId) {
     const session = stageSessions[tabId];
     if (!session || !session.sessionId) return;
 
-    const durationSec = Math.max(0, (Date.now() - (session.startEpochMs || Date.now())) / 1000).toFixed(2);
+    const elapsedByClockSec = Math.max(0, (Date.now() - (session.startEpochMs || Date.now())) / 1000);
+    const durationSecNum = Number.isFinite(session.lastDurationSec) && session.lastDurationSec > 0
+        ? session.lastDurationSec
+        : elapsedByClockSec;
+    const durationSec = clampStageDurationSec(durationSecNum).toFixed(2);
     const payload = {
         baseName: session.baseName || "Основная",
         stageName: session.stageName || "ПК Пирамида",
@@ -345,14 +366,30 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
 
     if (request.action === 'LOG_STAGE_TIME') {
-        const d = request.data;
+        const d = request.data || {};
+        const incomingDurationSec = parseStageDurationSec(d.duration);
+        let normalizedStatus = d.status;
+        let normalizedDurationSec = incomingDurationSec;
+
+        if (normalizedStatus === "ОЖИДАНИЕ" && incomingDurationSec !== null && incomingDurationSec > STAGE_MAX_WAITING_SEC) {
+            normalizedStatus = "ОТМЕНА";
+            normalizedDurationSec = STAGE_MAX_WAITING_SEC;
+        }
+
+        const normalizedDurationStr = (normalizedDurationSec !== null)
+            ? clampStageDurationSec(normalizedDurationSec).toFixed(2)
+            : String(d.duration || "0");
         const tabId = getStageTabId(request, sender);
         if (Number.isInteger(tabId)) {
-            upsertStageSession(tabId, d);
+            upsertStageSession(tabId, {
+                ...d,
+                status: normalizedStatus,
+                duration: normalizedDurationStr
+            });
         }
 
         // Игнорируем отправку, если пользователь не определен
-        if (d.userName === "Не определен" && d.status !== "ОТМЕНА") {
+        if (d.userName === "Не определен" && normalizedStatus !== "ОТМЕНА") {
             console.log("[StageTimer] Запись пропущена: Пользователь не определен.");
             return false;
         }
@@ -367,9 +404,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             stageName: d.stageName,
             userName: d.userName,
             departmentName: departmentName,
-            duration: d.duration.toString(),
+            duration: normalizedDurationStr,
             timestamp: d.timestamp,
-            status: d.status,
+            status: normalizedStatus,
             sessionId: d.sessionId,
             loadType: d.loadType,
             requestUrl: requestUrl,
@@ -379,7 +416,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         // Запускаем отправку (не ждем завершения, так как это fire-and-forget)
         enqueueTelemetry(payload);
 
-        if (d.status !== "ОЖИДАНИЕ" && Number.isInteger(tabId)) {
+        if (normalizedStatus !== "ОЖИДАНИЕ" && Number.isInteger(tabId)) {
             delete stageSessions[tabId];
             clearStageRequestsForTab(tabId);
         }

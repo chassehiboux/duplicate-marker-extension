@@ -6,6 +6,7 @@ const SHEET_SETTINGS = 'ДАШБОРД'; // Имя главного листа
 const DATA_HEADERS = ["Дата/Время", "Департамент", "Стадия", "Пользователь", "Время (сек)", "Статус", "SessionID", "Тип загрузки", "Версия", "URL Request"];
 const WAITING_ENTRY_FRESHNESS_SEC = 180; // ОЖИДАНИЕ считаем актуальным 3 минуты (а не 1), чтобы не флапать при задержках доставки
 const WAITING_ROW_CLEANUP_SEC = 300; // Удаляем "зависшие" ОЖИДАНИЕ спустя 5 минут
+const MAX_WAITING_DURATION_SEC = 2 * 60 * 60; // Жесткий лимит для ОЖИДАНИЕ: 2 часа
 const ALERT_RECOVERY_HOLD_SEC = 180; // После последнего ALERT держим статус ALERT еще 3 минуты
 const ALERT_OK_CONFIRM_CYCLES = 2; // Дополнительно требуем 2 спокойных цикла monitorPerformance перед OK
 
@@ -308,7 +309,15 @@ function handleRequest(p) {
     }
 
     var durationVal = p.duration || "0";
-    var durationStr = durationVal.toString().replace(/\./g, ',');
+    var incomingStatus = p.status || "УСПЕШНО";
+    var normalizedDuration = parseStageDuration(durationVal);
+
+    if (incomingStatus === "ОЖИДАНИЕ" && normalizedDuration > MAX_WAITING_DURATION_SEC) {
+      incomingStatus = "ОТМЕНА";
+      normalizedDuration = MAX_WAITING_DURATION_SEC;
+    }
+
+    var durationStr = normalizedDuration.toFixed(2).replace(/\./g, ',');
 
     var rawVer = p.version || "";
     var versionStr = "'" + String(rawVer);
@@ -322,7 +331,7 @@ function handleRequest(p) {
       p.stageName || "Unknown",
       p.userName || "Guest",
       durationStr,
-      p.status || "УСПЕШНО",
+      incomingStatus,
       p.sessionId || "",
       p.loadType || "Прочее",
       versionStr,
@@ -549,6 +558,7 @@ function calculateStatsAndUsers(ss, scanStartDate, filterNewDate, now) {
         var duration = parseStageDuration(rowModel.rawDuration);
 
         if (status === "ОЖИДАНИЕ") {
+          if (duration > MAX_WAITING_DURATION_SEC) continue;
           var secondsSinceLastUpdate = (now.getTime() - rowDate.getTime()) / 1000;
           if (secondsSinceLastUpdate > WAITING_ENTRY_FRESHNESS_SEC) continue;
         }
@@ -656,6 +666,7 @@ function calculateDayAnalysis(ss, startOfDay) {
       if (rowDate >= startOfDay) {
         var status = rowModel.status;
         var duration = parseStageDuration(rowModel.rawDuration);
+        if (status === "ОЖИДАНИЕ" && duration > MAX_WAITING_DURATION_SEC) return;
 
         if (status !== "УСПЕШНО" && duration < 5) return;
 
@@ -1050,9 +1061,10 @@ function cleanupStaleWaitingRows(ss) {
       var rowModel = getStageRowModel(values[i]);
       var rowDate = rowModel.rowDate;
       var status = rowModel.status;
+      var duration = parseStageDuration(rowModel.rawDuration);
 
       if (status === "ОЖИДАНИЕ" && rowDate instanceof Date) {
-        if (rowDate.getTime() < thresholdTime) {
+        if (rowDate.getTime() < thresholdTime || duration > MAX_WAITING_DURATION_SEC) {
            rowsToDelete.push(i + 2);
         }
       }
@@ -1129,6 +1141,7 @@ function compactSheet(sheet, todayInt, timeZone) {
     var sessionId = rowModel.sessionId || "unk_" + Math.random();
     var status = rowModel.status;
     var duration = parseStageDuration(rowModel.rawDuration);
+    if (status === "ОЖИДАНИЕ" && duration > MAX_WAITING_DURATION_SEC) return;
 
     if (!uniqueMap[sessionId]) {
       uniqueMap[sessionId] = { row: row, model: rowModel, duration: duration };

@@ -14,6 +14,24 @@ const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzkP1L4n2Qc_G
 const TELEMETRY_RETRIES = 3;
 const telemetryQueue = [];
 let isTelemetryQueueRunning = false;
+const VZID_CAPTURE_TTL_MS = 30 * 60 * 1000;
+const vzidCaptureStore = new Map();
+
+function cleanupVzidCaptureStore() {
+    const now = Date.now();
+    for (const [token, payload] of vzidCaptureStore.entries()) {
+        if (!payload || !payload.createdAtMs || (now - payload.createdAtMs) > VZID_CAPTURE_TTL_MS) {
+            vzidCaptureStore.delete(token);
+        }
+    }
+}
+
+function createVzidToken() {
+    if (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') {
+        return globalThis.crypto.randomUUID();
+    }
+    return `${Date.now()}_${Math.random().toString(36).slice(2, 12)}`;
+}
 
 // --- Утилита для логирования ---
 const LOG_KEY = 'extension_logs'; // Ключ для хранения логов в chrome.storage
@@ -147,8 +165,20 @@ const BIG_DEBTORS_MAP = {
     "expired_boss": "Пропущен срок руководителя"
 };
 
+const STAGE_MAX_WAITING_SEC = 2 * 60 * 60; // Жесткий лимит ожидания стадии: 2 часа.
 let stageRequests = {}; // requestId -> { startTime, tabId, loadType, requestUrl }
 let stageSessions = {}; // tabId -> { sessionId, baseName, userName, departmentName, stageName, loadType, requestUrl, version, startEpochMs }
+
+function parseStageDurationSec(rawDuration) {
+    if (rawDuration === undefined || rawDuration === null || rawDuration === "") return null;
+    const parsed = Number(String(rawDuration).replace(",", "."));
+    return Number.isFinite(parsed) ? parsed : null;
+}
+
+function clampStageDurationSec(durationSec) {
+    if (!Number.isFinite(durationSec)) return 0;
+    return Math.min(STAGE_MAX_WAITING_SEC, Math.max(0, durationSec));
+}
 
 function clearStageRequestsForTab(tabId) {
     if (!Number.isInteger(tabId)) return;
@@ -169,6 +199,7 @@ function upsertStageSession(tabId, data) {
     if (!Number.isInteger(tabId) || !data) return;
 
     const existing = stageSessions[tabId] || {};
+    const incomingDurationSec = parseStageDurationSec(data.duration);
     stageSessions[tabId] = {
         ...existing,
         tabId: tabId,
@@ -180,7 +211,11 @@ function upsertStageSession(tabId, data) {
         loadType: data.loadType || existing.loadType || "Загрузка",
         requestUrl: data.requestUrl || existing.requestUrl || "",
         version: data.version || existing.version || "",
-        startEpochMs: Number.isFinite(data.startEpochMs) ? data.startEpochMs : (existing.startEpochMs || Date.now())
+        startEpochMs: Number.isFinite(data.startEpochMs) ? data.startEpochMs : (existing.startEpochMs || Date.now()),
+        lastDurationSec: incomingDurationSec !== null
+            ? clampStageDurationSec(incomingDurationSec)
+            : (Number.isFinite(existing.lastDurationSec) ? existing.lastDurationSec : 0),
+        lastEventEpochMs: Date.now()
     };
 }
 
@@ -188,7 +223,11 @@ function sendStageCancelForClosedTab(tabId) {
     const session = stageSessions[tabId];
     if (!session || !session.sessionId) return;
 
-    const durationSec = Math.max(0, (Date.now() - (session.startEpochMs || Date.now())) / 1000).toFixed(2);
+    const elapsedByClockSec = Math.max(0, (Date.now() - (session.startEpochMs || Date.now())) / 1000);
+    const durationSecNum = Number.isFinite(session.lastDurationSec) && session.lastDurationSec > 0
+        ? session.lastDurationSec
+        : elapsedByClockSec;
+    const durationSec = clampStageDurationSec(durationSecNum).toFixed(2);
     const payload = {
         baseName: session.baseName || "Основная",
         stageName: session.stageName || "ПК Пирамида",
@@ -392,14 +431,30 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         
         // === ТЕЛЕМЕТРИЯ (ОБНОВЛЕННАЯ ВЕРСИЯ) ===
         case 'LOG_STAGE_TIME': {
-            const d = request.data;
+            const d = request.data || {};
+            const incomingDurationSec = parseStageDurationSec(d.duration);
+            let normalizedStatus = d.status;
+            let normalizedDurationSec = incomingDurationSec;
+
+            if (normalizedStatus === "ОЖИДАНИЕ" && incomingDurationSec !== null && incomingDurationSec > STAGE_MAX_WAITING_SEC) {
+                normalizedStatus = "ОТМЕНА";
+                normalizedDurationSec = STAGE_MAX_WAITING_SEC;
+            }
+
+            const normalizedDurationStr = (normalizedDurationSec !== null)
+                ? clampStageDurationSec(normalizedDurationSec).toFixed(2)
+                : String(d.duration || "0");
             const tabId = getStageTabId(request, sender);
             if (Number.isInteger(tabId)) {
-                upsertStageSession(tabId, d);
+                upsertStageSession(tabId, {
+                    ...d,
+                    status: normalizedStatus,
+                    duration: normalizedDurationStr
+                });
             }
             
             // Игнорируем отправку, если пользователь не определен
-            if (d.userName === "Не определен" && d.status !== "ОТМЕНА") {
+            if (d.userName === "Не определен" && normalizedStatus !== "ОТМЕНА") {
                 console.log("[TELEMETRY] Запись пропущена: Пользователь не определен.");
                 return false;
             }
@@ -413,9 +468,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 stageName: d.stageName,
                 userName: d.userName,
                 departmentName: departmentName,
-                duration: d.duration.toString(),
+                duration: normalizedDurationStr,
                 timestamp: d.timestamp,
-                status: d.status,
+                status: normalizedStatus,
                 sessionId: d.sessionId,
                 loadType: d.loadType,
                 requestUrl: requestUrl,
@@ -426,7 +481,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             enqueueTelemetry(payload);
 
             // Локальный лог
-            if (d.status !== "ОЖИДАНИЕ") {
+            if (normalizedStatus !== "ОЖИДАНИЕ") {
                 if (Number.isInteger(tabId)) {
                     delete stageSessions[tabId];
                     clearStageRequestsForTab(tabId);
@@ -434,8 +489,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 const storageKey = `logs_${d.baseName}`;
                 chrome.storage.local.get([storageKey], (res) => {
                     let logs = res[storageKey] || "";
-                    let logEntry = d.logLine;
-                    if (d.status !== "УСПЕШНО") logEntry += ` [${d.status}]`;
+                    let logEntry = d.logLine || "";
+                    if (normalizedStatus !== d.status || normalizedDurationStr !== String(d.duration)) {
+                        logEntry += ` [Нормализовано: ${normalizedStatus}, ${normalizedDurationStr}s]`;
+                    }
+                    if (normalizedStatus !== "УСПЕШНО") logEntry += ` [${normalizedStatus}]`;
                     logs += logEntry + "\n";
                     chrome.storage.local.set({ [storageKey]: logs });
                 });
@@ -560,6 +618,69 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 }
             });
             return true; // для асинхронного ответа
+        }
+
+        case 'VZID_OPEN_CAPTURE_PREVIEW': {
+            cleanupVzidCaptureStore();
+
+            const data = request.data || {};
+            if (!data.fileBase64) {
+                sendResponse({ success: false, error: 'PDF не получен' });
+                return false;
+            }
+
+            const token = createVzidToken();
+            vzidCaptureStore.set(token, {
+                createdAtMs: Date.now(),
+                sourceUrl: data.sourceUrl || '',
+                claimTypeLabel: data.claimTypeLabel || '',
+                claimTypeValue: data.claimTypeValue || '',
+                ipNumber: data.ipNumber || '',
+                fileName: data.fileName || 'document.pdf',
+                fileMimeType: data.fileMimeType || 'application/pdf',
+                fileBase64: data.fileBase64
+            });
+
+            const previewUrl = chrome.runtime.getURL(`vzid_capture_preview.html?token=${encodeURIComponent(token)}`);
+            chrome.tabs.create({ url: previewUrl }, (tab) => {
+                if (chrome.runtime.lastError) {
+                    sendResponse({
+                        success: false,
+                        error: chrome.runtime.lastError.message || 'Не удалось открыть тестовую страницу'
+                    });
+                    return;
+                }
+                sendResponse({ success: true, token, tabId: tab ? tab.id : null });
+            });
+
+            return true;
+        }
+
+        case 'VZID_GET_CAPTURE_DATA': {
+            cleanupVzidCaptureStore();
+            const token = request && (request.token || (request.data && request.data.token));
+            if (!token) {
+                sendResponse({ success: false, error: 'Не передан token' });
+                return false;
+            }
+
+            const payload = vzidCaptureStore.get(token);
+            if (!payload) {
+                sendResponse({ success: false, error: 'Данные не найдены или устарели' });
+                return false;
+            }
+
+            sendResponse({ success: true, data: payload });
+            return false;
+        }
+
+        case 'VZID_CLEAR_CAPTURE_DATA': {
+            const token = request && (request.token || (request.data && request.data.token));
+            if (token) {
+                vzidCaptureStore.delete(token);
+            }
+            sendResponse({ success: true });
+            return false;
         }
     }
 });

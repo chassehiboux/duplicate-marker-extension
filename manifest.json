@@ -70,6 +70,17 @@
         "*://*.pyramid.vostok-electra.ru/*",
         "*://*.pyramid-vostok.electra.ru/*"
       ],
+      "js": [
+        "vzid_create_send.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": true
+    },
+    {
+      "matches": [
+        "*://*.pyramid.vostok-electra.ru/*",
+        "*://*.pyramid-vostok.electra.ru/*"
+      ],
       "css": [
         "StageTimer/timer_styles.css"
       ],

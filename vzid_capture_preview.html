@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Тест отправки ВЗИД</title>
+  <style>
+    :root {
+      --bg: #f3f6fb;
+      --card: #ffffff;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --line: #d9e2ef;
+      --accent: #0b6cf0;
+      --accent-text: #ffffff;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Tahoma, sans-serif;
+      background: radial-gradient(circle at top left, #e8f0ff 0, var(--bg) 42%);
+      color: var(--text);
+    }
+
+    .wrap {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: 0 8px 24px rgba(20, 30, 55, 0.08);
+      padding: 20px;
+      margin-bottom: 16px;
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      font-size: 24px;
+    }
+
+    .muted {
+      color: var(--muted);
+      margin: 0;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 12px;
+      margin-top: 16px;
+    }
+
+    .item {
+      background: #f9fbff;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 12px;
+    }
+
+    .label {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .value {
+      font-size: 16px;
+      font-weight: 600;
+      word-break: break-word;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .btn {
+      border: none;
+      border-radius: 8px;
+      padding: 10px 14px;
+      background: var(--accent);
+      color: var(--accent-text);
+      cursor: pointer;
+      font-weight: 600;
+      text-decoration: none;
+      display: inline-block;
+    }
+
+    .btn:disabled {
+      opacity: 0.6;
+      cursor: default;
+    }
+
+    #pdf-frame {
+      width: 100%;
+      min-height: 72vh;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fff;
+    }
+
+    #error-box {
+      color: #b71c1c;
+      font-weight: 600;
+      display: none;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="card">
+      <h1>Тестовая страница отправки ВЗИД</h1>
+      <p class="muted">Заглушка для проверки: тип уведомления, номер ИП и перехваченный PDF.</p>
+
+      <div id="error-box" class="card"></div>
+
+      <div class="grid">
+        <div class="item">
+          <span class="label">Тип уведомления</span>
+          <div id="claim-type-label" class="value">—</div>
+        </div>
+        <div class="item">
+          <span class="label">Код типа</span>
+          <div id="claim-type-value" class="value">—</div>
+        </div>
+        <div class="item">
+          <span class="label">Номер ИП</span>
+          <div id="ip-number" class="value">—</div>
+        </div>
+        <div class="item">
+          <span class="label">Имя файла</span>
+          <div id="file-name" class="value">—</div>
+        </div>
+      </div>
+
+      <div class="actions">
+        <a id="open-pdf-link" class="btn" href="#" target="_blank" rel="noopener">Открыть PDF</a>
+        <a id="download-pdf-link" class="btn" href="#" download>Скачать PDF</a>
+      </div>
+    </section>
+
+    <section class="card">
+      <iframe id="pdf-frame" title="PDF превью"></iframe>
+    </section>
+  </div>
+
+  <script src="vzid_capture_preview.js"></script>
+</body>
+</html>

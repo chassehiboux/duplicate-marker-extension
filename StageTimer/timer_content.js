@@ -27,6 +27,13 @@
     let sessionStartEpochMs = 0;
     let sessionStartData = null;
     let sessionStableData = null;
+    const MAX_WAITING_DURATION_SEC = 2 * 60 * 60; // Жесткий лимит ожидания: 2 часа.
+    const SLEEP_GAP_THRESHOLD_MS = 5 * 60 * 1000; // Если JS "замолчал" > 5 минут — считаем, что был сон/заморозка.
+    const UNATTENDED_HIDDEN_TIMEOUT_SEC = 2 * 60 * 60; // Скрытая вкладка без внимания > 2 часов.
+    const MAX_PULSE_CATCHUP_PER_TICK = 20; // Защита от лавины pulse-сообщений после долгой паузы.
+    let lastTickWallClockMs = 0;
+    let lastStableElapsedSec = 0;
+    let hiddenSinceEpochMs = 0;
 
     // UI
     const toast = document.createElement("div");
@@ -201,7 +208,11 @@
         }
     }
 
-    function finalizeCanceledSession(uiText, hideDelayMs) {
+    function getSafeElapsedSec() {
+        return Number.isFinite(lastStableElapsedSec) && lastStableElapsedSec >= 0 ? lastStableElapsedSec : 0;
+    }
+
+    function finalizeCanceledSession(uiText, hideDelayMs, forcedDurationSec) {
         if (!isTimerActive) return;
 
         isTimerActive = false;
@@ -213,7 +224,11 @@
 
         if (toastTimeout) clearTimeout(toastTimeout);
 
-        const durationSec = ((performance.now() - startTime) / 1000).toFixed(2);
+        const measuredDurationSec = (performance.now() - startTime) / 1000;
+        const finalDurationSec = Number.isFinite(forcedDurationSec)
+            ? Math.max(0, forcedDurationSec)
+            : Math.max(0, measuredDurationSec);
+        const durationSec = finalDurationSec.toFixed(2);
         const sessionData = getResolvedSessionData(scrapeData());
 
         if (uiText) {
@@ -222,6 +237,10 @@
             toast.classList.remove("finished");
             toast.style.borderColor = "#e74c3c";
         }
+
+        lastTickWallClockMs = 0;
+        lastStableElapsedSec = 0;
+        hiddenSinceEpochMs = 0;
 
         sendToBackground("ОТМЕНА", durationSec, sessionData, activeLoadType, activeRequestUrl);
 
@@ -237,7 +256,19 @@
     }
 
     function cancelByPageClose() {
-        finalizeCanceledSession("", 0);
+        finalizeCanceledSession("", 0, getSafeElapsedSec());
+    }
+
+    function cancelByTimeout() {
+        finalizeCanceledSession("Отмена: лимит ожидания 2ч", 4000, MAX_WAITING_DURATION_SEC);
+    }
+
+    function cancelBySleepGap() {
+        finalizeCanceledSession("Отмена: обнаружен сон ПК", 4000, getSafeElapsedSec());
+    }
+
+    function cancelByHiddenTimeout() {
+        finalizeCanceledSession("Отмена: вкладка без внимания >2ч", 4000, getSafeElapsedSec());
     }
 
     function handleStart(data) {
@@ -272,6 +303,9 @@
         sessionStartEpochMs = Date.now();
         sessionStartData = normalizeSessionData(scrapeData());
         sessionStableData = isValidSessionData(sessionStartData) ? sessionStartData : null;
+        lastTickWallClockMs = Date.now();
+        lastStableElapsedSec = 0;
+        hiddenSinceEpochMs = document.hidden ? Date.now() : 0;
         sendSessionEvent("STAGE_TIMER_SESSION_START");
 
         if (hasVisibleGridError()) {
@@ -292,8 +326,36 @@
                 return;
             }
 
+            const wallNowMs = Date.now();
+            const tickGapMs = lastTickWallClockMs > 0 ? (wallNowMs - lastTickWallClockMs) : 0;
+            lastTickWallClockMs = wallNowMs;
+
+            if (tickGapMs > SLEEP_GAP_THRESHOLD_MS) {
+                cancelBySleepGap();
+                return;
+            }
+
+            if (document.hidden) {
+                if (!hiddenSinceEpochMs) hiddenSinceEpochMs = wallNowMs;
+                const hiddenSec = (wallNowMs - hiddenSinceEpochMs) / 1000;
+                if (hiddenSec >= UNATTENDED_HIDDEN_TIMEOUT_SEC) {
+                    cancelByHiddenTimeout();
+                    return;
+                }
+            } else {
+                hiddenSinceEpochMs = 0;
+            }
+
             const now = performance.now();
             const elapsed = parseFloat(((now - startTime) / 1000).toFixed(2));
+            if (!Number.isFinite(elapsed) || elapsed < 0) return;
+
+            if (elapsed >= MAX_WAITING_DURATION_SEC) {
+                cancelByTimeout();
+                return;
+            }
+
+            lastStableElapsedSec = elapsed;
             const valSpan = document.getElementById("timer-val");
             if (valSpan) valSpan.innerText = elapsed + "s";
 
@@ -313,11 +375,17 @@
             if (hasSentInitial && (elapsed - lastReportTime) >= pulseIntervalSec) {
                 const currentData = scrapeData();
                 const sessionData = getResolvedSessionData(currentData);
+                let pulseCatchupCount = 0;
                 while ((elapsed - lastReportTime) >= pulseIntervalSec) {
+                    if (pulseCatchupCount >= MAX_PULSE_CATCHUP_PER_TICK) {
+                        lastReportTime = elapsed;
+                        break;
+                    }
                     const pulseElapsed = parseFloat((lastReportTime + pulseIntervalSec).toFixed(2));
                     const pulseTimestampMs = sessionStartEpochMs + Math.round(pulseElapsed * 1000);
                     sendToBackground("ОЖИДАНИЕ", pulseElapsed.toString(), sessionData, data.loadType, undefined, pulseTimestampMs);
                     lastReportTime = pulseElapsed;
+                    pulseCatchupCount++;
                 }
                 toast.style.borderColor = "#e67e22"; 
             }
@@ -342,6 +410,9 @@
             clearInterval(timerInterval);
             timerInterval = null;
         }
+        lastTickWallClockMs = 0;
+        lastStableElapsedSec = 0;
+        hiddenSinceEpochMs = 0;
 
         if (!sessionId) {
             sessionId = "rec" + Date.now().toString(36);
@@ -377,6 +448,9 @@
             clearInterval(timerInterval);
             timerInterval = null;
         }
+        lastTickWallClockMs = 0;
+        lastStableElapsedSec = 0;
+        hiddenSinceEpochMs = 0;
         const valSpan = document.getElementById("timer-val");
         if (valSpan) valSpan.innerText = `Ошибка`;
         toast.style.borderColor = "#e74c3c";
@@ -384,6 +458,25 @@
             toast.style.opacity = "0";
         }, 2000);
     }
+
+    document.addEventListener("visibilitychange", () => {
+        if (!isTimerActive) return;
+        if (document.hidden) {
+            if (!hiddenSinceEpochMs) hiddenSinceEpochMs = Date.now();
+            return;
+        }
+
+        if (hiddenSinceEpochMs) {
+            const hiddenSec = (Date.now() - hiddenSinceEpochMs) / 1000;
+            if (hiddenSec >= UNATTENDED_HIDDEN_TIMEOUT_SEC) {
+                cancelByHiddenTimeout();
+                return;
+            }
+        }
+
+        hiddenSinceEpochMs = 0;
+        lastTickWallClockMs = Date.now();
+    }, { capture: true });
 
     window.addEventListener("pagehide", () => {
         if (!isTimerActive) return;
