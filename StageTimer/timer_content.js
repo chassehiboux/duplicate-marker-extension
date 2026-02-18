@@ -34,17 +34,304 @@
     let lastTickWallClockMs = 0;
     let lastStableElapsedSec = 0;
     let hiddenSinceEpochMs = 0;
+    let currentTimerHost = null;
+    const TIMER_HOST_SYNC_INTERVAL_MS = 250;
+    let lastTimerHostSyncMs = 0;
+    const TIMER_BUTTON_SYNC_INTERVAL_MS = 1000;
+    const TIMER_VISIBILITY_STORAGE_KEY = "pyramid_stage_timer_ui_visible";
 
     // UI
     const toast = document.createElement("div");
     toast.id = "pyramid-stage-timer";
-    toast.innerHTML = `<div class="timer-spinner"></div><span id="timer-type" style="margin-right:8px; font-weight:normal; font-size: 13px; opacity: 0.9;"></span><span id="timer-val">0.00s</span>`;
-    
-    function injectToast() {
-        if (document.body) document.body.appendChild(toast);
-        else requestAnimationFrame(injectToast);
+    toast.innerHTML = `
+        <div class="timer-spinner"></div>
+        <span class="pyramid-stage-timer-type"></span>
+        <span class="pyramid-stage-timer-val">0,0с</span>
+    `;
+
+    const timerTypeEl = toast.querySelector(".pyramid-stage-timer-type");
+    const timerValueEl = toast.querySelector(".pyramid-stage-timer-val");
+    const timerToggleButton = document.createElement("button");
+    timerToggleButton.id = "pyramid-stage-timer-toggle";
+    timerToggleButton.type = "button";
+    timerToggleButton.innerHTML = `<span class="pyramid-stage-timer-toggle-mark fa fa-eye" aria-hidden="true"></span>`;
+    let isTimerUiVisible = true;
+    let hasTimerSnapshot = false;
+
+    function isElementVisible(element) {
+        if (!element) return false;
+        const style = window.getComputedStyle(element);
+        if (style.display === "none" || style.visibility === "hidden") return false;
+        const rect = element.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
     }
-    injectToast();
+
+    function readTimerUiVisibilityPreference() {
+        try {
+            const rawValue = window.localStorage.getItem(TIMER_VISIBILITY_STORAGE_KEY);
+            if (rawValue === "0") return false;
+            if (rawValue === "1") return true;
+        } catch (e) {
+            // ignore
+        }
+        return true;
+    }
+
+    function saveTimerUiVisibilityPreference(isVisible) {
+        try {
+            window.localStorage.setItem(TIMER_VISIBILITY_STORAGE_KEY, isVisible ? "1" : "0");
+        } catch (e) {
+            // ignore
+        }
+    }
+
+    function updateTimerToggleButtonState() {
+        const buttonTitle = isTimerUiVisible ? "Скрыть таймер" : "Показать таймер";
+        const iconEl = timerToggleButton.querySelector(".pyramid-stage-timer-toggle-mark");
+        if (iconEl) {
+            iconEl.className = isTimerUiVisible
+                ? "pyramid-stage-timer-toggle-mark fa fa-eye"
+                : "pyramid-stage-timer-toggle-mark fa fa-eye-slash";
+        }
+        timerToggleButton.classList.toggle("is-disabled", !isTimerUiVisible);
+        timerToggleButton.setAttribute("title", buttonTitle);
+        timerToggleButton.setAttribute("aria-label", buttonTitle);
+    }
+
+    function applyTimerUiVisibility() {
+        if (!isTimerUiVisible || !hasTimerSnapshot) {
+            toast.style.display = "none";
+            return;
+        }
+        toast.style.display = "inline-flex";
+    }
+
+    function setTimerUiVisibility(isVisible, shouldPersist = true) {
+        isTimerUiVisible = !!isVisible;
+        if (shouldPersist) {
+            saveTimerUiVisibilityPreference(isTimerUiVisible);
+        }
+        updateTimerToggleButtonState();
+        applyTimerUiVisibility();
+    }
+
+    function getToggleButtonClassesByCloseButton(closeButton) {
+        if (!closeButton) return ["btn", "btn-xs", "btn-default"];
+        const sourceClasses = Array.from(closeButton.classList);
+        const filteredClasses = sourceClasses.filter((className) => (
+            className !== "ui-jqgrid-titlebar-close" &&
+            className !== "ui-dialog-titlebar-close"
+        ));
+        return filteredClasses.length > 0 ? filteredClasses : ["btn", "btn-xs", "btn-default"];
+    }
+
+    function syncToggleButtonLook(closeButton) {
+        timerToggleButton.className = "pyramid-stage-timer-toggle-btn";
+        const classesToApply = getToggleButtonClassesByCloseButton(closeButton);
+        classesToApply.forEach((className) => timerToggleButton.classList.add(className));
+        updateTimerToggleButtonState();
+    }
+
+    timerToggleButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        setTimerUiVisibility(!isTimerUiVisible);
+    }, { capture: true });
+
+    setTimerUiVisibility(readTimerUiVisibilityPreference(), false);
+    setInterval(() => {
+        syncTimerHost();
+    }, TIMER_BUTTON_SYNC_INTERVAL_MS);
+
+    function isDialogLoadType(loadType, requestUrl) {
+        const normalizedLoadType = String(loadType || "").toLowerCase();
+        const normalizedRequestUrl = String(requestUrl || "").toLowerCase();
+
+        if (normalizedRequestUrl.includes("/claims/execution")) return true;
+        if (!normalizedLoadType) return false;
+
+        const hasFormingWord = normalizedLoadType.includes("формирован");
+        const hasNotificationOrClaimWord =
+            normalizedLoadType.includes("уведомлен") ||
+            normalizedLoadType.includes("заявлен");
+
+        return hasFormingWord && hasNotificationOrClaimWord;
+    }
+
+    function getCompactLoadTypeLabel(loadType) {
+        const raw = String(loadType || "Загрузка").trim();
+        const normalized = raw.toLowerCase();
+
+        if (normalized.includes("фильтрац")) return "Фильтрация";
+        if (normalized.includes("загрузка")) return "Загрузка";
+        if (normalized.includes("формирован")) return "Формирование";
+        if (normalized.includes("редактирован")) return "Редактирование";
+
+        return raw;
+    }
+
+    function getVisibleGridTitlebar() {
+        const gridTitlebars = Array.from(document.querySelectorAll(".ui-jqgrid-titlebar"));
+        return gridTitlebars.find(isElementVisible) || null;
+    }
+
+    function parseZIndex(value) {
+        const parsed = Number.parseInt(value, 10);
+        return Number.isFinite(parsed) ? parsed : 0;
+    }
+
+    function getVisibleDialogTitlebar() {
+        const dialogTitlebars = Array.from(document.querySelectorAll(".ui-dialog .ui-dialog-titlebar, .ui-dialog-titlebar"));
+        const visible = dialogTitlebars.filter(isElementVisible);
+
+        if (visible.length === 0) return null;
+        if (visible.length === 1) return visible[0];
+
+        visible.sort((a, b) => {
+            const aContainer = a.closest(".ui-dialog") || a;
+            const bContainer = b.closest(".ui-dialog") || b;
+            return parseZIndex(window.getComputedStyle(aContainer).zIndex) - parseZIndex(window.getComputedStyle(bContainer).zIndex);
+        });
+
+        return visible[visible.length - 1];
+    }
+
+    function resolveTimerHost(_loadType, _requestUrl) {
+        return getVisibleGridTitlebar();
+    }
+
+    function resolvePreferredIdleHost() {
+        return getVisibleGridTitlebar();
+    }
+
+    function mountTimerToHost(host) {
+        if (!host) return false;
+
+        if (currentTimerHost && currentTimerHost !== host) {
+            currentTimerHost.classList.remove("pyramid-stage-timer-host");
+            timerToggleButton.remove();
+            currentTimerHost.style.removeProperty("--pyramid-stage-timer-right-offset");
+            currentTimerHost.style.removeProperty("--pyramid-stage-toggle-right-offset");
+        }
+
+        const closeButton = host.querySelector(".ui-jqgrid-titlebar-close, .ui-dialog-titlebar-close");
+        syncToggleButtonLook(closeButton);
+
+        if (timerToggleButton.parentElement !== host) {
+            timerToggleButton.remove();
+            if (closeButton && closeButton.parentElement === host) {
+                host.insertBefore(timerToggleButton, closeButton);
+            } else {
+                host.appendChild(timerToggleButton);
+            }
+        }
+
+        const closeButtonWidth = closeButton && isElementVisible(closeButton)
+            ? closeButton.getBoundingClientRect().width
+            : 0;
+
+        const toggleButtonWidth = isElementVisible(timerToggleButton)
+            ? timerToggleButton.getBoundingClientRect().width
+            : 24;
+
+        const closeOffsetPx = Math.max(0, Math.ceil(closeButtonWidth));
+        const toggleOffsetPx = closeOffsetPx + 6;
+        const timerRightOffsetPx = toggleOffsetPx + Math.ceil(toggleButtonWidth) + 8;
+
+        host.style.setProperty("--pyramid-stage-toggle-right-offset", `${toggleOffsetPx}px`);
+        host.style.setProperty("--pyramid-stage-timer-right-offset", `${timerRightOffsetPx}px`);
+
+        if (toast.parentElement !== host) {
+            toast.remove();
+            if (closeButton && closeButton.parentElement === host) {
+                host.insertBefore(toast, closeButton);
+            } else {
+                host.appendChild(toast);
+            }
+        }
+
+        host.classList.add("pyramid-stage-timer-host");
+        currentTimerHost = host;
+        return true;
+    }
+
+    function syncTimerHost(force = false) {
+        const nowMs = Date.now();
+        if (!force && (nowMs - lastTimerHostSyncMs) < TIMER_HOST_SYNC_INTERVAL_MS) return;
+        lastTimerHostSyncMs = nowMs;
+
+        const host = isTimerActive
+            ? resolveTimerHost(activeLoadType, activeRequestUrl)
+            : resolvePreferredIdleHost();
+        if (host) {
+            mountTimerToHost(host);
+        }
+    }
+
+    function clearTimerHost(removeToggleButton = true) {
+        toast.remove();
+        if (removeToggleButton) {
+            timerToggleButton.remove();
+        }
+        if (currentTimerHost) {
+            currentTimerHost.classList.remove("pyramid-stage-timer-host");
+            currentTimerHost.style.removeProperty("--pyramid-stage-timer-right-offset");
+            if (removeToggleButton) {
+                currentTimerHost.style.removeProperty("--pyramid-stage-toggle-right-offset");
+            }
+            currentTimerHost = null;
+        }
+    }
+
+    function setTimerState(state) {
+        toast.classList.remove("is-loading", "is-warning", "finished", "is-error");
+        if (state === "success") {
+            toast.classList.add("finished");
+            return;
+        }
+        if (state === "error") {
+            toast.classList.add("is-error");
+            return;
+        }
+        if (state === "warning") {
+            toast.classList.add("is-warning");
+            return;
+        }
+        toast.classList.add("is-loading");
+    }
+
+    function setTimerLabel(loadType) {
+        if (timerTypeEl) {
+            timerTypeEl.textContent = getCompactLoadTypeLabel(loadType);
+        }
+    }
+
+    function setTimerValue(text) {
+        if (timerValueEl) {
+            timerValueEl.textContent = text;
+        }
+    }
+
+    function formatUiDuration(secondsValue) {
+        const normalizedSeconds = Number.isFinite(secondsValue) ? Math.max(0, secondsValue) : 0;
+        return `${normalizedSeconds.toFixed(1).replace(".", ",")}с`;
+    }
+
+    function showTimer() {
+        hasTimerSnapshot = true;
+        syncTimerHost(true);
+        applyTimerUiVisibility();
+    }
+
+    function hideTimer() {
+        toast.style.display = "none";
+        syncTimerHost(true);
+    }
+
+    function scheduleTimerHide(_delayMs) {
+        if (toastTimeout) clearTimeout(toastTimeout);
+        applyTimerUiVisibility();
+    }
 
     function normalizeDepartmentName(value) {
         const normalized = String(value || "").replace(/\s+/g, " ").trim();
@@ -212,7 +499,7 @@
         return Number.isFinite(lastStableElapsedSec) && lastStableElapsedSec >= 0 ? lastStableElapsedSec : 0;
     }
 
-    function finalizeCanceledSession(uiText, hideDelayMs, forcedDurationSec) {
+    function finalizeCanceledSession(_uiText, hideDelayMs, forcedDurationSec) {
         if (!isTimerActive) return;
 
         isTimerActive = false;
@@ -231,12 +518,8 @@
         const durationSec = finalDurationSec.toFixed(2);
         const sessionData = getResolvedSessionData(scrapeData());
 
-        if (uiText) {
-            const valSpan = document.getElementById("timer-val");
-            if (valSpan) valSpan.innerText = uiText;
-            toast.classList.remove("finished");
-            toast.style.borderColor = "#e74c3c";
-        }
+        setTimerValue(formatUiDuration(finalDurationSec));
+        setTimerState("error");
 
         lastTickWallClockMs = 0;
         lastStableElapsedSec = 0;
@@ -244,11 +527,7 @@
 
         sendToBackground("ОТМЕНА", durationSec, sessionData, activeLoadType, activeRequestUrl);
 
-        if (hideDelayMs > 0) {
-            toastTimeout = setTimeout(() => {
-                toast.style.opacity = "0";
-            }, hideDelayMs);
-        }
+        scheduleTimerHide(hideDelayMs);
     }
 
     function cancelByPageError() {
@@ -280,16 +559,7 @@
 
         // Сброс и показ UI
         sessionId = Date.now().toString(36) + Math.random().toString(36).substr(2);
-        
-        toast.style.opacity = "1";
-        toast.style.borderColor = "#f1c40f"; 
-        
-        const typeSpan = toast.querySelector("#timer-type");
-        if (typeSpan) typeSpan.innerText = data.loadType || "Загрузка";
 
-        toast.querySelector("#timer-val").innerText = "0.00s";
-        toast.classList.remove("finished");
-        
         if (toastTimeout) clearTimeout(toastTimeout);
         if (timerInterval) {
             clearInterval(timerInterval);
@@ -303,9 +573,14 @@
         sessionStartEpochMs = Date.now();
         sessionStartData = normalizeSessionData(scrapeData());
         sessionStableData = isValidSessionData(sessionStartData) ? sessionStartData : null;
+        lastTimerHostSyncMs = 0;
         lastTickWallClockMs = Date.now();
         lastStableElapsedSec = 0;
         hiddenSinceEpochMs = document.hidden ? Date.now() : 0;
+        setTimerLabel(activeLoadType);
+        setTimerValue(formatUiDuration(0));
+        setTimerState("loading");
+        showTimer();
         sendSessionEvent("STAGE_TIMER_SESSION_START");
 
         if (hasVisibleGridError()) {
@@ -320,6 +595,7 @@
         // Запускаем тиканье таймера
         timerInterval = setInterval(() => {
             if (!isTimerActive) return;
+            syncTimerHost();
 
             if (hasVisibleGridError()) {
                 cancelByPageError();
@@ -356,8 +632,7 @@
             }
 
             lastStableElapsedSec = elapsed;
-            const valSpan = document.getElementById("timer-val");
-            if (valSpan) valSpan.innerText = elapsed + "s";
+            setTimerValue(formatUiDuration(elapsed));
 
             // 1. Попытка отправить "ОЖИДАНИЕ" через 1 сек
             if (!hasSentInitial && elapsed > 1.0) {
@@ -387,7 +662,7 @@
                     lastReportTime = pulseElapsed;
                     pulseCatchupCount++;
                 }
-                toast.style.borderColor = "#e67e22"; 
+                setTimerState("warning");
             }
 
         }, 50); 
@@ -421,21 +696,19 @@
         setTimeout(() => {
             const sessionData = getResolvedSessionData(scrapeData());
             const durationSec = (data.duration / 1000).toFixed(2);
+            const durationSecNumber = data.duration / 1000;
             
             // UI Update
-            const valSpan = document.getElementById("timer-val");
-            if (valSpan) valSpan.innerText = `Готово: ${durationSec}s`;
-            toast.classList.add("finished");
-            toast.style.borderColor = "#2ecc71"; 
+            setTimerValue(formatUiDuration(durationSecNumber));
+            setTimerState("success");
+            syncTimerHost(true);
 
             // Отправка лога
             const finalRequestUrl = data.requestUrl || activeRequestUrl;
             sendToBackground("УСПЕШНО", durationSec, sessionData, data.loadType, finalRequestUrl);
 
             // Скрыть через 4 сек
-            toastTimeout = setTimeout(() => {
-                toast.style.opacity = "0";
-            }, 4000);
+            scheduleTimerHide(4000);
 
         }, 100); 
     }
@@ -451,12 +724,9 @@
         lastTickWallClockMs = 0;
         lastStableElapsedSec = 0;
         hiddenSinceEpochMs = 0;
-        const valSpan = document.getElementById("timer-val");
-        if (valSpan) valSpan.innerText = `Ошибка`;
-        toast.style.borderColor = "#e74c3c";
-        toastTimeout = setTimeout(() => {
-            toast.style.opacity = "0";
-        }, 2000);
+        setTimerValue(formatUiDuration(getSafeElapsedSec()));
+        setTimerState("error");
+        scheduleTimerHide(2000);
     }
 
     document.addEventListener("visibilitychange", () => {
