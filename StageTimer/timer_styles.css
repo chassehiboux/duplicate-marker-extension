@@ -8,6 +8,11 @@
     padding-right: 2.4em !important;
 }
 
+html.dup-ext-screenshot-mode #pyramid-stage-timer,
+html.dup-ext-screenshot-mode #pyramid-stage-timer-toggle {
+    display: none !important;
+}
+
 #pyramid-stage-timer-toggle {
     position: absolute;
     top: 50%;

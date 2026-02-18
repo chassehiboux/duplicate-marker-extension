@@ -39,6 +39,14 @@
     let lastTimerHostSyncMs = 0;
     const TIMER_BUTTON_SYNC_INTERVAL_MS = 1000;
     const TIMER_VISIBILITY_STORAGE_KEY = "pyramid_stage_timer_ui_visible";
+    const SCREENSHOT_MODE_CLASS = "dup-ext-screenshot-mode";
+    const SCREENSHOT_HIDE_EVENT = "dup-ext-screenshot-visibility-change";
+    const SCREENSHOT_HIDE_DURATION_MS = 2500;
+    const SCREENSHOT_HIDE_ON_BLUR_DURATION_MS = 2500;
+    const SCREENSHOT_THROTTLE_MS = 150;
+    const KEY_CODE_PRINT_SCREEN = 44;
+    const KEY_CODE_F8 = 119;
+    const SCREENSHOT_MANUAL_KEY = "S";
 
     // UI
     const toast = document.createElement("div");
@@ -57,6 +65,9 @@
     timerToggleButton.innerHTML = `<span class="pyramid-stage-timer-toggle-mark fa fa-eye" aria-hidden="true"></span>`;
     let isTimerUiVisible = true;
     let hasTimerSnapshot = false;
+    let isScreenshotModeActive = false;
+    let screenshotHideTimer = null;
+    let lastScreenshotTriggerAtMs = 0;
 
     function isElementVisible(element) {
         if (!element) return false;
@@ -98,8 +109,12 @@
         timerToggleButton.setAttribute("aria-label", buttonTitle);
     }
 
+    function applyToggleButtonVisibility() {
+        timerToggleButton.style.display = isScreenshotModeActive ? "none" : "inline-flex";
+    }
+
     function applyTimerUiVisibility() {
-        if (!isTimerUiVisible || !hasTimerSnapshot) {
+        if (isScreenshotModeActive || !isTimerUiVisible || !hasTimerSnapshot) {
             toast.style.display = "none";
             return;
         }
@@ -112,7 +127,93 @@
             saveTimerUiVisibilityPreference(isTimerUiVisible);
         }
         updateTimerToggleButtonState();
+        applyToggleButtonVisibility();
         applyTimerUiVisibility();
+    }
+
+    function readScreenshotModeFromDom() {
+        const root = document.documentElement;
+        return !!(root && root.classList.contains(SCREENSHOT_MODE_CLASS));
+    }
+
+    function setScreenshotModeActive(nextValue) {
+        const normalizedNextValue = !!nextValue;
+        if (isScreenshotModeActive === normalizedNextValue) return;
+        isScreenshotModeActive = normalizedNextValue;
+        applyToggleButtonVisibility();
+        applyTimerUiVisibility();
+    }
+
+    function syncScreenshotModeState() {
+        setScreenshotModeActive(readScreenshotModeFromDom());
+    }
+
+    function finalizeScreenshotAutohide() {
+        if (readScreenshotModeFromDom()) {
+            setScreenshotModeActive(true);
+            return;
+        }
+        setScreenshotModeActive(false);
+    }
+
+    function scheduleScreenshotAutohide(_source) {
+        setScreenshotModeActive(true);
+        if (screenshotHideTimer) clearTimeout(screenshotHideTimer);
+        screenshotHideTimer = setTimeout(() => {
+            screenshotHideTimer = null;
+            finalizeScreenshotAutohide();
+        }, SCREENSHOT_HIDE_DURATION_MS);
+    }
+
+    function resolveScreenshotTriggerKey(event) {
+        const key = String(event.key || "");
+        const code = String(event.code || "");
+        const upperKey = key.toUpperCase();
+        const keyCode = Number(event.keyCode || event.which || 0);
+
+        if (event.ctrlKey && event.shiftKey && (upperKey === SCREENSHOT_MANUAL_KEY || code === "KeyS")) {
+            return "ManualHide";
+        }
+
+        if (
+            key === "PrintScreen" || code === "PrintScreen" ||
+            key === "PrtSc" || code === "PrtSc" ||
+            key === "Print" || code === "Print" ||
+            key === "PrintScrn" || code === "PrintScrn" ||
+            key === "Snapshot" || code === "Snapshot" ||
+            key === "SysRq" || code === "SysRq" ||
+            key === "ScreenCapture" || code === "ScreenCapture" ||
+            keyCode === KEY_CODE_PRINT_SCREEN ||
+            key === "F8" || code === "F8" || keyCode === KEY_CODE_F8
+        ) {
+            return "PrintScreen";
+        }
+
+        return "";
+    }
+
+    function handleScreenshotHotkey(event) {
+        const triggerKey = resolveScreenshotTriggerKey(event);
+        if (!triggerKey) return;
+        if (event.type === "keydown" && event.repeat) return;
+
+        const nowMs = Date.now();
+        if ((nowMs - lastScreenshotTriggerAtMs) < SCREENSHOT_THROTTLE_MS) return;
+        lastScreenshotTriggerAtMs = nowMs;
+        scheduleScreenshotAutohide(`hotkey:${triggerKey}:${event.type}`);
+    }
+
+    function initScreenshotAutohideMode() {
+        document.addEventListener("keydown", handleScreenshotHotkey, true);
+        document.addEventListener("keyup", handleScreenshotHotkey, true);
+        window.addEventListener("blur", () => {
+            if (!isScreenshotModeActive) return;
+            if (screenshotHideTimer) clearTimeout(screenshotHideTimer);
+            screenshotHideTimer = setTimeout(() => {
+                screenshotHideTimer = null;
+                finalizeScreenshotAutohide();
+            }, SCREENSHOT_HIDE_ON_BLUR_DURATION_MS);
+        });
     }
 
     function getToggleButtonClassesByCloseButton(closeButton) {
@@ -138,7 +239,21 @@
         setTimerUiVisibility(!isTimerUiVisible);
     }, { capture: true });
 
+    window.addEventListener(SCREENSHOT_HIDE_EVENT, (event) => {
+        if (event && event.detail && typeof event.detail.hidden === "boolean") {
+            setScreenshotModeActive(event.detail.hidden);
+            if (!event.detail.hidden && screenshotHideTimer) {
+                clearTimeout(screenshotHideTimer);
+                screenshotHideTimer = null;
+            }
+            return;
+        }
+        syncScreenshotModeState();
+    }, { capture: true });
+
     setTimerUiVisibility(readTimerUiVisibilityPreference(), false);
+    syncScreenshotModeState();
+    initScreenshotAutohideMode();
     setInterval(() => {
         syncTimerHost();
     }, TIMER_BUTTON_SYNC_INTERVAL_MS);
@@ -225,6 +340,7 @@
                 host.appendChild(timerToggleButton);
             }
         }
+        applyToggleButtonVisibility();
 
         const closeButtonWidth = closeButton && isElementVisible(closeButton)
             ? closeButton.getBoundingClientRect().width
@@ -256,6 +372,7 @@
     }
 
     function syncTimerHost(force = false) {
+        syncScreenshotModeState();
         const nowMs = Date.now();
         if (!force && (nowMs - lastTimerHostSyncMs) < TIMER_HOST_SYNC_INTERVAL_MS) return;
         lastTimerHostSyncMs = nowMs;
