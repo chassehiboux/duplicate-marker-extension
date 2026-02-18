@@ -5,9 +5,22 @@
 
   const HIGHLIGHT_CLASS = 'dupe-highlight-active';
   const LS_SELECTOR = '[aria-describedby="list_AccAddress_AccountNumber"]';
+  const SCREENSHOT_MODE_CLASS = 'dup-ext-screenshot-mode';
+  const SCREENSHOT_HIDE_STYLE_ID = 'dup-ext-screenshot-style';
+  const SCREENSHOT_HIDE_EVENT = 'dup-ext-screenshot-visibility-change';
+  const SCREENSHOT_HIDE_DURATION_MS = 2500;
+  const SCREENSHOT_HIDE_ON_BLUR_DURATION_MS = 2500;
+  const KEY_CODE_PAGE_DOWN = 34;
+  const KEY_CODE_PRINT_SCREEN = 44;
+  const KEY_CODE_F8 = 119;
+  const SCREENSHOT_MANUAL_KEY = 'S';
   
   let isCopyModeEnabled = false;
   let currentHighlightSettings = {};
+  let screenshotHideTimer = null;
+  let screenshotModeIsActive = false;
+  let screenshotNewYearWasActive = false;
+  let lastScreenshotTriggerAtMs = 0;
   const allDuplicateSettingKeys = [
     'setting_highlight_mode', 'list_DebtID', 'list_AccAddress_AccountNumber',
     'list_Individual_FullName', 'list_CaseNumber', 'list_EDNumber',
@@ -43,6 +56,163 @@
       clearTimeout(timeoutId);
       timeoutId = setTimeout(() => fn.apply(this, args), delay);
     };
+  }
+
+  function ensureScreenshotHideStyle() {
+    if (document.getElementById(SCREENSHOT_HIDE_STYLE_ID)) return;
+
+    const style = document.createElement('style');
+    style.id = SCREENSHOT_HIDE_STYLE_ID;
+    style.textContent = `
+      html.${SCREENSHOT_MODE_CLASS} .${HIGHLIGHT_CLASS} {
+        background-color: transparent !important;
+        outline: none !important;
+      }
+
+      html.${SCREENSHOT_MODE_CLASS} #extension-confirmation-overlay,
+      html.${SCREENSHOT_MODE_CLASS} #extension-confirmation-modal-container,
+      html.${SCREENSHOT_MODE_CLASS} #jqgrid-manager-btn,
+      html.${SCREENSHOT_MODE_CLASS} .jq-ext-modal-overlay,
+      html.${SCREENSHOT_MODE_CLASS} #support-reminder-action-menu,
+      html.${SCREENSHOT_MODE_CLASS} .support-reminder-action-header,
+      html.${SCREENSHOT_MODE_CLASS} .support-reminder-action-cell,
+      html.${SCREENSHOT_MODE_CLASS} .ny-header-item,
+      html.${SCREENSHOT_MODE_CLASS} #nySwicher,
+      html.${SCREENSHOT_MODE_CLASS} .material-switch-newYear,
+      html.${SCREENSHOT_MODE_CLASS} .my-super-btn,
+      html.${SCREENSHOT_MODE_CLASS} #batch-inn-check-btn,
+      html.${SCREENSHOT_MODE_CLASS} #inn-toast-container,
+      html.${SCREENSHOT_MODE_CLASS} #inn-batch-modal-overlay,
+      html.${SCREENSHOT_MODE_CLASS} .ny-snow-container,
+      html.${SCREENSHOT_MODE_CLASS} .ny-garland-container,
+      html.${SCREENSHOT_MODE_CLASS} #pyramid-stage-timer {
+        display: none !important;
+      }
+
+      html.${SCREENSHOT_MODE_CLASS} tr.support-reminder-highlight,
+      html.${SCREENSHOT_MODE_CLASS} tr.support-reminder-highlight > td {
+        background-color: transparent !important;
+      }
+
+      html.${SCREENSHOT_MODE_CLASS} .ny-element,
+      html.${SCREENSHOT_MODE_CLASS} .snowflake {
+        display: none !important;
+      }
+    `;
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  function broadcastScreenshotMode(hidden, source) {
+    try {
+      window.dispatchEvent(new CustomEvent(SCREENSHOT_HIDE_EVENT, {
+        detail: { hidden: !!hidden, source: source || 'unknown' }
+      }));
+    } catch (err) {
+      // ignore
+    }
+  }
+
+  function toggleNewYearThemeForScreenshot(hidden) {
+    const body = document.body;
+    if (!body) return;
+
+    if (hidden) {
+      screenshotNewYearWasActive = body.classList.contains('ny-active');
+      if (screenshotNewYearWasActive) {
+        body.classList.remove('ny-active');
+      }
+      return;
+    }
+
+    if (screenshotNewYearWasActive) {
+      body.classList.add('ny-active');
+    }
+    screenshotNewYearWasActive = false;
+  }
+
+  function setScreenshotMode(hidden, source) {
+    const root = document.documentElement;
+    if (!root) return;
+
+    const nextState = !!hidden;
+    if (nextState === screenshotModeIsActive) return;
+
+    screenshotModeIsActive = nextState;
+    toggleNewYearThemeForScreenshot(nextState);
+    root.classList.toggle(SCREENSHOT_MODE_CLASS, nextState);
+    broadcastScreenshotMode(nextState, source);
+  }
+
+  function scheduleScreenshotHide(source) {
+    ensureScreenshotHideStyle();
+    setScreenshotMode(true, source);
+
+    if (screenshotHideTimer) clearTimeout(screenshotHideTimer);
+    screenshotHideTimer = setTimeout(() => {
+      screenshotHideTimer = null;
+      setScreenshotMode(false, 'timeout');
+    }, SCREENSHOT_HIDE_DURATION_MS);
+  }
+
+  function resolveScreenshotTriggerKey(event) {
+    const key = String(event.key || '');
+    const code = String(event.code || '');
+    const upperKey = key.toUpperCase();
+    const keyCode = Number(event.keyCode || event.which || 0);
+
+    if (event.ctrlKey && event.shiftKey && (upperKey === SCREENSHOT_MANUAL_KEY || code === 'KeyS')) {
+      return 'ManualHide';
+    }
+
+    if (
+      key === 'PageDown' || code === 'PageDown' ||
+      key === 'PgDown' || code === 'PgDown' ||
+      key === 'Next' || code === 'Next' ||
+      keyCode === KEY_CODE_PAGE_DOWN
+    ) {
+      return 'PageDown';
+    }
+
+    if (
+      key === 'PrintScreen' || code === 'PrintScreen' ||
+      key === 'PrtSc' || code === 'PrtSc' ||
+      key === 'Print' || code === 'Print' ||
+      key === 'PrintScrn' || code === 'PrintScrn' ||
+      key === 'Snapshot' || code === 'Snapshot' ||
+      key === 'SysRq' || code === 'SysRq' ||
+      key === 'ScreenCapture' || code === 'ScreenCapture' ||
+      keyCode === KEY_CODE_PRINT_SCREEN ||
+      key === 'F8' || code === 'F8' || keyCode === KEY_CODE_F8
+    ) {
+      return 'PrintScreen';
+    }
+
+    return '';
+  }
+
+  function handleScreenshotHotkey(event) {
+    const triggerKey = resolveScreenshotTriggerKey(event);
+    if (!triggerKey) return;
+    if (event.type === 'keydown' && event.repeat) return;
+
+    const nowMs = Date.now();
+    if ((nowMs - lastScreenshotTriggerAtMs) < 150) return;
+    lastScreenshotTriggerAtMs = nowMs;
+    scheduleScreenshotHide(`hotkey:${triggerKey}:${event.type}`);
+  }
+
+  function initScreenshotHideMode() {
+    ensureScreenshotHideStyle();
+    document.addEventListener('keydown', handleScreenshotHotkey, true);
+    document.addEventListener('keyup', handleScreenshotHotkey, true);
+    window.addEventListener('blur', () => {
+      if (!screenshotModeIsActive) return;
+      if (screenshotHideTimer) clearTimeout(screenshotHideTimer);
+      screenshotHideTimer = setTimeout(() => {
+        screenshotHideTimer = null;
+        setScreenshotMode(false, 'blur-timeout');
+      }, SCREENSHOT_HIDE_ON_BLUR_DURATION_MS);
+    });
   }
 
   // --- Логика подсветки дублей ---
@@ -222,6 +392,7 @@
   }
 
   // Запуск
+  initScreenshotHideMode();
   init();
 
   // --- Логика модального окна для подтверждения действий ---
