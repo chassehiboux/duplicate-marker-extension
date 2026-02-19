@@ -85,7 +85,13 @@
       html.${SCREENSHOT_MODE_CLASS} #inn-batch-modal-overlay,
       html.${SCREENSHOT_MODE_CLASS} .ny-snow-container,
       html.${SCREENSHOT_MODE_CLASS} .ny-garland-container,
-      html.${SCREENSHOT_MODE_CLASS} #pyramid-stage-timer {
+      html.${SCREENSHOT_MODE_CLASS} #pyramid-stage-timer,
+      html.${SCREENSHOT_MODE_CLASS} #pyramid-stage-timer-toggle,
+      html.${SCREENSHOT_MODE_CLASS} .pyramid-stage-timer-toggle-btn,
+      html.${SCREENSHOT_MODE_CLASS} [title="Скрыть таймер"],
+      html.${SCREENSHOT_MODE_CLASS} [aria-label="Скрыть таймер"],
+      html.${SCREENSHOT_MODE_CLASS} [title="Показать таймер"],
+      html.${SCREENSHOT_MODE_CLASS} [aria-label="Показать таймер"] {
         display: none !important;
       }
 

@@ -145,6 +145,10 @@
     }
 
     function syncScreenshotModeState() {
+        if (screenshotHideTimer) {
+            setScreenshotModeActive(true);
+            return;
+        }
         setScreenshotModeActive(readScreenshotModeFromDom());
     }
 

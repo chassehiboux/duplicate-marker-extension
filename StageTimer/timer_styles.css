@@ -9,7 +9,12 @@
 }
 
 html.dup-ext-screenshot-mode #pyramid-stage-timer,
-html.dup-ext-screenshot-mode #pyramid-stage-timer-toggle {
+html.dup-ext-screenshot-mode #pyramid-stage-timer-toggle,
+html.dup-ext-screenshot-mode .pyramid-stage-timer-toggle-btn,
+html.dup-ext-screenshot-mode [title="Скрыть таймер"],
+html.dup-ext-screenshot-mode [aria-label="Скрыть таймер"],
+html.dup-ext-screenshot-mode [title="Показать таймер"],
+html.dup-ext-screenshot-mode [aria-label="Показать таймер"] {
     display: none !important;
 }
 
