@@ -11,6 +11,8 @@
 html.dup-ext-screenshot-mode #pyramid-stage-timer,
 html.dup-ext-screenshot-mode #pyramid-stage-timer-toggle,
 html.dup-ext-screenshot-mode .pyramid-stage-timer-toggle-btn,
+html.dup-ext-screenshot-mode .dup-stage-jump-btn,
+html.dup-ext-screenshot-mode [data-dup-stage-jump-btn="1"],
 html.dup-ext-screenshot-mode [title="Скрыть таймер"],
 html.dup-ext-screenshot-mode [aria-label="Скрыть таймер"],
 html.dup-ext-screenshot-mode [title="Показать таймер"],

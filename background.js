@@ -428,6 +428,92 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             clearStageRequestsForTab(tabId);
             return false;
         }
+
+        case 'STAGEJUMP_APPLY_DEBTID_MAIN_WORLD': {
+            const tabId = sender && sender.tab ? sender.tab.id : null;
+            const frameId = (sender && Number.isInteger(sender.frameId)) ? sender.frameId : 0;
+            const rawDebtId = request && request.data ? request.data.debtId : '';
+            const debtId = String(rawDebtId || '').trim();
+
+            if (!Number.isInteger(tabId)) {
+                sendResponse({ success: false, error: 'NO_TAB_ID' });
+                return false;
+            }
+
+            if (!debtId) {
+                sendResponse({ success: false, error: 'EMPTY_DEBTID' });
+                return false;
+            }
+
+            chrome.scripting.executeScript(
+                {
+                    target: { tabId: tabId, frameIds: [frameId] },
+                    world: 'MAIN',
+                    func: (targetDebtId) => {
+                        try {
+                            const debtIdValue = String(targetDebtId || '').trim();
+                            if (!debtIdValue) {
+                                return { success: false, error: 'EMPTY_DEBTID' };
+                            }
+
+                            const $ = window.jQuery;
+                            if (!($ && $.fn && $.fn.jqGrid)) {
+                                return { success: false, error: 'NO_JQGRID' };
+                            }
+
+                            const jqGrid = $('#list');
+                            if (!(jqGrid && jqGrid.length)) {
+                                return { success: false, error: 'NO_GRID' };
+                            }
+
+                            const gridEl = jqGrid[0];
+                            const postData = (gridEl && gridEl.p && gridEl.p.postData) ? gridEl.p.postData : {};
+                            const filters = JSON.stringify({
+                                groupOp: 'AND',
+                                rules: [{ field: 'DebtID', op: 'eq', data: debtIdValue }]
+                            });
+
+                            jqGrid.jqGrid('setGridParam', {
+                                search: true,
+                                page: 1,
+                                postData: Object.assign({}, postData, { _search: true, filters: filters })
+                            });
+                            jqGrid.trigger('reloadGrid', [{ page: 1, current: true }]);
+
+                            return { success: true };
+                        } catch (error) {
+                            return {
+                                success: false,
+                                error: (error && error.message) ? error.message : 'EXECUTION_ERROR'
+                            };
+                        }
+                    },
+                    args: [debtId]
+                },
+                (results) => {
+                    if (chrome.runtime.lastError) {
+                        sendResponse({
+                            success: false,
+                            error: chrome.runtime.lastError.message || 'EXECUTE_SCRIPT_FAILED'
+                        });
+                        return;
+                    }
+
+                    const scriptResult = Array.isArray(results) && results.length ? results[0].result : null;
+                    if (!scriptResult || scriptResult.success !== true) {
+                        sendResponse({
+                            success: false,
+                            error: scriptResult && scriptResult.error ? scriptResult.error : 'NO_SCRIPT_RESULT'
+                        });
+                        return;
+                    }
+
+                    sendResponse({ success: true });
+                }
+            );
+
+            return true;
+        }
         
         // === ТЕЛЕМЕТРИЯ (ОБНОВЛЕННАЯ ВЕРСИЯ) ===
         case 'LOG_STAGE_TIME': {
