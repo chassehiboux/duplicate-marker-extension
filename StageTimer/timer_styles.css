@@ -11,6 +11,8 @@
 html.dup-ext-screenshot-mode #pyramid-stage-timer,
 html.dup-ext-screenshot-mode #pyramid-stage-timer-toggle,
 html.dup-ext-screenshot-mode .pyramid-stage-timer-toggle-btn,
+html.dup-ext-screenshot-mode #pyramid-stage-timer-abort,
+html.dup-ext-screenshot-mode .pyramid-stage-timer-abort-btn,
 html.dup-ext-screenshot-mode .dup-stage-jump-btn,
 html.dup-ext-screenshot-mode [data-dup-stage-jump-btn="1"],
 html.dup-ext-screenshot-mode [title="Скрыть таймер"],
@@ -48,6 +50,31 @@ html.dup-ext-screenshot-mode [aria-label="Показать таймер"] {
 #pyramid-stage-timer-toggle.is-disabled {
     background: transparent !important;
     opacity: 0.55;
+}
+
+#pyramid-stage-timer-abort {
+    position: absolute;
+    top: 50%;
+    right: var(--pyramid-stage-abort-right-offset, 0px);
+    transform: translateY(-50%);
+    z-index: 3;
+    min-width: 22px;
+    height: 22px;
+    padding: 0 4px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    text-indent: 0 !important;
+    cursor: pointer;
+    background: transparent !important;
+    background-image: none !important;
+    color: inherit;
+}
+
+#pyramid-stage-timer-abort .pyramid-stage-timer-abort-mark {
+    font-size: 14px;
+    line-height: 1;
+    font-weight: 700;
 }
 
 #pyramid-stage-timer {

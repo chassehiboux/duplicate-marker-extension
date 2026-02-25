@@ -1,4 +1,4 @@
-// StageTimer/timer_content.js
+﻿// StageTimer/timer_content.js
 
 (function() {
     // 1. Определение базы
@@ -47,6 +47,8 @@
     const KEY_CODE_PRINT_SCREEN = 44;
     const KEY_CODE_F8 = 119;
     const SCREENSHOT_MANUAL_KEY = "S";
+    const GRID_ABORT_REWRITE_EVENT = "dup-grid-abort-message";
+    const GRID_ABORT_REWRITE_TEXT = "Загрузка/Фильтрация была прервана пользователем вручную. Повторите действие заново.";
 
     // UI
     const toast = document.createElement("div");
@@ -63,6 +65,10 @@
     timerToggleButton.id = "pyramid-stage-timer-toggle";
     timerToggleButton.type = "button";
     timerToggleButton.innerHTML = `<span class="pyramid-stage-timer-toggle-mark fa fa-eye" aria-hidden="true"></span>`;
+    const timerAbortButton = document.createElement("button");
+    timerAbortButton.id = "pyramid-stage-timer-abort";
+    timerAbortButton.type = "button";
+    timerAbortButton.innerHTML = `<span class="pyramid-stage-timer-abort-mark" aria-hidden="true">×</span>`;
     let isTimerUiVisible = true;
     let hasTimerSnapshot = false;
     let isScreenshotModeActive = false;
@@ -109,8 +115,16 @@
         timerToggleButton.setAttribute("aria-label", buttonTitle);
     }
 
-    function applyToggleButtonVisibility() {
-        timerToggleButton.style.display = isScreenshotModeActive ? "none" : "inline-flex";
+    function updateTimerAbortButtonState() {
+        const buttonTitle = "Прервать загрузку/фильтрацию (debug)";
+        timerAbortButton.setAttribute("title", buttonTitle);
+        timerAbortButton.setAttribute("aria-label", buttonTitle);
+    }
+
+    function applyControlButtonsVisibility() {
+        const displayValue = isScreenshotModeActive ? "none" : "inline-flex";
+        timerToggleButton.style.display = displayValue;
+        timerAbortButton.style.display = displayValue;
     }
 
     function applyTimerUiVisibility() {
@@ -127,7 +141,7 @@
             saveTimerUiVisibilityPreference(isTimerUiVisible);
         }
         updateTimerToggleButtonState();
-        applyToggleButtonVisibility();
+        applyControlButtonsVisibility();
         applyTimerUiVisibility();
     }
 
@@ -140,7 +154,7 @@
         const normalizedNextValue = !!nextValue;
         if (isScreenshotModeActive === normalizedNextValue) return;
         isScreenshotModeActive = normalizedNextValue;
-        applyToggleButtonVisibility();
+        applyControlButtonsVisibility();
         applyTimerUiVisibility();
     }
 
@@ -237,10 +251,172 @@
         updateTimerToggleButtonState();
     }
 
+    function syncAbortButtonLook(closeButton) {
+        timerAbortButton.className = "pyramid-stage-timer-abort-btn";
+        const classesToApply = getToggleButtonClassesByCloseButton(closeButton);
+        classesToApply.forEach((className) => timerAbortButton.classList.add(className));
+        updateTimerAbortButtonState();
+    }
+
+    function getGridCandidatesForAbort() {
+        const candidates = [];
+        const byId = document.getElementById("list");
+        if (byId) candidates.push(byId);
+
+        const bySelector = Array.from(document.querySelectorAll("table.ui-jqgrid-btable"));
+        bySelector.forEach((el) => candidates.push(el));
+
+        if (window.jQuery) {
+            try {
+                const jqById = window.jQuery("#list")[0];
+                if (jqById) candidates.push(jqById);
+            } catch (e) {
+                // ignore
+            }
+            try {
+                window.jQuery("table.ui-jqgrid-btable").each((_, el) => {
+                    if (el) candidates.push(el);
+                });
+            } catch (e) {
+                // ignore
+            }
+        }
+
+        const unique = [];
+        const seen = new Set();
+        candidates.forEach((el) => {
+            if (!el || typeof el !== "object") return;
+            if (seen.has(el)) return;
+            seen.add(el);
+            unique.push(el);
+        });
+        return unique;
+    }
+
+    function isGridRequestBusy(jqXhr) {
+        if (!jqXhr) return false;
+        const readyState = Number(jqXhr.readyState || 0);
+        return readyState > 0 && readyState < 4;
+    }
+
+    function getAbortableGridRequest() {
+        const grids = getGridCandidatesForAbort();
+        let fallbackRequest = null;
+
+        for (const gridEl of grids) {
+            const jqXhr = gridEl && gridEl.p ? gridEl.p.jqXhr : null;
+            if (!jqXhr || typeof jqXhr.abort !== "function") continue;
+
+            if (isGridRequestBusy(jqXhr)) {
+                return { gridEl, jqXhr, isBusy: true };
+            }
+
+            if (!fallbackRequest) {
+                fallbackRequest = { gridEl, jqXhr, isBusy: false };
+            }
+        }
+
+        return fallbackRequest;
+    }
+
+    function abortActiveStageLoadForDebug() {
+        const activeRequest = getAbortableGridRequest();
+        if (activeRequest) {
+            try {
+                activeRequest.jqXhr.abort();
+                return "jqxhr";
+            } catch (e) {
+                // ignore and try hard fallback below
+            }
+        }
+
+        // Жесткий fallback для отладки: останавливаем сетевую активность страницы.
+        // Нужен для кейсов, где jqXhr не пробрасывается в content-world.
+        try {
+            window.stop();
+            return "window-stop";
+        } catch (e) {
+            return "";
+        }
+    }
+
+    function rewriteGridAbortErrorMessage(messageText) {
+        const finalMessage = String(messageText || GRID_ABORT_REWRITE_TEXT).trim() || GRID_ABORT_REWRITE_TEXT;
+
+        const srOnlyErrors = Array.from(document.querySelectorAll("span.sr-only.ui-jqgrid-error"));
+        srOnlyErrors.forEach((el) => {
+            const currentText = String(el.textContent || "").trim().toLowerCase();
+            if (!currentText || currentText === "error" || currentText === "ошибка" || currentText.includes("error")) {
+                el.textContent = finalMessage;
+            }
+        });
+
+        const errorBars = Array.from(document.querySelectorAll(".ui-jqgrid-errorbar"));
+        errorBars.forEach((bar) => {
+            if (!(bar instanceof HTMLElement)) return;
+            const textNodes = Array.from(bar.childNodes).filter((node) => node.nodeType === Node.TEXT_NODE);
+            textNodes.forEach((node) => {
+                const text = String(node.textContent || "").trim().toLowerCase();
+                if (!text || text === "error" || text.includes("error")) {
+                    node.textContent = ` ${finalMessage} `;
+                }
+            });
+            bar.setAttribute("aria-label", finalMessage);
+        });
+    }
+
+    function scheduleGridAbortErrorMessageRewrite(messageText) {
+        const retries = [0, 60, 180, 420, 900];
+        retries.forEach((delayMs) => {
+            setTimeout(() => {
+                rewriteGridAbortErrorMessage(messageText);
+            }, delayMs);
+        });
+    }
+
+    function notifyGridAbortMessageRewrite(source, messageText) {
+        const finalMessage = String(messageText || GRID_ABORT_REWRITE_TEXT).trim() || GRID_ABORT_REWRITE_TEXT;
+        scheduleGridAbortErrorMessageRewrite(finalMessage);
+
+        try {
+            window.dispatchEvent(new CustomEvent(GRID_ABORT_REWRITE_EVENT, {
+                detail: {
+                    source: source || "timer-debug-abort",
+                    message: finalMessage
+                }
+            }));
+        } catch (e) {
+            // ignore
+        }
+    }
+
     timerToggleButton.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
         setTimerUiVisibility(!isTimerUiVisible);
+    }, { capture: true });
+
+    timerAbortButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const mode = abortActiveStageLoadForDebug();
+        if (mode === "jqxhr") {
+            notifyGridAbortMessageRewrite("timer-debug-abort-jqxhr");
+            console.info("[StageTimer] Debug abort: jqXhr aborted.");
+        } else if (mode === "window-stop") {
+            notifyGridAbortMessageRewrite("timer-debug-abort-window-stop");
+            console.info("[StageTimer] Debug abort: fallback window.stop() applied.");
+        } else {
+            console.info("[StageTimer] Debug abort: active grid request not found.");
+        }
+    }, { capture: true });
+
+    window.addEventListener(GRID_ABORT_REWRITE_EVENT, (event) => {
+        const detail = event && event.detail ? event.detail : {};
+        const message = detail && typeof detail.message === "string"
+            ? detail.message
+            : GRID_ABORT_REWRITE_TEXT;
+        scheduleGridAbortErrorMessageRewrite(message);
     }, { capture: true });
 
     window.addEventListener(SCREENSHOT_HIDE_EVENT, (event) => {
@@ -329,35 +505,53 @@
         if (currentTimerHost && currentTimerHost !== host) {
             currentTimerHost.classList.remove("pyramid-stage-timer-host");
             timerToggleButton.remove();
+            timerAbortButton.remove();
             currentTimerHost.style.removeProperty("--pyramid-stage-timer-right-offset");
             currentTimerHost.style.removeProperty("--pyramid-stage-toggle-right-offset");
+            currentTimerHost.style.removeProperty("--pyramid-stage-abort-right-offset");
         }
 
         const closeButton = host.querySelector(".ui-jqgrid-titlebar-close, .ui-dialog-titlebar-close");
         syncToggleButtonLook(closeButton);
+        syncAbortButtonLook(closeButton);
+
+        if (timerAbortButton.parentElement !== host) {
+            timerAbortButton.remove();
+            if (closeButton && closeButton.parentElement === host) {
+                host.insertBefore(timerAbortButton, closeButton);
+            } else {
+                host.appendChild(timerAbortButton);
+            }
+        }
 
         if (timerToggleButton.parentElement !== host) {
             timerToggleButton.remove();
             if (closeButton && closeButton.parentElement === host) {
-                host.insertBefore(timerToggleButton, closeButton);
+                host.insertBefore(timerToggleButton, timerAbortButton);
             } else {
                 host.appendChild(timerToggleButton);
             }
         }
-        applyToggleButtonVisibility();
+        applyControlButtonsVisibility();
 
         const closeButtonWidth = closeButton && isElementVisible(closeButton)
             ? closeButton.getBoundingClientRect().width
             : 0;
+
+        const abortButtonWidth = isElementVisible(timerAbortButton)
+            ? timerAbortButton.getBoundingClientRect().width
+            : 22;
 
         const toggleButtonWidth = isElementVisible(timerToggleButton)
             ? timerToggleButton.getBoundingClientRect().width
             : 24;
 
         const closeOffsetPx = Math.max(0, Math.ceil(closeButtonWidth));
-        const toggleOffsetPx = closeOffsetPx + 6;
+        const abortOffsetPx = closeOffsetPx + 6;
+        const toggleOffsetPx = abortOffsetPx + Math.ceil(abortButtonWidth) + 4;
         const timerRightOffsetPx = toggleOffsetPx + Math.ceil(toggleButtonWidth) + 8;
 
+        host.style.setProperty("--pyramid-stage-abort-right-offset", `${abortOffsetPx}px`);
         host.style.setProperty("--pyramid-stage-toggle-right-offset", `${toggleOffsetPx}px`);
         host.style.setProperty("--pyramid-stage-timer-right-offset", `${timerRightOffsetPx}px`);
 
@@ -393,12 +587,14 @@
         toast.remove();
         if (removeToggleButton) {
             timerToggleButton.remove();
+            timerAbortButton.remove();
         }
         if (currentTimerHost) {
             currentTimerHost.classList.remove("pyramid-stage-timer-host");
             currentTimerHost.style.removeProperty("--pyramid-stage-timer-right-offset");
             if (removeToggleButton) {
                 currentTimerHost.style.removeProperty("--pyramid-stage-toggle-right-offset");
+                currentTimerHost.style.removeProperty("--pyramid-stage-abort-right-offset");
             }
             currentTimerHost = null;
         }
@@ -906,3 +1102,5 @@
     }
 
 })();
+
+

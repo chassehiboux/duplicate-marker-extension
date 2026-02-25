@@ -32,16 +32,22 @@
   const STAGE_JUMP_MENU_ACTION_ATTR = 'data-dup-stage-jump-action';
   const STAGE_JUMP_MENU_ACTION_SLOWSEARCH = 'to_slowsearch';
   const STAGE_JUMP_MENU_ACTION_STAGE = 'to_stage';
+  const STAGE_JUMP_MENU_ACTION_EXECUTION_ANALYSIS = 'to_execution_analysis';
   const STAGE_JUMP_MENU_ITEM_SLOWSEARCH_TEXT = 'Переход в Глобальный поиск';
   const STAGE_JUMP_MENU_ITEM_STAGE_TEXT = 'Переход к ИД на стадии';
+  const STAGE_JUMP_MENU_ITEM_EXECUTION_ANALYSIS_TEXT = 'Анализ исполнения';
+  const STAGE_JUMP_PENDING_MODE_EXECUTION_ANALYSIS = 'execution_analysis';
+  const STAGE_JUMP_ANALYSIS_DRAFT_STORAGE_KEY = 'dup_stage_jump_analysis_draft';
   const SLOWSEARCH_TARGET_PATH = '/ovzid/status/all';
   const SLOWSEARCH_JUMP_BUTTON_TEXT = 'Перейти в ОВЗИД (status/all)';
   const SLOWSEARCH_JUMP_MARK_ATTR = 'data-dup-slowsearch-jump';
   const SLOWSEARCH_CITIES_TOGGLE_SELECTOR = 'button.btn-cities.dropdown-toggle';
   const SLOWSEARCH_CITIES_LINK_SELECTOR = 'a.department-switch';
+  const GRID_ABORT_REWRITE_EVENT = 'dup-grid-abort-message';
+  const GRID_ABORT_REWRITE_TEXT = 'Загрузка/Фильтрация была прервана пользователем вручную. Повторите действие заново.';
   // Статическая карта стадий/статусов ВЗИД, зафиксированная по меню блока ВЗИД.
   const STAGE_JUMP_STATIC_MENU_LINKS = [
-    { path: ['ИД принятые в работу из ПУ (новые)'], href: '/ovzid/status/32' },
+    { path: ['ОВЗИД','ИД принятые в работу из ПУ (новые)'], href: '/ovzid/status/32' },
     { path: ['Подлежат повторному предъявлению'], href: '/ovzid/stage/100000' },
     { path: ['Подлежат повторному предъявлению', 'ИД, возвращенные из ПФ'], href: '/ovzid/status/100053' },
     { path: ['Подлежат повторному предъявлению', 'ИД, возвращенные из СБ'], href: '/ovzid/status/100064' },
@@ -101,6 +107,14 @@
   let stageJumpCachedMenuIndex = null;
   let stageJumpActionMenuEl = null;
   let stageJumpActionMenuAnchor = null;
+  let stageJumpLastStageLoadStartAtMs = 0;
+  let stageJumpLastStageLoadType = '';
+  let stageJumpLastStageLoadRequestUrl = '';
+  let stageJumpLastEditDocStartAtMs = 0;
+  let stageJumpLastEditDocStopAtMs = 0;
+  let stageJumpLastStageTimerErrorAtMs = 0;
+  const stageJumpExecutionRequestStates = new Map();
+  const stageJumpExecutionButtonStates = new Map();
   const allDuplicateSettingKeys = [
     'setting_highlight_mode', 'list_DebtID', 'list_AccAddress_AccountNumber',
     'list_Individual_FullName', 'list_CaseNumber', 'list_EDNumber',
@@ -180,6 +194,68 @@
     }, safeIntervalMs);
   }
 
+  function rewriteGridAbortErrorMessage(messageText) {
+    const finalMessage = String(messageText || GRID_ABORT_REWRITE_TEXT).trim() || GRID_ABORT_REWRITE_TEXT;
+    let changed = false;
+
+    const srOnlyErrors = Array.from(document.querySelectorAll('span.sr-only.ui-jqgrid-error'));
+    srOnlyErrors.forEach((el) => {
+      const currentText = String(el.textContent || '').trim().toLowerCase();
+      if (!currentText || currentText === 'error' || currentText === 'ошибка' || currentText.indexOf('error') !== -1) {
+        el.textContent = finalMessage;
+        changed = true;
+      }
+    });
+
+    const errorBars = Array.from(document.querySelectorAll('.ui-jqgrid-errorbar'));
+    errorBars.forEach((bar) => {
+      if (!(bar instanceof HTMLElement)) return;
+      const textNodes = Array.from(bar.childNodes).filter((node) => node.nodeType === Node.TEXT_NODE);
+      textNodes.forEach((node) => {
+        const text = String(node.textContent || '').trim().toLowerCase();
+        if (!text || text === 'error' || text.indexOf('error') !== -1) {
+          node.textContent = ` ${finalMessage} `;
+          changed = true;
+        }
+      });
+      bar.setAttribute('aria-label', finalMessage);
+    });
+
+    return changed;
+  }
+
+  function scheduleGridAbortErrorMessageRewrite(messageText) {
+    const retries = [0, 60, 180, 420, 900];
+    retries.forEach((delayMs) => {
+      setTimeout(() => {
+        rewriteGridAbortErrorMessage(messageText);
+      }, delayMs);
+    });
+  }
+
+  function notifyGridAbortMessageRewrite(source, messageText) {
+    const finalMessage = String(messageText || GRID_ABORT_REWRITE_TEXT).trim() || GRID_ABORT_REWRITE_TEXT;
+    scheduleGridAbortErrorMessageRewrite(finalMessage);
+    try {
+      window.dispatchEvent(new CustomEvent(GRID_ABORT_REWRITE_EVENT, {
+        detail: {
+          source: source || 'manual-abort',
+          message: finalMessage
+        }
+      }));
+    } catch (error) {
+      // ignore
+    }
+  }
+
+  window.addEventListener(GRID_ABORT_REWRITE_EVENT, function(event) {
+    const detail = event && event.detail ? event.detail : {};
+    const message = detail && typeof detail.message === 'string'
+      ? detail.message
+      : GRID_ABORT_REWRITE_TEXT;
+    scheduleGridAbortErrorMessageRewrite(message);
+  }, { capture: true });
+
   function ensureScreenshotHideStyle() {
     if (document.getElementById(SCREENSHOT_HIDE_STYLE_ID)) return;
 
@@ -210,6 +286,8 @@
       html.${SCREENSHOT_MODE_CLASS} #pyramid-stage-timer,
       html.${SCREENSHOT_MODE_CLASS} #pyramid-stage-timer-toggle,
       html.${SCREENSHOT_MODE_CLASS} .pyramid-stage-timer-toggle-btn,
+      html.${SCREENSHOT_MODE_CLASS} #pyramid-stage-timer-abort,
+      html.${SCREENSHOT_MODE_CLASS} .pyramid-stage-timer-abort-btn,
       html.${SCREENSHOT_MODE_CLASS} .${STAGE_JUMP_BUTTON_CLASS},
       html.${SCREENSHOT_MODE_CLASS} .${STAGE_JUMP_MENU_CLASS},
       html.${SCREENSHOT_MODE_CLASS} [${STAGE_JUMP_BUTTON_MARK_ATTR}="1"],
@@ -523,6 +601,141 @@
     if (searchInput) searchInput.select();
   }, true);
 
+  function tryAbortBeforeManualGridSearch(searchInput, triggerName) {
+    if (!(searchInput instanceof HTMLInputElement)) return;
+    const abortMode = abortStageJumpBusyGridRequest(searchInput);
+    if (!abortMode) return '';
+    notifyGridAbortMessageRewrite('manual-search-' + String(triggerName || 'unknown'));
+
+    if (abortMode === 'jqxhr') {
+      console.info('[StageJump] Manual search pre-abort via jqXhr (' + triggerName + ').');
+    } else if (abortMode === 'window-stop') {
+      console.info('[StageJump] Manual search pre-abort via window.stop() (' + triggerName + ').');
+    }
+    return abortMode;
+  }
+
+  function dispatchManualGridSearchEnter(searchInput) {
+    if (!(searchInput instanceof HTMLInputElement)) return false;
+    if (!document.contains(searchInput)) return false;
+
+    try {
+      searchInput.focus({ preventScroll: true });
+    } catch (error) {
+      searchInput.focus();
+    }
+
+    const enterKey = {
+      key: 'Enter',
+      code: 'Enter',
+      keyCode: 13,
+      which: 13,
+      bubbles: true,
+      cancelable: true
+    };
+
+    try {
+      searchInput.dispatchEvent(new KeyboardEvent('keydown', enterKey));
+      searchInput.dispatchEvent(new KeyboardEvent('keypress', enterKey));
+      searchInput.dispatchEvent(new KeyboardEvent('keyup', enterKey));
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function replayManualGridSearchEnterAfterAbort(searchInput, abortMode) {
+    if (!(searchInput instanceof HTMLInputElement)) return;
+    const delayMs = abortMode === 'window-stop' ? 220 : 90;
+    window.setTimeout(() => {
+      const ok = dispatchManualGridSearchEnter(searchInput);
+      if (ok) {
+        console.info('[StageJump] Manual search enter replayed after pre-abort.');
+      }
+    }, delayMs);
+  }
+
+  function getManualGridSortTrigger(target) {
+    if (!(target instanceof Element)) return null;
+    const sortable = target.closest('.ui-jqgrid-sortable');
+    if (!(sortable instanceof HTMLElement)) return null;
+
+    const headerCell = sortable.closest('th');
+    if (!(headerCell instanceof HTMLTableCellElement)) return null;
+    if (!headerCell.closest('.ui-jqgrid-hdiv')) return null;
+
+    return sortable;
+  }
+
+  function dispatchManualGridSortClick(sortableEl) {
+    if (!(sortableEl instanceof HTMLElement)) return false;
+    if (!document.contains(sortableEl)) return false;
+
+    try {
+      sortableEl.dispatchEvent(new MouseEvent('click', {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        button: 0
+      }));
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function replayManualGridSortClickAfterAbort(sortableEl, abortMode) {
+    if (!(sortableEl instanceof HTMLElement)) return;
+    const delayMs = abortMode === 'window-stop' ? 220 : 90;
+    window.setTimeout(() => {
+      const ok = dispatchManualGridSortClick(sortableEl);
+      if (ok) {
+        console.info('[StageJump] Manual sort click replayed after pre-abort.');
+      }
+    }, delayMs);
+  }
+
+  document.addEventListener('keydown', function(e) {
+    if (!e || !e.isTrusted) return;
+    if (e.repeat) return;
+    if (e.key !== 'Enter' && e.keyCode !== 13) return;
+    const searchInput = e.target && e.target.closest
+      ? e.target.closest('input[role="search"]')
+      : null;
+    if (!searchInput) return;
+    const abortMode = tryAbortBeforeManualGridSearch(searchInput, 'enter');
+    if (!abortMode) return;
+
+    // Первый Enter тратится на abort: перехватываем его и переотправляем один раз сами.
+    if (typeof e.preventDefault === 'function') e.preventDefault();
+    if (typeof e.stopPropagation === 'function') e.stopPropagation();
+    if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+    replayManualGridSearchEnterAfterAbort(searchInput, abortMode);
+  }, true);
+
+  document.addEventListener('click', function(e) {
+    if (!e || !e.isTrusted) return;
+    if (typeof e.button === 'number' && e.button !== 0) return;
+
+    const sortTrigger = getManualGridSortTrigger(e.target);
+    if (!sortTrigger) return;
+
+    const abortMode = abortStageJumpBusyGridRequest(null);
+    if (!abortMode) return;
+
+    notifyGridAbortMessageRewrite('manual-sort-click');
+    if (abortMode === 'jqxhr') {
+      console.info('[StageJump] Manual sort pre-abort via jqXhr.');
+    } else if (abortMode === 'window-stop') {
+      console.info('[StageJump] Manual sort pre-abort via window.stop().');
+    }
+
+    if (typeof e.preventDefault === 'function') e.preventDefault();
+    if (typeof e.stopPropagation === 'function') e.stopPropagation();
+    if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+    replayManualGridSortClickAfterAbort(sortTrigger, abortMode);
+  }, true);
+
   // --- Переход на стадию ИД ---
   function normalizeStageJumpText(value) {
     return String(value || '')
@@ -535,6 +748,100 @@
       .replace(/\s+/g, ' ')
       .trim();
   }
+
+  function getStageTimerLoadKind(loadType) {
+    const normalized = String(loadType || '').toLowerCase();
+    if (!normalized) return '';
+    if (normalized.includes('фильтрац')) return 'filter';
+    if (normalized.includes('загруз')) return 'load';
+    return '';
+  }
+
+  function rememberStageTimerStart(data) {
+    const loadType = data && data.loadType ? String(data.loadType) : '';
+    if (getStageTimerLoadKind(loadType) !== 'load') return;
+
+    stageJumpLastStageLoadStartAtMs = Date.now();
+    stageJumpLastStageLoadType = loadType;
+    stageJumpLastStageLoadRequestUrl = data && data.requestUrl ? String(data.requestUrl) : '';
+  }
+
+  function hasStageLoadStartSince(timestampMs) {
+    const fromTs = Number(timestampMs || 0);
+    return stageJumpLastStageLoadStartAtMs > 0 && stageJumpLastStageLoadStartAtMs >= fromTs;
+  }
+
+  function isStageJumpEditDocRequestData(data) {
+    if (!data || typeof data !== 'object') return false;
+    const requestUrl = String(data.requestUrl || '').toLowerCase();
+    return requestUrl.includes('/actions/editedoc');
+  }
+
+  function rememberStageTimerMessage(action, data) {
+    const normalizedAction = String(action || '').trim().toUpperCase();
+    if (!normalizedAction) return;
+
+    if (normalizedAction === 'STAGE_TIMER_START') {
+      rememberStageTimerStart(data || {});
+      if (isStageJumpEditDocRequestData(data)) {
+        stageJumpLastEditDocStartAtMs = Date.now();
+      }
+      return;
+    }
+
+    if (normalizedAction === 'STAGE_TIMER_STOP') {
+      if (isStageJumpEditDocRequestData(data)) {
+        stageJumpLastEditDocStopAtMs = Date.now();
+      }
+      return;
+    }
+
+    if (normalizedAction === 'STAGE_TIMER_ERROR') {
+      stageJumpLastStageTimerErrorAtMs = Date.now();
+    }
+  }
+
+  // Слежение за StageTimer: фиксируем старт/стоп/ошибку запросов, в т.ч. POST editedoc.
+  chrome.runtime.onMessage.addListener((message) => {
+    if (!message) return false;
+    const action = String(message.action || '').trim();
+    if (action !== 'STAGE_TIMER_START' && action !== 'STAGE_TIMER_STOP' && action !== 'STAGE_TIMER_ERROR') {
+      return false;
+    }
+    rememberStageTimerMessage(action, message.data || {});
+    return false;
+  });
+
+  chrome.runtime.onMessage.addListener((message) => {
+    if (!message || message.action !== 'STAGEJUMP_EXECUTION_ANALYSIS_STATUS') return false;
+    const data = message.data || {};
+    const requestId = String(data.requestId || '').trim();
+    const status = String(data.status || '').trim().toLowerCase();
+    if (!requestId) return false;
+
+    const stateKey = stageJumpExecutionRequestStates.get(requestId);
+    if (!stateKey) return false;
+
+    if (status === 'running') {
+      setStageJumpExecutionButtonState(stateKey, 'loading');
+      updateStageJumpButtons();
+      return false;
+    }
+
+    stageJumpExecutionRequestStates.delete(requestId);
+
+    if (status === 'success') {
+      setStageJumpExecutionButtonState(stateKey, 'success', 1000);
+      updateStageJumpButtons();
+      return false;
+    }
+
+    setStageJumpExecutionButtonState(stateKey, '');
+    updateStageJumpButtons();
+    const error = data && data.error ? String(data.error) : 'UNKNOWN_ERROR';
+    console.warn('[StageJump] Фоновый анализ исполнения завершился с ошибкой: ' + error);
+    return false;
+  });
 
   function isStageJumpSourcePage() {
     const pathname = String(window.location.pathname || '');
@@ -975,6 +1282,71 @@
     return null;
   }
 
+  function getStageJumpExecutionButtonStateKey(debtId, edocId) {
+    const normalizedDebtId = String(debtId || '').trim();
+    const normalizedEdocId = String(edocId || '').trim();
+    if (!normalizedDebtId || !normalizedEdocId) return '';
+    return `${normalizedDebtId}::${normalizedEdocId}`;
+  }
+
+  function setStageJumpExecutionButtonState(stateKey, state, ttlMs = 0) {
+    if (!stateKey) return;
+    const normalizedState = String(state || '').trim();
+    if (!normalizedState) {
+      stageJumpExecutionButtonStates.delete(stateKey);
+      return;
+    }
+
+    const safeTtlMs = Number(ttlMs) > 0 ? Number(ttlMs) : 0;
+    const expiresAt = safeTtlMs > 0 ? Date.now() + safeTtlMs : 0;
+    stageJumpExecutionButtonStates.set(stateKey, { state: normalizedState, expiresAt });
+
+    if (safeTtlMs > 0) {
+      window.setTimeout(() => {
+        const current = stageJumpExecutionButtonStates.get(stateKey);
+        if (!current) return;
+        if (current.expiresAt !== expiresAt) return;
+        stageJumpExecutionButtonStates.delete(stateKey);
+        updateStageJumpButtons();
+      }, safeTtlMs + 60);
+    }
+  }
+
+  function getStageJumpExecutionButtonState(stateKey) {
+    if (!stateKey) return '';
+    const current = stageJumpExecutionButtonStates.get(stateKey);
+    if (!current) return '';
+
+    if (current.expiresAt > 0 && current.expiresAt <= Date.now()) {
+      stageJumpExecutionButtonStates.delete(stateKey);
+      return '';
+    }
+
+    return String(current.state || '').trim();
+  }
+
+  function applyStageJumpExecutionButtonVisualState(button, debtId, edocId) {
+    if (!(button instanceof HTMLElement)) return;
+    const stateKey = getStageJumpExecutionButtonStateKey(debtId, edocId);
+    const state = getStageJumpExecutionButtonState(stateKey);
+
+    button.classList.remove('is-processing', 'is-success');
+    if (!state) return;
+
+    if (state === 'loading') {
+      button.classList.add('is-processing');
+      return;
+    }
+
+    if (state === 'success') {
+      button.classList.add('is-success');
+    }
+  }
+
+  function createStageJumpExecutionRequestId() {
+    return `sj_exec_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  }
+
   function ensureStageJumpStyle() {
     if (document.getElementById(STAGE_JUMP_STYLE_ID)) return;
 
@@ -1020,6 +1392,34 @@
         cursor: not-allowed !important;
       }
 
+      .${STAGE_JUMP_BUTTON_CLASS}.is-processing {
+        color: transparent !important;
+        pointer-events: none !important;
+        position: relative;
+      }
+
+      .${STAGE_JUMP_BUTTON_CLASS}.is-processing::after {
+        content: '';
+        position: absolute;
+        width: 11px;
+        height: 11px;
+        border: 2px solid #8a6d00;
+        border-top-color: transparent;
+        border-radius: 50%;
+        animation: dupStageJumpSpin 0.7s linear infinite;
+      }
+
+      .${STAGE_JUMP_BUTTON_CLASS}.is-success {
+        background: #43a047 !important;
+        border-color: #2e7d32 !important;
+        color: #ffffff !important;
+      }
+
+      @keyframes dupStageJumpSpin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+      }
+
       .${STAGE_JUMP_MENU_CLASS} {
         position: fixed;
         z-index: 2147483646;
@@ -1061,7 +1461,7 @@
     (document.head || document.documentElement).appendChild(style);
   }
 
-  function openStageJumpTarget(targetUrl, debtId) {
+  function openStageJumpTarget(targetUrl, debtId, options = null) {
     if (!targetUrl || !debtId) return;
     try {
       const nextUrl = new URL(targetUrl, window.location.origin);
@@ -1074,15 +1474,67 @@
       hashParams.set(STAGE_JUMP_HASH_KEY, normalizedDebtId);
       nextUrl.hash = hashParams.toString();
 
-      try {
-        const pendingPayload = {
-          debtId: normalizedDebtId,
-          path: nextUrl.pathname,
-          createdAt: Date.now()
+      const pendingPayload = {
+        debtId: normalizedDebtId,
+        path: nextUrl.pathname,
+        createdAt: Date.now()
+      };
+      const mode = String(options && options.mode ? options.mode : '').trim();
+      const edocId = String(options && options.edocId ? options.edocId : '').trim();
+      const analysisText = String(options && options.analysisText ? options.analysisText : '').trim();
+      const requestId = String(options && options.requestId ? options.requestId : '').trim();
+      const openInBackground = !!(options && options.openInBackground === true);
+      const onResult = options && typeof options.onResult === 'function'
+        ? options.onResult
+        : null;
+      const isExecutionAnalysisBackground = (
+        openInBackground &&
+        mode === STAGE_JUMP_PENDING_MODE_EXECUTION_ANALYSIS
+      );
+
+      if (mode) pendingPayload.mode = mode;
+      if (edocId) pendingPayload.edocId = edocId;
+      if (analysisText) pendingPayload.analysisText = analysisText;
+      if (requestId) pendingPayload.requestId = requestId;
+      if (!isExecutionAnalysisBackground) {
+        saveStageJumpPendingPayloadToStorage(pendingPayload);
+      }
+
+      if (openInBackground) {
+        if (!(chrome && chrome.runtime && typeof chrome.runtime.sendMessage === 'function')) {
+          if (onResult) onResult({ success: false, error: 'NO_RUNTIME' });
+          return;
+        }
+
+        const backgroundRequestData = {
+          url: nextUrl.toString(),
+          requestId
         };
-        window.localStorage.setItem(STAGE_JUMP_STORAGE_KEY, JSON.stringify(pendingPayload));
-      } catch (error) {
-        // ignore
+        if (isExecutionAnalysisBackground) {
+          backgroundRequestData.payload = {
+            mode: STAGE_JUMP_PENDING_MODE_EXECUTION_ANALYSIS,
+            path: nextUrl.pathname,
+            debtId: normalizedDebtId,
+            edocId,
+            analysisText
+          };
+        }
+
+        chrome.runtime.sendMessage({
+          action: 'STAGEJUMP_OPEN_BACKGROUND_TAB',
+          data: backgroundRequestData
+        }, (response) => {
+          if (!onResult) return;
+          const runtimeError = chrome.runtime && chrome.runtime.lastError
+            ? chrome.runtime.lastError.message
+            : '';
+          if (runtimeError) {
+            onResult({ success: false, error: runtimeError });
+            return;
+          }
+          onResult(response || { success: false, error: 'NO_RESPONSE' });
+        });
+        return;
       }
 
       window.open(nextUrl.toString(), '_blank', 'noopener');
@@ -1095,6 +1547,113 @@
     if (!stageJumpActionMenuEl) return;
     stageJumpActionMenuEl.hidden = true;
     stageJumpActionMenuAnchor = null;
+  }
+
+  function startStageJumpExecutionAnalysisInBackground(targetUrl, debtId, edocId, analysisText) {
+    const stateKey = getStageJumpExecutionButtonStateKey(debtId, edocId);
+    if (!stateKey) return;
+
+    const requestId = createStageJumpExecutionRequestId();
+    stageJumpExecutionRequestStates.set(requestId, stateKey);
+    setStageJumpExecutionButtonState(stateKey, 'loading');
+    updateStageJumpButtons();
+
+    openStageJumpTarget(targetUrl, debtId, {
+      mode: STAGE_JUMP_PENDING_MODE_EXECUTION_ANALYSIS,
+      edocId,
+      analysisText,
+      requestId,
+      openInBackground: true,
+      onResult: (response) => {
+        const isSuccess = !!(response && response.success === true);
+        if (isSuccess) return;
+
+        stageJumpExecutionRequestStates.delete(requestId);
+        setStageJumpExecutionButtonState(stateKey, '');
+        updateStageJumpButtons();
+
+        const reason = response && response.error
+          ? String(response.error)
+          : 'UNKNOWN_ERROR';
+        console.warn('[StageJump] Не удалось запустить фоновый анализ исполнения: ' + reason);
+      }
+    });
+  }
+
+  function getStageJumpExecutionTargetFromButton(button) {
+    if (!(button instanceof HTMLElement)) return null;
+
+    const debtId = String(button.dataset.debtId || '').trim();
+    if (!debtId) return null;
+
+    const targetUrl = String(button.dataset.targetUrl || '').trim();
+    const edocId = String(button.dataset.edocId || '').trim();
+    return {
+      button,
+      debtId,
+      targetUrl,
+      edocId
+    };
+  }
+
+  function getStageJumpSelectedExecutionButtons() {
+    const rows = Array.from(document.querySelectorAll('#list tbody > tr.jqgrow'));
+    return rows
+      .map((row) => {
+        const isSelected = (
+          row.getAttribute('aria-selected') === 'true' ||
+          row.classList.contains('ui-state-highlight')
+        );
+        if (!isSelected) return null;
+
+        const jumpButton = row.querySelector(
+          `.${STAGE_JUMP_BUTTON_CLASS}[${STAGE_JUMP_BUTTON_MARK_ATTR}="1"]:not([${SLOWSEARCH_JUMP_MARK_ATTR}="1"])`
+        );
+        return jumpButton instanceof HTMLElement ? jumpButton : null;
+      })
+      .filter((button) => button instanceof HTMLElement);
+  }
+
+  function collectStageJumpExecutionTargets(anchorButton) {
+    const summary = {
+      selectedButtonsCount: 0,
+      missingTargetCount: 0,
+      missingEdocCount: 0,
+      targets: []
+    };
+
+    const dedupeKeys = new Set();
+    const addTargetFromButton = (button) => {
+      const candidate = getStageJumpExecutionTargetFromButton(button);
+      if (!candidate) return;
+
+      if (!candidate.targetUrl) {
+        summary.missingTargetCount += 1;
+        return;
+      }
+
+      if (!candidate.edocId) {
+        summary.missingEdocCount += 1;
+        return;
+      }
+
+      const stateKey = getStageJumpExecutionButtonStateKey(candidate.debtId, candidate.edocId);
+      const dedupeKey = stateKey || `${candidate.debtId}::${candidate.edocId}`;
+      if (dedupeKeys.has(dedupeKey)) return;
+
+      dedupeKeys.add(dedupeKey);
+      summary.targets.push(candidate);
+    };
+
+    const selectedButtons = getStageJumpSelectedExecutionButtons();
+    summary.selectedButtonsCount = selectedButtons.length;
+    if (selectedButtons.length > 0) {
+      selectedButtons.forEach(addTargetFromButton);
+    } else {
+      addTargetFromButton(anchorButton);
+    }
+
+    return summary;
   }
 
   function executeStageJumpMenuAction(action, anchorButton) {
@@ -1111,6 +1670,37 @@
       const targetUrl = String(anchorButton.dataset.targetUrl || '').trim();
       if (!targetUrl) return;
       openStageJumpTarget(targetUrl, debtId);
+      return;
+    }
+
+    if (action === STAGE_JUMP_MENU_ACTION_EXECUTION_ANALYSIS) {
+      const executionTargetsSummary = collectStageJumpExecutionTargets(anchorButton);
+      const executionTargets = executionTargetsSummary.targets;
+      if (!executionTargets.length) {
+        if (executionTargetsSummary.selectedButtonsCount > 0) {
+          window.alert('Нет подходящих выбранных строк для "Анализ исполнения". Проверьте маршрут стадии и EDocID.');
+        }
+        return;
+      }
+
+      const inputText = askStageJumpExecutionAnalysisText(getStageJumpAnalysisDraftText());
+      if (inputText === null) return;
+
+      const normalizedText = String(inputText || '').trim();
+      if (!normalizedText) {
+        window.alert('Текст для "Анализ исполнения" не введен.');
+        return;
+      }
+
+      setStageJumpAnalysisDraftText(normalizedText);
+      executionTargets.forEach((target) => {
+        startStageJumpExecutionAnalysisInBackground(
+          target.targetUrl,
+          target.debtId,
+          target.edocId,
+          normalizedText
+        );
+      });
     }
   }
 
@@ -1143,7 +1733,8 @@
     menu.hidden = true;
     menu.innerHTML = [
       `<button type="button" class="${STAGE_JUMP_MENU_ITEM_CLASS}" ${STAGE_JUMP_MENU_ACTION_ATTR}="${STAGE_JUMP_MENU_ACTION_SLOWSEARCH}">${STAGE_JUMP_MENU_ITEM_SLOWSEARCH_TEXT}</button>`,
-      `<button type="button" class="${STAGE_JUMP_MENU_ITEM_CLASS}" ${STAGE_JUMP_MENU_ACTION_ATTR}="${STAGE_JUMP_MENU_ACTION_STAGE}">${STAGE_JUMP_MENU_ITEM_STAGE_TEXT}</button>`
+      `<button type="button" class="${STAGE_JUMP_MENU_ITEM_CLASS}" ${STAGE_JUMP_MENU_ACTION_ATTR}="${STAGE_JUMP_MENU_ACTION_STAGE}">${STAGE_JUMP_MENU_ITEM_STAGE_TEXT}</button>`,
+      `<button type="button" class="${STAGE_JUMP_MENU_ITEM_CLASS}" ${STAGE_JUMP_MENU_ACTION_ATTR}="${STAGE_JUMP_MENU_ACTION_EXECUTION_ANALYSIS}">${STAGE_JUMP_MENU_ITEM_EXECUTION_ANALYSIS_TEXT}</button>`
     ].join('');
 
     menu.addEventListener('click', (event) => {
@@ -1183,6 +1774,8 @@
     if (!menu || !anchorButton) return;
 
     const stageItem = menu.querySelector(`.${STAGE_JUMP_MENU_ITEM_CLASS}[${STAGE_JUMP_MENU_ACTION_ATTR}="${STAGE_JUMP_MENU_ACTION_STAGE}"]`);
+    const executionAnalysisItem = menu.querySelector(`.${STAGE_JUMP_MENU_ITEM_CLASS}[${STAGE_JUMP_MENU_ACTION_ATTR}="${STAGE_JUMP_MENU_ACTION_EXECUTION_ANALYSIS}"]`);
+    const executionTargetsSummary = collectStageJumpExecutionTargets(anchorButton);
     const hasStageTarget = String(anchorButton.dataset.targetUrl || '').trim().length > 0;
     if (stageItem instanceof HTMLButtonElement) {
       stageItem.disabled = !hasStageTarget;
@@ -1190,6 +1783,36 @@
         stageItem.title = 'Маршрут стадии/статуса не найден в статической карте ВЗИД.';
       } else {
         stageItem.removeAttribute('title');
+      }
+    }
+    if (executionAnalysisItem instanceof HTMLButtonElement) {
+      const selectedCount = executionTargetsSummary.selectedButtonsCount;
+      const readyCount = executionTargetsSummary.targets.length;
+      const labelSuffix = selectedCount > 1
+        ? (readyCount === selectedCount ? ` (${selectedCount})` : ` (${readyCount}/${selectedCount})`)
+        : '';
+      executionAnalysisItem.textContent = `${STAGE_JUMP_MENU_ITEM_EXECUTION_ANALYSIS_TEXT}${labelSuffix}`;
+
+      const isEnabled = readyCount > 0;
+      executionAnalysisItem.disabled = !isEnabled;
+      if (!isEnabled) {
+        if (selectedCount > 0) {
+          if (executionTargetsSummary.missingTargetCount > 0) {
+            executionAnalysisItem.title = 'Для выбранных строк не найден маршрут стадии.';
+          } else if (executionTargetsSummary.missingEdocCount > 0) {
+            executionAnalysisItem.title = 'Для выбранных строк нужен EDocID.';
+          } else {
+            executionAnalysisItem.title = 'Нет доступных выбранных строк.';
+          }
+        } else {
+          executionAnalysisItem.title = hasStageTarget
+            ? 'Для действия нужен EDocID в строке.'
+            : 'Маршрут стадии/статуса не найден в статической карте ВЗИД.';
+        }
+      } else if (selectedCount > 1) {
+        executionAnalysisItem.title = `Будет запущено: ${readyCount}`;
+      } else {
+        executionAnalysisItem.removeAttribute('title');
       }
     }
 
@@ -1256,6 +1879,7 @@
       }
 
       const debtId = getRowCellTextByAria(row, 'list_DebtID');
+      const edocId = getRowCellTextByAria(row, 'list_EDocID') || getRowCellTextByAria(row, 'list_EdocID');
       const stageName = getRowCellTextByAria(row, 'list_CaseStageName');
       const statusName = getRowCellTextByAria(row, 'list_CaseStatusName');
       const cacheKey = `${stageName}|||${statusName}`;
@@ -1269,6 +1893,11 @@
       if (debtId) {
         jumpButton.classList.remove('is-disabled');
         jumpButton.dataset.debtId = debtId;
+        if (edocId) {
+          jumpButton.dataset.edocId = edocId;
+        } else {
+          delete jumpButton.dataset.edocId;
+        }
         if (target) {
           jumpButton.dataset.targetUrl = target.href;
           jumpButton.title = [
@@ -1276,6 +1905,7 @@
             'Выберите действие:',
             `1) ${STAGE_JUMP_MENU_ITEM_SLOWSEARCH_TEXT}`,
             `2) ${STAGE_JUMP_MENU_ITEM_STAGE_TEXT}`,
+            `3) ${STAGE_JUMP_MENU_ITEM_EXECUTION_ANALYSIS_TEXT}${edocId ? '' : ' (недоступен: нет EDocID)'}`,
             `Маршрут: ${target.pathText || target.path.join(' > ')}`
           ].join('\n');
         } else {
@@ -1284,15 +1914,19 @@
             `DebtID: ${debtId}`,
             'Выберите действие:',
             `1) ${STAGE_JUMP_MENU_ITEM_SLOWSEARCH_TEXT}`,
-            `2) ${STAGE_JUMP_MENU_ITEM_STAGE_TEXT} (недоступен: маршрут не найден)`
+            `2) ${STAGE_JUMP_MENU_ITEM_STAGE_TEXT} (недоступен: маршрут не найден)`,
+            `3) ${STAGE_JUMP_MENU_ITEM_EXECUTION_ANALYSIS_TEXT} (недоступен: нет маршрута стадии)`
           ].join('\n');
         }
       } else {
         jumpButton.classList.add('is-disabled');
         delete jumpButton.dataset.targetUrl;
         delete jumpButton.dataset.debtId;
+        delete jumpButton.dataset.edocId;
         jumpButton.title = 'Не удалось определить DebtID строки.';
       }
+
+      applyStageJumpExecutionButtonVisualState(jumpButton, debtId, edocId);
     });
   }
 
@@ -1423,29 +2057,168 @@
     }, 500);
   }
 
-  function getStageJumpDebtIdFromStorage() {
+  function readStageJumpPendingPayloadFromStorage() {
     try {
       const raw = window.localStorage.getItem(STAGE_JUMP_STORAGE_KEY);
-      if (!raw) return '';
+      if (!raw) return null;
 
       const parsed = JSON.parse(raw);
-      if (!parsed || typeof parsed !== 'object') return '';
+      if (!parsed || typeof parsed !== 'object') return null;
 
-      const debtId = String(parsed.debtId || '').trim();
       const createdAt = Number(parsed.createdAt || 0);
       const path = String(parsed.path || '').trim();
 
-      if (!debtId || !createdAt) return '';
-      if ((Date.now() - createdAt) > STAGE_JUMP_STORAGE_TTL_MS) return '';
-      if (path && path !== window.location.pathname) return '';
+      if (!createdAt) return null;
+      if ((Date.now() - createdAt) > STAGE_JUMP_STORAGE_TTL_MS) return null;
+      if (path && path !== window.location.pathname) return null;
 
-      return debtId;
+      return parsed;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function saveStageJumpPendingPayloadToStorage(payload) {
+    if (!payload || typeof payload !== 'object') return;
+    try {
+      window.localStorage.setItem(STAGE_JUMP_STORAGE_KEY, JSON.stringify(payload));
+    } catch (error) {
+      // ignore
+    }
+  }
+
+  function normalizeStageJumpExecutionAnalysisPayload(payload) {
+    if (!payload || typeof payload !== 'object') return null;
+
+    const modeRaw = String(payload.mode || '').trim();
+    if (modeRaw && modeRaw !== STAGE_JUMP_PENDING_MODE_EXECUTION_ANALYSIS) return null;
+
+    const edocId = String(payload.edocId || '').trim();
+    const analysisText = String(payload.analysisText || '').trim();
+    if (!edocId || !analysisText) return null;
+
+    return {
+      ...payload,
+      mode: STAGE_JUMP_PENDING_MODE_EXECUTION_ANALYSIS,
+      edocId,
+      analysisText
+    };
+  }
+
+  function getStageJumpExecutionAnalysisPayloadFromStorage() {
+    const payload = readStageJumpPendingPayloadFromStorage();
+    return normalizeStageJumpExecutionAnalysisPayload(payload);
+  }
+
+  function requestStageJumpExecutionAnalysisPayloadFromBackground() {
+    return new Promise((resolve) => {
+      if (!(chrome && chrome.runtime && typeof chrome.runtime.sendMessage === 'function')) {
+        resolve(null);
+        return;
+      }
+
+      try {
+        chrome.runtime.sendMessage(
+          { action: 'STAGEJUMP_GET_EXECUTION_ANALYSIS_PAYLOAD' },
+          (response) => {
+            const runtimeError = chrome.runtime && chrome.runtime.lastError
+              ? chrome.runtime.lastError.message
+              : '';
+            if (runtimeError) {
+              resolve(null);
+              return;
+            }
+
+            if (!response || response.success !== true) {
+              resolve(null);
+              return;
+            }
+
+            resolve(normalizeStageJumpExecutionAnalysisPayload(response.data || null));
+          }
+        );
+      } catch (error) {
+        resolve(null);
+      }
+    });
+  }
+
+  function getStageJumpAnalysisDraftText() {
+    try {
+      return String(window.localStorage.getItem(STAGE_JUMP_ANALYSIS_DRAFT_STORAGE_KEY) || '').trim();
     } catch (error) {
       return '';
     }
   }
 
-  function clearStageJumpDebtIdStorage() {
+  function setStageJumpAnalysisDraftText(text) {
+    const normalizedText = String(text || '').trim();
+    if (!normalizedText) return;
+    try {
+      window.localStorage.setItem(STAGE_JUMP_ANALYSIS_DRAFT_STORAGE_KEY, normalizedText);
+    } catch (error) {
+      // ignore
+    }
+  }
+
+  function askStageJumpExecutionAnalysisText(defaultValue) {
+    const initialValue = String(defaultValue || '').trim();
+    const message = 'Введите текст для "Анализ исполнения":';
+    return window.prompt(message, initialValue);
+  }
+
+  function getStageJumpDebtIdFromStorage() {
+    const payload = readStageJumpPendingPayloadFromStorage();
+    if (!payload) return '';
+    return String(payload.debtId || '').trim();
+  }
+
+  function clearStageJumpDebtIdStorage(options = null) {
+    const preserveExecution = !!(
+      options &&
+      typeof options === 'object' &&
+      options.preserveExecution === true
+    );
+
+    if (!preserveExecution) {
+      try {
+        window.localStorage.removeItem(STAGE_JUMP_STORAGE_KEY);
+      } catch (error) {
+        // ignore
+      }
+      return;
+    }
+
+    const payload = getStageJumpExecutionAnalysisPayloadFromStorage();
+    if (!payload) {
+      try {
+        window.localStorage.removeItem(STAGE_JUMP_STORAGE_KEY);
+      } catch (error) {
+        // ignore
+      }
+      return;
+    }
+
+    const nextPayload = {
+      ...payload,
+      createdAt: Date.now()
+    };
+    delete nextPayload.debtId;
+    saveStageJumpPendingPayloadToStorage(nextPayload);
+  }
+
+  function getStageJumpActionPayloadForPath(pathname) {
+    const payload = readStageJumpPendingPayloadFromStorage();
+    if (!payload) return null;
+    const path = String(payload.path || '').trim();
+    if (!path) return null;
+    if (path !== String(pathname || '').trim()) return null;
+    return payload;
+  }
+
+  function clearStageJumpPendingPayloadForCurrentPath() {
+    const payload = getStageJumpActionPayloadForPath(window.location.pathname);
+    if (!payload) return;
     try {
       window.localStorage.removeItem(STAGE_JUMP_STORAGE_KEY);
     } catch (error) {
@@ -1468,7 +2241,7 @@
     return getStageJumpDebtIdFromStorage();
   }
 
-  function clearStageJumpDebtIdFromHash() {
+  function clearStageJumpDebtIdFromHash(options = null) {
     let isChanged = false;
     const url = new URL(window.location.href);
 
@@ -1487,7 +2260,7 @@
       }
     }
 
-    clearStageJumpDebtIdStorage();
+    clearStageJumpDebtIdStorage(options);
 
     if (!isChanged) return;
     window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
@@ -1502,6 +2275,68 @@
       if (jqGrid) return jqGrid;
     }
 
+    return null;
+  }
+
+  function getStageJumpGridElementFromSearchInput(searchInput) {
+    if (!(searchInput instanceof HTMLElement)) return null;
+
+    const jqGridRoot = searchInput.closest('.ui-jqgrid');
+    if (jqGridRoot) {
+      const rootGrid = jqGridRoot.querySelector('table.ui-jqgrid-btable');
+      if (rootGrid) return rootGrid;
+    }
+
+    const searchTable = searchInput.closest('table[id]');
+    if (searchTable && /^gs_/.test(String(searchTable.id || ''))) {
+      const linkedGridId = String(searchTable.id).slice(3);
+      if (linkedGridId) {
+        const linkedGrid = document.getElementById(linkedGridId);
+        if (linkedGrid) return linkedGrid;
+      }
+    }
+
+    return null;
+  }
+
+  function getStageJumpGridCandidates(searchInput) {
+    const candidates = [];
+    const seen = new Set();
+    const pushUnique = (el) => {
+      if (!el || typeof el !== 'object') return;
+      if (seen.has(el)) return;
+      seen.add(el);
+      candidates.push(el);
+    };
+
+    pushUnique(getStageJumpGridElementFromSearchInput(searchInput));
+    pushUnique(getStageJumpGridElement());
+
+    const bySelector = Array.from(document.querySelectorAll('table.ui-jqgrid-btable'));
+    bySelector.forEach(pushUnique);
+
+    if (window.jQuery) {
+      try {
+        const jqById = window.jQuery('#list')[0];
+        pushUnique(jqById);
+      } catch (error) {
+        // ignore
+      }
+      try {
+        window.jQuery('table.ui-jqgrid-btable').each((_, el) => pushUnique(el));
+      } catch (error) {
+        // ignore
+      }
+    }
+
+    return candidates;
+  }
+
+  function getStageJumpBusyGrid(searchInput) {
+    const candidates = getStageJumpGridCandidates(searchInput);
+    for (const grid of candidates) {
+      if (isStageJumpGridBusy(grid)) return grid;
+    }
     return null;
   }
 
@@ -1537,15 +2372,79 @@
     const jqXhr = grid.p.jqXhr;
     if (typeof jqXhr.abort !== 'function') return false;
 
-    const readyState = Number(jqXhr.readyState || 0);
-    if (readyState <= 0 || readyState >= 4) return false;
-
     try {
       jqXhr.abort();
       return true;
     } catch (error) {
       return false;
     }
+  }
+
+  function abortStageJumpLoadWithFallback(grid) {
+    if (abortStageJumpGridLoad(grid)) return 'jqxhr';
+
+    // Жесткий fallback: останавливаем текущую сетевую загрузку страницы.
+    // Нужен для случаев, когда jqXhr не пробрасывается в content-world.
+    try {
+      window.stop();
+      return 'window-stop';
+    } catch (error) {
+      return '';
+    }
+  }
+
+  function getStageJumpTimerTypeText() {
+    const el = document.querySelector('#pyramid-stage-timer .pyramid-stage-timer-type');
+    return String(el && el.textContent ? el.textContent : '').trim().toLowerCase();
+  }
+
+  function hasStageJumpLoadingOverlay(searchInput) {
+    const candidates = getStageJumpGridCandidates(searchInput);
+    for (const grid of candidates) {
+      if (!(grid instanceof HTMLElement)) continue;
+
+      const gridId = String(grid.id || '').trim();
+      if (!gridId) continue;
+
+      const overlay = document.getElementById('load_' + gridId);
+      if (!overlay) continue;
+
+      const text = String(overlay.textContent || '').trim();
+      if (!text) continue;
+
+      const style = window.getComputedStyle(overlay);
+      const isVisible = style.display !== 'none' && style.visibility !== 'hidden';
+      if (isVisible) return true;
+    }
+
+    return false;
+  }
+
+  function shouldForceStopForManualSearchAbort(searchInput) {
+    const timerType = getStageJumpTimerTypeText();
+    if (timerType.includes('загруз') || timerType.includes('фильтрац')) return true;
+    return hasStageJumpLoadingOverlay(searchInput);
+  }
+
+  function abortStageJumpBusyGridRequest(searchInput) {
+    const busyGrid = getStageJumpBusyGrid(searchInput);
+    if (busyGrid) {
+      const mode = abortStageJumpLoadWithFallback(busyGrid);
+      if (mode) return mode;
+    }
+
+    // Фолбэк: иногда readyState не читается стабильно, но jqXhr.abort доступен.
+    const candidates = getStageJumpGridCandidates(searchInput);
+    for (const grid of candidates) {
+      if (abortStageJumpGridLoad(grid)) return 'jqxhr';
+    }
+
+    // Если по UI явно идёт загрузка/фильтрация, используем принудительный stop.
+    if (shouldForceStopForManualSearchAbort(searchInput)) {
+      return abortStageJumpLoadWithFallback(null);
+    }
+
+    return '';
   }
 
   function hasStageJumpDebtIdInPostData(postData, debtId) {
@@ -1681,7 +2580,14 @@
 
   function setNativeInputValue(input, value) {
     if (!input) return;
-    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+    const ownerWindow = input.ownerDocument && input.ownerDocument.defaultView
+      ? input.ownerDocument.defaultView
+      : window;
+    const isTextArea = ownerWindow.HTMLTextAreaElement && input instanceof ownerWindow.HTMLTextAreaElement;
+    const proto = isTextArea
+      ? ownerWindow.HTMLTextAreaElement.prototype
+      : ownerWindow.HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
     if (setter) {
       setter.call(input, value);
       return;
@@ -1816,31 +2722,42 @@
     const debtId = getStageJumpDebtIdFromHash();
     if (!debtId) return;
 
+    const STATE_WAIT_LOAD_START = 'WAIT_LOAD_START';
+    const STATE_ABORT_LOAD = 'ABORT_LOAD';
+    const STATE_WAIT_FILTER_DELAY = 'WAIT_FILTER_DELAY';
+    const STATE_APPLY_FILTER = 'APPLY_FILTER';
+    const STATE_CONFIRM_RESULT = 'CONFIRM_RESULT';
+
+    let state = STATE_WAIT_LOAD_START;
     let abortPerformed = false;
-    let abortWindowFinished = false;
-    let applyDispatched = false;
-    let applyDispatchedAtMs = 0;
-    let loggedAbortWait = false;
+    let filterDispatched = false;
+    let abortAtMs = 0;
+    let filterDispatchedAtMs = 0;
+    let loggedLoadWait = false;
+    let loggedLoadFallback = false;
     let timer = null;
 
     const startedAt = Date.now();
     const maxDurationMs = 60 * 1000;
-    const intervalMs = 300;
-    const abortWindowMs = 1500;
-    const postApplyConfirmMs = 12000;
+    const intervalMs = 120;
+    const waitLoadStartTimeoutMs = 20 * 1000;
+    const filterDelayAfterAbortMs = 1;
+    const postApplyConfirmMs = 12 * 1000;
 
     console.info('[StageJump] DebtID param detected: ' + debtId);
+    console.info('[StageJump] Rule active: load start -> abort -> 500ms -> DebtID filter.');
 
     const finishSuccess = () => {
       clearInterval(timer);
       clearStageJumpDebtIdFilterInput();
-      clearStageJumpDebtIdFromHash();
+      const preserveExecution = !!getStageJumpExecutionAnalysisPayloadFromStorage();
+      clearStageJumpDebtIdFromHash({ preserveExecution });
       console.info('[StageJump] DebtID applied once.');
     };
 
     const finishFail = () => {
       clearInterval(timer);
-      console.warn('[StageJump] Failed to apply DebtID within timeout.');
+      console.warn('[StageJump] Failed to apply DebtID within timeout. State: ' + state + ', aborted=' + String(abortPerformed));
     };
 
     const runAttempt = () => {
@@ -1858,49 +2775,84 @@
         return;
       }
 
-      const isBusy = isStageJumpGridBusy(grid);
+      if (state === STATE_WAIT_LOAD_START) {
+        const hasLoadSignal = hasStageLoadStartSince(startedAt);
+        const gridBusyNow = isStageJumpGridBusy(grid);
 
-      if (!abortPerformed && !abortWindowFinished) {
-        if (isBusy) {
-          const aborted = abortStageJumpGridLoad(grid);
-          if (aborted) {
-            abortPerformed = true;
-            console.info('[StageJump] Main load aborted, applying DebtID filter.');
-            return;
-          }
-        } else if (!loggedAbortWait) {
-          loggedAbortWait = true;
-          console.info('[StageJump] Waiting briefly for active load to abort before filtering.');
+        if (hasLoadSignal) {
+          state = STATE_ABORT_LOAD;
+          console.info('[StageJump] StageTimer reported load start: ' + (stageJumpLastStageLoadType || 'n/a'));
+          return;
         }
 
-        if (elapsedMs < abortWindowMs) return;
-        abortWindowFinished = true;
+        // Фолбэк: если сообщение StageTimer пропущено, но jqXhr уже активен, считаем это стартом загрузки.
+        if (gridBusyNow) {
+          state = STATE_ABORT_LOAD;
+          if (!loggedLoadFallback) {
+            loggedLoadFallback = true;
+            console.info('[StageJump] Load start inferred from active jqXhr (fallback).');
+          }
+          return;
+        }
+
+        if (!loggedLoadWait) {
+          loggedLoadWait = true;
+          console.info('[StageJump] Waiting for real stage load start (ignoring filter starts).');
+        }
+
+        if (elapsedMs >= waitLoadStartTimeoutMs) {
+          state = STATE_ABORT_LOAD;
+          console.warn('[StageJump] No load start signal in time, switching to abort fallback.');
+        }
+        return;
       }
 
-      if (applyDispatched) {
-        if ((Date.now() - applyDispatchedAtMs) >= postApplyConfirmMs) {
+      if (state === STATE_ABORT_LOAD) {
+        const abortMode = abortStageJumpLoadWithFallback(grid);
+        const aborted = !!abortMode;
+        abortPerformed = abortPerformed || aborted;
+        abortAtMs = Date.now();
+        state = STATE_WAIT_FILTER_DELAY;
+
+        if (abortMode === 'jqxhr') {
+          console.info('[StageJump] Stage load aborted via jqXhr.');
+        } else if (abortMode === 'window-stop') {
+          console.info('[StageJump] Stage load aborted via window.stop() fallback.');
+        } else {
+          console.info('[StageJump] Abort did not report success, continuing to delayed filter.');
+        }
+        return;
+      }
+
+      if (state === STATE_WAIT_FILTER_DELAY) {
+        if ((Date.now() - abortAtMs) < filterDelayAfterAbortMs) return;
+        state = STATE_APPLY_FILTER;
+        return;
+      }
+
+      if (state === STATE_APPLY_FILTER) {
+        if (filterDispatched) {
+          state = STATE_CONFIRM_RESULT;
+          return;
+        }
+
+        const isApplied = applyStageJumpDebtIdFilterOnce(debtId);
+        if (!isApplied) return;
+
+        filterDispatched = true;
+        filterDispatchedAtMs = Date.now();
+        state = STATE_CONFIRM_RESULT;
+
+        console.info('[StageJump] DebtID filter dispatched once after abort delay.');
+        return;
+      }
+
+      if (state === STATE_CONFIRM_RESULT) {
+        if ((Date.now() - filterDispatchedAtMs) >= postApplyConfirmMs) {
           finishFail();
         }
         return;
       }
-
-      if (isBusy) {
-        if (!abortPerformed) {
-          const abortedLate = abortStageJumpGridLoad(grid);
-          if (abortedLate) {
-            abortPerformed = true;
-            console.info('[StageJump] Main load aborted, applying DebtID filter.');
-          }
-        }
-        return;
-      }
-
-      const isApplied = applyStageJumpDebtIdFilterOnce(debtId);
-      if (!isApplied) return;
-
-      applyDispatched = true;
-      applyDispatchedAtMs = Date.now();
-      console.info('[StageJump] DebtID filter dispatched (one-shot).');
     };
 
     runAttempt();
@@ -1974,6 +2926,349 @@
   }
 
 
+  function isStageJumpElementVisible(element) {
+    if (!element || typeof element !== 'object') return false;
+    if (Number(element.nodeType) !== 1) return false;
+    const ownerWindow = element.ownerDocument && element.ownerDocument.defaultView
+      ? element.ownerDocument.defaultView
+      : window;
+    const style = ownerWindow.getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+    const rect = element.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+
+  function findStageJumpRowByEdocId(edocId) {
+    const normalizedEdocId = String(edocId || '').trim();
+    if (!normalizedEdocId) return null;
+
+    const byId = document.getElementById(normalizedEdocId);
+    if (byId && byId.classList && byId.classList.contains('jqgrow')) return byId;
+
+    const rows = Array.from(document.querySelectorAll('#list tbody > tr.jqgrow'));
+    for (const row of rows) {
+      const cell = row.querySelector('td[aria-describedby="list_EDocID"], td[aria-describedby="list_EdocID"], td[aria-describedby$="_EDocID"], td[aria-describedby$="_EdocID"]');
+      if (!cell) continue;
+      const value = String(cell.textContent || '').trim();
+      if (value === normalizedEdocId) return row;
+    }
+    return null;
+  }
+
+  function selectStageJumpRowByEdocId(edocId) {
+    const row = findStageJumpRowByEdocId(edocId);
+    if (!(row instanceof HTMLElement)) return false;
+
+    const rowId = String(row.id || '').trim();
+    if (rowId && window.jQuery && window.jQuery.fn && window.jQuery.fn.jqGrid) {
+      try {
+        window.jQuery('#list').jqGrid('setSelection', rowId, true);
+      } catch (error) {
+        // ignore
+      }
+    }
+
+    const checkbox = row.querySelector('input.cbox[type="checkbox"]');
+    if (checkbox instanceof HTMLInputElement && !checkbox.checked) {
+      checkbox.click();
+    }
+
+    if (row.getAttribute('aria-selected') !== 'true' && !row.classList.contains('ui-state-highlight')) {
+      row.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    }
+
+    return row.getAttribute('aria-selected') === 'true' ||
+      row.classList.contains('ui-state-highlight') ||
+      (checkbox instanceof HTMLInputElement && checkbox.checked);
+  }
+
+  function clickStageJumpToolbarButtonByText(buttonText) {
+    const targetText = normalizeStageJumpText(buttonText);
+    if (!targetText) return false;
+
+    const labels = Array.from(document.querySelectorAll('.ui-pg-button .ui-pg-button-text, .ui-pg-button-text'));
+    for (const label of labels) {
+      if (!isStageJumpElementVisible(label)) continue;
+      const labelText = normalizeStageJumpText(label.textContent || '');
+      if (labelText !== targetText) continue;
+
+      const clickable = label.closest('.ui-pg-button, button, a');
+      if (clickable instanceof HTMLElement) {
+        if (clickable.matches('.ui-state-disabled, [disabled]')) return false;
+        clickable.click();
+        return true;
+      }
+
+      if (label instanceof HTMLElement) {
+        label.click();
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  function getStageJumpExecutionAnalysisDocuments() {
+    const docs = [document];
+    const iframeCandidates = Array.from(document.querySelectorAll('.ui-dialog iframe, iframe'));
+    iframeCandidates.forEach((iframe) => {
+      if (!(iframe instanceof HTMLIFrameElement)) return;
+      try {
+        if (iframe.contentDocument) docs.push(iframe.contentDocument);
+      } catch (error) {
+        // ignore cross-origin if any
+      }
+    });
+    return docs;
+  }
+
+  function getStageJumpExecutionAnalysisSuccessAlertCandidates() {
+    const alerts = [];
+    const docs = getStageJumpExecutionAnalysisDocuments();
+    docs.forEach((doc) => {
+      if (!doc) return;
+      const candidates = doc.querySelectorAll('.alert.alert-success.alert-dismissible[role="alert"], .alert.alert-success[role="alert"]');
+      candidates.forEach((candidate) => {
+        if (candidate && candidate.nodeType === 1) {
+          alerts.push(candidate);
+        }
+      });
+    });
+    return alerts;
+  }
+
+  function captureStageJumpExecutionAnalysisSuccessAlertState() {
+    const state = new Map();
+    const alerts = getStageJumpExecutionAnalysisSuccessAlertCandidates();
+    alerts.forEach((alert) => {
+      state.set(alert, {
+        visible: isStageJumpElementVisible(alert),
+        text: normalizeStageJumpText(alert.textContent || '')
+      });
+    });
+    return state;
+  }
+
+  function hasStageJumpExecutionAnalysisSaveSuccessAlert(previousState) {
+    const successText = normalizeStageJumpText('Анализ исполнения успешно занес');
+    if (!successText) return false;
+
+    const alerts = getStageJumpExecutionAnalysisSuccessAlertCandidates();
+    for (const alert of alerts) {
+      if (!isStageJumpElementVisible(alert)) continue;
+      const currentText = normalizeStageJumpText(alert.textContent || '');
+      if (!currentText.includes(successText)) continue;
+
+      if (!(previousState instanceof Map)) return true;
+      const previous = previousState.get(alert);
+      if (!previous) return true;
+      if (!previous.visible) return true;
+      if (!String(previous.text || '').includes(successText)) return true;
+    }
+
+    return false;
+  }
+
+  function getStageJumpExecutionAnalysisFormContext() {
+    const docs = getStageJumpExecutionAnalysisDocuments();
+
+    for (const doc of docs) {
+      if (!doc) continue;
+
+      const saveButton = Array.from(doc.querySelectorAll('button, input[type="submit"], input[type="button"], a.ui-button'))
+        .find((el) => {
+          if (!isStageJumpElementVisible(el)) return false;
+          const text = normalizeStageJumpText(el.textContent || el.value || '');
+          return text.includes(normalizeStageJumpText('Сохранить информацию'));
+        });
+      if (!saveButton) continue;
+
+      const inputCandidates = Array.from(doc.querySelectorAll('textarea, input[type="text"], input:not([type])'))
+        .filter((el) => isStageJumpElementVisible(el));
+      if (!inputCandidates.length) continue;
+
+      const preferredInput = inputCandidates.find((el) => {
+        const marker = normalizeStageJumpText([
+          el.id || '',
+          el.name || '',
+          el.className || '',
+          el.getAttribute('placeholder') || ''
+        ].join(' '));
+        return marker.includes('примеч') || marker.includes('коммент') || marker.includes('анализ');
+      }) || inputCandidates[0];
+      if (!preferredInput) continue;
+
+      return { input: preferredInput, saveButton };
+    }
+
+    return null;
+  }
+
+  function notifyStageJumpExecutionAnalysisResult(success, errorMessage) {
+    if (!(chrome && chrome.runtime && typeof chrome.runtime.sendMessage === 'function')) return;
+    try {
+      chrome.runtime.sendMessage({
+        action: 'STAGEJUMP_EXECUTION_ANALYSIS_FINISH',
+        data: {
+          success: !!success,
+          error: String(errorMessage || '')
+        }
+      });
+    } catch (error) {
+      // ignore
+    }
+  }
+
+  function runStageJumpExecutionAnalysisFlow(payload, options = null) {
+    const normalizedPayload = normalizeStageJumpExecutionAnalysisPayload(payload);
+    if (!normalizedPayload) return false;
+
+    const clearStorageOnFinish = !!(
+      options &&
+      typeof options === 'object' &&
+      options.clearStorageOnFinish === true
+    );
+    const edocId = String(normalizedPayload.edocId || '').trim();
+    const analysisText = String(normalizedPayload.analysisText || '').trim();
+    if (!edocId || !analysisText) {
+      if (clearStorageOnFinish) {
+        clearStageJumpPendingPayloadForCurrentPath();
+      }
+      notifyStageJumpExecutionAnalysisResult(false, 'EMPTY_PAYLOAD');
+      return false;
+    }
+
+    const startedAt = Date.now();
+    const timeoutMs = 90 * 1000;
+    const intervalMs = 180;
+    const saveStartTimeoutMs = 20 * 1000;
+    const saveCompleteTimeoutMs = 45 * 1000;
+    let timer = null;
+    let rowSelected = false;
+    let analysisOpened = false;
+    let saveClicked = false;
+    let saveClickAtMs = 0;
+    let saveRequestStarted = false;
+    let saveRequestStartAtMs = 0;
+    let saveSuccessAlertStateBeforeClick = null;
+
+    const finishSuccess = () => {
+      clearInterval(timer);
+      if (clearStorageOnFinish) {
+        clearStageJumpPendingPayloadForCurrentPath();
+      }
+      notifyStageJumpExecutionAnalysisResult(true, '');
+      console.info('[StageJump] Execution analysis completed in background for EDocID=' + edocId);
+    };
+
+    const finishFail = (reason) => {
+      clearInterval(timer);
+      if (clearStorageOnFinish) {
+        clearStageJumpPendingPayloadForCurrentPath();
+      }
+      notifyStageJumpExecutionAnalysisResult(false, reason);
+      console.warn('[StageJump] Execution analysis failed in background: ' + reason);
+    };
+
+    const runAttempt = () => {
+      if ((Date.now() - startedAt) >= timeoutMs) {
+        finishFail('TIMEOUT');
+        return;
+      }
+
+      if (!rowSelected) {
+        rowSelected = selectStageJumpRowByEdocId(edocId);
+        return;
+      }
+
+      if (!analysisOpened) {
+        analysisOpened = clickStageJumpToolbarButtonByText('Анализ исполнения');
+        return;
+      }
+
+      if (saveClicked) {
+        if (hasStageJumpExecutionAnalysisSaveSuccessAlert(saveSuccessAlertStateBeforeClick)) {
+          finishSuccess();
+          return;
+        }
+
+        const saveErrorDetected = stageJumpLastStageTimerErrorAtMs >= saveClickAtMs;
+        if (saveErrorDetected) {
+          finishFail('SAVE_REQUEST_ERROR');
+          return;
+        }
+
+        if (!saveRequestStarted) {
+          if (stageJumpLastEditDocStopAtMs >= saveClickAtMs) {
+            finishSuccess();
+            return;
+          }
+
+          if (stageJumpLastEditDocStartAtMs >= saveClickAtMs) {
+            saveRequestStarted = true;
+            saveRequestStartAtMs = stageJumpLastEditDocStartAtMs;
+            return;
+          }
+
+          if ((Date.now() - saveClickAtMs) >= saveStartTimeoutMs) {
+            finishFail('SAVE_REQUEST_NOT_STARTED');
+          }
+          return;
+        }
+
+        if (stageJumpLastEditDocStopAtMs >= saveRequestStartAtMs) {
+          finishSuccess();
+          return;
+        }
+
+        if ((Date.now() - saveRequestStartAtMs) >= saveCompleteTimeoutMs) {
+          finishFail('SAVE_REQUEST_TIMEOUT');
+        }
+        return;
+      }
+
+      const formContext = getStageJumpExecutionAnalysisFormContext();
+      if (!formContext) return;
+
+      const input = formContext.input;
+      const saveButton = formContext.saveButton;
+      if (!input || !saveButton) return;
+
+      setNativeInputValue(input, analysisText);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      saveSuccessAlertStateBeforeClick = captureStageJumpExecutionAnalysisSuccessAlertState();
+      saveButton.click();
+      saveClicked = true;
+      saveClickAtMs = Date.now();
+    };
+
+    runAttempt();
+    timer = setInterval(runAttempt, intervalMs);
+    return true;
+  }
+
+  function initStageJumpExecutionAnalysisFromStorage() {
+    if (!window.location.pathname.includes('/ovzid/')) return;
+
+    requestStageJumpExecutionAnalysisPayloadFromBackground()
+      .then((payloadFromBackground) => {
+        const payload = payloadFromBackground || getStageJumpExecutionAnalysisPayloadFromStorage();
+        if (!payload) return;
+
+        runStageJumpExecutionAnalysisFlow(payload, {
+          clearStorageOnFinish: !payloadFromBackground
+        });
+      })
+      .catch(() => {
+        const payload = getStageJumpExecutionAnalysisPayloadFromStorage();
+        if (!payload) return;
+        runStageJumpExecutionAnalysisFlow(payload, {
+          clearStorageOnFinish: true
+        });
+      });
+  }
+
   // --- Подсветка строк/колонок в Google Sheets (без изменений) ---
   if (window.location.hostname === 'docs.google.com' && window.location.pathname.includes('/spreadsheets/')) {
     // ... (код без изменений)
@@ -1981,6 +3276,7 @@
 
   // Запуск
   initStageJumpDebtIdFilterFromHash();
+  initStageJumpExecutionAnalysisFromStorage();
   initSlowsearchDebtIdFilterFromHash();
   initStageJumpButtons();
   initSlowsearchJumpButtons();
@@ -1989,123 +3285,125 @@
 
   // --- Логика модального окна для подтверждения действий ---
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-      if (message.action === 'show_confirmation_modal_in_tab') {
-          // Удаляем старые модалки, если они есть
-          const existingModal = document.getElementById('extension-confirmation-modal-container');
-          if (existingModal) {
-              existingModal.remove();
-          }
-          const existingOverlay = document.getElementById('extension-confirmation-overlay');
-          if (existingOverlay) {
-              existingOverlay.remove();
-          }
-
-          const { path, edocid } = message.data;
-
-          // Создаем элементы модального окна
-          const modalOverlay = document.createElement('div');
-          modalOverlay.id = 'extension-confirmation-overlay';
-          modalOverlay.style.cssText = `
-              position: fixed;
-              top: 0;
-              left: 0;
-              width: 100vw;
-              height: 100vh;
-              background-color: rgba(0, 0, 0, 0.5);
-              z-index: 2147483646 !important;
-          `;
-
-          const modalContainer = document.createElement('div');
-          modalContainer.id = 'extension-confirmation-modal-container';
-          modalContainer.style.cssText = `
-              position: fixed;
-              top: 50%;
-              left: 50%;
-              transform: translate(-50%, -50%);
-              z-index: 2147483647 !important;
-              background-color: #fff;
-              padding: 20px;
-              border-radius: 8px;
-              box-shadow: 0 4px 10px rgba(0,0,0,0.2);
-              width: 400px;
-              max-width: 90%;
-              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-          `;
-
-          const modalText = document.createElement('p');
-          modalText.textContent = `Вы хотите разрешить счётчику учитывать действие данной кнопки?\nДействие: ${path}`;
-          modalText.style.margin = '0 0 15px 0';
-          modalText.style.wordBreak = 'break-word';
-
-          const buttonContainer = document.createElement('div');
-          buttonContainer.style.cssText = 'display: flex; justify-content: flex-end; gap: 10px;';
-
-          const createButton = (text, type = 'primary') => {
-              const button = document.createElement('button');
-              button.textContent = text;
-              button.style.cssText = `
-                  padding: 8px 15px;
-                  border: 1px solid #ccc;
-                  border-radius: 5px;
-                  cursor: pointer;
-                  background-color: ${type === 'primary' ? '#007bff' : (type === 'danger' ? '#dc3545' : '#f8f9fa')};
-                  color: ${type === 'primary' || type === 'danger' ? '#fff' : '#212529'};
-                  border-color: ${type === 'primary' ? '#007bff' : (type === 'danger' ? '#dc3545' : '#ccc')};
-              `;
-              return button;
-          };
-          
-          const removeModals = () => {
-              modalOverlay.remove();
-              modalContainer.remove();
-          }
-
-          const saveButton = createButton('Сохранить', 'primary');
-          const blockButton = createButton('Заблокировать', 'danger');
-          const cancelButton = createButton('Пропустить', 'secondary');
-
-          // Обработчики кнопок
-          saveButton.addEventListener('click', () => {
-              removeModals(); // Сначала убираем нашу модалку
-              const tag = prompt('Придумайте понятное название для этого действия (например, "Сохранить отчет"):', '');
-              // Если пользователь нажал "ОК" (даже с пустым полем), а не "Отмена"
-              if (tag !== null) {
-                  chrome.runtime.sendMessage({
-                      action: 'approve_action',
-                      data: { path, edocid, tag: tag.trim() }
-                  });
-              }
-          });
-
-          blockButton.addEventListener('click', () => {
-              removeModals(); // Сначала убираем нашу модалку
-              const tag = prompt('Придумайте название для этого заблокированного действия (необязательно):', '');
-               // Если пользователь нажал "ОК", а не "Отмена"
-              if (tag !== null) {
-                  chrome.runtime.sendMessage({ 
-                      action: 'block_action', 
-                      data: { path, edocid, tag: tag.trim() } 
-                  });
-              }
-          });
-
-          cancelButton.addEventListener('click', () => {
-              chrome.runtime.sendMessage({
-                  action: 'cancel_pending_action',
-                  data: { path, edocid }
-              });
-              removeModals();
-          });
-
-          // Собираем модальное окно
-          buttonContainer.append(cancelButton, blockButton, saveButton);
-          modalContainer.append(modalText, buttonContainer);
-          
-          document.body.appendChild(modalOverlay);
-          document.body.appendChild(modalContainer);
-
-          sendResponse({ success: true });
+      if (!message || message.action !== 'show_confirmation_modal_in_tab') {
+          return false;
       }
+
+      // Удаляем старые модалки, если они есть
+      const existingModal = document.getElementById('extension-confirmation-modal-container');
+      if (existingModal) {
+          existingModal.remove();
+      }
+      const existingOverlay = document.getElementById('extension-confirmation-overlay');
+      if (existingOverlay) {
+          existingOverlay.remove();
+      }
+
+      const { path, edocid } = message.data;
+
+      // Создаем элементы модального окна
+      const modalOverlay = document.createElement('div');
+      modalOverlay.id = 'extension-confirmation-overlay';
+      modalOverlay.style.cssText = `
+          position: fixed;
+          top: 0;
+          left: 0;
+          width: 100vw;
+          height: 100vh;
+          background-color: rgba(0, 0, 0, 0.5);
+          z-index: 2147483646 !important;
+      `;
+
+      const modalContainer = document.createElement('div');
+      modalContainer.id = 'extension-confirmation-modal-container';
+      modalContainer.style.cssText = `
+          position: fixed;
+          top: 50%;
+          left: 50%;
+          transform: translate(-50%, -50%);
+          z-index: 2147483647 !important;
+          background-color: #fff;
+          padding: 20px;
+          border-radius: 8px;
+          box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+          width: 400px;
+          max-width: 90%;
+          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      `;
+
+      const modalText = document.createElement('p');
+      modalText.textContent = `Вы хотите разрешить счётчику учитывать действие данной кнопки?\nДействие: ${path}`;
+      modalText.style.margin = '0 0 15px 0';
+      modalText.style.wordBreak = 'break-word';
+
+      const buttonContainer = document.createElement('div');
+      buttonContainer.style.cssText = 'display: flex; justify-content: flex-end; gap: 10px;';
+
+      const createButton = (text, type = 'primary') => {
+          const button = document.createElement('button');
+          button.textContent = text;
+          button.style.cssText = `
+              padding: 8px 15px;
+              border: 1px solid #ccc;
+              border-radius: 5px;
+              cursor: pointer;
+              background-color: ${type === 'primary' ? '#007bff' : (type === 'danger' ? '#dc3545' : '#f8f9fa')};
+              color: ${type === 'primary' || type === 'danger' ? '#fff' : '#212529'};
+              border-color: ${type === 'primary' ? '#007bff' : (type === 'danger' ? '#dc3545' : '#ccc')};
+          `;
+          return button;
+      };
+      
+      const removeModals = () => {
+          modalOverlay.remove();
+          modalContainer.remove();
+      }
+
+      const saveButton = createButton('Сохранить', 'primary');
+      const blockButton = createButton('Заблокировать', 'danger');
+      const cancelButton = createButton('Пропустить', 'secondary');
+
+      // Обработчики кнопок
+      saveButton.addEventListener('click', () => {
+          removeModals(); // Сначала убираем нашу модалку
+          const tag = prompt('Придумайте понятное название для этого действия (например, "Сохранить отчет"):', '');
+          // Если пользователь нажал "ОК" (даже с пустым полем), а не "Отмена"
+          if (tag !== null) {
+              chrome.runtime.sendMessage({
+                  action: 'approve_action',
+                  data: { path, edocid, tag: tag.trim() }
+              });
+          }
+      });
+
+      blockButton.addEventListener('click', () => {
+          removeModals(); // Сначала убираем нашу модалку
+          const tag = prompt('Придумайте название для этого заблокированного действия (необязательно):', '');
+           // Если пользователь нажал "ОК", а не "Отмена"
+          if (tag !== null) {
+              chrome.runtime.sendMessage({ 
+                  action: 'block_action', 
+                  data: { path, edocid, tag: tag.trim() } 
+              });
+          }
+      });
+
+      cancelButton.addEventListener('click', () => {
+          chrome.runtime.sendMessage({
+              action: 'cancel_pending_action',
+              data: { path, edocid }
+          });
+          removeModals();
+      });
+
+      // Собираем модальное окно
+      buttonContainer.append(cancelButton, blockButton, saveButton);
+      modalContainer.append(modalText, buttonContainer);
+      
+      document.body.appendChild(modalOverlay);
+      document.body.appendChild(modalContainer);
+
+      sendResponse({ success: true });
       return true; // Keep the message channel open for async response
   });
 })();
