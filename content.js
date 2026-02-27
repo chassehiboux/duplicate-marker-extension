@@ -587,6 +587,15 @@
       } catch (err) { searchInput.focus(); }
       return;
     }
+    const targetHeader = getManualGridHeaderTrigger(e.target);
+    if (targetHeader) {
+      const columnCodeName = ensureManualGridColumnCodeTooltip(targetHeader);
+      if (columnCodeName) {
+        e.preventDefault();
+        navigator.clipboard.writeText(columnCodeName).then(() => showSuccessFeedback(targetHeader));
+        return;
+      }
+    }
     const targetCell = e.target.closest('td[role="gridcell"]');
     if (targetCell) {
       e.preventDefault();
@@ -666,6 +675,63 @@
 
     return sortable;
   }
+
+  function getManualGridHeaderTrigger(target) {
+    if (!(target instanceof Element)) return null;
+
+    const byJqghId = target.closest('div[id^="jqgh_"]');
+    const byRole = target.closest('div[role="columnheader"]');
+    const header = byJqghId instanceof HTMLElement ? byJqghId : byRole;
+    if (!(header instanceof HTMLElement)) return null;
+
+    const headerCell = header.closest('th');
+    if (!(headerCell instanceof HTMLTableCellElement)) return null;
+    if (!headerCell.closest('.ui-jqgrid-hdiv')) return null;
+
+    return header;
+  }
+
+  function extractManualGridColumnCodeName(rawHeaderId) {
+    const normalizedHeaderId = String(rawHeaderId || '').trim();
+    if (!normalizedHeaderId) return '';
+
+    const withoutJqghPrefix = normalizedHeaderId.startsWith('jqgh_')
+      ? normalizedHeaderId.slice('jqgh_'.length)
+      : normalizedHeaderId;
+    if (!withoutJqghPrefix) return '';
+
+    const firstUnderscoreIndex = withoutJqghPrefix.indexOf('_');
+    if (firstUnderscoreIndex < 0) return withoutJqghPrefix;
+    if (firstUnderscoreIndex >= withoutJqghPrefix.length - 1) return '';
+    return withoutJqghPrefix.slice(firstUnderscoreIndex + 1);
+  }
+
+  function getManualGridColumnCodeName(sortableEl) {
+    if (!(sortableEl instanceof HTMLElement)) return '';
+
+    const columnCodeName = extractManualGridColumnCodeName(sortableEl.id);
+    if (columnCodeName) return columnCodeName;
+
+    const headerCell = sortableEl.closest('th');
+    if (!(headerCell instanceof HTMLTableCellElement)) return '';
+    return extractManualGridColumnCodeName(headerCell.id);
+  }
+
+  function ensureManualGridColumnCodeTooltip(sortableEl) {
+    if (!(sortableEl instanceof HTMLElement)) return '';
+
+    const columnCodeName = getManualGridColumnCodeName(sortableEl);
+    if (!columnCodeName) return '';
+
+    sortableEl.title = columnCodeName;
+    return columnCodeName;
+  }
+
+  document.addEventListener('mouseover', function(e) {
+    const headerTrigger = getManualGridHeaderTrigger(e.target);
+    if (!headerTrigger) return;
+    ensureManualGridColumnCodeTooltip(headerTrigger);
+  }, true);
 
   function dispatchManualGridSortClick(sortableEl) {
     if (!(sortableEl instanceof HTMLElement)) return false;
