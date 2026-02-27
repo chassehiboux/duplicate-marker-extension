@@ -664,6 +664,130 @@
     }, delayMs);
   }
 
+  function tryAbortBeforeManualGridSelectChange(selectEl, triggerName) {
+    if (!(selectEl instanceof HTMLSelectElement)) return '';
+    const abortMode = abortStageJumpBusyGridRequest(selectEl);
+    if (!abortMode) return '';
+    notifyGridAbortMessageRewrite('manual-select-' + String(triggerName || 'unknown'));
+
+    if (abortMode === 'jqxhr') {
+      console.info('[StageJump] Manual select pre-abort via jqXhr (' + triggerName + ').');
+    } else if (abortMode === 'window-stop') {
+      console.info('[StageJump] Manual select pre-abort via window.stop() (' + triggerName + ').');
+    }
+    return abortMode;
+  }
+
+  function dispatchManualGridSelectChange(selectEl) {
+    if (!(selectEl instanceof HTMLSelectElement)) return false;
+    if (!document.contains(selectEl)) return false;
+
+    try {
+      selectEl.focus({ preventScroll: true });
+    } catch (error) {
+      selectEl.focus();
+    }
+
+    try {
+      selectEl.dispatchEvent(new Event('input', { bubbles: true }));
+    } catch (error) {
+      // ignore
+    }
+
+    try {
+      selectEl.dispatchEvent(new Event('change', {
+        bubbles: true,
+        cancelable: true
+      }));
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function replayManualGridSelectChangeAfterAbort(selectEl, abortMode, triggerName) {
+    if (!(selectEl instanceof HTMLSelectElement)) return;
+    const delayMs = abortMode === 'window-stop' ? 220 : 90;
+    window.setTimeout(() => {
+      const ok = dispatchManualGridSelectChange(selectEl);
+      if (ok) {
+        console.info('[StageJump] Manual select change replayed after pre-abort (' + String(triggerName || 'unknown') + ').');
+      }
+    }, delayMs);
+  }
+
+  function dispatchManualGridMouseClick(targetEl) {
+    if (!(targetEl instanceof HTMLElement)) return false;
+    if (!document.contains(targetEl)) return false;
+
+    try {
+      targetEl.dispatchEvent(new MouseEvent('click', {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        button: 0
+      }));
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function replayManualGridMouseClickAfterAbort(targetEl, abortMode, successMessage) {
+    if (!(targetEl instanceof HTMLElement)) return;
+    const delayMs = abortMode === 'window-stop' ? 220 : 90;
+    window.setTimeout(() => {
+      const ok = dispatchManualGridMouseClick(targetEl);
+      if (ok && successMessage) {
+        console.info(successMessage);
+      }
+    }, delayMs);
+  }
+
+  function getManualGridSelectTrigger(target) {
+    if (!(target instanceof HTMLSelectElement)) return null;
+    if (target.matches('select[role="search"], select.ui-pg-selbox')) return target;
+    return null;
+  }
+
+  function getManualGridMultiselectFilterButton() {
+    const buttons = Array.from(document.querySelectorAll('button.ui-multiselect.ui-state-active[id$="_ms"]'));
+    for (const button of buttons) {
+      if (!(button instanceof HTMLButtonElement)) continue;
+      const buttonId = String(button.id || '').trim();
+      if (!buttonId.endsWith('_ms')) continue;
+
+      const selectId = buttonId.slice(0, -3);
+      if (!selectId) continue;
+
+      const sourceSelect = document.getElementById(selectId);
+      if (!(sourceSelect instanceof HTMLSelectElement)) continue;
+      if (!sourceSelect.matches('select[role="search"][multiple]')) continue;
+      return button;
+    }
+    return null;
+  }
+
+  function getManualGridMultiselectAction(target) {
+    if (!(target instanceof Element)) return null;
+
+    const actionEl = target.closest('label, input[type="checkbox"], a.ui-multiselect-all, a.ui-multiselect-none');
+    if (!(actionEl instanceof HTMLElement)) return null;
+    if (!actionEl.closest('.ui-multiselect-menu')) return null;
+
+    const button = getManualGridMultiselectFilterButton();
+    if (!(button instanceof HTMLButtonElement)) return null;
+
+    const sourceSelectId = String(button.id || '').slice(0, -3);
+    if (!sourceSelectId) return null;
+
+    const sourceSelect = document.getElementById(sourceSelectId);
+    if (!(sourceSelect instanceof HTMLSelectElement)) return null;
+    if (!sourceSelect.matches('select[role="search"][multiple]')) return null;
+
+    return { actionEl, sourceSelect };
+  }
+
   function getManualGridSortTrigger(target) {
     if (!(target instanceof Element)) return null;
     const sortable = target.closest('.ui-jqgrid-sortable');
@@ -734,31 +858,15 @@
   }, true);
 
   function dispatchManualGridSortClick(sortableEl) {
-    if (!(sortableEl instanceof HTMLElement)) return false;
-    if (!document.contains(sortableEl)) return false;
-
-    try {
-      sortableEl.dispatchEvent(new MouseEvent('click', {
-        bubbles: true,
-        cancelable: true,
-        composed: true,
-        button: 0
-      }));
-      return true;
-    } catch (error) {
-      return false;
-    }
+    return dispatchManualGridMouseClick(sortableEl);
   }
 
   function replayManualGridSortClickAfterAbort(sortableEl, abortMode) {
-    if (!(sortableEl instanceof HTMLElement)) return;
-    const delayMs = abortMode === 'window-stop' ? 220 : 90;
-    window.setTimeout(() => {
-      const ok = dispatchManualGridSortClick(sortableEl);
-      if (ok) {
-        console.info('[StageJump] Manual sort click replayed after pre-abort.');
-      }
-    }, delayMs);
+    replayManualGridMouseClickAfterAbort(
+      sortableEl,
+      abortMode,
+      '[StageJump] Manual sort click replayed after pre-abort.'
+    );
   }
 
   document.addEventListener('keydown', function(e) {
@@ -783,6 +891,23 @@
     if (!e || !e.isTrusted) return;
     if (typeof e.button === 'number' && e.button !== 0) return;
 
+    const multiselectAction = getManualGridMultiselectAction(e.target);
+    if (multiselectAction) {
+      const abortMode = tryAbortBeforeManualGridSelectChange(multiselectAction.sourceSelect, 'filter-multiselect-click');
+      if (!abortMode) return;
+
+      if (typeof e.preventDefault === 'function') e.preventDefault();
+      if (typeof e.stopPropagation === 'function') e.stopPropagation();
+      if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+
+      replayManualGridMouseClickAfterAbort(
+        multiselectAction.actionEl,
+        abortMode,
+        '[StageJump] Manual multiselect click replayed after pre-abort.'
+      );
+      return;
+    }
+
     const sortTrigger = getManualGridSortTrigger(e.target);
     if (!sortTrigger) return;
 
@@ -800,6 +925,24 @@
     if (typeof e.stopPropagation === 'function') e.stopPropagation();
     if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
     replayManualGridSortClickAfterAbort(sortTrigger, abortMode);
+  }, true);
+
+  document.addEventListener('change', function(e) {
+    if (!e || !e.isTrusted) return;
+
+    const selectTrigger = getManualGridSelectTrigger(e.target);
+    if (!selectTrigger) return;
+
+    const triggerName = selectTrigger.matches('select.ui-pg-selbox')
+      ? 'pager-rows'
+      : 'filter-select';
+    const abortMode = tryAbortBeforeManualGridSelectChange(selectTrigger, triggerName);
+    if (!abortMode) return;
+
+    if (typeof e.preventDefault === 'function') e.preventDefault();
+    if (typeof e.stopPropagation === 'function') e.stopPropagation();
+    if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+    replayManualGridSelectChangeAfterAbort(selectTrigger, abortMode, triggerName);
   }, true);
 
   // --- Переход на стадию ИД ---
