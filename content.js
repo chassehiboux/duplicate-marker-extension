@@ -45,6 +45,44 @@
   const SLOWSEARCH_CITIES_LINK_SELECTOR = 'a.department-switch';
   const GRID_ABORT_REWRITE_EVENT = 'dup-grid-abort-message';
   const GRID_ABORT_REWRITE_TEXT = 'Загрузка/Фильтрация была прервана пользователем вручную. Повторите действие заново.';
+  const FSSP_REESTR_PATH_PART = '/ovzid/fsspreestr';
+  const FSSP_REESTR_DUPLICATE_CLASS = 'dup-fsspreestr-duplicate';
+  const FSSP_REESTR_STATUS_CLASS = 'dup-fsspreestr-status';
+  const FSSP_REESTR_DUPLICATE_COLOR_PALETTE = [
+    { background: '#FDDFDF', outline: '#FF8888' },
+    { background: '#DEFDE0', outline: '#88FF88' },
+    { background: '#FCF7DE', outline: '#FFFF88' },
+    { background: '#DEF3FD', outline: '#88DDFF' },
+    { background: '#F0DEFD', outline: '#DD88FF' },
+    { background: '#FFC8C8', outline: '#FF8888' },
+    { background: '#C8FFC8', outline: '#88FF88' },
+    { background: '#FFF2C8', outline: '#FFFF88' },
+    { background: '#C8E7FF', outline: '#88DDFF' },
+    { background: '#E2C8FF', outline: '#DD88FF' }
+  ];
+  const FSSP_REESTR_STATUS_COLOR_BY_TEXT = {
+    'проведен': '#C8F2CC',
+    'проведен (нет данных)': '#FFF3B8',
+    'не проведен': '#FFC9C9'
+  };
+  const EPGU_REQUESTS_PATH_PART = '/ovzid/epgurequests';
+  const EPGU_REQUESTS_DUPLICATE_CLASS = 'dup-epgu-duplicate';
+  const EPGU_REQUESTS_FILL_CLASS = 'dup-epgu-fill';
+  const EPGU_REQUESTS_DUPLICATE_COLOR_PALETTE = [
+    { background: '#FDDFDF', outline: '#FF8888' },
+    { background: '#DEFDE0', outline: '#88FF88' },
+    { background: '#FCF7DE', outline: '#FFFF88' },
+    { background: '#DEF3FD', outline: '#88DDFF' },
+    { background: '#F0DEFD', outline: '#DD88FF' },
+    { background: '#FFC8C8', outline: '#FF8888' },
+    { background: '#C8FFC8', outline: '#88FF88' },
+    { background: '#FFF2C8', outline: '#FFFF88' },
+    { background: '#C8E7FF', outline: '#88DDFF' },
+    { background: '#E2C8FF', outline: '#DD88FF' }
+  ];
+  const EPGU_REQUESTS_COLOR_RED = '#FFC9C9';
+  const EPGU_REQUESTS_COLOR_GREEN = '#C8F2CC';
+  const EPGU_REQUESTS_COLOR_YELLOW = '#FFF3B8';
   // Статическая карта стадий/статусов ВЗИД, зафиксированная по меню блока ВЗИД.
   const STAGE_JUMP_STATIC_MENU_LINKS = [
     { path: ['ОВЗИД','ИД принятые в работу из ПУ (новые)'], href: '/ovzid/status/32' },
@@ -267,6 +305,18 @@
         outline: none !important;
       }
 
+      html.${SCREENSHOT_MODE_CLASS} .${FSSP_REESTR_DUPLICATE_CLASS},
+      html.${SCREENSHOT_MODE_CLASS} .${FSSP_REESTR_STATUS_CLASS} {
+        background-color: transparent !important;
+        outline: none !important;
+      }
+
+      html.${SCREENSHOT_MODE_CLASS} .${EPGU_REQUESTS_DUPLICATE_CLASS},
+      html.${SCREENSHOT_MODE_CLASS} .${EPGU_REQUESTS_FILL_CLASS} {
+        background-color: transparent !important;
+        outline: none !important;
+      }
+
       html.${SCREENSHOT_MODE_CLASS} #extension-confirmation-overlay,
       html.${SCREENSHOT_MODE_CLASS} #extension-confirmation-modal-container,
       html.${SCREENSHOT_MODE_CLASS} #jqgrid-manager-btn,
@@ -477,10 +527,282 @@
     return rawVal;
   }
 
+  function normalizeCreateDateForDuplicate(rawValue) {
+    const normalized = String(rawValue || '').replace(/\s+/g, ' ').trim();
+    if (!normalized) return '';
+
+    const fullMatch = normalized.match(/^(\d{2}-\d{2}-\d{4})(?:\s+\d{2}:\d{2}(?::\d{2})?)?$/);
+    if (fullMatch && fullMatch[1]) {
+      return fullMatch[1];
+    }
+
+    const datePrefixMatch = normalized.match(/^(\d{2}-\d{2}-\d{4})\b/);
+    if (datePrefixMatch && datePrefixMatch[1]) {
+      return datePrefixMatch[1];
+    }
+
+    return normalized;
+  }
+
+  function isFsspReestrPage() {
+    const pathname = String(window.location.pathname || '').toLowerCase();
+    return pathname.includes(FSSP_REESTR_PATH_PART);
+  }
+
+  function normalizeFsspReestrCellText(value) {
+    return String(value || '').replace(/\s+/g, ' ').trim();
+  }
+
+  function clearFsspReestrHighlights() {
+    document.querySelectorAll(`.${FSSP_REESTR_DUPLICATE_CLASS}`).forEach((cell) => {
+      if (!(cell instanceof HTMLElement)) return;
+      cell.style.backgroundColor = '';
+      cell.style.outline = '';
+      cell.classList.remove(FSSP_REESTR_DUPLICATE_CLASS);
+    });
+
+    document.querySelectorAll(`.${FSSP_REESTR_STATUS_CLASS}`).forEach((cell) => {
+      if (!(cell instanceof HTMLElement)) return;
+      cell.style.backgroundColor = '';
+      cell.classList.remove(FSSP_REESTR_STATUS_CLASS);
+    });
+
+    fsspReestrDuplicateColorMap.clear();
+    fsspReestrDuplicateColorIndex = 0;
+  }
+
+  const fsspReestrDuplicateColorMap = new Map();
+  let fsspReestrDuplicateColorIndex = 0;
+
+  function getFsspReestrDuplicateColorByKey(key) {
+    const normalizedKey = String(key || '').trim();
+    if (!normalizedKey) {
+      return FSSP_REESTR_DUPLICATE_COLOR_PALETTE[0];
+    }
+
+    if (!fsspReestrDuplicateColorMap.has(normalizedKey)) {
+      const nextColor = FSSP_REESTR_DUPLICATE_COLOR_PALETTE[
+        fsspReestrDuplicateColorIndex % FSSP_REESTR_DUPLICATE_COLOR_PALETTE.length
+      ];
+      fsspReestrDuplicateColorMap.set(normalizedKey, nextColor);
+      fsspReestrDuplicateColorIndex += 1;
+    }
+    return fsspReestrDuplicateColorMap.get(normalizedKey);
+  }
+
+  function markFsspReestrDuplicateCell(cell, colorPair) {
+    if (!(cell instanceof HTMLElement)) return;
+    cell.classList.add(FSSP_REESTR_DUPLICATE_CLASS);
+    cell.style.backgroundColor = colorPair && colorPair.background ? colorPair.background : '';
+    cell.style.outline = colorPair && colorPair.outline ? `2px solid ${colorPair.outline}` : '';
+  }
+
+  function applyFsspReestrStatusColor(statusCell) {
+    if (!(statusCell instanceof HTMLElement)) return;
+
+    const statusText = normalizeFsspReestrCellText(getSmartValue(statusCell)).toLowerCase();
+    const statusColor = FSSP_REESTR_STATUS_COLOR_BY_TEXT[statusText];
+    if (!statusColor) return;
+
+    statusCell.classList.add(FSSP_REESTR_STATUS_CLASS);
+    statusCell.style.backgroundColor = statusColor;
+  }
+
+  function applyFsspReestrPermanentHighlights() {
+    if (!isFsspReestrPage()) {
+      clearFsspReestrHighlights();
+      return;
+    }
+
+    clearFsspReestrHighlights();
+
+    const rows = Array.from(document.querySelectorAll('#list tbody > tr.jqgrow'));
+    const duplicatePairs = new Map();
+
+    rows.forEach((row) => {
+      if (!(row instanceof HTMLElement)) return;
+
+      const fileNameCell = row.querySelector('td[aria-describedby="list_FileName"]');
+      const createDateCell = row.querySelector('td[aria-describedby="list_CreateDate"]');
+      const typeNameCell = row.querySelector('td[aria-describedby="list_TypeName"]');
+      const statusCell = row.querySelector('td[aria-describedby="list_StatusName"]');
+
+      if (statusCell) {
+        applyFsspReestrStatusColor(statusCell);
+      }
+
+      if (
+        !(fileNameCell instanceof HTMLElement) ||
+        !(createDateCell instanceof HTMLElement) ||
+        !(typeNameCell instanceof HTMLElement)
+      ) return;
+
+      const fileName = normalizeFsspReestrCellText(getSmartValue(fileNameCell));
+      const createDate = normalizeFsspReestrCellText(getSmartValue(createDateCell));
+      const typeName = normalizeFsspReestrCellText(getSmartValue(typeNameCell));
+      if (!fileName || !createDate || !typeName) return;
+
+      const pairKey = `${fileName}|||${createDate}|||${typeName}`;
+      if (!duplicatePairs.has(pairKey)) {
+        duplicatePairs.set(pairKey, []);
+      }
+      duplicatePairs.get(pairKey).push({
+        fileNameCell,
+        createDateCell,
+        typeNameCell
+      });
+    });
+
+    duplicatePairs.forEach((pairRows, pairKey) => {
+      if (!Array.isArray(pairRows) || pairRows.length < 2) return;
+      const colors = getFsspReestrDuplicateColorByKey(pairKey);
+      pairRows.forEach((pair) => {
+        markFsspReestrDuplicateCell(pair.fileNameCell, colors);
+      });
+    });
+  }
+
+  function isEpguRequestsPage() {
+    const pathname = String(window.location.pathname || '').toLowerCase();
+    return pathname.includes(EPGU_REQUESTS_PATH_PART);
+  }
+
+  function normalizeEpguRequestsCellText(value) {
+    return String(value || '').replace(/\s+/g, ' ').trim();
+  }
+
+  const epguRequestsDuplicateColorMap = new Map();
+  let epguRequestsDuplicateColorIndex = 0;
+
+  function clearEpguRequestsHighlights() {
+    document.querySelectorAll(`.${EPGU_REQUESTS_DUPLICATE_CLASS}`).forEach((cell) => {
+      if (!(cell instanceof HTMLElement)) return;
+      cell.style.backgroundColor = '';
+      cell.style.outline = '';
+      cell.classList.remove(EPGU_REQUESTS_DUPLICATE_CLASS);
+    });
+
+    document.querySelectorAll(`.${EPGU_REQUESTS_FILL_CLASS}`).forEach((cell) => {
+      if (!(cell instanceof HTMLElement)) return;
+      cell.style.backgroundColor = '';
+      cell.style.outline = '';
+      cell.classList.remove(EPGU_REQUESTS_FILL_CLASS);
+    });
+
+    epguRequestsDuplicateColorMap.clear();
+    epguRequestsDuplicateColorIndex = 0;
+  }
+
+  function getEpguRequestsDuplicateColorByKey(key) {
+    const normalizedKey = String(key || '').trim();
+    if (!normalizedKey) {
+      return EPGU_REQUESTS_DUPLICATE_COLOR_PALETTE[0];
+    }
+
+    if (!epguRequestsDuplicateColorMap.has(normalizedKey)) {
+      const nextColor = EPGU_REQUESTS_DUPLICATE_COLOR_PALETTE[
+        epguRequestsDuplicateColorIndex % EPGU_REQUESTS_DUPLICATE_COLOR_PALETTE.length
+      ];
+      epguRequestsDuplicateColorMap.set(normalizedKey, nextColor);
+      epguRequestsDuplicateColorIndex += 1;
+    }
+
+    return epguRequestsDuplicateColorMap.get(normalizedKey);
+  }
+
+  function markEpguRequestsDuplicateCell(cell, colorPair) {
+    if (!(cell instanceof HTMLElement)) return;
+    cell.classList.add(EPGU_REQUESTS_DUPLICATE_CLASS);
+    cell.style.backgroundColor = colorPair && colorPair.background ? colorPair.background : '';
+    cell.style.outline = colorPair && colorPair.outline ? `2px solid ${colorPair.outline}` : '';
+  }
+
+  function applyEpguRequestsFillColor(cell, color) {
+    if (!(cell instanceof HTMLElement)) return;
+    cell.classList.add(EPGU_REQUESTS_FILL_CLASS);
+    cell.style.backgroundColor = String(color || '').trim();
+    cell.style.outline = '';
+  }
+
+  function resolveEpguStatusColor(statusText) {
+    const normalizedStatus = normalizeEpguRequestsCellText(statusText).toLowerCase();
+    if (normalizedStatus === 'ошибка') return EPGU_REQUESTS_COLOR_RED;
+    if (normalizedStatus === 'услуга оказана') return EPGU_REQUESTS_COLOR_GREEN;
+    return EPGU_REQUESTS_COLOR_YELLOW;
+  }
+
+  function resolveEpguFileRequestColor(fileRequestText) {
+    const normalizedValue = normalizeEpguRequestsCellText(fileRequestText).toLowerCase();
+    if (!normalizedValue) return EPGU_REQUESTS_COLOR_YELLOW;
+    if (normalizedValue === 'файл уже получен') return EPGU_REQUESTS_COLOR_GREEN;
+    return EPGU_REQUESTS_COLOR_RED;
+  }
+
+  function resolveEpguProcessFileColor(processFileText) {
+    const normalizedValue = normalizeEpguRequestsCellText(processFileText).toLowerCase();
+    if (normalizedValue === 'файл уже обработан') return EPGU_REQUESTS_COLOR_GREEN;
+    if (normalizedValue === 'ошибка при обработке файла') return EPGU_REQUESTS_COLOR_RED;
+    return EPGU_REQUESTS_COLOR_YELLOW;
+  }
+
+  function applyEpguRequestsPermanentHighlights() {
+    if (!isEpguRequestsPage()) {
+      clearEpguRequestsHighlights();
+      return;
+    }
+
+    clearEpguRequestsHighlights();
+
+    const rows = Array.from(document.querySelectorAll('#list tbody > tr.jqgrow'));
+    const duplicatePairs = new Map();
+
+    rows.forEach((row) => {
+      if (!(row instanceof HTMLElement)) return;
+
+      const claimantCell = row.querySelector('td[aria-describedby="list_Claimant"]');
+      const createDateCell = row.querySelector('td[aria-describedby="list_CreateDate"]');
+      const statusCell = row.querySelector('td[aria-describedby="list_StatusName"]');
+      const fileRequestCell = row.querySelector('td[aria-describedby="list_FileRequest"]');
+      const processFileCell = row.querySelector('td[aria-describedby="list_ProcessFile"]');
+
+      if (statusCell instanceof HTMLElement) {
+        applyEpguRequestsFillColor(statusCell, resolveEpguStatusColor(getSmartValue(statusCell)));
+      }
+      if (fileRequestCell instanceof HTMLElement) {
+        applyEpguRequestsFillColor(fileRequestCell, resolveEpguFileRequestColor(getSmartValue(fileRequestCell)));
+      }
+      if (processFileCell instanceof HTMLElement) {
+        applyEpguRequestsFillColor(processFileCell, resolveEpguProcessFileColor(getSmartValue(processFileCell)));
+      }
+
+      if (!(claimantCell instanceof HTMLElement) || !(createDateCell instanceof HTMLElement)) return;
+
+      const claimant = normalizeEpguRequestsCellText(getSmartValue(claimantCell));
+      const createDate = normalizeCreateDateForDuplicate(getSmartValue(createDateCell));
+      if (!claimant || !createDate) return;
+
+      const pairKey = `${claimant}|||${createDate}`;
+      if (!duplicatePairs.has(pairKey)) {
+        duplicatePairs.set(pairKey, []);
+      }
+      duplicatePairs.get(pairKey).push({ claimantCell });
+    });
+
+    duplicatePairs.forEach((groupRows, pairKey) => {
+      if (!Array.isArray(groupRows) || groupRows.length < 2) return;
+      const colors = getEpguRequestsDuplicateColorByKey(pairKey);
+      groupRows.forEach((groupRow) => {
+        markEpguRequestsDuplicateCell(groupRow.claimantCell, colors);
+      });
+    });
+  }
+
   function runCheck() {
     // Если режим подсветки выключен, просто очищаем и выходим.
     if (!currentHighlightSettings.setting_highlight_mode) {
       clearHighlights();
+      applyFsspReestrPermanentHighlights();
+      applyEpguRequestsPermanentHighlights();
       return;
     }
 
@@ -523,6 +845,9 @@
         }
       });
     });
+
+    applyFsspReestrPermanentHighlights();
+    applyEpguRequestsPermanentHighlights();
   }
 
   const debouncedRunCheck = debounce(runCheck, 500);
@@ -559,7 +884,7 @@
 
   // Запускаем проверку при изменениях на странице (динамический контент)
   const observer = new MutationObserver(() => {
-    if (currentHighlightSettings.setting_highlight_mode) {
+    if (currentHighlightSettings.setting_highlight_mode || isFsspReestrPage() || isEpguRequestsPage()) {
       debouncedRunCheck();
     }
   });
