@@ -9,6 +9,10 @@ const WAITING_ROW_CLEANUP_SEC = 300; // Удаляем "зависшие" ОЖИ
 const MAX_WAITING_DURATION_SEC = 2 * 60 * 60; // Жесткий лимит для ОЖИДАНИЕ: 2 часа
 const ALERT_RECOVERY_HOLD_SEC = 180; // После последнего ALERT держим статус ALERT еще 3 минуты
 const ALERT_OK_CONFIRM_CYCLES = 2; // Дополнительно требуем 2 спокойных цикла monitorPerformance перед OK
+// --- ОКНО УВЕДОМЛЕНИЙ (GMT+5) ---
+const NOTIFY_TIMEZONE = "GMT+5";
+const NOTIFY_WINDOW_START_CELL = "B2"; // HH:MM
+const NOTIFY_WINDOW_END_CELL = "D2";   // HH:MM
 
 // ================= 0. МЕНЮ =================
 function onOpen() {
@@ -19,7 +23,7 @@ function onOpen() {
       .addSeparator()
       .addItem('🧹 Принудительная очистка (Только сегодня)', 'performCleanup')
       .addItem('⚙️ Сброс настроек (Setup)', 'setupDashboard')
-      .addToUi();
+      .addToUi(); 
 }
 
 function decodeSelectedUrl() {
@@ -122,6 +126,86 @@ function parseUrlParams(rawUrl) {
   });
 
   return result;
+}
+
+function tgEscape_(text) {
+  return String(text === null || text === undefined ? "" : text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function truncate_(s, n) {
+  s = String(s || "");
+  if (s.length <= n) return s;
+  return s.substring(0, n - 1) + "…";
+}
+
+function getUrlHostShort_(rawUrl) {
+  var m = String(rawUrl || "").match(/^https?:\/\/([^\/?#]+)/i);
+  if (!m) return "";
+  var host = m[1].toLowerCase();
+  // коротко: берем первый “ярлык” до точки: pyramid / kgn / и т.п.
+  return host.split(".")[0] || host;
+}
+
+function getUrlPath_(rawUrl) {
+  var m = String(rawUrl || "").match(/^https?:\/\/[^\/?#]+(\/[^?#]*)?/i);
+  return m && m[1] ? m[1] : "";
+}
+
+function prettyField_(field) {
+  var map = {
+    "Individual_FullName": "ФИО",
+    "Claimant_Name": "Взыскатель",
+    "CaseNumber": "№ дела",
+    "V_OVZID.EDocID": "EDocID"
+  };
+  return map[field] || field || "";
+}
+
+function buildUrlHintForTelegram_(rawUrl) {
+  var url = String(rawUrl || "").trim();
+  if (!url) return "";
+
+  var params = parseUrlParams(url);
+
+  var rows = firstParamValue(getParamValue(params, ["rows"]));
+  var page = firstParamValue(getParamValue(params, ["page"]));
+  var sidx = firstParamValue(getParamValue(params, ["sidx"]));
+  var sord = firstParamValue(getParamValue(params, ["sord"]));
+
+  var bits = [];
+  if (rows && rows !== "(пусто)") bits.push("строк=" + rows);
+  if (page && page !== "(пусто)") bits.push("стр=" + page);
+  if (sidx && sidx !== "(пусто)") {
+    var arrow = (sord === "asc") ? "↑" : (sord === "desc" ? "↓" : "");
+    bits.push("сорт=" + sidx + arrow);
+  }
+
+  // filters (первое правило — как “куда копать”)
+  var filterLine = "";
+  var filtersRaw = firstParamValue(getParamValue(params, ["filters"]));
+  if (filtersRaw) {
+    var parsed = tryParseFilters(filtersRaw);
+    if (!parsed.error && parsed.value) {
+      var rules = [];
+      collectFilterRules(parsed.value, rules);
+      if (rules.length > 0) {
+        var r = rules[0];
+        var f = prettyField_(toDisplayValue(r.field));
+        var op = toDisplayValue(r.op);
+        var d = toDisplayValue(r.data);
+        d = truncate_(d, 80);
+        filterLine = "🧩 Фильтр: <code>" + tgEscape_(f) + "</code> (" + tgEscape_(op) + ") = \"" + tgEscape_(d) + "\"";
+      }
+    }
+  }
+
+  if (bits.length === 0 && !filterLine) return "";
+
+  var line1 = bits.length ? ("🔎 " + tgEscape_(bits.join(" • "))) : "";
+  return filterLine ? (line1 ? (line1 + "\n" + filterLine) : filterLine) : line1;
 }
 
 function getParamValue(params, keys) {
@@ -616,8 +700,13 @@ function calculateStatsAndUsers(ss, scanStartDate, filterNewDate, now) {
         if (duration > ms.max) ms.max = duration;
         if (duration > 10) ms.slow++;
         ms.uniqueUsers[user] = true;
-        ms.loads.push({user: user, time: duration});
-
+        ms.loads.push({
+          user: user,
+          time: duration,
+          department: rowModel.department || "Не определен",
+          requestUrl: rowModel.requestUrl || "",
+          sessionId: rowModel.sessionId || ""
+        });
         if (status === "УСПЕШНО") { } 
         else if (status === "ОЖИДАНИЕ") { 
             ms.waiting++; 
@@ -814,6 +903,61 @@ function updateDayAnalysisDashboard(sheet, dayStats, dateStr) {
   }
 }
 
+function pad2_(n) {
+  n = Number(n) || 0;
+  return (n < 10 ? "0" : "") + n;
+}
+
+function parseHHMM_(raw) {
+  var s = String(raw || "").trim();
+  if (!s) return { ok: false, minutes: 0, str: "" };
+
+  var m = s.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+  if (!m) return { ok: false, minutes: 0, str: "" };
+
+  var hh = parseInt(m[1], 10);
+  var mm = parseInt(m[2], 10);
+
+  if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return { ok: false, minutes: 0, str: "" };
+
+  return {
+    ok: true,
+    minutes: hh * 60 + mm,
+    str: pad2_(hh) + ":" + pad2_(mm)
+  };
+}
+
+function getNowMinutesInTz_(tz) {
+  var hhmm = Utilities.formatDate(new Date(), tz, "HH:mm"); // уже с ведущими нулями
+  var p = parseHHMM_(hhmm);
+  return p.ok ? p.minutes : 0;
+}
+
+function isWithinWindow_(nowMin, startMin, endMin) {
+  // start == end -> считаем "всегда можно" (24ч), чтобы не “вырубить” мониторинг случайно
+  if (startMin === endMin) return true;
+
+  // обычное окно (например 09:00-21:00)
+  if (startMin < endMin) return nowMin >= startMin && nowMin < endMin;
+
+  // окно через полночь (например 22:00-06:00)
+  return nowMin >= startMin || nowMin < endMin;
+}
+
+function readNotifyWindow_(sheet) {
+  var startRaw = sheet.getRange(NOTIFY_WINDOW_START_CELL).getDisplayValue();
+  var endRaw = sheet.getRange(NOTIFY_WINDOW_END_CELL).getDisplayValue();
+
+  var start = parseHHMM_(startRaw);
+  var end = parseHHMM_(endRaw);
+
+  // если невалидно — ограничения НЕ применяем (fail-open)
+  if (!start.ok || !end.ok) {
+    return { enabled: false, startMin: 0, endMin: 0, startStr: "", endStr: "" };
+  }
+
+  return { enabled: true, startMin: start.minutes, endMin: end.minutes, startStr: start.str, endStr: end.str };
+}
 
 // ---------------- АЛЕРТЫ ----------------
 function checkAlerts(sheet, stats, timeZone) {
@@ -821,6 +965,8 @@ function checkAlerts(sheet, stats, timeZone) {
   var configs = configsRange.getValues();
   var props = PropertiesService.getScriptProperties();
   var nowMs = Date.now();
+  var notifyWindow = readNotifyWindow_(sheet);
+  var nowMinGmt5 = notifyWindow.enabled ? getNowMinutesInTz_(NOTIFY_TIMEZONE) : 0;
   var recoveryHoldMs = ALERT_RECOVERY_HOLD_SEC * 1000;
   var extraConfirmCycles = Math.max(1, ALERT_OK_CONFIRM_CYCLES) - 1;
 
@@ -834,6 +980,33 @@ function checkAlerts(sheet, stats, timeZone) {
     var lastStatus = row[5] || "OK";
 
     if (!baseTarget || !limit || !chatId || isActive !== true) continue;
+
+    // --- Ограничение отправки/редактирования по окну времени (GMT+5) ---
+    if (notifyWindow.enabled && !isWithinWindow_(nowMinGmt5, notifyWindow.startMin, notifyWindow.endMin)) {
+      var offText = "Уведомления приходят в рабочее время с " + notifyWindow.startStr + " до " + notifyWindow.endStr;
+
+      // В нерабочее время именно РЕДАКТИРУЕМ сообщение, чтобы не спамить
+      var offMsgId = null;
+
+      if (lastMsgId) {
+        var editedOff = editTelegramMessage(chatId, lastMsgId, offText);
+        if (editedOff === "SUCCESS") {
+          offMsgId = lastMsgId;
+        } else if (editedOff === "NOT_FOUND") {
+          offMsgId = sendTelegram(chatId, offText, true /* silent */);
+        } else {
+          offMsgId = lastMsgId; // оставляем как есть, чтобы не плодить новые
+        }
+      } else {
+        offMsgId = sendTelegram(chatId, offText, true /* silent */);
+      }
+
+      if (offMsgId) {
+        sheet.getRange(4 + i, 5).setValue(offMsgId);
+      }
+      sheet.getRange(4 + i, 6).setValue("OFF");
+      continue;
+    }
 
     var alertBlocks = []; 
 
@@ -853,21 +1026,38 @@ function checkAlerts(sheet, stats, timeZone) {
           var isAlertCondition = (avgTime > limit) || (s.maxWaiting > limit);
 
           if (isAlertCondition) {
-            var topSlowest = s.loads.sort((a, b) => b.time - a.time).slice(0, 3);
-            
-            var top3Msg = "";
-            topSlowest.forEach((item, index) => {
-              var tStr = item.time.toFixed(1).replace('.', ',');
-              top3Msg += `\n          ${index + 1}. <b>${item.user}</b>: ${tStr}с`;
+            var perUser = {};
+            s.loads.forEach(function(item) {
+              var u = (item && item.user) ? String(item.user) : "Unknown";
+              if (!perUser[u] || (Number(item.time || 0) > Number(perUser[u].time || 0))) {
+                perUser[u] = item; // храним запись с максимальным временем
+              }
             });
 
+            var topSlowest = Object.keys(perUser)
+              .map(function(k){ return perUser[k]; })
+              .sort(function(a, b){ return Number(b.time || 0) - Number(a.time || 0); })
+              .slice(0, 3);
+
+            var top3Msg = "";
+            topSlowest.forEach(function(item, index) {
+              var tStr = Number(item.time || 0).toFixed(1).replace('.', ',');
+              var dep = item.department ? String(item.department) : "Не определен";
+              var hint = buildUrlHintForTelegram_(item.requestUrl || "");
+
+              top3Msg +=
+                "   " + (index + 1) + ") <b>" + tgEscape_(item.user) + "</b> — " + tgEscape_(tStr) + "с\n       🏛 - <i>" + tgEscape_(dep) + "</i>" +
+                (hint ? ("\n      " + hint.replace(/\n/g, "\n      ")) : "") +
+                "\n";
+            });
+            top3Msg = top3Msg.trimEnd();  
+                      
             var avgStr = avgTime.toFixed(1).replace('.', ',');
             
-            var stageBlock = `   🔸 <b>${stageName}</b>\n` +
-                             `      ⏱ Среднее: <b>${avgStr} с</b> (Лимит: ${limit})\n` +
-                             `      ⏳ В работе: ${s.waiting} (Макс: ${s.maxWaiting.toFixed(1)}с)\n` +
-                             `      🐌 <i>Топ долгих:</i>${top3Msg}`;
-            
+            var stageBlock =
+              "   🔸 <b>" + tgEscape_(stageName) + "</b>" +
+              (top3Msg ? ("\n" + top3Msg) : "\n   — нет данных");   
+                       
             loadTypeAlerts.push(stageBlock);
           }
         }
@@ -935,29 +1125,70 @@ function checkAlerts(sheet, stats, timeZone) {
 
     saveAlertState(props, stateKey, alertState);
 
-    var newMsgId = null;    
+    var newMsgId = null;
+
     if (currentStatus !== lastStatus) {
-      if (lastMsgId) deleteTelegramMessage(chatId, lastMsgId);
-      var silent = (currentStatus === "OK");
-      newMsgId = sendTelegram(chatId, finalMessage, silent);
-    } 
-    else {
+
+      // ✅ ALERT → OK: редактируем ALERT-сообщение в OK
+      if (lastStatus === "ALERT" && currentStatus === "OK") {
+        if (lastMsgId) {
+          var editedToOk = editTelegramMessage(chatId, lastMsgId, finalMessage);
+          if (editedToOk === "SUCCESS") {
+            newMsgId = lastMsgId;
+          } else if (editedToOk === "NOT_FOUND") {
+            // если сообщения уже нет — запасной вариант: отправим OK тихо
+            newMsgId = sendTelegram(chatId, finalMessage, true);
+          } else {
+            // чтобы не спамить — оставляем старый id как есть
+            newMsgId = lastMsgId;
+          }
+        } else {
+          newMsgId = sendTelegram(chatId, finalMessage, true);
+        }
+      }
+
+      // ✅ OK → ALERT: удаляем OK и шлем новый ALERT
+      else if (lastStatus === "OK" && currentStatus === "ALERT") {
+        if (lastMsgId) deleteTelegramMessage(chatId, lastMsgId);
+        newMsgId = sendTelegram(chatId, finalMessage, false);
+      }
+
+      // Остальные переходы (например OFF ↔ OK/ALERT, если ты уже добавил OFF)
+      else {
+        if (lastMsgId) {
+          var editedAny = editTelegramMessage(chatId, lastMsgId, finalMessage);
+          if (editedAny === "SUCCESS") {
+            newMsgId = lastMsgId;
+          } else if (editedAny === "NOT_FOUND") {
+            var silentAny = (currentStatus === "OK" || currentStatus === "OFF");
+            newMsgId = sendTelegram(chatId, finalMessage, silentAny);
+          } else {
+            newMsgId = lastMsgId;
+          }
+        } else {
+          var silentAny2 = (currentStatus === "OK" || currentStatus === "OFF");
+          newMsgId = sendTelegram(chatId, finalMessage, silentAny2);
+        }
+      }
+
+    } else {
+      // Статус не изменился — как раньше: обновляем (edit) то же сообщение
       if (lastMsgId) {
-        var edited = editTelegramMessage(chatId, lastMsgId, finalMessage);
-        if (edited === "SUCCESS") {
-          newMsgId = lastMsgId; 
-        } else if (edited === "NOT_FOUND") {
-          var silent = (currentStatus === "OK");
-          newMsgId = sendTelegram(chatId, finalMessage, silent);
+        var editedSame = editTelegramMessage(chatId, lastMsgId, finalMessage);
+        if (editedSame === "SUCCESS") {
+          newMsgId = lastMsgId;
+        } else if (editedSame === "NOT_FOUND") {
+          var silentSame = (currentStatus === "OK" || currentStatus === "OFF");
+          newMsgId = sendTelegram(chatId, finalMessage, silentSame);
         } else {
           newMsgId = lastMsgId;
         }
       } else {
-        var silent = (currentStatus === "OK");
-        newMsgId = sendTelegram(chatId, finalMessage, silent);
+        var silentSame2 = (currentStatus === "OK" || currentStatus === "OFF");
+        newMsgId = sendTelegram(chatId, finalMessage, silentSame2);
       }
     }
-
+    
     if (newMsgId) {
       sheet.getRange(4 + i, 5).setValue(newMsgId);
     }
@@ -1187,6 +1418,12 @@ function setupDashboard() {
   
   sheet.clear();
   sheet.getRange("A1").setValue("НАСТРОЙКИ МОНИТОРИНГА").setFontSize(14).setFontWeight("bold");
+    // Окно уведомлений (GMT+5)
+  sheet.getRange("A2").setValue("Начало дня (GMT+5)").setFontWeight("bold");
+  sheet.getRange("B2").setValue("09:00").setNumberFormat("@");
+  sheet.getRange("C2").setValue("Конец дня (GMT+5)").setFontWeight("bold");
+  sheet.getRange("D2").setValue("21:00").setNumberFormat("@");
+  sheet.getRange("A2:D2").setBackground("#fff2cc");
   sheet.getRange("A3:F3").setValues([["Имя базы (или *)", "Лимит времени (сек)", "ID Чата Telegram", "Активно?", "ID посл. сообщ.", "Статус (Last)"]]);
   sheet.getRange("A3:F3").setBackground("#cfe2f3").setFontWeight("bold");
   
