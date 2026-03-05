@@ -46,19 +46,27 @@
   const GRID_ABORT_REWRITE_EVENT = 'dup-grid-abort-message';
   const GRID_ABORT_REWRITE_TEXT = 'Загрузка/Фильтрация была прервана пользователем вручную. Повторите действие заново.';
   const FSSP_REESTR_PATH_PART = '/ovzid/fsspreestr';
+  const FSSP_REESTR_GROUPING_STORAGE_KEY = 'dup_fsspreestr_group_duplicates';
+  const FSSP_REESTR_GROUPING_CHANGE_EVENT = 'dup-fsspreestr-grouping-toggle';
+  const FSSP_REESTR_GROUPING_TOGGLE_ID = 'dup-fsspreestr-grouping-toggle';
+  const FSSP_REESTR_GROUPING_TOGGLE_INPUT_ID = 'dup-fsspreestr-grouping-toggle-input';
+  const FSSP_REESTR_GROUPING_STYLE_ID = 'dup-fsspreestr-grouping-style';
+  const FSSP_REESTR_GROUPING_HOST_CLASS = 'dup-fsspreestr-grouping-host';
+  const FSSP_REESTR_GROUPING_HOST_LEFT_VAR = '--dup-fsspreestr-grouping-left-offset';
+  const FSSP_REESTR_ORIGINAL_INDEX_ATTR = 'data-dup-fsspreestr-original-index';
   const FSSP_REESTR_DUPLICATE_CLASS = 'dup-fsspreestr-duplicate';
   const FSSP_REESTR_STATUS_CLASS = 'dup-fsspreestr-status';
   const FSSP_REESTR_DUPLICATE_COLOR_PALETTE = [
-    { background: '#FDDFDF', outline: '#FF8888' },
-    { background: '#DEFDE0', outline: '#88FF88' },
-    { background: '#FCF7DE', outline: '#FFFF88' },
-    { background: '#DEF3FD', outline: '#88DDFF' },
-    { background: '#F0DEFD', outline: '#DD88FF' },
-    { background: '#FFC8C8', outline: '#FF8888' },
-    { background: '#C8FFC8', outline: '#88FF88' },
-    { background: '#FFF2C8', outline: '#FFFF88' },
-    { background: '#C8E7FF', outline: '#88DDFF' },
-    { background: '#E2C8FF', outline: '#DD88FF' }
+    { background: '#A9D2FF' },
+    { background: '#C6B6FF' },
+    { background: '#9FDDE8' },
+    { background: '#FFD6AE' },
+    { background: '#E7B6D7' },
+    { background: '#BCC7D2' },
+    { background: '#AFC4FF' },
+    { background: '#D5B7E8' },
+    { background: '#F4BECA' },
+    { background: '#B8C1E6' }
   ];
   const FSSP_REESTR_STATUS_COLOR_BY_TEXT = {
     'проведен': '#C8F2CC',
@@ -69,16 +77,16 @@
   const EPGU_REQUESTS_DUPLICATE_CLASS = 'dup-epgu-duplicate';
   const EPGU_REQUESTS_FILL_CLASS = 'dup-epgu-fill';
   const EPGU_REQUESTS_DUPLICATE_COLOR_PALETTE = [
-    { background: '#FDDFDF', outline: '#FF8888' },
-    { background: '#DEFDE0', outline: '#88FF88' },
-    { background: '#FCF7DE', outline: '#FFFF88' },
-    { background: '#DEF3FD', outline: '#88DDFF' },
-    { background: '#F0DEFD', outline: '#DD88FF' },
-    { background: '#FFC8C8', outline: '#FF8888' },
-    { background: '#C8FFC8', outline: '#88FF88' },
-    { background: '#FFF2C8', outline: '#FFFF88' },
-    { background: '#C8E7FF', outline: '#88DDFF' },
-    { background: '#E2C8FF', outline: '#DD88FF' }
+    { background: '#A9D2FF' },
+    { background: '#C6B6FF' },
+    { background: '#9FDDE8' },
+    { background: '#FFD6AE' },
+    { background: '#E7B6D7' },
+    { background: '#BCC7D2' },
+    { background: '#AFC4FF' },
+    { background: '#D5B7E8' },
+    { background: '#F4BECA' },
+    { background: '#B8C1E6' }
   ];
   const EPGU_REQUESTS_COLOR_RED = '#FFC9C9';
   const EPGU_REQUESTS_COLOR_GREEN = '#C8F2CC';
@@ -145,6 +153,7 @@
   let stageJumpCachedMenuIndex = null;
   let stageJumpActionMenuEl = null;
   let stageJumpActionMenuAnchor = null;
+  let fsspReestrGroupingCurrentHost = null;
   let stageJumpLastStageLoadStartAtMs = 0;
   let stageJumpLastStageLoadType = '';
   let stageJumpLastStageLoadRequestUrl = '';
@@ -338,6 +347,7 @@
       html.${SCREENSHOT_MODE_CLASS} .pyramid-stage-timer-toggle-btn,
       html.${SCREENSHOT_MODE_CLASS} #pyramid-stage-timer-abort,
       html.${SCREENSHOT_MODE_CLASS} .pyramid-stage-timer-abort-btn,
+      html.${SCREENSHOT_MODE_CLASS} #dup-fsspreestr-grouping-toggle,
       html.${SCREENSHOT_MODE_CLASS} .${STAGE_JUMP_BUTTON_CLASS},
       html.${SCREENSHOT_MODE_CLASS} .${STAGE_JUMP_MENU_CLASS},
       html.${SCREENSHOT_MODE_CLASS} [${STAGE_JUMP_BUTTON_MARK_ATTR}="1"],
@@ -477,13 +487,8 @@
   // --- Логика подсветки дублей ---
 
   const colorPalette = [
-    '#FDDFDF', '#DEFDE0', '#FCF7DE', '#DEF3FD', '#F0DEFD',
-    '#FFC8C8', '#C8FFC8', '#FFF2C8', '#C8E7FF', '#E2C8FF',
-  ];
-  // Brighter versions for the outline, chosen to stand out more.
-  const outlinePalette = [
-    '#FF8888', '#88FF88', '#FFFF88', '#88DDFF', '#DD88FF',
-    '#FF8888', '#88FF88', '#FFFF88', '#88DDFF', '#DD88FF',
+    '#A9D2FF', '#C6B6FF', '#9FDDE8', '#FFD6AE', '#E7B6D7',
+    '#BCC7D2', '#AFC4FF', '#D5B7E8', '#F4BECA', '#B8C1E6',
   ];
   let colorIndex = 0;
   const colorMap = new Map();
@@ -503,8 +508,7 @@
   function getColorForText(str) {
     if (!colorMap.has(str)) {
       colorMap.set(str, {
-        background: colorPalette[colorIndex],
-        outline: outlinePalette[colorIndex]
+        background: colorPalette[colorIndex]
       });
       colorIndex = (colorIndex + 1) % colorPalette.length;
     }
@@ -553,6 +557,179 @@
     return String(value || '').replace(/\s+/g, ' ').trim();
   }
 
+  function isFsspReestrGroupingEnabled() {
+    try {
+      const rawValue = window.localStorage.getItem(FSSP_REESTR_GROUPING_STORAGE_KEY);
+      if (rawValue === '0' || rawValue === 'false') return false;
+      if (rawValue === '1' || rawValue === 'true') return true;
+    } catch (error) {
+      // ignore
+    }
+    return true;
+  }
+
+  function saveFsspReestrGroupingPreference(isEnabled) {
+    try {
+      window.localStorage.setItem(FSSP_REESTR_GROUPING_STORAGE_KEY, isEnabled ? '1' : '0');
+    } catch (error) {
+      // ignore
+    }
+  }
+
+  function dispatchFsspReestrGroupingChange(isEnabled) {
+    try {
+      window.dispatchEvent(new CustomEvent(FSSP_REESTR_GROUPING_CHANGE_EVENT, {
+        detail: { enabled: !!isEnabled }
+      }));
+    } catch (error) {
+      // ignore
+    }
+  }
+
+  function ensureFsspReestrGroupingStyle() {
+    if (document.getElementById(FSSP_REESTR_GROUPING_STYLE_ID)) return;
+
+    const style = document.createElement('style');
+    style.id = FSSP_REESTR_GROUPING_STYLE_ID;
+    style.textContent = `
+      .ui-jqgrid-titlebar.${FSSP_REESTR_GROUPING_HOST_CLASS} {
+        padding-left: calc(var(${FSSP_REESTR_GROUPING_HOST_LEFT_VAR}, 0px) + 0.4em) !important;
+      }
+
+      #${FSSP_REESTR_GROUPING_TOGGLE_ID} {
+        position: absolute;
+        top: 50%;
+        left: 6px;
+        transform: translateY(-50%);
+        z-index: 4;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        margin: 0;
+        padding: 1px 2px;
+        font-size: 12px;
+        line-height: 1.1;
+        font-weight: 500;
+        white-space: nowrap;
+        color: inherit;
+        cursor: pointer;
+        user-select: none;
+        text-indent: 0 !important;
+        background: transparent !important;
+      }
+
+      #${FSSP_REESTR_GROUPING_TOGGLE_INPUT_ID} {
+        width: 13px;
+        height: 13px;
+        margin: 0;
+        cursor: pointer;
+      }
+
+      #${FSSP_REESTR_GROUPING_TOGGLE_ID} .dup-fsspreestr-grouping-label {
+        white-space: nowrap;
+      }
+    `;
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  function getFsspReestrGroupingHost() {
+    return document.querySelector('#gbox_list .ui-jqgrid-titlebar')
+      || document.querySelector('#gview_list .ui-jqgrid-titlebar');
+  }
+
+  function clearFsspReestrGroupingHostState(host) {
+    if (!(host instanceof HTMLElement)) return;
+    host.classList.remove(FSSP_REESTR_GROUPING_HOST_CLASS);
+    host.style.removeProperty(FSSP_REESTR_GROUPING_HOST_LEFT_VAR);
+  }
+
+  function detachFsspReestrGroupingToggle() {
+    const toggle = document.getElementById(FSSP_REESTR_GROUPING_TOGGLE_ID);
+    if (toggle instanceof HTMLElement) {
+      toggle.remove();
+    }
+    if (fsspReestrGroupingCurrentHost instanceof HTMLElement) {
+      clearFsspReestrGroupingHostState(fsspReestrGroupingCurrentHost);
+      fsspReestrGroupingCurrentHost = null;
+    }
+  }
+
+  function buildFsspReestrGroupingToggleElement() {
+    const label = document.createElement('label');
+    label.id = FSSP_REESTR_GROUPING_TOGGLE_ID;
+    label.innerHTML = `
+      <input id="${FSSP_REESTR_GROUPING_TOGGLE_INPUT_ID}" type="checkbox" />
+      <span class="dup-fsspreestr-grouping-label">Сгруппировать дубликаты</span>
+    `;
+
+    const checkbox = label.querySelector(`#${FSSP_REESTR_GROUPING_TOGGLE_INPUT_ID}`);
+    if (checkbox instanceof HTMLInputElement) {
+      checkbox.addEventListener('change', function(event) {
+        const target = event && event.target ? event.target : null;
+        const isChecked = !!(target && target.checked);
+        saveFsspReestrGroupingPreference(isChecked);
+        dispatchFsspReestrGroupingChange(isChecked);
+      }, { capture: true });
+    }
+
+    label.addEventListener('click', function(event) {
+      if (event) event.stopPropagation();
+    }, { capture: true });
+
+    return label;
+  }
+
+  function ensureFsspReestrGroupingToggle() {
+    if (!isFsspReestrPage()) {
+      detachFsspReestrGroupingToggle();
+      return;
+    }
+
+    const host = getFsspReestrGroupingHost();
+    if (!(host instanceof HTMLElement)) return;
+
+    ensureFsspReestrGroupingStyle();
+
+    let toggle = document.getElementById(FSSP_REESTR_GROUPING_TOGGLE_ID);
+    if (!(toggle instanceof HTMLElement)) {
+      toggle = buildFsspReestrGroupingToggleElement();
+    }
+
+    if (toggle.parentElement !== host) {
+      if (host.firstChild) {
+        host.insertBefore(toggle, host.firstChild);
+      } else {
+        host.appendChild(toggle);
+      }
+    }
+
+    if (fsspReestrGroupingCurrentHost instanceof HTMLElement && fsspReestrGroupingCurrentHost !== host) {
+      clearFsspReestrGroupingHostState(fsspReestrGroupingCurrentHost);
+    }
+
+    host.classList.add(FSSP_REESTR_GROUPING_HOST_CLASS);
+    fsspReestrGroupingCurrentHost = host;
+
+    const checkbox = toggle.querySelector(`#${FSSP_REESTR_GROUPING_TOGGLE_INPUT_ID}`);
+    const enabled = isFsspReestrGroupingEnabled();
+    if (checkbox instanceof HTMLInputElement) {
+      checkbox.checked = enabled;
+      checkbox.setAttribute('aria-label', 'Сгруппировать дубликаты');
+    }
+
+    const tooltipText = enabled
+      ? 'Сгруппировать дубликаты (включено)'
+      : 'Сгруппировать дубликаты (выключено)';
+    toggle.setAttribute('title', tooltipText);
+    toggle.setAttribute('aria-label', tooltipText);
+
+    const toggleRect = toggle.getBoundingClientRect();
+    const toggleWidth = toggleRect && Number.isFinite(toggleRect.width) && toggleRect.width > 1
+      ? Math.ceil(toggleRect.width)
+      : 170;
+    host.style.setProperty(FSSP_REESTR_GROUPING_HOST_LEFT_VAR, `${toggleWidth + 10}px`);
+  }
+
   function clearFsspReestrHighlights() {
     document.querySelectorAll(`.${FSSP_REESTR_DUPLICATE_CLASS}`).forEach((cell) => {
       if (!(cell instanceof HTMLElement)) return;
@@ -594,13 +771,21 @@
     if (!(cell instanceof HTMLElement)) return;
     cell.classList.add(FSSP_REESTR_DUPLICATE_CLASS);
     cell.style.backgroundColor = colorPair && colorPair.background ? colorPair.background : '';
-    cell.style.outline = colorPair && colorPair.outline ? `2px solid ${colorPair.outline}` : '';
+    cell.style.outline = '';
+  }
+
+  function normalizeFsspReestrStatusKey(value) {
+    const normalized = normalizeFsspReestrCellText(value).toLowerCase();
+    if (normalized.startsWith('проведен (нет данных')) {
+      return 'проведен (нет данных)';
+    }
+    return normalized;
   }
 
   function applyFsspReestrStatusColor(statusCell) {
     if (!(statusCell instanceof HTMLElement)) return;
 
-    const statusText = normalizeFsspReestrCellText(getSmartValue(statusCell)).toLowerCase();
+    const statusText = normalizeFsspReestrStatusKey(getSmartValue(statusCell));
     const statusColor = FSSP_REESTR_STATUS_COLOR_BY_TEXT[statusText];
     if (!statusColor) return;
 
@@ -608,24 +793,210 @@
     statusCell.style.backgroundColor = statusColor;
   }
 
+  function shouldSkipFsspReestrDuplicateByClaimant(pairRows) {
+    if (!Array.isArray(pairRows) || pairRows.length < 2) return false;
+
+    const claimantValues = pairRows.map((pairRow) => (
+      normalizeFsspReestrCellText(pairRow && pairRow.claimantName ? pairRow.claimantName : '')
+    ));
+    const allFilled = claimantValues.every((value) => value.length > 0);
+    if (!allFilled) return false;
+
+    const uniqueClaimants = new Set(claimantValues);
+    return uniqueClaimants.size === claimantValues.length;
+  }
+
+  function parseFsspReestrSortIdValue(rawId) {
+    const normalized = normalizeFsspReestrCellText(rawId);
+    if (!normalized) return Number.NEGATIVE_INFINITY;
+
+    const digitsOnly = normalized.replace(/\D+/g, '');
+    if (digitsOnly) {
+      const parsed = Number.parseInt(digitsOnly, 10);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+
+    return Number.NEGATIVE_INFINITY;
+  }
+
+  function sortFsspReestrPairRowsByIdDesc(pairRows) {
+    if (!Array.isArray(pairRows)) return [];
+    return pairRows
+      .slice()
+      .sort((leftPair, rightPair) => {
+        const leftSortId = Number.isFinite(leftPair && leftPair.rowIdSortValue)
+          ? leftPair.rowIdSortValue
+          : Number.NEGATIVE_INFINITY;
+        const rightSortId = Number.isFinite(rightPair && rightPair.rowIdSortValue)
+          ? rightPair.rowIdSortValue
+          : Number.NEGATIVE_INFINITY;
+        if (leftSortId !== rightSortId) return rightSortId - leftSortId;
+
+        const leftRowIdText = normalizeFsspReestrCellText(leftPair && leftPair.rowIdText ? leftPair.rowIdText : '');
+        const rightRowIdText = normalizeFsspReestrCellText(rightPair && rightPair.rowIdText ? rightPair.rowIdText : '');
+        if (leftRowIdText !== rightRowIdText) {
+          return rightRowIdText.localeCompare(leftRowIdText, 'ru', { numeric: true, sensitivity: 'base' });
+        }
+
+        const leftIndex = Number.isFinite(leftPair && leftPair.originalIndex) ? leftPair.originalIndex : Number.MAX_SAFE_INTEGER;
+        const rightIndex = Number.isFinite(rightPair && rightPair.originalIndex) ? rightPair.originalIndex : Number.MAX_SAFE_INTEGER;
+        return leftIndex - rightIndex;
+      });
+  }
+
+  function getFsspReestrRowOriginalIndex(row, fallbackIndex) {
+    if (!(row instanceof HTMLElement)) {
+      return Number.isFinite(fallbackIndex) ? fallbackIndex : Number.MAX_SAFE_INTEGER;
+    }
+
+    const rawStored = String(row.getAttribute(FSSP_REESTR_ORIGINAL_INDEX_ATTR) || '').trim();
+    if (/^\d+$/.test(rawStored)) {
+      const parsed = Number.parseInt(rawStored, 10);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+
+    return Number.isFinite(fallbackIndex) ? fallbackIndex : Number.MAX_SAFE_INTEGER;
+  }
+
+  function rememberFsspReestrRowsOriginalOrder(rows) {
+    if (!Array.isArray(rows) || !rows.length) return;
+    rows.forEach((row, index) => {
+      if (!(row instanceof HTMLElement)) return;
+      if (row.hasAttribute(FSSP_REESTR_ORIGINAL_INDEX_ATTR)) return;
+      row.setAttribute(FSSP_REESTR_ORIGINAL_INDEX_ATTR, String(index));
+    });
+  }
+
+  function clearFsspReestrRowsOriginalOrder(rows) {
+    if (!Array.isArray(rows) || !rows.length) return;
+    rows.forEach((row) => {
+      if (!(row instanceof HTMLElement)) return;
+      row.removeAttribute(FSSP_REESTR_ORIGINAL_INDEX_ATTR);
+    });
+  }
+
+  function restoreFsspReestrRowsOriginalOrder(rows) {
+    if (!Array.isArray(rows) || rows.length < 2) return rows;
+
+    const sortableRows = rows.filter((row) => row instanceof HTMLTableRowElement);
+    if (sortableRows.length !== rows.length) return rows;
+    if (!sortableRows.every((row) => row.hasAttribute(FSSP_REESTR_ORIGINAL_INDEX_ATTR))) return rows;
+
+    const restoredRows = sortableRows
+      .slice()
+      .sort((leftRow, rightRow) => {
+        const leftIndex = getFsspReestrRowOriginalIndex(leftRow, Number.MAX_SAFE_INTEGER);
+        const rightIndex = getFsspReestrRowOriginalIndex(rightRow, Number.MAX_SAFE_INTEGER);
+        if (leftIndex !== rightIndex) return leftIndex - rightIndex;
+        return 0;
+      });
+
+    const hasDifference = sortableRows.some((row, index) => row !== restoredRows[index]);
+    if (!hasDifference) return rows;
+
+    const tbody = sortableRows[0] && sortableRows[0].parentElement;
+    if (!(tbody instanceof HTMLElement)) return rows;
+
+    const fragment = document.createDocumentFragment();
+    restoredRows.forEach((row) => fragment.appendChild(row));
+    tbody.appendChild(fragment);
+    return restoredRows;
+  }
+
+  function reorderFsspReestrRowsByDuplicateGroups(rows, duplicateGroups) {
+    if (!Array.isArray(rows) || rows.length < 2) return rows;
+    if (!Array.isArray(duplicateGroups) || duplicateGroups.length === 0) return rows;
+
+    const duplicateRowSet = new Set();
+    const groupedRowsByFirstIndex = new Map();
+
+    duplicateGroups.forEach((groupRows) => {
+      if (!Array.isArray(groupRows) || groupRows.length < 2) return;
+
+      const validPairs = groupRows.filter((pair) => pair && pair.row instanceof HTMLTableRowElement);
+      if (validPairs.length < 2) return;
+
+      let firstIndex = Number.POSITIVE_INFINITY;
+      validPairs.forEach((pair) => {
+        duplicateRowSet.add(pair.row);
+        if (Number.isFinite(pair.originalIndex) && pair.originalIndex < firstIndex) {
+          firstIndex = pair.originalIndex;
+        }
+      });
+
+      if (!Number.isFinite(firstIndex)) return;
+      groupedRowsByFirstIndex.set(firstIndex, validPairs.map((pair) => pair.row));
+    });
+
+    if (!duplicateRowSet.size || !groupedRowsByFirstIndex.size) return rows;
+
+    const reorderedRows = [];
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[index];
+      if (!(row instanceof HTMLTableRowElement)) continue;
+
+      if (duplicateRowSet.has(row)) {
+        if (groupedRowsByFirstIndex.has(index)) {
+          reorderedRows.push(...groupedRowsByFirstIndex.get(index));
+        }
+        continue;
+      }
+
+      reorderedRows.push(row);
+    }
+
+    if (reorderedRows.length !== rows.length) return rows;
+
+    const hasDifference = rows.some((row, index) => row !== reorderedRows[index]);
+    if (!hasDifference) return rows;
+
+    const tbody = rows[0] && rows[0].parentElement;
+    if (!(tbody instanceof HTMLElement)) return rows;
+
+    const fragment = document.createDocumentFragment();
+    reorderedRows.forEach((row) => fragment.appendChild(row));
+    tbody.appendChild(fragment);
+
+    return reorderedRows;
+  }
+
+  function updateFsspReestrVisibleRowNumbers(rows) {
+    if (!Array.isArray(rows) || !rows.length) return;
+    rows.forEach((row, index) => {
+      if (!(row instanceof HTMLTableRowElement)) return;
+      const rowNumberCell = row.querySelector('td[aria-describedby="list_rn"], td.jqgrid-rownum');
+      if (!(rowNumberCell instanceof HTMLElement)) return;
+      rowNumberCell.textContent = String(index + 1);
+    });
+  }
+
   function applyFsspReestrPermanentHighlights() {
     if (!isFsspReestrPage()) {
+      detachFsspReestrGroupingToggle();
       clearFsspReestrHighlights();
       return;
     }
 
+    ensureFsspReestrGroupingToggle();
+    const groupingEnabled = isFsspReestrGroupingEnabled();
     clearFsspReestrHighlights();
 
     const rows = Array.from(document.querySelectorAll('#list tbody > tr.jqgrow'));
+    if (groupingEnabled) {
+      rememberFsspReestrRowsOriginalOrder(rows);
+    }
+
     const duplicatePairs = new Map();
 
-    rows.forEach((row) => {
+    rows.forEach((row, rowIndex) => {
       if (!(row instanceof HTMLElement)) return;
 
       const fileNameCell = row.querySelector('td[aria-describedby="list_FileName"]');
       const createDateCell = row.querySelector('td[aria-describedby="list_CreateDate"]');
       const typeNameCell = row.querySelector('td[aria-describedby="list_TypeName"]');
       const statusCell = row.querySelector('td[aria-describedby="list_StatusName"]');
+      const idCell = row.querySelector('td[aria-describedby="list_Id"]');
+      const claimantNameCell = row.querySelector('td[aria-describedby="list_ClaimantName"]');
 
       if (statusCell) {
         applyFsspReestrStatusColor(statusCell);
@@ -640,6 +1011,9 @@
       const fileName = normalizeFsspReestrCellText(getSmartValue(fileNameCell));
       const createDate = normalizeFsspReestrCellText(getSmartValue(createDateCell));
       const typeName = normalizeFsspReestrCellText(getSmartValue(typeNameCell));
+      const rowIdText = idCell ? normalizeFsspReestrCellText(getSmartValue(idCell)) : '';
+      const rowIdSortValue = parseFsspReestrSortIdValue(rowIdText);
+      const claimantName = claimantNameCell ? normalizeFsspReestrCellText(getSmartValue(claimantNameCell)) : '';
       if (!fileName || !createDate || !typeName) return;
 
       const pairKey = `${fileName}|||${createDate}|||${typeName}`;
@@ -647,19 +1021,44 @@
         duplicatePairs.set(pairKey, []);
       }
       duplicatePairs.get(pairKey).push({
+        row,
+        originalIndex: getFsspReestrRowOriginalIndex(row, rowIndex),
         fileNameCell,
-        createDateCell,
-        typeNameCell
+        rowIdText,
+        rowIdSortValue,
+        claimantName
       });
     });
 
+    const duplicateGroupsForReorder = [];
     duplicatePairs.forEach((pairRows, pairKey) => {
       if (!Array.isArray(pairRows) || pairRows.length < 2) return;
+      if (shouldSkipFsspReestrDuplicateByClaimant(pairRows)) return;
+
+      const orderedPairRows = groupingEnabled
+        ? sortFsspReestrPairRowsByIdDesc(pairRows)
+        : pairRows.slice().sort((leftPair, rightPair) => leftPair.originalIndex - rightPair.originalIndex);
+
+      if (orderedPairRows.length < 2) return;
+
+      if (groupingEnabled) {
+        duplicateGroupsForReorder.push(orderedPairRows);
+      }
+
       const colors = getFsspReestrDuplicateColorByKey(pairKey);
-      pairRows.forEach((pair) => {
+      orderedPairRows.forEach((pair) => {
         markFsspReestrDuplicateCell(pair.fileNameCell, colors);
       });
     });
+
+    if (groupingEnabled) {
+      const finalRows = reorderFsspReestrRowsByDuplicateGroups(rows, duplicateGroupsForReorder);
+      updateFsspReestrVisibleRowNumbers(finalRows);
+      return;
+    }
+
+    const restoredRows = restoreFsspReestrRowsOriginalOrder(rows);
+    updateFsspReestrVisibleRowNumbers(restoredRows);
   }
 
   function isEpguRequestsPage() {
@@ -714,7 +1113,7 @@
     if (!(cell instanceof HTMLElement)) return;
     cell.classList.add(EPGU_REQUESTS_DUPLICATE_CLASS);
     cell.style.backgroundColor = colorPair && colorPair.background ? colorPair.background : '';
-    cell.style.outline = colorPair && colorPair.outline ? `2px solid ${colorPair.outline}` : '';
+    cell.style.outline = '';
   }
 
   function applyEpguRequestsFillColor(cell, color) {
@@ -841,7 +1240,7 @@
           el.classList.add(HIGHLIGHT_CLASS);
           const colors = getColorForText(key);
           el.style.backgroundColor = colors.background;
-          el.style.outline = `2px solid ${colors.outline}`;
+          el.style.outline = '';
         }
       });
     });
@@ -851,6 +1250,17 @@
   }
 
   const debouncedRunCheck = debounce(runCheck, 500);
+
+  window.addEventListener(FSSP_REESTR_GROUPING_CHANGE_EVENT, function(event) {
+    if (!isFsspReestrPage()) return;
+    const enabled = !!(event && event.detail && event.detail.enabled);
+    if (enabled) {
+      const rows = Array.from(document.querySelectorAll('#list tbody > tr.jqgrow'));
+      clearFsspReestrRowsOriginalOrder(rows);
+    }
+    ensureFsspReestrGroupingToggle();
+    runCheck();
+  }, { capture: true });
 
   // --- Инициализация и слушатели ---
   
