@@ -1,0 +1,64 @@
+/* Вариант B: "Свежая зелень"
+ * Концепт для согласования, не подключен к прод-расширению.
+ */
+
+:root {
+  --spring-b-header-1: rgba(222, 247, 229, 0.96);
+  --spring-b-header-2: rgba(197, 241, 213, 0.96);
+  --spring-b-border: #9fd6b3;
+  --spring-b-title: #284135;
+  --spring-b-accent: #5bbd7a;
+}
+
+body.spring-active.spring-variant-b .ui-jqgrid-titlebar,
+body.spring-active.spring-variant-b .ui-dialog-titlebar,
+body.spring-active.spring-variant-b .ui-tabs-nav,
+body.spring-active.spring-variant-b .ui-widget-header {
+  background: linear-gradient(
+    90deg,
+    var(--spring-b-header-1) 0%,
+    var(--spring-b-header-2) 100%
+  ) !important;
+  border: 1px solid var(--spring-b-border) !important;
+  color: var(--spring-b-title) !important;
+  border-radius: 8px 8px 0 0 !important;
+}
+
+body.spring-active.spring-variant-b .ui-jqgrid-title::before,
+body.spring-active.spring-variant-b .ui-dialog-title::before {
+  content: "🍃 ";
+}
+
+body.spring-active.spring-variant-b .ui-jqgrid-title::after,
+body.spring-active.spring-variant-b .ui-dialog-title::after {
+  content: " ☀️";
+}
+
+body.spring-active.spring-variant-b .ui-tabs-tab.ui-tabs-active {
+  background: linear-gradient(to bottom, #86cf9f, #67be87) !important;
+  border-color: #5bbd7a !important;
+}
+
+body.spring-active.spring-variant-b .ui-dialog {
+  border: 1px solid rgba(91, 189, 122, 0.35) !important;
+  animation: spring-breathe 6s ease-in-out infinite;
+}
+
+@keyframes spring-breathe {
+  0% {
+    box-shadow: 0 0 0 rgba(91, 189, 122, 0.1);
+  }
+  50% {
+    box-shadow: 0 0 16px rgba(91, 189, 122, 0.24);
+  }
+  100% {
+    box-shadow: 0 0 0 rgba(91, 189, 122, 0.1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body.spring-active.spring-variant-b .ui-dialog {
+    animation: none !important;
+  }
+}
+

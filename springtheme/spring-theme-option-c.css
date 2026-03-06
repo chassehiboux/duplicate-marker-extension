@@ -1,0 +1,42 @@
+/* Вариант C: "Минималистичная весна"
+ * Концепт для согласования, не подключен к прод-расширению.
+ */
+
+:root {
+  --spring-c-header: #f6fbf8;
+  --spring-c-border: #cde3d5;
+  --spring-c-title: #2f3d35;
+  --spring-c-accent: #72b793;
+}
+
+body.spring-active.spring-variant-c .ui-jqgrid-titlebar,
+body.spring-active.spring-variant-c .ui-dialog-titlebar,
+body.spring-active.spring-variant-c .ui-tabs-nav,
+body.spring-active.spring-variant-c .ui-widget-header {
+  background: var(--spring-c-header) !important;
+  border: 1px solid var(--spring-c-border) !important;
+  border-radius: 6px 6px 0 0 !important;
+  color: var(--spring-c-title) !important;
+  text-shadow: none !important;
+}
+
+body.spring-active.spring-variant-c .ui-jqgrid-title::before,
+body.spring-active.spring-variant-c .ui-dialog-title::before {
+  content: "🌱 ";
+}
+
+body.spring-active.spring-variant-c .ui-tabs-tab {
+  background: #f4faf7 !important;
+  border-color: #d7e9df !important;
+}
+
+body.spring-active.spring-variant-c .ui-tabs-tab.ui-tabs-active {
+  background: #e9f5ef !important;
+  border-color: var(--spring-c-accent) !important;
+}
+
+body.spring-active.spring-variant-c .ui-jqgrid-titlebar a,
+body.spring-active.spring-variant-c .ui-dialog-titlebar button {
+  color: var(--spring-c-title) !important;
+}
+

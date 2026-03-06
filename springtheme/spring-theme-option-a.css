@@ -1,0 +1,87 @@
+/* Вариант A: "Сакура"
+ * Концепт для согласования, не подключен к прод-расширению.
+ */
+
+:root {
+  --spring-a-bg-start: #fdf7fb;
+  --spring-a-bg-end: #eef9f2;
+  --spring-a-header-1: rgba(255, 203, 224, 0.95);
+  --spring-a-header-2: rgba(187, 236, 201, 0.95);
+  --spring-a-border: #e7b6cc;
+  --spring-a-title: #374151;
+  --spring-a-glow: rgba(236, 120, 167, 0.25);
+}
+
+body.spring-active.spring-variant-a .ui-jqgrid-titlebar,
+body.spring-active.spring-variant-a .ui-dialog-titlebar,
+body.spring-active.spring-variant-a .ui-tabs-nav,
+body.spring-active.spring-variant-a .ui-widget-header {
+  background: linear-gradient(
+    90deg,
+    var(--spring-a-header-1) 0%,
+    var(--spring-a-header-2) 100%
+  ) !important;
+  border: 1px solid var(--spring-a-border) !important;
+  border-radius: 8px 8px 0 0 !important;
+  color: var(--spring-a-title) !important;
+  text-shadow: none !important;
+}
+
+body.spring-active.spring-variant-a .ui-jqgrid-title::before,
+body.spring-active.spring-variant-a .ui-dialog-title::before {
+  content: "🌸 ";
+}
+
+body.spring-active.spring-variant-a .ui-jqgrid-title::after,
+body.spring-active.spring-variant-a .ui-dialog-title::after {
+  content: " 🌿";
+}
+
+body.spring-active.spring-variant-a .ui-dialog {
+  box-shadow: 0 6px 18px var(--spring-a-glow) !important;
+  border-radius: 10px !important;
+}
+
+.spring-petal-layer {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 99998;
+  overflow: hidden;
+}
+
+.spring-petal {
+  position: absolute;
+  top: -40px;
+  width: 12px;
+  height: 8px;
+  border-radius: 70% 30% 70% 30%;
+  background: radial-gradient(circle at 30% 30%, #ffe8f3 0%, #ff9cc8 80%);
+  opacity: 0.85;
+  animation-name: spring-petal-fall;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+  will-change: transform, opacity;
+}
+
+@keyframes spring-petal-fall {
+  0% {
+    transform: translate3d(0, 0, 0) rotate(0deg);
+    opacity: 0;
+  }
+  10% {
+    opacity: 0.9;
+  }
+  100% {
+    transform: translate3d(120px, 110vh, 0) rotate(340deg);
+    opacity: 0.15;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spring-petal {
+    animation: none !important;
+    display: none !important;
+  }
+}
+
