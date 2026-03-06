@@ -1,0 +1,504 @@
+/* === 1. ГЛОБАЛЬНОЕ ПОВЕДЕНИЕ ВЕСЕННЕЙ ТЕМЫ === */
+body:not(.spring-active) .spring-element {
+    display: none !important;
+}
+
+/* === 2. ПЕРЕКЛЮЧАТЕЛЬ "ВЕСНА!" === */
+.spring-header-item {
+    display: flex;
+    align-items: center;
+    margin-left: 16px;
+    padding: 0 10px;
+}
+
+.spring-label {
+    font-size: 14px;
+    color: rgb(51, 51, 51);
+    font-weight: bold;
+    margin-bottom: 8px;
+    white-space: nowrap;
+}
+
+.material-switch-spring > input[type="checkbox"] {
+    display: none;
+}
+
+.material-switch-spring > label {
+    cursor: pointer;
+    height: 0;
+    position: relative;
+    width: 34px;
+}
+
+.material-switch-spring > label::before {
+    background: linear-gradient(90deg, #9bd9ac, #ffd1e3);
+    box-shadow: inset 0 0 8px rgba(0, 0, 0, 0.22);
+    border-radius: 10px;
+    content: '';
+    height: 12px;
+    margin-top: -8px;
+    position: absolute;
+    opacity: 0.45;
+    transition: all 0.2s ease-in-out;
+    width: 34px;
+}
+
+.material-switch-spring > label::after {
+    background: #ffffff;
+    border-radius: 16px;
+    box-shadow: 0 0 5px rgba(0, 0, 0, 0.25);
+    content: '';
+    height: 20px;
+    width: 20px;
+    left: -4px;
+    margin-top: -8px;
+    position: absolute;
+    top: -4px;
+    transition: all 0.2s ease-in-out;
+}
+
+.material-switch-spring > input[type="checkbox"]:checked + label::before {
+    opacity: 0.9;
+}
+
+.material-switch-spring > input[type="checkbox"]:checked + label::after {
+    left: 20px;
+    background: linear-gradient(135deg, #fefefe, #e9ffe9);
+}
+
+/* === 3. ЛЕПЕСТКИ === */
+.spring-petal-layer {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 99998;
+    overflow: hidden;
+}
+
+.spring-petal {
+    position: absolute;
+    top: -50px;
+    width: 12px;
+    height: 8px;
+    border-radius: 70% 30% 70% 30%;
+    background: radial-gradient(circle at 30% 30%, #ffe6f2 0%, #ff9fc8 85%);
+    opacity: 0.86;
+    animation-name: spring-petal-fall;
+    animation-timing-function: linear;
+    animation-fill-mode: forwards;
+    will-change: transform, opacity;
+}
+
+@keyframes spring-petal-fall {
+    0% {
+        transform: translate3d(0, 0, 0) rotate(0deg);
+        opacity: 0;
+    }
+    10% {
+        opacity: 0.9;
+    }
+    100% {
+        transform: translate3d(var(--spring-petal-drift, 120px), 110vh, 0) rotate(340deg);
+        opacity: 0.15;
+    }
+}
+
+/* === 4. САКУРА: ОСНОВНОЙ ОФОРМЛЕНИЕ === */
+body.spring-active.spring-variant-a .ui-jqgrid-titlebar,
+body.spring-active.spring-variant-a .ui-dialog-titlebar,
+body.spring-active.spring-variant-a .custom-ui-tab,
+body.spring-active.spring-variant-a .ui-tabs-nav,
+body.spring-active.spring-variant-a .ui-widget-header {
+    background: linear-gradient(90deg, rgba(250, 226, 236, 0.92) 0%, rgba(250, 226, 236, 0.92) 10%, rgba(199, 237, 210, 0.96) 58%, rgba(182, 228, 196, 0.96) 100%) !important;
+    border: 1px solid #a7d4b5 !important;
+    color: #2f4d3c !important;
+    text-shadow: none !important;
+    border-radius: 8px 8px 0 0 !important;
+}
+
+body.spring-active.spring-variant-a .ui-jqgrid-title::before,
+body.spring-active.spring-variant-a .ui-dialog-title::before {
+    content: "🌸 ";
+}
+
+body.spring-active.spring-variant-a .ui-jqgrid-title::after,
+body.spring-active.spring-variant-a .ui-dialog-title::after {
+    content: " 🌿";
+}
+
+body.spring-active.spring-variant-a .ui-dialog {
+    box-shadow: 0 8px 18px rgba(120, 186, 141, 0.24);
+    border-radius: 10px !important;
+}
+
+/* === 5. САКУРА: РАБОЧАЯ ОБЛАСТЬ GRID === */
+body.spring-active.spring-variant-a .ui-jqgrid-hbox {
+    background: transparent !important;
+    border: 1px solid #a7d4b5 !important;
+    border-bottom-color: #8fbe9f !important;
+    border-radius: 8px 8px 0 0 !important;
+    box-shadow: none !important;
+}
+
+body.spring-active.spring-variant-a .ui-jqgrid-bdiv {
+    background: transparent !important;
+}
+
+body.spring-active.spring-variant-a .ui-jqgrid-hdiv,
+body.spring-active.spring-variant-a .ui-jqgrid-hdiv .ui-jqgrid-htable,
+body.spring-active.spring-variant-a .ui-jqgrid-hdiv .ui-jqgrid-htable thead,
+body.spring-active.spring-variant-a .ui-jqgrid-hdiv .ui-jqgrid-labels,
+body.spring-active.spring-variant-a .ui-jqgrid-hdiv .ui-jqgrid-labels th,
+body.spring-active.spring-variant-a .ui-jqgrid-hdiv .ui-search-toolbar,
+body.spring-active.spring-variant-a .ui-jqgrid-hdiv .ui-search-toolbar th,
+body.spring-active.spring-variant-a .ui-jqgrid-hdiv .ui-search-toolbar td,
+body.spring-active.spring-variant-a .ui-jqgrid-bdiv,
+body.spring-active.spring-variant-a .ui-jqgrid-bdiv table#list,
+body.spring-active.spring-variant-a .ui-jqgrid-bdiv table#list tbody,
+body.spring-active.spring-variant-a .ui-jqgrid-bdiv table.ui-jqgrid-btable,
+body.spring-active.spring-variant-a .ui-jqgrid-bdiv table.ui-jqgrid-btable tbody {
+    background: transparent !important;
+    background-image: none !important;
+    box-shadow: none !important;
+}
+
+body.spring-active.spring-variant-a .ui-jqgrid-bdiv table#list tbody tr.jqgrow td,
+body.spring-active.spring-variant-a .ui-jqgrid-bdiv table.ui-jqgrid-btable tbody tr.jqgrow td {
+    color: #1a2b21 !important;
+}
+
+body.spring-active.spring-variant-a .ui-jqgrid-bdiv table#list tbody tr.jqgrow td a,
+body.spring-active.spring-variant-a .ui-jqgrid-bdiv table.ui-jqgrid-btable tbody tr.jqgrow td a {
+    color: #174b33 !important;
+}
+
+body.spring-active.spring-variant-a .ui-jqgrid-bdiv table.ui-jqgrid-btable tr.jqgrow:is(.ui-state-highlight, .success, .selected, [aria-selected="true"]) {
+    background-color: #cfead9 !important;
+    background-image: linear-gradient(180deg, #e6f7ec 0%, #cbe7d4 100%) !important;
+}
+
+body.spring-active.spring-variant-a .ui-jqgrid-bdiv table.ui-jqgrid-btable tr.jqgrow:is(.ui-state-highlight, .success, .selected, [aria-selected="true"]) > td:not(.dupe-highlight-active):not(.dup-fsspreestr-duplicate):not(.dup-fsspreestr-status):not(.dup-epgu-duplicate):not(.dup-epgu-fill),
+body.spring-active.spring-variant-a .ui-jqgrid-bdiv table.ui-jqgrid-btable tr.jqgrow > td.ui-state-highlight:not(.dupe-highlight-active):not(.dup-fsspreestr-duplicate):not(.dup-fsspreestr-status):not(.dup-epgu-duplicate):not(.dup-epgu-fill) {
+    background-color: #cfead9 !important;
+    background-image: linear-gradient(180deg, #e6f7ec 0%, #cbe7d4 100%) !important;
+    color: #15261d !important;
+}
+
+body.spring-active.spring-variant-a .spring-card-modal .ui-dialog-content {
+    background: linear-gradient(180deg, #fff7fb 0%, #fff7fb 10%, #f2fbf5 100%) !important;
+    color: #1a2b21 !important;
+}
+
+body.spring-active.spring-variant-a .spring-card-modal iframe {
+    border: 1px solid #b4d7c0 !important;
+    border-radius: 6px !important;
+    background: #f6fcf8 !important;
+}
+
+body.spring-active.spring-variant-a .spring-card-modal .ui-dialog-buttonpane {
+    background: linear-gradient(180deg, #fbf1f6 0%, #fbf1f6 10%, #ecf8ef 100%) !important;
+    border-top: 1px solid #b6d9c1 !important;
+}
+
+body.spring-active.spring-variant-a .spring-card-modal .ui-dialog-buttonpane .ui-button {
+    background: linear-gradient(180deg, #fcf7fa 0%, #fcf7fa 10%, #eaf7ee 100%) !important;
+    border: 1px solid #b6d8c0 !important;
+    color: #2a4a38 !important;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.88), 0 2px 8px rgba(136, 185, 152, 0.3);
+}
+
+body.spring-active.spring-variant-a .spring-card-modal .ui-dialog-buttonpane .ui-button:hover {
+    background: linear-gradient(180deg, #f9eff5 0%, #f9eff5 10%, #ddede4 100%) !important;
+}
+
+body.modalform.spring-active.spring-variant-a,
+body.spring-active.spring-variant-a.modalform {
+    background: linear-gradient(180deg, #fff7fb 0%, #fff7fb 10%, #f3fbf5 100%) !important;
+    color: #1a2b21 !important;
+}
+
+body.modalform.spring-active.spring-variant-a .custom-ui-tab.ui-tabs-nav,
+body.spring-active.spring-variant-a.modalform .custom-ui-tab.ui-tabs-nav {
+    background: linear-gradient(90deg, rgba(250, 226, 236, 0.92) 0%, rgba(250, 226, 236, 0.92) 10%, rgba(199, 237, 210, 0.96) 58%, rgba(182, 228, 196, 0.96) 100%) !important;
+    border: 1px solid #a7d4b5 !important;
+    border-radius: 8px !important;
+    padding: 2px 4px !important;
+}
+
+body.modalform.spring-active.spring-variant-a .custom-ui-tab.ui-tabs-nav > li,
+body.spring-active.spring-variant-a.modalform .custom-ui-tab.ui-tabs-nav > li {
+    margin: 2px 4px 0 0 !important;
+    border: 1px solid #b8d9c2 !important;
+    border-bottom: 0 !important;
+    border-radius: 6px 6px 0 0 !important;
+    background: linear-gradient(180deg, #fcf7fa 0%, #fcf7fa 10%, #eaf7ee 100%) !important;
+}
+
+body.modalform.spring-active.spring-variant-a .custom-ui-tab.ui-tabs-nav > li > a.ui-tabs-anchor,
+body.spring-active.spring-variant-a.modalform .custom-ui-tab.ui-tabs-nav > li > a.ui-tabs-anchor {
+    color: #2f4d3c !important;
+    font-weight: 600 !important;
+    text-shadow: none !important;
+}
+
+body.modalform.spring-active.spring-variant-a .custom-ui-tab.ui-tabs-nav > li.ui-tabs-active,
+body.modalform.spring-active.spring-variant-a .custom-ui-tab.ui-tabs-nav > li.ui-state-active,
+body.spring-active.spring-variant-a.modalform .custom-ui-tab.ui-tabs-nav > li.ui-tabs-active,
+body.spring-active.spring-variant-a.modalform .custom-ui-tab.ui-tabs-nav > li.ui-state-active {
+    background: linear-gradient(180deg, #5faf76 0%, #4a9f63 100%) !important;
+    border-color: #478f5e !important;
+}
+
+body.modalform.spring-active.spring-variant-a .custom-ui-tab.ui-tabs-nav > li.ui-tabs-active > a.ui-tabs-anchor,
+body.modalform.spring-active.spring-variant-a .custom-ui-tab.ui-tabs-nav > li.ui-state-active > a.ui-tabs-anchor,
+body.spring-active.spring-variant-a.modalform .custom-ui-tab.ui-tabs-nav > li.ui-tabs-active > a.ui-tabs-anchor,
+body.spring-active.spring-variant-a.modalform .custom-ui-tab.ui-tabs-nav > li.ui-state-active > a.ui-tabs-anchor {
+    color: #ffffff !important;
+}
+
+body.modalform.spring-active.spring-variant-a,
+body.modalform.spring-active.spring-variant-a p,
+body.modalform.spring-active.spring-variant-a span,
+body.modalform.spring-active.spring-variant-a div,
+body.modalform.spring-active.spring-variant-a td,
+body.modalform.spring-active.spring-variant-a th,
+body.modalform.spring-active.spring-variant-a li,
+body.modalform.spring-active.spring-variant-a strong,
+body.modalform.spring-active.spring-variant-a h1,
+body.modalform.spring-active.spring-variant-a h2,
+body.modalform.spring-active.spring-variant-a h3,
+body.modalform.spring-active.spring-variant-a h4,
+body.modalform.spring-active.spring-variant-a h5,
+body.spring-active.spring-variant-a.modalform,
+body.spring-active.spring-variant-a.modalform p,
+body.spring-active.spring-variant-a.modalform span,
+body.spring-active.spring-variant-a.modalform div,
+body.spring-active.spring-variant-a.modalform td,
+body.spring-active.spring-variant-a.modalform th,
+body.spring-active.spring-variant-a.modalform li,
+body.spring-active.spring-variant-a.modalform strong,
+body.spring-active.spring-variant-a.modalform h1,
+body.spring-active.spring-variant-a.modalform h2,
+body.spring-active.spring-variant-a.modalform h3,
+body.spring-active.spring-variant-a.modalform h4,
+body.spring-active.spring-variant-a.modalform h5 {
+    color: #1a2b21 !important;
+}
+
+body.modalform.spring-active.spring-variant-a a,
+body.spring-active.spring-variant-a.modalform a {
+    color: #1f5b3d !important;
+}
+
+body.modalform.spring-active.spring-variant-a .table > thead > tr > th,
+body.modalform.spring-active.spring-variant-a table.table-bordered > thead > tr > th,
+body.spring-active.spring-variant-a.modalform .table > thead > tr > th,
+body.spring-active.spring-variant-a.modalform table.table-bordered > thead > tr > th {
+    background: linear-gradient(90deg, rgba(250, 226, 236, 0.9) 0%, rgba(250, 226, 236, 0.9) 10%, rgba(213, 241, 221, 0.95) 60%, rgba(196, 233, 207, 0.95) 100%) !important;
+    border-color: #a8cfb6 !important;
+    color: #1f3a2d !important;
+}
+
+body.modalform.spring-active.spring-variant-a .table-bordered > tbody > tr > td,
+body.modalform.spring-active.spring-variant-a .table-bordered > tfoot > tr > td,
+body.modalform.spring-active.spring-variant-a .table-bordered > tbody > tr > th,
+body.modalform.spring-active.spring-variant-a .table-bordered > tfoot > tr > th,
+body.spring-active.spring-variant-a.modalform .table-bordered > tbody > tr > td,
+body.spring-active.spring-variant-a.modalform .table-bordered > tfoot > tr > td,
+body.spring-active.spring-variant-a.modalform .table-bordered > tbody > tr > th,
+body.spring-active.spring-variant-a.modalform .table-bordered > tfoot > tr > th {
+    border-color: #bad8c4 !important;
+    color: #1a2b21 !important;
+}
+
+body.modalform.spring-active.spring-variant-a .table > tbody > tr:nth-child(even) > td,
+body.spring-active.spring-variant-a.modalform .table > tbody > tr:nth-child(even) > td {
+    background-color: rgba(220, 243, 228, 0.48) !important;
+}
+
+/* === 6. САКУРА: ФОН ШАПКИ И КНОПКИ === */
+body.spring-active.spring-variant-a header {
+    position: relative;
+    background: linear-gradient(90deg, #fbf1f6 0%, #fbf1f6 10%, #ecfaef 58%, #f6fff8 100%) !important;
+    border-bottom: 1px solid rgba(150, 196, 164, 0.72);
+}
+
+body.spring-active.spring-variant-a header::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    opacity: 0.58;
+    background-image:
+        radial-gradient(circle at 16% 34%, rgba(183, 233, 198, 0.34) 0, rgba(183, 233, 198, 0) 36%),
+        radial-gradient(circle at 78% 22%, rgba(153, 215, 173, 0.32) 0, rgba(153, 215, 173, 0) 34%),
+        radial-gradient(circle at 46% 78%, rgba(255, 214, 226, 0.16) 0, rgba(255, 214, 226, 0) 40%),
+        linear-gradient(120deg, rgba(255, 255, 255, 0.42) 0%, rgba(255, 255, 255, 0.16) 40%, rgba(255, 255, 255, 0.42) 80%);
+    background-size: 130% 130%, 150% 150%, 140% 140%, 180% 100%;
+    animation: spring-header-drift 24s linear infinite;
+}
+
+body.spring-active.spring-variant-a header > * {
+    position: relative;
+    z-index: 1;
+}
+
+@keyframes spring-header-drift {
+    0% {
+        background-position: 0% 20%, 100% 12%, 48% 100%, 0% 0%;
+    }
+    50% {
+        background-position: 36% 34%, 72% 30%, 60% 84%, 100% 0%;
+    }
+    100% {
+        background-position: 0% 20%, 100% 12%, 48% 100%, 0% 0%;
+    }
+}
+
+body.spring-active.spring-variant-a header .topmenu a.btn.btn-default,
+body.spring-active.spring-variant-a header a#menu-toggle.btn {
+    background: linear-gradient(180deg, #fcf7fa 0%, #fcf7fa 10%, #eaf7ee 100%) !important;
+    border: 1px solid #b8d9c2 !important;
+    color: #355444 !important;
+    text-shadow: none !important;
+    border-radius: 5px !important;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.9), 0 2px 8px rgba(140, 191, 156, 0.3);
+    transition: background-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+body.spring-active.spring-variant-a header .topmenu a.btn.dropdown-toggle,
+body.spring-active.spring-variant-a header .btn.btn-sm.btn-default.btn-cities.dropdown-toggle {
+    background: linear-gradient(180deg, #efdde6 0%, #efdde6 10%, #c4dfcc 100%) !important;
+    border: 1px solid #9fc3ac !important;
+    color: #284634 !important;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.82), 0 2px 9px rgba(123, 173, 142, 0.38);
+}
+
+body.spring-active.spring-variant-a header .topmenu a.btn.btn-success {
+    background: linear-gradient(180deg, #6cbc84 0%, #55ab70 100%) !important;
+    border: 1px solid #4e9d66 !important;
+    color: #ffffff !important;
+    text-shadow: 0 1px 0 rgba(0, 0, 0, 0.14) !important;
+    border-radius: 5px !important;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.2), 0 3px 10px rgba(75, 145, 97, 0.42);
+}
+
+body.spring-active.spring-variant-a header .topmenu .list-group-item.active > a.btn.btn-default,
+body.spring-active.spring-variant-a header .topmenu .list-group-item.active > a.btn.btn-success {
+    background: linear-gradient(180deg, #5faf76 0%, #4a9f63 100%) !important;
+    border-color: #478f5e !important;
+    color: #ffffff !important;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.25), 0 3px 10px rgba(67, 139, 90, 0.42);
+}
+
+body.spring-active.spring-variant-a header .topmenu .list-group-item.active > a.btn.dropdown-toggle {
+    background: linear-gradient(180deg, #539f69 0%, #3f8d57 100%) !important;
+    border-color: #3d8151 !important;
+    color: #ffffff !important;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.18), 0 3px 10px rgba(61, 129, 81, 0.46);
+}
+
+body.spring-active.spring-variant-a header .topmenu a.btn.btn-default:hover,
+body.spring-active.spring-variant-a header a#menu-toggle.btn:hover {
+    background: linear-gradient(180deg, #faf2f7 0%, #faf2f7 10%, #e2f2e8 100%) !important;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.95), 0 4px 12px rgba(126, 178, 145, 0.42);
+    transform: translateY(-1px);
+}
+
+body.spring-active.spring-variant-a header .topmenu a.btn.dropdown-toggle:hover,
+body.spring-active.spring-variant-a header .btn.btn-sm.btn-default.btn-cities.dropdown-toggle:hover {
+    background: linear-gradient(180deg, #e8d6df 0%, #e8d6df 10%, #b8d7c4 100%) !important;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.9), 0 4px 12px rgba(110, 162, 131, 0.46);
+    transform: translateY(-1px);
+}
+
+body.spring-active.spring-variant-a header .topmenu a.btn.btn-success:hover {
+    background: linear-gradient(180deg, #5eb277 0%, #4b9f64 100%) !important;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.28), 0 4px 12px rgba(71, 143, 93, 0.5);
+    transform: translateY(-1px);
+}
+
+body.spring-active.spring-variant-a header .topmenu a.btn.btn-default:active,
+body.spring-active.spring-variant-a header a#menu-toggle.btn:active {
+    transform: translateY(0);
+    box-shadow: 0 1px 4px rgba(126, 178, 145, 0.4);
+}
+
+body.spring-active.spring-variant-a header .topmenu a.btn.dropdown-toggle:active,
+body.spring-active.spring-variant-a header .btn.btn-sm.btn-default.btn-cities.dropdown-toggle:active {
+    transform: translateY(0);
+    box-shadow: 0 1px 4px rgba(110, 162, 131, 0.42);
+}
+
+body.spring-active.spring-variant-a header .topmenu a.btn.btn-success:active {
+    transform: translateY(0);
+    box-shadow: 0 1px 4px rgba(71, 143, 93, 0.46);
+}
+
+body.spring-active.spring-variant-a header .topmenu .dropdown-menu {
+    border: 1px solid #b6d8c0;
+    box-shadow: 0 8px 16px rgba(109, 167, 127, 0.24);
+    background: linear-gradient(180deg, #fdf4f8 0%, #fdf4f8 10%, #ecf9f0 100%);
+}
+
+body.spring-active.spring-variant-a #pager {
+    background: linear-gradient(180deg, #fcf4f9 0%, #fcf4f9 10%, #edf8f1 100%) !important;
+    border-top: 1px solid #bddcc7 !important;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+body.spring-active.spring-variant-a #pager .ui-pg-button {
+    background: linear-gradient(180deg, #fcf7fa 0%, #fcf7fa 10%, #eaf7ee 100%) !important;
+    border: 1px solid #b8d9c2 !important;
+    color: #355444 !important;
+    border-radius: 4px !important;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.88), 0 2px 8px rgba(140, 191, 156, 0.28);
+    transition: background-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+body.spring-active.spring-variant-a #pager .ui-pg-button:hover:not(.disabled) {
+    background: linear-gradient(180deg, #faf2f7 0%, #faf2f7 10%, #deefe5 100%) !important;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.95), 0 4px 12px rgba(126, 178, 145, 0.38);
+}
+
+body.spring-active.spring-variant-a #pager .ui-pg-button.disabled,
+body.spring-active.spring-variant-a #pager .ui-jqgrid-disablePointerEvents {
+    background: linear-gradient(180deg, #f4edf1 0%, #f4edf1 10%, #e4eee7 100%) !important;
+    border-color: #cfdfd6 !important;
+    color: #809487 !important;
+    box-shadow: none !important;
+    opacity: 0.75;
+}
+
+body.spring-active.spring-variant-a #pager .ui-pg-input,
+body.spring-active.spring-variant-a #pager .ui-pg-selbox {
+    background: linear-gradient(180deg, #fff8fb 0%, #fff8fb 10%, #f1fbf4 100%) !important;
+    border: 1px solid #b1d0bd !important;
+    color: #355444 !important;
+    border-radius: 4px !important;
+}
+
+body.spring-active.spring-variant-a #pager .ui-pg-input:focus,
+body.spring-active.spring-variant-a #pager .ui-pg-selbox:focus {
+    outline: none !important;
+    border-color: #7fb594 !important;
+    box-shadow: 0 0 0 2px rgba(127, 181, 148, 0.25);
+}
+
+body.spring-active.spring-variant-a #pager .ui-paging-info,
+body.spring-active.spring-variant-a #pager .ui-pg-table td,
+body.spring-active.spring-variant-a #pager .ui-pg-input,
+body.spring-active.spring-variant-a #pager .ui-pg-selbox {
+    color: #355444 !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .spring-petal {
+        animation: none !important;
+        display: none !important;
+    }
+    body.spring-active.spring-variant-a header::before {
+        animation: none !important;
+    }
+}

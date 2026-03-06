@@ -149,6 +149,8 @@
   let screenshotHideTimer = null;
   let screenshotModeIsActive = false;
   let screenshotNewYearWasActive = false;
+  let screenshotSpringWasActive = false;
+  let screenshotSpringVariantClass = '';
   let lastScreenshotTriggerAtMs = 0;
   let stageJumpCachedMenuIndex = null;
   let stageJumpActionMenuEl = null;
@@ -336,12 +338,17 @@
       html.${SCREENSHOT_MODE_CLASS} .ny-header-item,
       html.${SCREENSHOT_MODE_CLASS} #nySwicher,
       html.${SCREENSHOT_MODE_CLASS} .material-switch-newYear,
+      html.${SCREENSHOT_MODE_CLASS} .spring-header-item,
+      html.${SCREENSHOT_MODE_CLASS} #springSwitcher,
+      html.${SCREENSHOT_MODE_CLASS} .material-switch-spring,
       html.${SCREENSHOT_MODE_CLASS} .my-super-btn,
       html.${SCREENSHOT_MODE_CLASS} #batch-inn-check-btn,
       html.${SCREENSHOT_MODE_CLASS} #inn-toast-container,
       html.${SCREENSHOT_MODE_CLASS} #inn-batch-modal-overlay,
       html.${SCREENSHOT_MODE_CLASS} .ny-snow-container,
       html.${SCREENSHOT_MODE_CLASS} .ny-garland-container,
+      html.${SCREENSHOT_MODE_CLASS} .spring-petal-layer,
+      html.${SCREENSHOT_MODE_CLASS} .spring-petal,
       html.${SCREENSHOT_MODE_CLASS} #pyramid-stage-timer,
       html.${SCREENSHOT_MODE_CLASS} #pyramid-stage-timer-toggle,
       html.${SCREENSHOT_MODE_CLASS} .pyramid-stage-timer-toggle-btn,
@@ -364,7 +371,9 @@
       }
 
       html.${SCREENSHOT_MODE_CLASS} .ny-element,
-      html.${SCREENSHOT_MODE_CLASS} .snowflake {
+      html.${SCREENSHOT_MODE_CLASS} .snowflake,
+      html.${SCREENSHOT_MODE_CLASS} .spring-element,
+      html.${SCREENSHOT_MODE_CLASS} .spring-petal {
         display: none !important;
       }
     `;
@@ -390,13 +399,36 @@
       if (screenshotNewYearWasActive) {
         body.classList.remove('ny-active');
       }
+
+      screenshotSpringWasActive = body.classList.contains('spring-active');
+      screenshotSpringVariantClass = '';
+      if (screenshotSpringWasActive) {
+        const existingVariant = Array.from(body.classList).find((className) =>
+          String(className || '').indexOf('spring-variant-') === 0
+        );
+        screenshotSpringVariantClass = existingVariant || '';
+        body.classList.remove('spring-active');
+        if (screenshotSpringVariantClass) {
+          body.classList.remove(screenshotSpringVariantClass);
+        }
+      }
       return;
     }
 
     if (screenshotNewYearWasActive) {
       body.classList.add('ny-active');
     }
+
+    if (screenshotSpringWasActive) {
+      body.classList.add('spring-active');
+      if (screenshotSpringVariantClass) {
+        body.classList.add(screenshotSpringVariantClass);
+      }
+    }
+
     screenshotNewYearWasActive = false;
+    screenshotSpringWasActive = false;
+    screenshotSpringVariantClass = '';
   }
 
   function setScreenshotMode(hidden, source) {

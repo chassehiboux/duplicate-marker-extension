@@ -95,12 +95,16 @@
         "*://*.pyramid.vostok-electra.ru/*"
       ],
       "css": [
-        "PyramidNewYear/pyramid_christmas.css"
+        "PyramidNewYear/pyramid_christmas.css",
+        "PyramidNewYear/pyramid_spring.css"
       ],
       "js": [
-        "PyramidNewYear/pyramid_christmas.js"
+        "PyramidNewYear/pyramid_theme_config.js",
+        "PyramidNewYear/pyramid_christmas.js",
+        "PyramidNewYear/pyramid_spring.js"
       ],
-      "run_at": "document_end"
+      "run_at": "document_end",
+      "all_frames": true
     },
     {
       "matches": [

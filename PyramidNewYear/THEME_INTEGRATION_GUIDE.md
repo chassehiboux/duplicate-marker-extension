@@ -1,0 +1,93 @@
+# Инструкция по добавлению сезонной темы в `duplicate-marker-extension`
+
+## 1. Назначение
+Документ описывает, как добавлять/расширять сезонные темы (например, `Весна`) без поломки визуальных эффектов других модулей расширения (дубликаты, копирование на ПКМ, вспомогательные подсветки строк, служебные обводки).
+
+## 2. Текущие файлы темы
+- `PyramidNewYear/pyramid_theme_config.js` — быстрый конфиг переключателей и поведения темы.
+- `PyramidNewYear/pyramid_spring.js` — логика включения/выключения темы.
+- `PyramidNewYear/pyramid_spring.css` — стили темы.
+- `PyramidNewYear/pyramid_christmas.js` / `PyramidNewYear/pyramid_christmas.css` — новогодняя тема.
+- `manifest.json` — подключение CSS/JS темы в `content_scripts`.
+
+## 3. Базовый принцип подключения темы
+1. Добавить конфиг в `pyramid_theme_config.js`.
+2. Добавить/обновить логику включения в `pyramid_spring.js` (класс на `body`, синхронизация состояния).
+3. Добавить стили в `pyramid_spring.css` с жёстким скоупом:
+   - только через `body.spring-active.spring-variant-a ...`
+4. Подключить файлы в `manifest.json`.
+5. Перезагрузить расширение на `chrome://extensions` и обновить страницу.
+
+## 4. Обязательные правила, чтобы не ломать другие модули
+1. Не использовать широкие селекторы, которые затирают чужие стили:
+   - плохо: `#list tr td { ... !important; }`
+   - плохо: `.ui-jqgrid-bdiv * { ... !important; }`
+2. Не перекрывать служебные классы других модулей без необходимости:
+   - `.dupe-highlight-active`
+   - `.dup-fsspreestr-duplicate`
+   - `.dup-fsspreestr-status`
+   - `.dup-epgu-duplicate`
+   - `.dup-epgu-fill`
+   - классы строк/ячеек, которые выставляются логикой контекстного меню/копирования/дубликатов
+3. Для фона/цвета строк задавать стили только на конкретные состояния:
+   - `tr.jqgrow.ui-state-highlight`
+   - `tr.jqgrow[aria-selected="true"]`
+   - `tr.jqgrow.success`
+   - `tr.jqgrow.selected`
+4. Для текста в гриде затемнять только базовые ячейки, но не трогать иконки/служебные маркеры.
+5. Любые `!important` применять точечно и только в узком контексте темы.
+
+## 5. Безопасный шаблон селекторов
+Использовать паттерн:
+
+```css
+body.spring-active.spring-variant-a .ui-jqgrid-bdiv table.ui-jqgrid-btable tr.jqgrow:is(.ui-state-highlight, .success, .selected, [aria-selected="true"]) > td:not(.dupe-highlight-active):not(.dup-fsspreestr-duplicate):not(.dup-fsspreestr-status):not(.dup-epgu-duplicate):not(.dup-epgu-fill) { ... }
+```
+
+Не использовать:
+
+```css
+#list td { ... }
+.ui-jqgrid-bdiv table tr td { ... }
+.ui-jqgrid-bdiv table#list tr.jqgrow td { ... !important; }
+```
+
+## 6. Работа с модалкой "Открыть карточку"
+1. Вкладки карточки находятся внутри `iframe`.
+2. Тема внутри `iframe` должна работать через инъекцию в `all_frames`.
+3. В `manifest.json` для сезонного блока указывать:
+   - `"all_frames": true`
+4. В `pyramid_spring.js`:
+   - в верхнем окне (`window.top === window`) оставлять тяжёлую логику (лепестки, переключатель).
+   - во фреймах — только применение классов темы.
+5. Для модалки с `iframe` в основном окне допустим отдельный класс-обёртка (например, `spring-card-modal`) только на узел диалога.
+
+## 7. Чеклист перед сдачей
+1. Переключение темы работает.
+2. Выделение строки (`selected/highlight`) видно как заливка, а не только обводка.
+3. Текст в строках читаемый и достаточно контрастный.
+4. Модалка "Открыть карточку": вкладки и контент внутри `iframe` в теме.
+5. Проверить, что не сломаны:
+   - стили дубликатов;
+   - подсветки/обводки модулей копирования через ПКМ;
+   - служебные inline-иконки в гриде.
+6. Проверка на mojibake:
+   - не должно быть `Ð`, `Ñ`, `Â`, `�` в изменённых файлах.
+
+## 8. Минимальный набор команд проверки
+```powershell
+node --check PyramidNewYear/pyramid_spring.js
+Get-Content manifest.json -Encoding UTF8 | ConvertFrom-Json | Out-Null
+rg -n "Ð|Ñ|Â|�" PyramidNewYear/pyramid_spring.js PyramidNewYear/pyramid_spring.css manifest.json
+```
+
+## 9. Практика обновления в браузере
+1. Открыть `chrome://extensions`.
+2. Нажать `Перезагрузить` у расширения.
+3. На странице Пирамиды сделать `Ctrl+F5`.
+4. Повторно проверить грид и модалку карточки.
+
+## 10. Что делать при конфликте стилей
+1. Сначала сузить селектор (добавить скоуп темы + конкретный контейнер).
+2. Убрать глобальные `background/color/border` с общих таблиц.
+3. Вернуть стили модулей на их классах и только потом накладывать тему поверх.
