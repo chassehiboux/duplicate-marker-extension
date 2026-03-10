@@ -211,6 +211,63 @@ body.spring-active.spring-variant-a .spring-card-modal .ui-dialog-buttonpane .ui
     background: linear-gradient(180deg, #f9eff5 0%, #f9eff5 10%, #ddede4 100%) !important;
 }
 
+/* === 5.1 САКУРА: ЛОКАЛЬНО ВНУТРИ КАРТОЧКИ (TAB/ACCORDION ТЕКСТ И ШАПКИ) === */
+body.modalform.spring-active.spring-variant-a .custom-ui-tab.ui-tabs-nav > li,
+body.modalform.spring-active.spring-variant-a ul.ui-tabs-nav > li,
+body.spring-active.spring-variant-a.modalform .custom-ui-tab.ui-tabs-nav > li,
+body.spring-active.spring-variant-a.modalform ul.ui-tabs-nav > li {
+    background: transparent !important;
+    border-color: transparent !important;
+}
+
+body.modalform.spring-active.spring-variant-a .custom-ui-tab.ui-tabs-nav > li > a.ui-tabs-anchor,
+body.modalform.spring-active.spring-variant-a ul.ui-tabs-nav > li > a.ui-tabs-anchor,
+body.spring-active.spring-variant-a.modalform .custom-ui-tab.ui-tabs-nav > li > a.ui-tabs-anchor,
+body.spring-active.spring-variant-a.modalform ul.ui-tabs-nav > li > a.ui-tabs-anchor {
+    color: #2a4a38 !important;
+    font-weight: 700 !important;
+    text-shadow: none !important;
+    border-radius: 6px !important;
+    border: 1px solid #b8d9c2 !important;
+    background: linear-gradient(180deg, #fcf7fa 0%, #fcf7fa 10%, #eaf7ee 100%) !important;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.9), 0 2px 8px rgba(136, 185, 152, 0.24) !important;
+}
+
+body.modalform.spring-active.spring-variant-a .custom-ui-tab.ui-tabs-nav > li.ui-tabs-active > a.ui-tabs-anchor,
+body.modalform.spring-active.spring-variant-a .custom-ui-tab.ui-tabs-nav > li.ui-state-active > a.ui-tabs-anchor,
+body.modalform.spring-active.spring-variant-a ul.ui-tabs-nav > li.ui-tabs-active > a.ui-tabs-anchor,
+body.modalform.spring-active.spring-variant-a ul.ui-tabs-nav > li.ui-state-active > a.ui-tabs-anchor,
+body.spring-active.spring-variant-a.modalform .custom-ui-tab.ui-tabs-nav > li.ui-tabs-active > a.ui-tabs-anchor,
+body.spring-active.spring-variant-a.modalform .custom-ui-tab.ui-tabs-nav > li.ui-state-active > a.ui-tabs-anchor,
+body.spring-active.spring-variant-a.modalform ul.ui-tabs-nav > li.ui-tabs-active > a.ui-tabs-anchor,
+body.spring-active.spring-variant-a.modalform ul.ui-tabs-nav > li.ui-state-active > a.ui-tabs-anchor {
+    color: #ffffff !important;
+    text-shadow: none !important;
+    border-color: #478f5e !important;
+    background: linear-gradient(180deg, #5faf76 0%, #4a9f63 100%) !important;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.2), 0 3px 10px rgba(75, 145, 97, 0.34) !important;
+}
+
+body.modalform.spring-active.spring-variant-a .ui-accordion .ui-accordion-header,
+body.spring-active.spring-variant-a.modalform .ui-accordion .ui-accordion-header {
+    background: linear-gradient(90deg, rgba(250, 226, 236, 0.9) 0%, rgba(250, 226, 236, 0.9) 10%, rgba(213, 241, 221, 0.95) 60%, rgba(196, 233, 207, 0.95) 100%) !important;
+    border: 1px solid #a8cfb6 !important;
+    color: #234130 !important;
+    text-shadow: none !important;
+}
+
+body.modalform.spring-active.spring-variant-a .ui-accordion .ui-accordion-header.ui-state-active,
+body.spring-active.spring-variant-a.modalform .ui-accordion .ui-accordion-header.ui-state-active {
+    background: linear-gradient(180deg, #5faf76 0%, #4a9f63 100%) !important;
+    border-color: #478f5e !important;
+    color: #ffffff !important;
+}
+
+body.modalform.spring-active.spring-variant-a .ui-accordion .ui-accordion-header:hover,
+body.spring-active.spring-variant-a.modalform .ui-accordion .ui-accordion-header:hover {
+    background: linear-gradient(90deg, rgba(248, 218, 230, 0.9) 0%, rgba(248, 218, 230, 0.9) 10%, rgba(202, 233, 212, 0.95) 60%, rgba(187, 226, 199, 0.95) 100%) !important;
+}
+
 /* === 6. САКУРА: ФОН ШАПКИ И КНОПКИ === */
 body.spring-active.spring-variant-a header {
     position: relative;
