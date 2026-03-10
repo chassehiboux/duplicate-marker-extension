@@ -131,57 +131,13 @@ body.spring-active.spring-variant-a .ui-dialog {
     border-radius: 10px !important;
 }
 
-/* === 5. САКУРА: РАБОЧАЯ ОБЛАСТЬ GRID === */
+/* === 5. САКУРА: ОБРАМЛЕНИЕ GRID БЕЗ ВМЕШАТЕЛЬСТВА В ДАННЫЕ === */
 body.spring-active.spring-variant-a .ui-jqgrid-hbox {
     background: transparent !important;
     border: 1px solid #a7d4b5 !important;
     border-bottom-color: #8fbe9f !important;
     border-radius: 8px 8px 0 0 !important;
     box-shadow: none !important;
-}
-
-body.spring-active.spring-variant-a .ui-jqgrid-bdiv {
-    background: transparent !important;
-}
-
-body.spring-active.spring-variant-a .ui-jqgrid-hdiv,
-body.spring-active.spring-variant-a .ui-jqgrid-hdiv .ui-jqgrid-htable,
-body.spring-active.spring-variant-a .ui-jqgrid-hdiv .ui-jqgrid-htable thead,
-body.spring-active.spring-variant-a .ui-jqgrid-hdiv .ui-jqgrid-labels,
-body.spring-active.spring-variant-a .ui-jqgrid-hdiv .ui-jqgrid-labels th,
-body.spring-active.spring-variant-a .ui-jqgrid-hdiv .ui-search-toolbar,
-body.spring-active.spring-variant-a .ui-jqgrid-hdiv .ui-search-toolbar th,
-body.spring-active.spring-variant-a .ui-jqgrid-hdiv .ui-search-toolbar td,
-body.spring-active.spring-variant-a .ui-jqgrid-bdiv,
-body.spring-active.spring-variant-a .ui-jqgrid-bdiv table#list,
-body.spring-active.spring-variant-a .ui-jqgrid-bdiv table#list tbody,
-body.spring-active.spring-variant-a .ui-jqgrid-bdiv table.ui-jqgrid-btable,
-body.spring-active.spring-variant-a .ui-jqgrid-bdiv table.ui-jqgrid-btable tbody {
-    background: transparent !important;
-    background-image: none !important;
-    box-shadow: none !important;
-}
-
-body.spring-active.spring-variant-a .ui-jqgrid-bdiv table#list tbody tr.jqgrow td,
-body.spring-active.spring-variant-a .ui-jqgrid-bdiv table.ui-jqgrid-btable tbody tr.jqgrow td {
-    color: #1a2b21 !important;
-}
-
-body.spring-active.spring-variant-a .ui-jqgrid-bdiv table#list tbody tr.jqgrow td a,
-body.spring-active.spring-variant-a .ui-jqgrid-bdiv table.ui-jqgrid-btable tbody tr.jqgrow td a {
-    color: #174b33 !important;
-}
-
-body.spring-active.spring-variant-a .ui-jqgrid-bdiv table.ui-jqgrid-btable tr.jqgrow:is(.ui-state-highlight, .success, .selected, [aria-selected="true"]) {
-    background-color: #cfead9 !important;
-    background-image: linear-gradient(180deg, #e6f7ec 0%, #cbe7d4 100%) !important;
-}
-
-body.spring-active.spring-variant-a .ui-jqgrid-bdiv table.ui-jqgrid-btable tr.jqgrow:is(.ui-state-highlight, .success, .selected, [aria-selected="true"]) > td:not(.dupe-highlight-active):not(.dup-fsspreestr-duplicate):not(.dup-fsspreestr-status):not(.dup-epgu-duplicate):not(.dup-epgu-fill),
-body.spring-active.spring-variant-a .ui-jqgrid-bdiv table.ui-jqgrid-btable tr.jqgrow > td.ui-state-highlight:not(.dupe-highlight-active):not(.dup-fsspreestr-duplicate):not(.dup-fsspreestr-status):not(.dup-epgu-duplicate):not(.dup-epgu-fill) {
-    background-color: #cfead9 !important;
-    background-image: linear-gradient(180deg, #e6f7ec 0%, #cbe7d4 100%) !important;
-    color: #15261d !important;
 }
 
 body.spring-active.spring-variant-a .spring-card-modal .ui-dialog-content {
