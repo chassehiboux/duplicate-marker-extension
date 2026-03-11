@@ -140,6 +140,28 @@ body.spring-active.spring-variant-a .ui-jqgrid-hbox {
     box-shadow: none !important;
 }
 
+/* Данные в гриде оставляем максимально нативными: без весенних подложек и эффектов. */
+body.spring-active.spring-variant-a .ui-jqgrid-bdiv,
+body.spring-active.spring-variant-a .ui-jqgrid-bdiv table#list,
+body.spring-active.spring-variant-a .ui-jqgrid-bdiv table#list tbody,
+body.spring-active.spring-variant-a .ui-jqgrid-bdiv table.ui-jqgrid-btable,
+body.spring-active.spring-variant-a .ui-jqgrid-bdiv table.ui-jqgrid-btable tbody {
+    background-color: #ffffff !important;
+    background-image: none !important;
+    box-shadow: none !important;
+    filter: none !important;
+    backdrop-filter: none !important;
+}
+
+body.spring-active.spring-variant-a .ui-jqgrid-bdiv table#list tbody tr.jqgrow,
+body.spring-active.spring-variant-a .ui-jqgrid-bdiv table#list tbody tr.jqgrow > td,
+body.spring-active.spring-variant-a .ui-jqgrid-bdiv table.ui-jqgrid-btable tbody tr.jqgrow,
+body.spring-active.spring-variant-a .ui-jqgrid-bdiv table.ui-jqgrid-btable tbody tr.jqgrow > td {
+    text-shadow: none !important;
+    filter: none !important;
+    backdrop-filter: none !important;
+}
+
 body.spring-active.spring-variant-a .spring-card-modal .ui-dialog-content {
     background: linear-gradient(180deg, #fff7fb 0%, #fff7fb 10%, #f2fbf5 100%) !important;
     color: #1a2b21 !important;

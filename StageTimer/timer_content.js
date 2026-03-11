@@ -44,6 +44,7 @@
     const SCREENSHOT_HIDE_DURATION_MS = 2500;
     const SCREENSHOT_HIDE_ON_BLUR_DURATION_MS = 2500;
     const SCREENSHOT_THROTTLE_MS = 150;
+    const KEY_CODE_F1 = 112;
     const KEY_CODE_PRINT_SCREEN = 44;
     const KEY_CODE_F8 = 119;
     const SCREENSHOT_MANUAL_KEY = "S";
@@ -72,6 +73,7 @@
     let isTimerUiVisible = true;
     let hasTimerSnapshot = false;
     let isScreenshotModeActive = false;
+    let screenshotManualModeIsActive = false;
     let screenshotHideTimer = null;
     let lastScreenshotTriggerAtMs = 0;
 
@@ -150,6 +152,12 @@
         return !!(root && root.classList.contains(SCREENSHOT_MODE_CLASS));
     }
 
+    function getExternalScreenshotModeController() {
+        const controller = window.__dupScreenshotModeController;
+        if (!controller || typeof controller.toggleManualMode !== "function") return null;
+        return controller;
+    }
+
     function setScreenshotModeActive(nextValue) {
         const normalizedNextValue = !!nextValue;
         if (isScreenshotModeActive === normalizedNextValue) return;
@@ -159,7 +167,8 @@
     }
 
     function syncScreenshotModeState() {
-        if (screenshotHideTimer) {
+        const localManualModeIsEffective = !getExternalScreenshotModeController() && screenshotManualModeIsActive;
+        if (localManualModeIsEffective || screenshotHideTimer) {
             setScreenshotModeActive(true);
             return;
         }
@@ -167,11 +176,26 @@
     }
 
     function finalizeScreenshotAutohide() {
-        if (readScreenshotModeFromDom()) {
+        const localManualModeIsEffective = !getExternalScreenshotModeController() && screenshotManualModeIsActive;
+        if (localManualModeIsEffective || readScreenshotModeFromDom()) {
             setScreenshotModeActive(true);
             return;
         }
         setScreenshotModeActive(false);
+    }
+
+    function setLocalManualScreenshotMode(nextValue) {
+        const normalizedNextValue = !!nextValue;
+        if (screenshotManualModeIsActive === normalizedNextValue) return;
+        screenshotManualModeIsActive = normalizedNextValue;
+
+        try {
+            window.__dupPendingScreenshotManualMode = normalizedNextValue;
+        } catch (e) {
+            // ignore
+        }
+
+        syncScreenshotModeState();
     }
 
     function scheduleScreenshotAutohide(_source) {
@@ -210,6 +234,42 @@
         return "";
     }
 
+    function isScreenshotToggleHotkey(event) {
+        if (!event) return false;
+        if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return false;
+
+        const key = String(event.key || "");
+        const code = String(event.code || "");
+        const keyCode = Number(event.keyCode || event.which || 0);
+        return key === "F1" || code === "F1" || keyCode === KEY_CODE_F1;
+    }
+
+    function suppressHotkeyEvent(event) {
+        if (!event) return;
+        if (typeof event.preventDefault === "function") event.preventDefault();
+        if (typeof event.stopPropagation === "function") event.stopPropagation();
+        if (typeof event.stopImmediatePropagation === "function") event.stopImmediatePropagation();
+    }
+
+    function handleScreenshotToggleHotkey(event) {
+        if (!isScreenshotToggleHotkey(event)) return;
+
+        suppressHotkeyEvent(event);
+        if (event.type !== "keydown" || event.repeat) return;
+
+        const controller = getExternalScreenshotModeController();
+        if (controller) {
+            try {
+                controller.toggleManualMode("hotkey:F1");
+                return;
+            } catch (e) {
+                // ignore and fallback to local state
+            }
+        }
+
+        setLocalManualScreenshotMode(!screenshotManualModeIsActive);
+    }
+
     function handleScreenshotHotkey(event) {
         const triggerKey = resolveScreenshotTriggerKey(event);
         if (!triggerKey) return;
@@ -222,10 +282,12 @@
     }
 
     function initScreenshotAutohideMode() {
+        document.addEventListener("keydown", handleScreenshotToggleHotkey, true);
+        document.addEventListener("keyup", handleScreenshotToggleHotkey, true);
         document.addEventListener("keydown", handleScreenshotHotkey, true);
         document.addEventListener("keyup", handleScreenshotHotkey, true);
         window.addEventListener("blur", () => {
-            if (!isScreenshotModeActive) return;
+            if (!screenshotHideTimer) return;
             if (screenshotHideTimer) clearTimeout(screenshotHideTimer);
             screenshotHideTimer = setTimeout(() => {
                 screenshotHideTimer = null;
@@ -421,11 +483,11 @@
 
     window.addEventListener(SCREENSHOT_HIDE_EVENT, (event) => {
         if (event && event.detail && typeof event.detail.hidden === "boolean") {
-            setScreenshotModeActive(event.detail.hidden);
             if (!event.detail.hidden && screenshotHideTimer) {
                 clearTimeout(screenshotHideTimer);
                 screenshotHideTimer = null;
             }
+            syncScreenshotModeState();
             return;
         }
         syncScreenshotModeState();
@@ -1102,5 +1164,4 @@
     }
 
 })();
-
 

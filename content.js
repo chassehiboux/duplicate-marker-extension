@@ -12,6 +12,7 @@
   const SCREENSHOT_HIDE_ON_BLUR_DURATION_MS = 2500;
   const KEY_CODE_PAGE_DOWN = 34;
   const KEY_CODE_PRINT_SCREEN = 44;
+  const KEY_CODE_F1 = 112;
   const KEY_CODE_F8 = 119;
   const SCREENSHOT_MANUAL_KEY = 'S';
   const STAGE_JUMP_HASH_KEY = 'dup_stage_jump_debtid';
@@ -147,6 +148,8 @@
   let isCopyModeEnabled = false;
   let currentHighlightSettings = {};
   let screenshotHideTimer = null;
+  let screenshotAutoHideIsActive = false;
+  let screenshotManualModeIsActive = false;
   let screenshotModeIsActive = false;
   let screenshotNewYearWasActive = false;
   let screenshotSpringWasActive = false;
@@ -431,11 +434,11 @@
     screenshotSpringVariantClass = '';
   }
 
-  function setScreenshotMode(hidden, source) {
+  function applyScreenshotModeState(source) {
     const root = document.documentElement;
     if (!root) return;
 
-    const nextState = !!hidden;
+    const nextState = screenshotManualModeIsActive || screenshotAutoHideIsActive;
     if (nextState === screenshotModeIsActive) return;
 
     screenshotModeIsActive = nextState;
@@ -444,14 +447,59 @@
     broadcastScreenshotMode(nextState, source);
   }
 
+  function setScreenshotAutoHideState(hidden, source) {
+    const nextState = !!hidden;
+    if (nextState === screenshotAutoHideIsActive) return;
+    screenshotAutoHideIsActive = nextState;
+    applyScreenshotModeState(source);
+  }
+
+  function setScreenshotManualModeState(hidden, source) {
+    const nextState = !!hidden;
+    if (nextState === screenshotManualModeIsActive) return;
+    screenshotManualModeIsActive = nextState;
+    applyScreenshotModeState(source);
+  }
+
+  function installScreenshotModeController() {
+    try {
+      window.__dupScreenshotModeController = {
+        toggleManualMode(source) {
+          const nextState = !screenshotManualModeIsActive;
+          setScreenshotManualModeState(nextState, source || 'manual-toggle');
+          return nextState;
+        },
+        setManualMode(hidden, source) {
+          const nextState = !!hidden;
+          setScreenshotManualModeState(nextState, source || 'manual-set');
+          return nextState;
+        },
+        isManualModeActive() {
+          return screenshotManualModeIsActive;
+        },
+        isScreenshotModeActive() {
+          return screenshotModeIsActive;
+        }
+      };
+
+      if (typeof window.__dupPendingScreenshotManualMode === 'boolean') {
+        const pendingManualMode = window.__dupPendingScreenshotManualMode;
+        delete window.__dupPendingScreenshotManualMode;
+        setScreenshotManualModeState(pendingManualMode, 'pending-manual-mode');
+      }
+    } catch (err) {
+      // ignore
+    }
+  }
+
   function scheduleScreenshotHide(source) {
     ensureScreenshotHideStyle();
-    setScreenshotMode(true, source);
+    setScreenshotAutoHideState(true, source);
 
     if (screenshotHideTimer) clearTimeout(screenshotHideTimer);
     screenshotHideTimer = setTimeout(() => {
       screenshotHideTimer = null;
-      setScreenshotMode(false, 'timeout');
+      setScreenshotAutoHideState(false, 'timeout');
     }, SCREENSHOT_HIDE_DURATION_MS);
   }
 
@@ -491,6 +539,33 @@
     return '';
   }
 
+  function isScreenshotToggleHotkey(event) {
+    if (!event) return false;
+    if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return false;
+
+    const key = String(event.key || '');
+    const code = String(event.code || '');
+    const keyCode = Number(event.keyCode || event.which || 0);
+    return key === 'F1' || code === 'F1' || keyCode === KEY_CODE_F1;
+  }
+
+  function suppressHotkeyEvent(event) {
+    if (!event) return;
+    if (typeof event.preventDefault === 'function') event.preventDefault();
+    if (typeof event.stopPropagation === 'function') event.stopPropagation();
+    if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
+  }
+
+  function handleScreenshotToggleHotkey(event) {
+    if (!isScreenshotToggleHotkey(event)) return;
+    if (event.defaultPrevented) return;
+
+    suppressHotkeyEvent(event);
+    if (event.type !== 'keydown' || event.repeat) return;
+
+    setScreenshotManualModeState(!screenshotManualModeIsActive, 'hotkey:F1');
+  }
+
   function handleScreenshotHotkey(event) {
     const triggerKey = resolveScreenshotTriggerKey(event);
     if (!triggerKey) return;
@@ -504,14 +579,17 @@
 
   function initScreenshotHideMode() {
     ensureScreenshotHideStyle();
+    installScreenshotModeController();
+    document.addEventListener('keydown', handleScreenshotToggleHotkey, true);
+    document.addEventListener('keyup', handleScreenshotToggleHotkey, true);
     document.addEventListener('keydown', handleScreenshotHotkey, true);
     document.addEventListener('keyup', handleScreenshotHotkey, true);
     window.addEventListener('blur', () => {
-      if (!screenshotModeIsActive) return;
+      if (!screenshotAutoHideIsActive) return;
       if (screenshotHideTimer) clearTimeout(screenshotHideTimer);
       screenshotHideTimer = setTimeout(() => {
         screenshotHideTimer = null;
-        setScreenshotMode(false, 'blur-timeout');
+        setScreenshotAutoHideState(false, 'blur-timeout');
       }, SCREENSHOT_HIDE_ON_BLUR_DURATION_MS);
     });
   }
