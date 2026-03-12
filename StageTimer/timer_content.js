@@ -41,6 +41,7 @@
     const TIMER_VISIBILITY_STORAGE_KEY = "pyramid_stage_timer_ui_visible";
     const SCREENSHOT_MODE_CLASS = "dup-ext-screenshot-mode";
     const SCREENSHOT_HIDE_EVENT = "dup-ext-screenshot-visibility-change";
+    const SCREENSHOT_FRAME_BRIDGE_MESSAGE = "dup-screenshot-hotkey-frame-bridge";
     const SCREENSHOT_HIDE_DURATION_MS = 2500;
     const SCREENSHOT_HIDE_ON_BLUR_DURATION_MS = 2500;
     const SCREENSHOT_THROTTLE_MS = 150;
@@ -281,11 +282,38 @@
         scheduleScreenshotAutohide(`hotkey:${triggerKey}:${event.type}`);
     }
 
+    function handleScreenshotFrameBridgeMessage(event) {
+        const data = event && event.data && typeof event.data === "object"
+            ? event.data
+            : null;
+        if (!data || data.type !== SCREENSHOT_FRAME_BRIDGE_MESSAGE) return;
+        if (event.source === window) return;
+        if (getExternalScreenshotModeController()) return;
+
+        const source = typeof data.source === "string" && data.source
+            ? data.source
+            : "iframe-hotkey";
+        const command = String(data.command || "");
+
+        if (command === "toggle-manual") {
+            setLocalManualScreenshotMode(!screenshotManualModeIsActive);
+            return;
+        }
+
+        if (command !== "schedule-autohide") return;
+
+        const nowMs = Date.now();
+        if ((nowMs - lastScreenshotTriggerAtMs) < SCREENSHOT_THROTTLE_MS) return;
+        lastScreenshotTriggerAtMs = nowMs;
+        scheduleScreenshotAutohide(source);
+    }
+
     function initScreenshotAutohideMode() {
         document.addEventListener("keydown", handleScreenshotToggleHotkey, true);
         document.addEventListener("keyup", handleScreenshotToggleHotkey, true);
         document.addEventListener("keydown", handleScreenshotHotkey, true);
         document.addEventListener("keyup", handleScreenshotHotkey, true);
+        window.addEventListener("message", handleScreenshotFrameBridgeMessage, true);
         window.addEventListener("blur", () => {
             if (!screenshotHideTimer) return;
             if (screenshotHideTimer) clearTimeout(screenshotHideTimer);
@@ -1164,4 +1192,3 @@
     }
 
 })();
-

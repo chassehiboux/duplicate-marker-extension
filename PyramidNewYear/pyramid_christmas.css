@@ -1,5 +1,13 @@
+/* Перед изменениями в папке PyramidNewYear см. SEASONAL_THEME_RULES.md */
 /* === 1. ГЛОБАЛЬНЫЙ ПЕРЕКЛЮЧАТЕЛЬ === */
 body:not(.ny-active) .ny-element { display: none !important; }
+
+body:not(.ny-feature-page-garland-enabled) > .ny-garland-container,
+body:not(.ny-feature-modal-garland-enabled) .ui-dialog-titlebar > .ny-garland-container,
+body:not(.ny-feature-snowfall-enabled) .ny-snow-container,
+body:not(.ny-feature-snowfall-enabled) .snowflake {
+    display: none !important;
+}
 
 /* === 2. СНЕГОПАД === */
 .ny-snow-container {
@@ -45,11 +53,11 @@ body > .ny-garland-container { position: fixed; z-index: 10000; }
 
 /* === 4. ЕДИНЫЙ НОВОГОДНИЙ СТИЛЬ (Только для таблиц, вкладок и модалок) === */
 /* Header отсюда убрали! */
-body.ny-active .ui-jqgrid-titlebar,
-body.ny-active .ui-dialog-titlebar,
-body.ny-active .custom-ui-tab,
-body.ny-active .ui-tabs-nav,
-body.ny-active .ui-widget-header {
+body.ny-active.ny-feature-chrome-enabled .ui-jqgrid-titlebar,
+body.ny-active.ny-feature-chrome-enabled .ui-dialog-titlebar,
+body.ny-active.ny-feature-chrome-enabled .custom-ui-tab,
+body.ny-active.ny-feature-chrome-enabled .ui-tabs-nav,
+body.ny-active.ny-feature-chrome-enabled .ui-widget-header {
     background: linear-gradient(90deg, rgba(183, 28, 28, 0.95) 0%, rgba(46, 125, 50, 0.95) 100%), 
                 url('https://i.imgur.com/zONbQ3j.png') !important;
     background-repeat: repeat-x !important;
@@ -62,29 +70,37 @@ body.ny-active .ui-widget-header {
 }
 
 /* === 5. СМАЙЛИКИ === */
-body.ny-active .ui-jqgrid-title::before,
-body.ny-active .ui-dialog-title::before { content: "🎄🎅 "; font-size: 1.2em; margin-right: 5px; }
-body.ny-active .ui-jqgrid-title::after,
-body.ny-active .ui-dialog-title::after { content: " ⛄❄️"; font-size: 1.2em; margin-left: 5px; }
+body.ny-active.ny-feature-title-icons-enabled .ui-jqgrid-title::before,
+body.ny-active.ny-feature-title-icons-enabled .ui-dialog-title::before { content: "🎄🎅 "; font-size: 1.2em; margin-right: 5px; }
+body.ny-active.ny-feature-title-icons-enabled .ui-jqgrid-title::after,
+body.ny-active.ny-feature-title-icons-enabled .ui-dialog-title::after { content: " ⛄❄️"; font-size: 1.2em; margin-left: 5px; }
 
 /* Кнопки внутри заголовков */
-body.ny-active .ui-jqgrid-titlebar a,
-body.ny-active .ui-dialog-titlebar button { color: #fff !important; opacity: 1 !important; }
-body.ny-active .ui-jqgrid-titlebar .fa-file-excel-o {
+body.ny-active.ny-feature-title-buttons-enabled .ui-jqgrid-titlebar a,
+body.ny-active.ny-feature-title-buttons-enabled .ui-dialog-titlebar button { color: #fff !important; opacity: 1 !important; }
+body.ny-active.ny-feature-title-buttons-enabled .ui-jqgrid-titlebar .fa-file-excel-o {
     color: #4caf50 !important; background: white; padding: 2px; border-radius: 3px;
     box-shadow: 0 0 5px rgba(255,255,255,0.5);
 }
+body.ny-active:not(.ny-feature-chrome-enabled).ny-feature-title-buttons-enabled .ui-jqgrid-titlebar a,
+body.ny-active:not(.ny-feature-chrome-enabled).ny-feature-title-buttons-enabled .ui-dialog-titlebar button {
+    color: #8d1e1e !important;
+}
+body.ny-active:not(.ny-feature-chrome-enabled).ny-feature-title-buttons-enabled .ui-jqgrid-titlebar .fa-file-excel-o {
+    background: #fff8e3;
+    box-shadow: 0 0 4px rgba(141, 30, 30, 0.18);
+}
 
 /* === 6. ВКЛАДКИ (TABS) === */
-body.ny-active .ui-tabs-tab {
+body.ny-active.ny-feature-tabs-enabled .ui-tabs-tab {
     background: linear-gradient(to bottom, #2e7d32, #1b5e20) !important;
     border-color: #1b5e20 !important; border-bottom: none !important; margin-right: 2px !important;
 }
-body.ny-active .ui-tabs-tab.ui-tabs-active {
+body.ny-active.ny-feature-tabs-enabled .ui-tabs-tab.ui-tabs-active {
     background: linear-gradient(to bottom, #d32f2f, #b71c1c) !important;
     border: 2px solid #d4af37 !important; border-bottom: none !important;
 }
-body.ny-active .ui-tabs-anchor { color: #fff !important; font-weight: bold; }
+body.ny-active.ny-feature-tabs-enabled .ui-tabs-anchor { color: #fff !important; font-weight: bold; }
 
 /* === 7. МОДАЛКИ (Свечение) === */
 @keyframes window-glow {
@@ -93,11 +109,12 @@ body.ny-active .ui-tabs-anchor { color: #fff !important; font-weight: bold; }
     66%  { box-shadow: 0 0 15px rgba(255, 215, 0, 0.6); border-color: #ffd700; }
     100% { box-shadow: 0 0 20px rgba(0, 0, 255, 0.6); border-color: #0000ff; }
 }
-body.ny-active .ui-dialog {
+body.ny-active.ny-feature-modal-glow-enabled .ui-dialog {
     animation: window-glow 4s infinite linear alternate;
     border: 2px solid #fff !important; border-radius: 8px !important; background: #fff !important;
 }
-body.ny-active .ui-dialog-titlebar { overflow: hidden !important; border-bottom: none !important; }
+body.ny-active.ny-feature-modal-garland-enabled .ui-dialog-titlebar { overflow: hidden !important; }
+body.ny-active.ny-feature-chrome-enabled .ui-dialog-titlebar { border-bottom: none !important; }
 
 /* === 8. ПЕРЕКЛЮЧАТЕЛЬ === */
 /* Общий контейнер, который вставляем в хедер */

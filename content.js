@@ -8,6 +8,7 @@
   const SCREENSHOT_MODE_CLASS = 'dup-ext-screenshot-mode';
   const SCREENSHOT_HIDE_STYLE_ID = 'dup-ext-screenshot-style';
   const SCREENSHOT_HIDE_EVENT = 'dup-ext-screenshot-visibility-change';
+  const SCREENSHOT_FRAME_BRIDGE_MESSAGE = 'dup-screenshot-hotkey-frame-bridge';
   const SCREENSHOT_HIDE_DURATION_MS = 2500;
   const SCREENSHOT_HIDE_ON_BLUR_DURATION_MS = 2500;
   const KEY_CODE_PAGE_DOWN = 34;
@@ -151,9 +152,7 @@
   let screenshotAutoHideIsActive = false;
   let screenshotManualModeIsActive = false;
   let screenshotModeIsActive = false;
-  let screenshotNewYearWasActive = false;
-  let screenshotSpringWasActive = false;
-  let screenshotSpringVariantClass = '';
+  const screenshotThemeStateByDocument = new WeakMap();
   let lastScreenshotTriggerAtMs = 0;
   let stageJumpCachedMenuIndex = null;
   let stageJumpActionMenuEl = null;
@@ -172,6 +171,14 @@
     'list_Individual_FullName', 'list_CaseNumber', 'list_EDNumber',
     'strict_CaseNumber', 'strict_EDNumber'
   ];
+  const successFeedbackState = new WeakMap();
+  const successFeedbackStyleProps = Object.freeze([
+    'transition',
+    'background-color',
+    'background-image',
+    'box-shadow',
+    'color'
+  ]);
 
   // --- Утилиты ---
   
@@ -183,17 +190,71 @@
     if (childInput) return childInput.value.trim();
     return el.textContent.trim();
   }
+
+  function captureInlineStyleSnapshot(element) {
+    const snapshot = {};
+    const style = element && element.style;
+    if (!style) return snapshot;
+
+    successFeedbackStyleProps.forEach((propertyName) => {
+      snapshot[propertyName] = {
+        value: style.getPropertyValue(propertyName),
+        priority: style.getPropertyPriority(propertyName)
+      };
+    });
+
+    return snapshot;
+  }
+
+  function restoreInlineStyleSnapshot(element, snapshot) {
+    const style = element && element.style;
+    if (!style) return;
+
+    successFeedbackStyleProps.forEach((propertyName) => {
+      const entry = snapshot && snapshot[propertyName];
+      if (entry && entry.value) {
+        style.setProperty(propertyName, entry.value, entry.priority || '');
+      } else {
+        style.removeProperty(propertyName);
+      }
+    });
+  }
   
   // Визуальный отклик для Турбо-режима.
   function showSuccessFeedback(element) {
-    const originalBg = element.style.backgroundColor;
-    element.style.transition = 'background-color 0.1s ease';
-    element.style.backgroundColor = '#66bb6a'; 
-    if (element.tagName === 'INPUT') element.style.color = 'white';
-    setTimeout(() => {
-      element.style.backgroundColor = originalBg;
-      if (element.tagName === 'INPUT') element.style.color = '';
-    }, 200);
+    if (!(element instanceof HTMLElement)) return;
+
+    const existingState = successFeedbackState.get(element);
+    if (existingState && existingState.timerId) {
+      clearTimeout(existingState.timerId);
+    }
+
+    const snapshot = existingState && existingState.snapshot
+      ? existingState.snapshot
+      : captureInlineStyleSnapshot(element);
+
+    element.style.setProperty('transition', 'background-color 0.1s ease, box-shadow 0.1s ease', 'important');
+    element.style.setProperty('background-image', 'none', 'important');
+    element.style.setProperty('background-color', '#66bb6a', 'important');
+    element.style.setProperty('box-shadow', 'inset 0 0 0 999px rgba(102, 187, 106, 0.92)', 'important');
+
+    if (
+      element instanceof HTMLInputElement ||
+      element instanceof HTMLTextAreaElement ||
+      element instanceof HTMLSelectElement
+    ) {
+      element.style.setProperty('color', '#ffffff', 'important');
+    }
+
+    const timerId = window.setTimeout(() => {
+      restoreInlineStyleSnapshot(element, snapshot);
+      successFeedbackState.delete(element);
+    }, 220);
+
+    successFeedbackState.set(element, {
+      snapshot,
+      timerId
+    });
   }
 
   function debounce(fn, delay) {
@@ -308,10 +369,13 @@
     scheduleGridAbortErrorMessageRewrite(message);
   }, { capture: true });
 
-  function ensureScreenshotHideStyle() {
-    if (document.getElementById(SCREENSHOT_HIDE_STYLE_ID)) return;
+  function ensureScreenshotHideStyle(targetDocument) {
+    const doc = targetDocument && typeof targetDocument.getElementById === 'function'
+      ? targetDocument
+      : document;
+    if (doc.getElementById(SCREENSHOT_HIDE_STYLE_ID)) return;
 
-    const style = document.createElement('style');
+    const style = doc.createElement('style');
     style.id = SCREENSHOT_HIDE_STYLE_ID;
     style.textContent = `
       html.${SCREENSHOT_MODE_CLASS} .${HIGHLIGHT_CLASS} {
@@ -344,6 +408,13 @@
       html.${SCREENSHOT_MODE_CLASS} .spring-header-item,
       html.${SCREENSHOT_MODE_CLASS} #springSwitcher,
       html.${SCREENSHOT_MODE_CLASS} .material-switch-spring,
+      html.${SCREENSHOT_MODE_CLASS} #pyramid-seasonal-theme-settings-launcher,
+      html.${SCREENSHOT_MODE_CLASS} .seasonal-theme-settings-header-item,
+      html.${SCREENSHOT_MODE_CLASS} .seasonal-theme-settings-launcher,
+      html.${SCREENSHOT_MODE_CLASS} #pyramid-seasonal-theme-settings-overlay,
+      html.${SCREENSHOT_MODE_CLASS} .seasonal-theme-settings-overlay,
+      html.${SCREENSHOT_MODE_CLASS} .seasonal-theme-settings-panel,
+      html.${SCREENSHOT_MODE_CLASS} .seasonal-theme-settings-element,
       html.${SCREENSHOT_MODE_CLASS} .my-super-btn,
       html.${SCREENSHOT_MODE_CLASS} #batch-inn-check-btn,
       html.${SCREENSHOT_MODE_CLASS} #inn-toast-container,
@@ -380,12 +451,50 @@
         display: none !important;
       }
     `;
-    (document.head || document.documentElement).appendChild(style);
+    (doc.head || doc.documentElement).appendChild(style);
   }
 
-  function broadcastScreenshotMode(hidden, source) {
+  function collectAccessibleScreenshotDocuments() {
+    const docs = [];
+    const seenDocs = new Set();
+
+    function visitDocument(targetDocument) {
+      if (!targetDocument || seenDocs.has(targetDocument)) return;
+      seenDocs.add(targetDocument);
+      docs.push(targetDocument);
+
+      let frameNodes = [];
+      try {
+        frameNodes = Array.from(targetDocument.querySelectorAll('iframe, frame'));
+      } catch (err) {
+        frameNodes = [];
+      }
+
+      frameNodes.forEach((frameNode) => {
+        try {
+          const childDocument = frameNode && frameNode.contentDocument;
+          if (childDocument) {
+            visitDocument(childDocument);
+          }
+        } catch (err) {
+          // ignore cross-origin frames
+        }
+      });
+    }
+
+    visitDocument(document);
+    return docs;
+  }
+
+  function broadcastScreenshotMode(targetWindow, hidden, source) {
+    const eventTarget = targetWindow && typeof targetWindow.dispatchEvent === 'function'
+      ? targetWindow
+      : window;
     try {
-      window.dispatchEvent(new CustomEvent(SCREENSHOT_HIDE_EVENT, {
+      const CustomEventCtor = typeof eventTarget.CustomEvent === 'function'
+        ? eventTarget.CustomEvent
+        : CustomEvent;
+      eventTarget.dispatchEvent(new CustomEventCtor(SCREENSHOT_HIDE_EVENT, {
         detail: { hidden: !!hidden, source: source || 'unknown' }
       }));
     } catch (err) {
@@ -393,58 +502,84 @@
     }
   }
 
-  function toggleNewYearThemeForScreenshot(hidden) {
-    const body = document.body;
+  function toggleSeasonalThemeForScreenshot(targetDocument, hidden) {
+    const body = targetDocument && targetDocument.body;
     if (!body) return;
 
     if (hidden) {
-      screenshotNewYearWasActive = body.classList.contains('ny-active');
-      if (screenshotNewYearWasActive) {
+      let themeState = screenshotThemeStateByDocument.get(targetDocument);
+      if (!themeState) {
+        const springWasActive = body.classList.contains('spring-active');
+        const existingVariant = springWasActive
+          ? Array.from(body.classList).find((className) =>
+              String(className || '').indexOf('spring-variant-') === 0
+            )
+          : '';
+        themeState = {
+          newYearWasActive: body.classList.contains('ny-active'),
+          springWasActive,
+          springVariantClass: existingVariant || ''
+        };
+        screenshotThemeStateByDocument.set(targetDocument, themeState);
+      }
+
+      if (themeState.newYearWasActive) {
         body.classList.remove('ny-active');
       }
 
-      screenshotSpringWasActive = body.classList.contains('spring-active');
-      screenshotSpringVariantClass = '';
-      if (screenshotSpringWasActive) {
-        const existingVariant = Array.from(body.classList).find((className) =>
-          String(className || '').indexOf('spring-variant-') === 0
-        );
-        screenshotSpringVariantClass = existingVariant || '';
+      if (themeState.springWasActive) {
         body.classList.remove('spring-active');
-        if (screenshotSpringVariantClass) {
-          body.classList.remove(screenshotSpringVariantClass);
+        if (themeState.springVariantClass) {
+          body.classList.remove(themeState.springVariantClass);
         }
       }
       return;
     }
 
-    if (screenshotNewYearWasActive) {
+    const themeState = screenshotThemeStateByDocument.get(targetDocument);
+    if (!themeState) return;
+
+    if (themeState.newYearWasActive) {
       body.classList.add('ny-active');
     }
 
-    if (screenshotSpringWasActive) {
+    if (themeState.springWasActive) {
       body.classList.add('spring-active');
-      if (screenshotSpringVariantClass) {
-        body.classList.add(screenshotSpringVariantClass);
+      if (themeState.springVariantClass) {
+        body.classList.add(themeState.springVariantClass);
       }
     }
 
-    screenshotNewYearWasActive = false;
-    screenshotSpringWasActive = false;
-    screenshotSpringVariantClass = '';
+    screenshotThemeStateByDocument.delete(targetDocument);
+  }
+
+  function syncScreenshotModeForDocument(targetDocument, hidden, source) {
+    const doc = targetDocument;
+    const root = doc && doc.documentElement;
+    if (!root) return;
+
+    ensureScreenshotHideStyle(doc);
+
+    if (hidden) {
+      toggleSeasonalThemeForScreenshot(doc, true);
+      root.classList.add(SCREENSHOT_MODE_CLASS);
+    } else {
+      root.classList.remove(SCREENSHOT_MODE_CLASS);
+      toggleSeasonalThemeForScreenshot(doc, false);
+    }
+
+    broadcastScreenshotMode(doc.defaultView, hidden, source);
   }
 
   function applyScreenshotModeState(source) {
-    const root = document.documentElement;
-    if (!root) return;
-
     const nextState = screenshotManualModeIsActive || screenshotAutoHideIsActive;
-    if (nextState === screenshotModeIsActive) return;
+    if (nextState === screenshotModeIsActive && !nextState) return;
 
     screenshotModeIsActive = nextState;
-    toggleNewYearThemeForScreenshot(nextState);
-    root.classList.toggle(SCREENSHOT_MODE_CLASS, nextState);
-    broadcastScreenshotMode(nextState, source);
+
+    collectAccessibleScreenshotDocuments().forEach((targetDocument) => {
+      syncScreenshotModeForDocument(targetDocument, nextState, source);
+    });
   }
 
   function setScreenshotAutoHideState(hidden, source) {
@@ -577,6 +712,31 @@
     scheduleScreenshotHide(`hotkey:${triggerKey}:${event.type}`);
   }
 
+  function handleScreenshotFrameBridgeMessage(event) {
+    const data = event && event.data && typeof event.data === 'object'
+      ? event.data
+      : null;
+    if (!data || data.type !== SCREENSHOT_FRAME_BRIDGE_MESSAGE) return;
+    if (event.source === window) return;
+
+    const source = typeof data.source === 'string' && data.source
+      ? data.source
+      : 'iframe-hotkey';
+    const command = String(data.command || '');
+
+    if (command === 'toggle-manual') {
+      setScreenshotManualModeState(!screenshotManualModeIsActive, source);
+      return;
+    }
+
+    if (command !== 'schedule-autohide') return;
+
+    const nowMs = Date.now();
+    if ((nowMs - lastScreenshotTriggerAtMs) < 150) return;
+    lastScreenshotTriggerAtMs = nowMs;
+    scheduleScreenshotHide(source);
+  }
+
   function initScreenshotHideMode() {
     ensureScreenshotHideStyle();
     installScreenshotModeController();
@@ -584,6 +744,7 @@
     document.addEventListener('keyup', handleScreenshotToggleHotkey, true);
     document.addEventListener('keydown', handleScreenshotHotkey, true);
     document.addEventListener('keyup', handleScreenshotHotkey, true);
+    window.addEventListener('message', handleScreenshotFrameBridgeMessage, true);
     window.addEventListener('blur', () => {
       if (!screenshotAutoHideIsActive) return;
       if (screenshotHideTimer) clearTimeout(screenshotHideTimer);

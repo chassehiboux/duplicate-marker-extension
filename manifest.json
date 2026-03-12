@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Помощник по Пирамиде",
-  "version": "2.0.38",
+  "version": "2.0.40",
   "description": "Авто-режим + Проверка ИНН/Смерти + Мониторинг скорости стадий",
   "permissions": [
     "activeTab",
@@ -60,6 +60,16 @@
         "<all_urls>"
       ],
       "js": [
+        "StageTimer/screenshot_hotkeys_bridge.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true
+    },
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
         "Check_INN_DeathDate/inn_death_content.js"
       ],
       "run_at": "document_end",
@@ -95,11 +105,13 @@
         "*://*.pyramid.vostok-electra.ru/*"
       ],
       "css": [
+        "PyramidNewYear/pyramid_theme_settings.css",
         "PyramidNewYear/pyramid_christmas.css",
         "PyramidNewYear/pyramid_spring.css"
       ],
       "js": [
         "PyramidNewYear/pyramid_theme_config.js",
+        "PyramidNewYear/pyramid_theme_settings.js",
         "PyramidNewYear/pyramid_christmas.js",
         "PyramidNewYear/pyramid_spring.js"
       ],

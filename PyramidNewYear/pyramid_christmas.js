@@ -1,3 +1,4 @@
+/* Перед изменениями в папке PyramidNewYear см. SEASONAL_THEME_RULES.md */
 (function() {
     'use strict';
 
@@ -27,6 +28,15 @@
     function getDefaultEnabled(config) {
         if (config.defaultTheme === 'newyear') return true;
         return config.enabledByDefault === true;
+    }
+
+    function syncSettingsLauncher(targetContainer, anchorElement) {
+        const settingsApi = window.PYRAMID_THEME_SETTINGS;
+        if (!settingsApi || typeof settingsApi.syncLauncher !== 'function') return;
+        settingsApi.syncLauncher({
+            targetContainer,
+            anchorElement
+        });
     }
 
     function hasChromeStorage() {
@@ -140,8 +150,10 @@
     }
 
     function removeNewYearSwitch() {
+        const targetContainer = resolveHeaderContainer();
         document.querySelectorAll('.ny-header-item').forEach((node) => node.remove());
         switchCheckbox = null;
+        syncSettingsLauncher(targetContainer, null);
     }
 
     // === ПЕРЕКЛЮЧАТЕЛЬ ===
@@ -189,6 +201,8 @@
                 applyNewYearState(isEnabled, { persist: true, broadcast: true });
             });
         }
+
+        syncSettingsLauncher(targetContainer, switchWrapper);
     }
 
     function initThemeState() {

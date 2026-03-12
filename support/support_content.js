@@ -5,7 +5,6 @@
   const STORAGE_KEY = 'support_reminders_state_v1';
   const TARGET_STAGE = '2.4 Подтверждение решения и закрытие Запроса';
   const TARGET_STAGE_NORMALIZED = normalizeText(TARGET_STAGE);
-  const OPEN_FILTER_ID = 'requestFilter1';
   const REQUESTS_TABLE_ID = 'СписокОбращенийТаблица';
   const REQUESTS_BODY_ID = 'СписокОбращенийТелоТаблицы';
   const HIGHLIGHT_CLASS = 'support-reminder-highlight';
@@ -14,6 +13,12 @@
   const ACTION_BUTTON_CLASS = 'support-reminder-action-button';
   const ACTION_MENU_ID = 'support-reminder-action-menu';
   const SNAPSHOT_READY_DELAY_MS = 20000;
+  const TRACKED_FILTERS = {
+    requestFilter1: { type: 'open', label: 'Открытые обращения' },
+    requestFilter4: { type: 'my_tasks', label: 'Мои задачи' },
+    requestFilter3: { type: 'list', label: 'Список обращений' },
+    requestFilter2: { type: 'closed', label: 'Закрытые обращения' }
+  };
 
   const DEFAULT_COLUMNS = {
     createdAt: 1,
@@ -27,8 +32,11 @@
 
   let reminderIds = new Set();
   let remindersById = {};
+  let archiveById = {};
   let latestSnapshot = {
-    openFilterActive: false,
+    activeFilterType: '',
+    activeFilterLabel: '',
+    trackedFilterActive: false,
     requests: [],
     rowById: new Map(),
     snapshotReady: false
@@ -94,6 +102,12 @@
         border-color: #77a6d6;
         background: #e7f2ff;
         color: #114a80;
+      }
+
+      .${ACTION_BUTTON_CLASS}.is-archived-reminder {
+        border-color: #d2b48c;
+        background: #fff6e8;
+        color: #8b5a2b;
       }
 
       #${ACTION_MENU_ID} {
@@ -214,23 +228,58 @@
     return rowRef || '';
   }
 
-  function isOpenFilterActive() {
-    const openFilter = document.getElementById(OPEN_FILTER_ID);
-    return !!(openFilter && openFilter.classList.contains('selected'));
+  function getStatusText(row, columns) {
+    const statusIndex = Math.max(0, (columns?.createdAt ?? 1) - 1);
+    const statusCell = row && row.cells ? row.cells[statusIndex] : null;
+    if (!statusCell) return '';
+
+    const image = statusCell.querySelector('img');
+    if (image) {
+      const imageTitle = String(image.getAttribute('title') || image.getAttribute('alt') || '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (imageTitle) return imageTitle;
+    }
+
+    return String(statusCell.textContent || '').replace(/\s+/g, ' ').trim();
+  }
+
+  function getActiveFilterInfo() {
+    const match = Object.entries(TRACKED_FILTERS).find(([filterId]) => {
+      const filterNode = document.getElementById(filterId);
+      return !!(filterNode && filterNode.classList.contains('selected'));
+    });
+
+    if (!match) {
+      return { id: '', type: '', label: '' };
+    }
+
+    return { id: match[0], ...match[1] };
+  }
+
+  function getTrackedReminder(requestId) {
+    return remindersById[requestId] || archiveById[requestId] || null;
+  }
+
+  function isArchivedReminder(requestId) {
+    return !remindersById[requestId] && !!archiveById[requestId];
   }
 
   function extractSnapshot() {
-    const openFilterActive = isOpenFilterActive();
+    const activeFilter = getActiveFilterInfo();
+    const trackedFilterActive = !!activeFilter.type;
     const table = document.getElementById(REQUESTS_TABLE_ID);
     const body = document.getElementById(REQUESTS_BODY_ID);
 
     if (!table || !body) {
       const elapsed = Date.now() - scriptStartedAt;
       return {
-        openFilterActive,
+        activeFilterType: activeFilter.type,
+        activeFilterLabel: activeFilter.label,
+        trackedFilterActive,
         requests: [],
         rowById: new Map(),
-        snapshotReady: !openFilterActive || elapsed > SNAPSHOT_READY_DELAY_MS
+        snapshotReady: !trackedFilterActive || elapsed > SNAPSHOT_READY_DELAY_MS
       };
     }
 
@@ -248,27 +297,36 @@
         requestNumber: getCellText(row, columns.requestNumber),
         subject: getCellText(row, columns.subject),
         stage: getCellText(row, columns.stage),
+        status: getStatusText(row, columns),
         supportNumber: getCellText(row, columns.supportNumber),
         assignee: getCellText(row, columns.assignee),
         initiator: getCellText(row, columns.initiator),
-        createdAt: getCellText(row, columns.createdAt)
+        createdAt: getCellText(row, columns.createdAt),
+        filterType: activeFilter.type,
+        filterLabel: activeFilter.label
       };
 
       requests.push(request);
       rowById.set(requestId, row);
     });
 
-    const elapsed = Date.now() - scriptStartedAt;
-    const snapshotReady = !openFilterActive
-      || requests.length > 0
-      || elapsed > SNAPSHOT_READY_DELAY_MS;
+    const snapshotReady = !trackedFilterActive || !!(table && body);
 
-    return { openFilterActive, requests, rowById, snapshotReady };
+    return {
+      activeFilterType: activeFilter.type,
+      activeFilterLabel: activeFilter.label,
+      trackedFilterActive,
+      requests,
+      rowById,
+      snapshotReady
+    };
   }
 
   function getSnapshotHash(snapshot) {
-    const requestParts = snapshot.requests.map((item) => `${item.requestId}:${item.stage}`).join('|');
-    return `${snapshot.openFilterActive ? 'open' : 'closed'}|${snapshot.snapshotReady ? 'ready' : 'loading'}|${requestParts}`;
+    const requestParts = snapshot.requests
+      .map((item) => `${item.requestId}:${item.stage}:${item.status}`)
+      .join('|');
+    return `${snapshot.activeFilterType || 'none'}|${snapshot.snapshotReady ? 'ready' : 'loading'}|${requestParts}`;
   }
 
   function sendRuntimeMessage(action, data) {
@@ -294,7 +352,9 @@
   function applyReminderCache(rawState) {
     const state = rawState && typeof rawState === 'object' ? rawState : {};
     const reminders = state.reminders && typeof state.reminders === 'object' ? state.reminders : {};
+    const archive = state.archive && typeof state.archive === 'object' ? state.archive : {};
     remindersById = reminders;
+    archiveById = archive;
     reminderIds = new Set(Object.keys(reminders));
   }
 
@@ -302,9 +362,13 @@
     const reminders = response && response.remindersById && typeof response.remindersById === 'object'
       ? response.remindersById
       : null;
-    if (!reminders) return;
-    remindersById = reminders;
-    reminderIds = new Set(Object.keys(reminders));
+    const archive = response && response.archiveById && typeof response.archiveById === 'object'
+      ? response.archiveById
+      : null;
+    if (!reminders && !archive) return;
+    remindersById = reminders || {};
+    archiveById = archive || {};
+    reminderIds = new Set(Object.keys(remindersById));
   }
 
   function ensureActionHeader() {
@@ -332,7 +396,8 @@
   }
 
   function renderRowActionButton(row, request) {
-    const reminder = remindersById[request.requestId];
+    const reminder = getTrackedReminder(request.requestId);
+    const archivedReminder = isArchivedReminder(request.requestId);
     const actionCell = ensureActionCell(row);
     let button = actionCell.querySelector(`button.${ACTION_BUTTON_CLASS}`);
 
@@ -346,13 +411,20 @@
     const note = reminder && reminder.note ? String(reminder.note).trim() : '';
     button.dataset.requestId = request.requestId;
     button.classList.toggle('has-reminder', !!reminder);
-    button.textContent = reminder ? '🔔' : '➕';
+    button.classList.toggle('is-archived-reminder', archivedReminder);
+    button.textContent = reminder ? (archivedReminder ? '🗂' : '🔔') : '➕';
     button.title = reminder
-      ? (note ? `Напоминание: ${note}` : 'Напоминание без текста')
+      ? (
+        note
+          ? `${archivedReminder ? 'Архивное напоминание' : 'Напоминание'}: ${note}`
+          : archivedReminder
+            ? 'Архивное напоминание без текста'
+            : 'Напоминание без текста'
+      )
       : 'Создать напоминание';
 
     if (note) {
-      row.setAttribute('title', `Напоминание: ${note}`);
+      row.setAttribute('title', `${archivedReminder ? 'Архивное напоминание' : 'Напоминание'}: ${note}`);
     } else {
       row.removeAttribute('title');
     }
@@ -383,6 +455,8 @@
       try {
         if (action === 'create' || action === 'edit') {
           await upsertReminder(requestId);
+        } else if (action === 'delete-archive') {
+          await removeArchiveEntry(requestId);
         } else if (action === 'delete') {
           await removeReminder(requestId);
         }
@@ -434,7 +508,9 @@
 
   function showActionMenu(requestId, anchorButton) {
     const menu = ensureActionMenu();
-    const reminder = remindersById[requestId] || null;
+    const activeReminder = remindersById[requestId] || null;
+    const archivedReminder = !activeReminder ? (archiveById[requestId] || null) : null;
+    const reminder = activeReminder || archivedReminder;
     const request = latestRequestsById.get(requestId) || (reminder && reminder.lastKnown) || null;
 
     menu.innerHTML = '';
@@ -456,6 +532,8 @@
 
     if (!reminder) {
       appendMenuButton(menu, 'create', 'Создать', false);
+    } else if (archivedReminder) {
+      appendMenuButton(menu, 'delete-archive', 'Удалить из архива', true);
     } else {
       appendMenuButton(menu, 'edit', 'Редактировать', false);
       appendMenuButton(menu, 'delete', 'Удалить', true);
@@ -504,6 +582,13 @@
     refresh(true);
   }
 
+  async function removeArchiveEntry(requestId) {
+    if (!confirm('Удалить запись из архива по этой заявке?')) return;
+    const response = await sendRuntimeMessage('SUPPORT_DELETE_ARCHIVE', { requestId });
+    applyReminderCacheFromResponse(response);
+    refresh(true);
+  }
+
   function applyRowDecorations(snapshot) {
     clearHighlights();
     ensureActionHeader();
@@ -516,7 +601,6 @@
 
       renderRowActionButton(row, request);
 
-      if (!snapshot.openFilterActive) return;
       if (!reminderIds.has(request.requestId)) return;
       if (normalizeText(request.stage) !== TARGET_STAGE_NORMALIZED) return;
 
@@ -526,9 +610,11 @@
 
   function sendSync(snapshot) {
     chrome.runtime.sendMessage({
-      action: 'SUPPORT_SYNC_OPEN_REQUESTS',
+      action: 'SUPPORT_SYNC_REQUESTS',
       data: {
-        openFilterActive: snapshot.openFilterActive,
+        activeFilterType: snapshot.activeFilterType,
+        activeFilterLabel: snapshot.activeFilterLabel,
+        trackedFilterActive: snapshot.trackedFilterActive,
         requests: snapshot.requests,
         snapshotReady: snapshot.snapshotReady
       }
@@ -567,7 +653,7 @@
       const requestId = String(actionButton.dataset.requestId || '').trim();
       if (!requestId) return;
 
-      const reminder = remindersById[requestId] || null;
+      const reminder = getTrackedReminder(requestId);
       if (!reminder) {
         hideActionMenu();
         try {
@@ -596,7 +682,10 @@
   });
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (!message || message.action !== 'SUPPORT_GET_OPEN_REQUESTS') return false;
+    if (!message) return false;
+    if (message.action !== 'SUPPORT_GET_REQUEST_SNAPSHOT' && message.action !== 'SUPPORT_GET_OPEN_REQUESTS') {
+      return false;
+    }
 
     const snapshot = extractSnapshot();
     latestSnapshot = snapshot;
@@ -604,7 +693,10 @@
 
     sendResponse({
       success: true,
-      openFilterActive: snapshot.openFilterActive,
+      openFilterActive: snapshot.activeFilterType === 'open',
+      activeFilterType: snapshot.activeFilterType,
+      activeFilterLabel: snapshot.activeFilterLabel,
+      trackedFilterActive: snapshot.trackedFilterActive,
       requests: snapshot.requests,
       snapshotReady: snapshot.snapshotReady
     });

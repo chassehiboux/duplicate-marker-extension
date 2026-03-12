@@ -69,6 +69,17 @@ def create_minimal_manifest(version):
                 ],
                 "run_at": "document_start",
                 "all_frames": False
+            },
+            {
+                "matches": [
+                    "*://*.pyramid.vostok-electra.ru/*",
+                    "*://*.pyramid-vostok.electra.ru/*"
+                ],
+                "js": [
+                    "StageTimer/screenshot_hotkeys_bridge.js"
+                ],
+                "run_at": "document_start",
+                "all_frames": True
             }
         ]
     }
@@ -112,6 +123,7 @@ def main():
             shutil.copy(os.path.join(SOURCE_DIR, 'StageTimer', 'timer_content.js'), os.path.join(build_dir, 'StageTimer'))
             shutil.copy(os.path.join(SOURCE_DIR, 'StageTimer', 'timer_styles.css'), os.path.join(build_dir, 'StageTimer'))
             shutil.copy(os.path.join(SOURCE_DIR, 'StageTimer', 'timer_background.js'), os.path.join(build_dir, 'StageTimer'))
+            shutil.copy(os.path.join(SOURCE_DIR, 'StageTimer', 'screenshot_hotkeys_bridge.js'), os.path.join(build_dir, 'StageTimer'))
             shutil.copy(os.path.join(SOURCE_DIR, 'icon.png'), build_dir)
             
             # Создаем и записываем manifest.json с корректной версией

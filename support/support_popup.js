@@ -3,6 +3,7 @@
   const SUPPORT_HOST = 'support.vostok-electra.ru';
   const DEFAULT_STAGE_LABEL = '2.4 Подтверждение решения и закрытие Запроса';
   const AUTO_REFRESH_MS = 5000;
+  const SUPPORTED_FILTER_HINT = 'Открытые обращения, Мои задачи, Список обращений или Закрытые обращения';
 
   function escapeHtml(value) {
     return String(value || '')
@@ -254,7 +255,7 @@
         <div class="support-status" id="support-status">Загрузка...</div>
 
         <div class="support-section open-requests">
-          <div class="support-section-title">Открытые обращения</div>
+          <div class="support-section-title" id="support-current-list-title">Текущий список</div>
           <div class="support-list" id="support-open-list"></div>
         </div>
 
@@ -273,6 +274,7 @@
 
     const statusNode = root.querySelector('#support-status');
     const openListNode = root.querySelector('#support-open-list');
+    const currentListTitleNode = root.querySelector('#support-current-list-title');
     const reminderTitleNode = root.querySelector('#support-reminder-title');
     const reminderListNode = root.querySelector('#support-reminder-list');
     const refreshButton = root.querySelector('#support-refresh-btn');
@@ -281,9 +283,11 @@
       tabId: activeTab && typeof activeTab.id === 'number' ? activeTab.id : null,
       isSupportTab: false,
       targetStage: DEFAULT_STAGE_LABEL,
-      openFilterActive: false,
+      trackedFilterActive: false,
+      activeFilterType: '',
+      activeFilterLabel: '',
       snapshotReady: false,
-      openRequests: [],
+      currentRequests: [],
       activeReminders: [],
       archivedReminders: [],
       remindersById: {},
@@ -306,6 +310,25 @@
       return `Активных: ${state.activeReminders.length}, в архиве: ${state.archivedReminders.length}. Целевой этап: ${state.targetStage}.`;
     }
 
+    function currentListTitle() {
+      return state.activeFilterLabel || 'Текущий список';
+    }
+
+    function buildRequestMeta(request) {
+      const parts = [];
+      if (request.status) parts.push(`Статус: ${escapeHtml(request.status)}`);
+      if (request.stage) parts.push(`Этап: ${escapeHtml(request.stage)}`);
+      return parts.length ? parts.join(' | ') : 'Статус и этап не определены.';
+    }
+
+    function getRequestsWithoutReminders() {
+      return state.currentRequests.filter((request) => {
+        if (state.remindersById[request.requestId]) return false;
+        if (state.archiveById[request.requestId]) return false;
+        return true;
+      });
+    }
+
     function switchReminderTab(tabName) {
       state.reminderTab = tabName === 'archive' ? 'archive' : 'active';
       root.querySelectorAll('button[data-switch-tab]').forEach((button) => {
@@ -316,44 +339,45 @@
       renderReminderList();
     }
 
-    function renderOpenRequests() {
+    function renderCurrentRequests() {
+      currentListTitleNode.textContent = currentListTitle();
+
       if (!state.tabId) {
         openListNode.innerHTML = '<div class="support-empty">Активная вкладка недоступна.</div>';
         return;
       }
 
-      if (!state.openFilterActive) {
-        openListNode.innerHTML = '<div class="support-empty">Откройте фильтр "Открытые обращения" на support.vostok-electra.ru.</div>';
+      if (!state.trackedFilterActive) {
+        openListNode.innerHTML = `<div class="support-empty">Выберите на ${SUPPORT_HOST} одну из вкладок: ${SUPPORTED_FILTER_HINT}.</div>`;
         return;
       }
+
       if (!state.snapshotReady) {
-        openListNode.innerHTML = '<div class="support-empty">Список открытых обращений загружается...</div>';
+        openListNode.innerHTML = `<div class="support-empty">Список "${escapeHtml(currentListTitle())}" загружается...</div>`;
         return;
       }
 
-      if (!state.openRequests.length) {
-        openListNode.innerHTML = '<div class="support-empty">Список открытых обращений пуст.</div>';
+      if (!state.currentRequests.length) {
+        openListNode.innerHTML = `<div class="support-empty">Список "${escapeHtml(currentListTitle())}" пуст.</div>`;
         return;
       }
 
-      openListNode.innerHTML = state.openRequests.map((request) => {
-        const reminder = state.remindersById[request.requestId];
-        const reminderBlock = reminder ? `<div class="support-item-note">${escapeHtml(reminder.note)}</div>` : '';
-        const addOrEditAction = reminder ? 'edit-open' : 'add-open';
-        const addOrEditLabel = reminder ? 'Изменить' : 'Добавить';
-        const deleteButton = reminder
-          ? `<button class="support-btn danger" data-action="delete-open" data-request-id="${escapeHtml(request.requestId)}">Удалить</button>`
-          : '';
+      const visibleRequests = getRequestsWithoutReminders();
+      if (!visibleRequests.length) {
+        openListNode.innerHTML = `<div class="support-empty">В списке "${escapeHtml(currentListTitle())}" нет заявок без напоминаний.</div>`;
+        return;
+      }
+
+      openListNode.innerHTML = visibleRequests.map((request) => {
+        const primaryButton = `<button class="support-btn" data-action="add-current" data-request-id="${escapeHtml(request.requestId)}">Добавить</button>`;
 
         return `
           <div class="support-item">
             <div class="support-item-title">${escapeHtml(request.requestNumber || request.requestId)}</div>
             <div class="support-item-text">${escapeHtml(request.subject || '(без темы)')}</div>
-            <div class="support-item-meta">Этап: ${escapeHtml(request.stage || '—')}</div>
-            ${reminderBlock}
+            <div class="support-item-meta">${buildRequestMeta(request)}</div>
             <div class="support-actions">
-              <button class="support-btn" data-action="${addOrEditAction}" data-request-id="${escapeHtml(request.requestId)}">${addOrEditLabel}</button>
-              ${deleteButton}
+              ${primaryButton}
             </div>
           </div>
         `;
@@ -396,6 +420,7 @@
             <div class="support-item-meta">В архиве: ${escapeHtml(toDateString(archive.archivedAt))}</div>
             <div class="support-item-note">${escapeHtml(archive.note || '')}</div>
             <div class="support-actions">
+              <button class="support-btn" data-action="restore-archive" data-request-id="${escapeHtml(archive.requestId)}">Вернуть</button>
               <button class="support-btn danger" data-action="delete-archive" data-request-id="${escapeHtml(archive.requestId)}">Удалить</button>
             </div>
           </div>
@@ -410,7 +435,7 @@
     }
 
     function renderAll() {
-      renderOpenRequests();
+      renderCurrentRequests();
       renderReminderList();
     }
 
@@ -422,8 +447,8 @@
       state.archiveById = response.archiveById || {};
     }
 
-    function findOpenRequest(requestId) {
-      return state.openRequests.find((item) => item.requestId === requestId) || null;
+    function findCurrentRequest(requestId) {
+      return state.currentRequests.find((item) => item.requestId === requestId) || null;
     }
 
     function findReminderRequestFallback(requestId) {
@@ -436,7 +461,7 @@
 
     async function upsertReminder(requestId) {
       const existing = state.remindersById[requestId];
-      const sourceRequest = findOpenRequest(requestId) || findReminderRequestFallback(requestId);
+      const sourceRequest = findCurrentRequest(requestId) || findReminderRequestFallback(requestId);
       if (!sourceRequest) {
         alert('Не удалось найти данные заявки для создания напоминания.');
         return;
@@ -469,22 +494,32 @@
       await sendRuntimeMessage('SUPPORT_DELETE_ARCHIVE', { requestId });
     }
 
+    async function restoreArchive(requestId) {
+      await sendRuntimeMessage('SUPPORT_RESTORE_ARCHIVE', { requestId });
+    }
+
     async function syncFromActiveTab() {
       if (!state.tabId || !state.isSupportTab) {
-        state.openFilterActive = false;
+        state.trackedFilterActive = false;
+        state.activeFilterType = '';
+        state.activeFilterLabel = '';
         state.snapshotReady = false;
-        state.openRequests = [];
+        state.currentRequests = [];
         return null;
       }
 
-      const tabResponse = await sendTabMessage(state.tabId, 'SUPPORT_GET_OPEN_REQUESTS');
-      state.openFilterActive = !!tabResponse.openFilterActive;
+      const tabResponse = await sendTabMessage(state.tabId, 'SUPPORT_GET_REQUEST_SNAPSHOT');
+      state.trackedFilterActive = !!tabResponse.trackedFilterActive;
+      state.activeFilterType = String(tabResponse.activeFilterType || '').trim();
+      state.activeFilterLabel = String(tabResponse.activeFilterLabel || '').trim();
       state.snapshotReady = !!tabResponse.snapshotReady;
-      state.openRequests = Array.isArray(tabResponse.requests) ? tabResponse.requests : [];
+      state.currentRequests = Array.isArray(tabResponse.requests) ? tabResponse.requests : [];
 
-      await sendRuntimeMessage('SUPPORT_SYNC_OPEN_REQUESTS', {
-        openFilterActive: state.openFilterActive,
-        requests: state.openRequests,
+      await sendRuntimeMessage('SUPPORT_SYNC_REQUESTS', {
+        activeFilterType: state.activeFilterType,
+        activeFilterLabel: state.activeFilterLabel,
+        trackedFilterActive: state.trackedFilterActive,
+        requests: state.currentRequests,
         snapshotReady: state.snapshotReady
       });
 
@@ -505,9 +540,11 @@
           await syncFromActiveTab();
         } catch (error) {
           tabSyncError = error;
-          state.openFilterActive = false;
+          state.trackedFilterActive = false;
+          state.activeFilterType = '';
+          state.activeFilterLabel = '';
           state.snapshotReady = false;
-          state.openRequests = [];
+          state.currentRequests = [];
         }
 
         const stateResponse = await sendRuntimeMessage('SUPPORT_GET_STATE');
@@ -516,15 +553,15 @@
         renderAll();
 
         if (!state.isSupportTab) {
-          setStatus(`Откройте ${SUPPORT_HOST} и выберите "Открытые обращения". ${statusSummary()}`, 'error');
+          setStatus(`Откройте ${SUPPORT_HOST} и выберите одну из вкладок: ${SUPPORTED_FILTER_HINT}. ${statusSummary()}`, 'error');
         } else if (tabSyncError) {
-          setStatus(`Не удалось получить список открытых обращений из вкладки: ${tabSyncError.message}. ${statusSummary()}`, 'error');
+          setStatus(`Не удалось получить список заявок из вкладки: ${tabSyncError.message}. ${statusSummary()}`, 'error');
         } else if (!state.snapshotReady) {
-          setStatus(`Ожидаем загрузку списка открытых обращений. ${statusSummary()}`);
-        } else if (!state.openFilterActive) {
-          setStatus(`Выберите "Открытые обращения" для синхронизации. ${statusSummary()}`);
+          setStatus(`Ожидаем загрузку списка "${currentListTitle()}". ${statusSummary()}`);
+        } else if (!state.trackedFilterActive) {
+          setStatus(`Выберите для синхронизации одну из вкладок: ${SUPPORTED_FILTER_HINT}. ${statusSummary()}`);
         } else {
-          setStatus(statusSummary(), showSuccessStatus ? 'ok' : null);
+          setStatus(`Текущая вкладка: ${currentListTitle()}. ${statusSummary()}`, showSuccessStatus ? 'ok' : null);
         }
       } catch (error) {
         setStatus(`Ошибка загрузки данных: ${error.message}`, 'error');
@@ -554,10 +591,12 @@
       if (!action || !requestId) return;
 
       try {
-        if (action === 'add-open' || action === 'edit-open' || action === 'edit-active') {
+        if (action === 'add-current' || action === 'edit-active') {
           await upsertReminder(requestId);
-        } else if (action === 'delete-open' || action === 'delete-active') {
+        } else if (action === 'delete-active') {
           await deleteReminder(requestId);
+        } else if (action === 'restore-archive') {
+          await restoreArchive(requestId);
         } else if (action === 'delete-archive') {
           await deleteArchive(requestId);
         }

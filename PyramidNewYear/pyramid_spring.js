@@ -1,3 +1,4 @@
+/* Перед изменениями в папке PyramidNewYear см. SEASONAL_THEME_RULES.md */
 (function() {
     'use strict';
 
@@ -45,6 +46,15 @@
             maxPetals: Number.isFinite(spring.maxPetals) ? Math.max(0, Math.floor(spring.maxPetals)) : 18,
             spawnIntervalMs: Number.isFinite(spring.spawnIntervalMs) ? Math.max(120, Math.floor(spring.spawnIntervalMs)) : 520
         };
+    }
+
+    function syncSettingsLauncher(targetContainer, anchorElement) {
+        const settingsApi = window.PYRAMID_THEME_SETTINGS;
+        if (!settingsApi || typeof settingsApi.syncLauncher !== 'function') return;
+        settingsApi.syncLauncher({
+            targetContainer,
+            anchorElement
+        });
     }
 
     function resolveHeaderContainer() {
@@ -137,8 +147,10 @@
     }
 
     function removeSpringSwitch() {
+        const targetContainer = resolveHeaderContainer();
         document.querySelectorAll('.spring-header-item').forEach((node) => node.remove());
         switchCheckbox = null;
+        syncSettingsLauncher(targetContainer, null);
     }
 
     function injectSwitch() {
@@ -192,6 +204,8 @@
                 });
             });
         }
+
+        syncSettingsLauncher(targetContainer, wrapper);
     }
 
     function ensurePetalLayer() {
@@ -215,9 +229,10 @@
     function spawnPetal() {
         const body = document.body;
         if (!body || !body.classList.contains(THEME_CLASS)) return;
+        if (!body.classList.contains('spring-feature-petals-enabled')) return;
 
         const config = getThemeConfig();
-        if (!config.petalsEnabled || config.maxPetals <= 0) return;
+        if (config.maxPetals <= 0) return;
 
         const layer = ensurePetalLayer();
         if (!(layer instanceof HTMLElement)) return;
@@ -249,8 +264,6 @@
         }
 
         const config = getThemeConfig();
-        if (!config.petalsEnabled) return;
-
         petalIntervalId = setInterval(() => {
             spawnPetal();
         }, config.spawnIntervalMs);

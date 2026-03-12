@@ -2,6 +2,8 @@
   const STORAGE_KEY = 'support_reminders_state_v1';
   const TARGET_STAGE = '2.4 Подтверждение решения и закрытие Запроса';
   const TARGET_STAGE_NORMALIZED = normalizeText(TARGET_STAGE);
+  const CLOSED_FILTER_TYPE = 'closed';
+  const FINAL_STATUS_TOKENS = ['завершен', 'закрыт', 'закрыто', 'отменен', 'отменено'];
 
   function normalizeText(value) {
     return String(value || '')
@@ -25,10 +27,13 @@
       requestNumber: String(rawRequest.requestNumber || '').trim(),
       subject: String(rawRequest.subject || '').trim(),
       stage: String(rawRequest.stage || '').trim(),
+      status: String(rawRequest.status || '').trim(),
       supportNumber: String(rawRequest.supportNumber || '').trim(),
       assignee: String(rawRequest.assignee || '').trim(),
       initiator: String(rawRequest.initiator || '').trim(),
-      createdAt: String(rawRequest.createdAt || '').trim()
+      createdAt: String(rawRequest.createdAt || '').trim(),
+      filterType: String(rawRequest.filterType || '').trim(),
+      filterLabel: String(rawRequest.filterLabel || '').trim()
     };
   }
 
@@ -45,6 +50,7 @@
       updatedAt: String(rawReminder.updatedAt || ''),
       lastSeenAt: String(rawReminder.lastSeenAt || ''),
       lastNotifiedStage: String(rawReminder.lastNotifiedStage || ''),
+      skipAutoArchive: !!rawReminder.skipAutoArchive,
       lastKnown: normalizeRequest(rawReminder.lastKnown) || null
     };
   }
@@ -139,6 +145,42 @@
     });
   }
 
+  function isFinalStatus(status) {
+    const normalizedStatus = normalizeText(status);
+    if (!normalizedStatus) return false;
+    return FINAL_STATUS_TOKENS.some((token) => (
+      normalizedStatus === token || normalizedStatus.startsWith(`${token} `)
+    ));
+  }
+
+  function isClosedRequest(request, filterTypeOverride) {
+    const filterType = String(filterTypeOverride || request?.filterType || '').trim();
+    if (filterType === CLOSED_FILTER_TYPE) return true;
+
+    const normalizedStage = normalizeText(request?.stage);
+    if (normalizedStage === 'завершено' || normalizedStage === 'закрыто') {
+      return true;
+    }
+
+    return isFinalStatus(request?.status);
+  }
+
+  function getArchiveReason(request, filterTypeOverride) {
+    const filterType = String(filterTypeOverride || request?.filterType || '').trim();
+    if (filterType === CLOSED_FILTER_TYPE) return 'closed_request_list';
+
+    const normalizedStage = normalizeText(request?.stage);
+    if (normalizedStage === 'завершено' || normalizedStage === 'закрыто') {
+      return 'final_stage_detected';
+    }
+
+    if (isFinalStatus(request?.status)) {
+      return 'final_status_detected';
+    }
+
+    return 'closed_request_detected';
+  }
+
   function archiveReminder(state, reminder, reason) {
     state.archive[reminder.requestId] = {
       requestId: reminder.requestId,
@@ -146,7 +188,7 @@
       createdAt: reminder.createdAt || '',
       updatedAt: reminder.updatedAt || '',
       archivedAt: nowIso(),
-      archivedReason: reason || 'missing_in_open_requests',
+      archivedReason: reason || 'closed_request_detected',
       lastKnown: reminder.lastKnown || null
     };
     delete state.reminders[reminder.requestId];
@@ -179,6 +221,7 @@
       updatedAt: now,
       lastSeenAt: now,
       lastNotifiedStage: existingReminder?.lastNotifiedStage || '',
+      skipAutoArchive: !!(existingReminder?.skipAutoArchive && isClosedRequest(request)),
       lastKnown: request
     };
 
@@ -190,7 +233,38 @@
       reminder.lastNotifiedStage = '';
     }
 
-    state.reminders[request.requestId] = reminder;
+    if (isClosedRequest(request)) {
+      archiveReminder(state, reminder, getArchiveReason(request));
+    } else {
+      state.reminders[request.requestId] = reminder;
+    }
+    await saveState(state);
+
+    return stateToResponse(state);
+  }
+
+  async function restoreArchivedReminder(data) {
+    const requestId = String((data && data.requestId) || '').trim();
+    if (!requestId) throw new Error('requestId is required.');
+
+    const state = await getState();
+    const archivedReminder = state.archive[requestId];
+    if (!archivedReminder) {
+      throw new Error('Архивное напоминание не найдено.');
+    }
+
+    const now = nowIso();
+    state.reminders[requestId] = {
+      requestId,
+      note: archivedReminder.note || '',
+      createdAt: archivedReminder.createdAt || now,
+      updatedAt: now,
+      lastSeenAt: '',
+      lastNotifiedStage: '',
+      skipAutoArchive: true,
+      lastKnown: archivedReminder.lastKnown || null
+    };
+    delete state.archive[requestId];
     await saveState(state);
 
     return stateToResponse(state);
@@ -218,16 +292,21 @@
     return stateToResponse(state);
   }
 
-  async function syncOpenRequests(data) {
-    const openFilterActive = !!(data && data.openFilterActive);
-    if (!openFilterActive) {
-      return { synced: false, reason: 'open_filter_not_active' };
+  async function syncRequestSnapshot(data) {
+    const filterType = String((data && (data.activeFilterType || data.filterType)) || '').trim();
+    const trackedFilterActive = data && Object.prototype.hasOwnProperty.call(data, 'trackedFilterActive')
+      ? !!data.trackedFilterActive
+      : !!filterType;
+
+    if (!trackedFilterActive || !filterType) {
+      return { synced: false, reason: 'tracked_filter_not_active' };
     }
+
     const snapshotReady = data && Object.prototype.hasOwnProperty.call(data, 'snapshotReady')
       ? !!data.snapshotReady
       : true;
     if (!snapshotReady) {
-      return { synced: false, reason: 'open_requests_loading' };
+      return { synced: false, reason: 'request_list_loading', filterType };
     }
 
     const requestList = Array.isArray(data && data.requests) ? data.requests : [];
@@ -245,21 +324,40 @@
       const currentRequest = requestMap[requestId];
 
       if (!currentRequest) {
-        archiveReminder(state, reminder, 'missing_in_open_requests');
-        changed = true;
         return;
       }
 
       const now = nowIso();
       const previousKnown = reminder.lastKnown || null;
-      if (JSON.stringify(previousKnown) !== JSON.stringify(currentRequest)) {
+      const lastKnownChanged = JSON.stringify(previousKnown) !== JSON.stringify(currentRequest);
+      const lastSeenMissing = !reminder.lastSeenAt;
+
+      if (isClosedRequest(currentRequest, filterType)) {
+        reminder.lastSeenAt = now;
+        reminder.lastKnown = currentRequest;
+        if (reminder.skipAutoArchive) {
+          if (lastKnownChanged || lastSeenMissing) {
+            changed = true;
+          }
+          return;
+        }
+        archiveReminder(state, reminder, getArchiveReason(currentRequest, filterType));
+        changed = true;
+        return;
+      }
+
+      if (lastKnownChanged) {
         changed = true;
       }
-      if (!reminder.lastSeenAt) {
+      if (lastSeenMissing) {
         changed = true;
       }
       reminder.lastSeenAt = now;
       reminder.lastKnown = currentRequest;
+      if (reminder.skipAutoArchive) {
+        reminder.skipAutoArchive = false;
+        changed = true;
+      }
 
       const isTargetStage = normalizeText(currentRequest.stage) === TARGET_STAGE_NORMALIZED;
       if (isTargetStage) {
@@ -281,6 +379,7 @@
     return {
       synced: true,
       changed,
+      filterType,
       activeCount: Object.keys(state.reminders).length,
       archiveCount: Object.keys(state.archive).length
     };
@@ -312,8 +411,15 @@
           .catch((error) => sendResponse({ success: false, error: error.message }));
         return true;
 
+      case 'SUPPORT_RESTORE_ARCHIVE':
+        restoreArchivedReminder(request.data)
+          .then((stateResponse) => sendResponse({ success: true, ...stateResponse }))
+          .catch((error) => sendResponse({ success: false, error: error.message }));
+        return true;
+
+      case 'SUPPORT_SYNC_REQUESTS':
       case 'SUPPORT_SYNC_OPEN_REQUESTS':
-        syncOpenRequests(request.data)
+        syncRequestSnapshot(request.data)
           .then((result) => sendResponse({ success: true, ...result }))
           .catch((error) => sendResponse({ success: false, error: error.message }));
         return true;
