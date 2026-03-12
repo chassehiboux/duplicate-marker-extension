@@ -115,7 +115,7 @@
         "PyramidNewYear/pyramid_christmas.js",
         "PyramidNewYear/pyramid_spring.js"
       ],
-      "run_at": "document_end",
+      "run_at": "document_start",
       "all_frames": true
     },
     {

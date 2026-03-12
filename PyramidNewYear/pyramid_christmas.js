@@ -3,6 +3,7 @@
     'use strict';
 
     const STORAGE_KEY = 'pyramid_christmas_v10_enabled';
+    const STORAGE_CACHE_KEY = 'pyramid_christmas_enabled_cache_v1';
     const THEME_CLASS = 'ny-active';
     const SWITCH_ID = 'nySwicher';
     const THEME_EVENT_NAME = 'pyramid-seasonal-theme-activate';
@@ -10,6 +11,10 @@
     const SNOW_IMAGE_URL = 'https://www.expertplus.ru/UserFiles/Image/content/new_year/08.png';
 
     let switchCheckbox = null;
+    let storageSyncBound = false;
+    let pendingThemeState = null;
+    let bodyReadyObserver = null;
+    const pendingBodyReadyCallbacks = [];
 
     function getThemeConfig() {
         const config = window.PYRAMID_THEME_CONFIG || {};
@@ -23,6 +28,60 @@
             enabledByDefault: newYear.enabledByDefault === true,
             forceDisableWhenToggleHidden: newYear.forceDisableWhenToggleHidden === true
         };
+    }
+
+    function readCachedEnabledState() {
+        try {
+            const rawValue = window.localStorage.getItem(STORAGE_CACHE_KEY);
+            if (!rawValue) return null;
+            const parsedValue = JSON.parse(rawValue);
+            return typeof parsedValue === 'boolean' ? parsedValue : null;
+        } catch (error) {
+            return null;
+        }
+    }
+
+    function writeCachedEnabledState(enabled) {
+        try {
+            window.localStorage.setItem(STORAGE_CACHE_KEY, JSON.stringify(enabled === true));
+        } catch (error) {
+            // ignore
+        }
+    }
+
+    function flushBodyReadyCallbacks() {
+        if (!document.body) return;
+
+        if (bodyReadyObserver) {
+            bodyReadyObserver.disconnect();
+            bodyReadyObserver = null;
+        }
+
+        while (pendingBodyReadyCallbacks.length) {
+            const callback = pendingBodyReadyCallbacks.shift();
+            try {
+                callback();
+            } catch (error) {
+                // ignore
+            }
+        }
+    }
+
+    function onBodyReady(callback) {
+        if (typeof callback !== 'function') return;
+        if (document.body) {
+            callback();
+            return;
+        }
+
+        pendingBodyReadyCallbacks.push(callback);
+        document.addEventListener('DOMContentLoaded', flushBodyReadyCallbacks, { once: true });
+        if (bodyReadyObserver || !document.documentElement) return;
+
+        bodyReadyObserver = new MutationObserver(() => {
+            flushBodyReadyCallbacks();
+        });
+        bodyReadyObserver.observe(document.documentElement, { childList: true, subtree: true });
     }
 
     function getDefaultEnabled(config) {
@@ -57,25 +116,64 @@
         }
     }
 
+    function applyNewYearClass(body, enabled) {
+        body.classList.toggle(THEME_CLASS, enabled);
+    }
+
+    function flushPendingThemeState() {
+        if (!pendingThemeState || !document.body) return;
+        const nextState = pendingThemeState;
+        pendingThemeState = null;
+        applyNewYearState(nextState.enabled, {
+            persist: false,
+            broadcast: nextState.broadcast
+        });
+    }
+
     function applyNewYearState(isEnabled, options = {}) {
         const enabled = !!isEnabled;
         const persist = options.persist === true;
         const broadcast = options.broadcast !== false;
         const body = document.body;
-        if (!body) return;
 
-        body.classList.toggle(THEME_CLASS, enabled);
-        if (switchCheckbox instanceof HTMLInputElement) {
-            switchCheckbox.checked = enabled;
-        }
+        writeCachedEnabledState(enabled);
 
         if (persist && hasChromeStorage()) {
             chrome.storage.local.set({ [STORAGE_KEY]: enabled });
         }
 
+        if (!body) {
+            pendingThemeState = {
+                enabled,
+                broadcast
+            };
+            onBodyReady(flushPendingThemeState);
+            return;
+        }
+
+        pendingThemeState = null;
+        applyNewYearClass(body, enabled);
+        if (switchCheckbox instanceof HTMLInputElement) {
+            switchCheckbox.checked = enabled;
+        }
+
         if (broadcast) {
             dispatchThemeEvent(enabled);
         }
+    }
+
+    function bindStorageSync() {
+        if (!hasChromeStorage() || storageSyncBound) return;
+        if (!chrome.storage.onChanged || typeof chrome.storage.onChanged.addListener !== 'function') return;
+
+        chrome.storage.onChanged.addListener((changes, areaName) => {
+            if (areaName !== 'local' || !changes || !Object.prototype.hasOwnProperty.call(changes, STORAGE_KEY)) return;
+            const nextValue = changes[STORAGE_KEY] && changes[STORAGE_KEY].newValue;
+            if (typeof nextValue !== 'boolean') return;
+            applyNewYearState(nextValue, { persist: false, broadcast: false });
+        });
+
+        storageSyncBound = true;
     }
 
     // === ГЕНЕРАТОР ГИРЛЯНДЫ ===
@@ -208,15 +306,20 @@
     function initThemeState() {
         const config = getThemeConfig();
         const forceDisable = !config.showNewYearToggle && config.forceDisableWhenToggleHidden;
+        const defaultEnabled = forceDisable ? false : getDefaultEnabled(config);
+        const cachedEnabled = readCachedEnabledState();
+        const bootstrapEnabled = typeof cachedEnabled === 'boolean' ? cachedEnabled : defaultEnabled;
+
+        applyNewYearState(bootstrapEnabled, { persist: false, broadcast: false });
+
         if (!hasChromeStorage()) {
-            const enabled = forceDisable ? false : getDefaultEnabled(config);
-            applyNewYearState(enabled, { persist: false, broadcast: enabled });
+            applyNewYearState(bootstrapEnabled, { persist: false, broadcast: bootstrapEnabled });
             return;
         }
 
         chrome.storage.local.get([STORAGE_KEY], (result) => {
             const hasStoredValue = typeof result[STORAGE_KEY] === 'boolean';
-            let enabled = hasStoredValue ? result[STORAGE_KEY] === true : getDefaultEnabled(config);
+            let enabled = hasStoredValue ? result[STORAGE_KEY] === true : defaultEnabled;
 
             if (forceDisable && enabled) {
                 enabled = false;
@@ -240,17 +343,17 @@
     }
 
     function init() {
-        if (!document.body) return;
-
         window.addEventListener(THEME_EVENT_NAME, handleThemeEvent, { capture: true });
 
-        document.body.prepend(createGarlandElement(40));
-        initSnow();
-        watchModals();
-
         initThemeState();
-        injectSwitch();
-        setTimeout(injectSwitch, 1000);
+        bindStorageSync();
+        onBodyReady(() => {
+            document.body.prepend(createGarlandElement(40));
+            initSnow();
+            watchModals();
+            injectSwitch();
+            setTimeout(injectSwitch, 1000);
+        });
     }
 
     init();

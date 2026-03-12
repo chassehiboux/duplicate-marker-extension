@@ -3,6 +3,7 @@
     'use strict';
 
     const FEATURE_STORAGE_KEY = 'pyramid_theme_feature_settings_v1';
+    const FEATURE_CACHE_KEY = 'pyramid_theme_feature_settings_cache_v1';
     const SETTINGS_EVENT_NAME = 'pyramid-theme-feature-settings-changed';
     const LAUNCHER_HOST_ID = 'pyramid-seasonal-theme-settings-launcher';
     const OVERLAY_ID = 'pyramid-seasonal-theme-settings-overlay';
@@ -165,10 +166,66 @@
     let overlayElement = null;
     let launcherHost = null;
     let launcherButton = null;
+    let pendingFeatureSettings = null;
+    let bodyReadyObserver = null;
     const pendingLoadCallbacks = [];
+    const pendingBodyReadyCallbacks = [];
 
     function hasChromeStorage() {
         return !!(typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local);
+    }
+
+    function readLocalCache(key) {
+        try {
+            const rawValue = window.localStorage.getItem(key);
+            if (!rawValue) return null;
+            return JSON.parse(rawValue);
+        } catch (error) {
+            return null;
+        }
+    }
+
+    function writeLocalCache(key, value) {
+        try {
+            window.localStorage.setItem(key, JSON.stringify(value));
+        } catch (error) {
+            // ignore
+        }
+    }
+
+    function flushBodyReadyCallbacks() {
+        if (!document.body) return;
+
+        if (bodyReadyObserver) {
+            bodyReadyObserver.disconnect();
+            bodyReadyObserver = null;
+        }
+
+        while (pendingBodyReadyCallbacks.length) {
+            const callback = pendingBodyReadyCallbacks.shift();
+            try {
+                callback();
+            } catch (error) {
+                // ignore
+            }
+        }
+    }
+
+    function onBodyReady(callback) {
+        if (typeof callback !== 'function') return;
+        if (document.body) {
+            callback();
+            return;
+        }
+
+        pendingBodyReadyCallbacks.push(callback);
+        document.addEventListener('DOMContentLoaded', flushBodyReadyCallbacks, { once: true });
+        if (bodyReadyObserver || !document.documentElement) return;
+
+        bodyReadyObserver = new MutationObserver(() => {
+            flushBodyReadyCallbacks();
+        });
+        bodyReadyObserver.observe(document.documentElement, { childList: true, subtree: true });
     }
 
     function getThemeConfig() {
@@ -251,9 +308,18 @@
         return normalizeSettings(cachedSettings || buildDefaultSettings());
     }
 
-    function applyFeatureClasses(settings) {
-        const body = document.body;
-        if (!body) return;
+    function readCachedSettings() {
+        const cachedValue = readLocalCache(FEATURE_CACHE_KEY);
+        if (!cachedValue || typeof cachedValue !== 'object') return null;
+        return normalizeSettings(cachedValue);
+    }
+
+    function persistSettingsCache(settings) {
+        writeLocalCache(FEATURE_CACHE_KEY, normalizeSettings(settings));
+    }
+
+    function applyFeatureClassesToBody(body, settings) {
+        if (!(body instanceof HTMLElement)) return;
 
         Object.keys(FEATURE_CLASS_MAP).forEach((themeKey) => {
             const themeClasses = FEATURE_CLASS_MAP[themeKey];
@@ -263,6 +329,26 @@
                 body.classList.toggle(themeClasses[featureKey], themeSettings[featureKey] === true);
             });
         });
+    }
+
+    function flushPendingFeatureClasses() {
+        if (!pendingFeatureSettings || !document.body) return;
+        const nextSettings = pendingFeatureSettings;
+        pendingFeatureSettings = null;
+        applyFeatureClassesToBody(document.body, nextSettings);
+    }
+
+    function applyFeatureClasses(settings) {
+        const normalizedSettings = normalizeSettings(settings);
+        const body = document.body;
+        if (!body) {
+            pendingFeatureSettings = normalizedSettings;
+            onBodyReady(flushPendingFeatureClasses);
+            return;
+        }
+
+        pendingFeatureSettings = null;
+        applyFeatureClassesToBody(body, normalizedSettings);
     }
 
     function syncRenderedInputs() {
@@ -291,6 +377,7 @@
 
     function setCachedSettings(nextSettings, source) {
         cachedSettings = normalizeSettings(nextSettings);
+        persistSettingsCache(cachedSettings);
         applyFeatureClasses(cachedSettings);
         syncRenderedInputs();
         dispatchSettingsEvent(source);
@@ -320,7 +407,8 @@
         }
 
         storageLoadStarted = true;
-        setCachedSettings(buildDefaultSettings(), 'bootstrap-defaults');
+        const cachedLocalSettings = readCachedSettings();
+        setCachedSettings(cachedLocalSettings || buildDefaultSettings(), cachedLocalSettings ? 'bootstrap-cache' : 'bootstrap-defaults');
 
         if (!hasChromeStorage()) {
             storageLoadCompleted = true;
@@ -570,6 +658,7 @@
     }
 
     function init() {
+        onBodyReady(flushPendingFeatureClasses);
         loadSettings();
         bindStorageSync();
 

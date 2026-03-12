@@ -3,6 +3,7 @@
     'use strict';
 
     const STORAGE_KEY = 'pyramid_spring_enabled';
+    const STORAGE_CACHE_KEY = 'pyramid_spring_enabled_cache_v1';
     const THEME_CLASS = 'spring-active';
     const VARIANT_PREFIX = 'spring-variant-';
     const ONLY_VARIANT = 'a';
@@ -24,9 +25,66 @@
     let petalIntervalId = null;
     let modalObserver = null;
     let storageSyncBound = false;
+    let pendingThemeState = null;
+    let bodyReadyObserver = null;
+    const pendingBodyReadyCallbacks = [];
 
     function hasChromeStorage() {
         return !!(chrome && chrome.storage && chrome.storage.local);
+    }
+
+    function readCachedEnabledState() {
+        try {
+            const rawValue = window.localStorage.getItem(STORAGE_CACHE_KEY);
+            if (!rawValue) return null;
+            const parsedValue = JSON.parse(rawValue);
+            return typeof parsedValue === 'boolean' ? parsedValue : null;
+        } catch (error) {
+            return null;
+        }
+    }
+
+    function writeCachedEnabledState(enabled) {
+        try {
+            window.localStorage.setItem(STORAGE_CACHE_KEY, JSON.stringify(enabled === true));
+        } catch (error) {
+            // ignore
+        }
+    }
+
+    function flushBodyReadyCallbacks() {
+        if (!document.body) return;
+
+        if (bodyReadyObserver) {
+            bodyReadyObserver.disconnect();
+            bodyReadyObserver = null;
+        }
+
+        while (pendingBodyReadyCallbacks.length) {
+            const callback = pendingBodyReadyCallbacks.shift();
+            try {
+                callback();
+            } catch (error) {
+                // ignore
+            }
+        }
+    }
+
+    function onBodyReady(callback) {
+        if (typeof callback !== 'function') return;
+        if (document.body) {
+            callback();
+            return;
+        }
+
+        pendingBodyReadyCallbacks.push(callback);
+        document.addEventListener('DOMContentLoaded', flushBodyReadyCallbacks, { once: true });
+        if (bodyReadyObserver || !document.documentElement) return;
+
+        bodyReadyObserver = new MutationObserver(() => {
+            flushBodyReadyCallbacks();
+        });
+        bodyReadyObserver.observe(document.documentElement, { childList: true, subtree: true });
     }
 
     function getThemeConfig() {
@@ -111,16 +169,8 @@
         }
     }
 
-    function applySpringState(isEnabled, options = {}) {
-        const enabled = !!isEnabled;
-        const body = document.body;
-        if (!body) return;
-
-        const persist = options.persist === true;
-        const broadcast = options.broadcast !== false;
-        const forceRandom = options.forceRandom === true;
+    function applySpringClasses(body, enabled, forceRandom) {
         const config = getThemeConfig();
-
         if (enabled) {
             const variant = resolveVariant(config, forceRandom);
             removeSpringVariantClasses(body);
@@ -130,13 +180,47 @@
             body.classList.remove(THEME_CLASS);
             removeSpringVariantClasses(body);
         }
+    }
 
-        if (switchCheckbox instanceof HTMLInputElement) {
-            switchCheckbox.checked = enabled;
-        }
+    function flushPendingThemeState() {
+        if (!pendingThemeState || !document.body) return;
+        const nextState = pendingThemeState;
+        pendingThemeState = null;
+        applySpringState(nextState.enabled, {
+            persist: false,
+            broadcast: nextState.broadcast,
+            forceRandom: nextState.forceRandom
+        });
+    }
+
+    function applySpringState(isEnabled, options = {}) {
+        const enabled = !!isEnabled;
+        const persist = options.persist === true;
+        const broadcast = options.broadcast !== false;
+        const forceRandom = options.forceRandom === true;
+        const body = document.body;
+
+        writeCachedEnabledState(enabled);
 
         if (persist && hasChromeStorage()) {
             chrome.storage.local.set({ [STORAGE_KEY]: enabled });
+        }
+
+        if (!body) {
+            pendingThemeState = {
+                enabled,
+                broadcast,
+                forceRandom
+            };
+            onBodyReady(flushPendingThemeState);
+            return;
+        }
+
+        pendingThemeState = null;
+        applySpringClasses(body, enabled, forceRandom);
+
+        if (switchCheckbox instanceof HTMLInputElement) {
+            switchCheckbox.checked = enabled;
         }
 
         if (broadcast) {
@@ -324,10 +408,20 @@
 
     function initThemeState() {
         const config = getThemeConfig();
+        const defaultEnabled = getDefaultEnabled(config);
+        const cachedEnabled = readCachedEnabledState();
+        const bootstrapEnabled = typeof cachedEnabled === 'boolean' ? cachedEnabled : defaultEnabled;
+
+        applySpringState(bootstrapEnabled, {
+            persist: false,
+            broadcast: false,
+            forceRandom: true
+        });
+
         if (!hasChromeStorage()) {
-            applySpringState(getDefaultEnabled(config), {
+            applySpringState(bootstrapEnabled, {
                 persist: false,
-                broadcast: getDefaultEnabled(config),
+                broadcast: bootstrapEnabled,
                 forceRandom: true
             });
             return;
@@ -335,7 +429,7 @@
 
         chrome.storage.local.get([STORAGE_KEY], (result) => {
             const hasStoredValue = typeof result[STORAGE_KEY] === 'boolean';
-            const enabled = hasStoredValue ? result[STORAGE_KEY] === true : getDefaultEnabled(config);
+            const enabled = hasStoredValue ? result[STORAGE_KEY] === true : defaultEnabled;
             applySpringState(enabled, {
                 persist: !hasStoredValue,
                 broadcast: enabled,
@@ -357,19 +451,19 @@
     }
 
     function init() {
-        if (!document.body) return;
-
         window.addEventListener(THEME_EVENT_NAME, handleThemeEvent, { capture: true });
 
         initThemeState();
         bindStorageSync();
 
         if (IS_TOP_WINDOW) {
-            initPetalEngine();
-            observeModalIframes();
-            syncModalIframeThemes();
-            injectSwitch();
-            setTimeout(injectSwitch, 1000);
+            onBodyReady(() => {
+                initPetalEngine();
+                observeModalIframes();
+                syncModalIframeThemes();
+                injectSwitch();
+                setTimeout(injectSwitch, 1000);
+            });
         }
     }
 

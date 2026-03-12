@@ -222,12 +222,14 @@ body.spring-active.spring-variant-a .ui-jqgrid-bdiv table.ui-jqgrid-btable tbody
     backdrop-filter: none !important;
 }
 
-body.spring-active.spring-variant-a.spring-feature-card-modal-enabled .spring-card-modal .ui-dialog-content {
+body.spring-active.spring-variant-a.spring-feature-card-modal-enabled .spring-card-modal .ui-dialog-content,
+body.spring-active.spring-variant-a.spring-feature-card-modal-enabled .ui-dialog:has(iframe) .ui-dialog-content {
     background: linear-gradient(180deg, #fff7fb 0%, #fff7fb 10%, #f2fbf5 100%) !important;
     color: #1a2b21 !important;
 }
 
-body.spring-active.spring-variant-a.spring-feature-card-modal-enabled .spring-card-modal iframe {
+body.spring-active.spring-variant-a.spring-feature-card-modal-enabled .spring-card-modal iframe,
+body.spring-active.spring-variant-a.spring-feature-card-modal-enabled .ui-dialog:has(iframe) iframe {
     border: 1px solid #b4d7c0 !important;
     border-radius: 6px !important;
     background: #f6fcf8 !important;
@@ -277,19 +279,22 @@ body.modalform.spring-active.spring-variant-a.spring-feature-card-modal-enabled 
     box-shadow: inset 0 2px 4px rgba(52, 105, 68, 0.2), 0 4px 10px rgba(89, 157, 109, 0.22) !important;
 }
 
-body.spring-active.spring-variant-a.spring-feature-card-modal-enabled .spring-card-modal .ui-dialog-buttonpane {
+body.spring-active.spring-variant-a.spring-feature-card-modal-enabled .spring-card-modal .ui-dialog-buttonpane,
+body.spring-active.spring-variant-a.spring-feature-card-modal-enabled .ui-dialog:has(iframe) .ui-dialog-buttonpane {
     background: linear-gradient(180deg, #fbf1f6 0%, #fbf1f6 10%, #ecf8ef 100%) !important;
     border-top: 1px solid #b6d9c1 !important;
 }
 
-body.spring-active.spring-variant-a.spring-feature-card-modal-enabled .spring-card-modal .ui-dialog-buttonpane .ui-button {
+body.spring-active.spring-variant-a.spring-feature-card-modal-enabled .spring-card-modal .ui-dialog-buttonpane .ui-button,
+body.spring-active.spring-variant-a.spring-feature-card-modal-enabled .ui-dialog:has(iframe) .ui-dialog-buttonpane .ui-button {
     background: linear-gradient(180deg, #fcf7fa 0%, #fcf7fa 10%, #eaf7ee 100%) !important;
     border: 1px solid #b6d8c0 !important;
     color: #2a4a38 !important;
     box-shadow: 0 1px 0 rgba(255, 255, 255, 0.88), 0 2px 8px rgba(136, 185, 152, 0.3);
 }
 
-body.spring-active.spring-variant-a.spring-feature-card-modal-enabled .spring-card-modal .ui-dialog-buttonpane .ui-button:hover {
+body.spring-active.spring-variant-a.spring-feature-card-modal-enabled .spring-card-modal .ui-dialog-buttonpane .ui-button:hover,
+body.spring-active.spring-variant-a.spring-feature-card-modal-enabled .ui-dialog:has(iframe) .ui-dialog-buttonpane .ui-button:hover {
     background: linear-gradient(180deg, #f9eff5 0%, #f9eff5 10%, #ddede4 100%) !important;
 }
 
@@ -378,6 +383,15 @@ body.spring-active.spring-variant-a.spring-feature-header-background-enabled hea
 body.spring-active.spring-variant-a.spring-feature-header-background-enabled header > * {
     position: relative;
     z-index: 1;
+}
+
+body.spring-active.spring-variant-a.spring-feature-dropdown-enabled header > div[style*="display:flex"][style*="align-items:center"],
+body.spring-active.spring-variant-a.spring-feature-dropdown-enabled header > div[style*="display: flex"][style*="align-items: center"] {
+    z-index: 2 !important;
+}
+
+body.spring-active.spring-variant-a.spring-feature-dropdown-enabled header > .alert {
+    z-index: 1 !important;
 }
 
 @keyframes spring-header-drift {
