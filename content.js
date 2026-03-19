@@ -111,6 +111,18 @@
     'dup_ui_show_new_year_theme',
     'dup_ui_show_spring_theme'
   ]);
+  const EXTENSION_UI_GLOBAL_CONFIG = (() => {
+    const rawConfig = window.PYRAMID_EXTENSION_UI_CONFIG && typeof window.PYRAMID_EXTENSION_UI_CONFIG === 'object'
+      ? window.PYRAMID_EXTENSION_UI_CONFIG
+      : {};
+    const rawForcedVisibility = rawConfig.forcedVisibility && typeof rawConfig.forcedVisibility === 'object'
+      ? rawConfig.forcedVisibility
+      : {};
+    return {
+      globalEnabled: rawConfig.globalEnabled !== false,
+      forcedVisibility: rawForcedVisibility
+    };
+  })();
   const EXTENSION_UI_SETTING_DEFS = Object.freeze([
     {
       key: 'duplicateHighlights',
@@ -331,7 +343,10 @@
   );
   const EXTENSION_UI_SETTINGS_DEFAULTS = Object.freeze(
     EXTENSION_UI_SETTING_DEFS.reduce((map, definition) => {
-      map[definition.key] = true;
+      const forcedVisibility = EXTENSION_UI_GLOBAL_CONFIG.forcedVisibility[definition.key];
+      map[definition.key] = typeof forcedVisibility === 'boolean'
+        ? forcedVisibility
+        : EXTENSION_UI_GLOBAL_CONFIG.globalEnabled !== false;
       return map;
     }, Object.create(null))
   );
@@ -642,7 +657,21 @@
     return normalized;
   }
 
+  function getExtensionUiForcedVisibility(key) {
+    const forcedVisibility = EXTENSION_UI_GLOBAL_CONFIG.forcedVisibility[key];
+    return typeof forcedVisibility === 'boolean'
+      ? forcedVisibility
+      : null;
+  }
+
+  function isExtensionUiSettingLocked(key) {
+    return EXTENSION_UI_GLOBAL_CONFIG.globalEnabled === false || getExtensionUiForcedVisibility(key) !== null;
+  }
+
   function isExtensionUiSettingEnabled(key) {
+    if (EXTENSION_UI_GLOBAL_CONFIG.globalEnabled === false) return false;
+    const forcedVisibility = getExtensionUiForcedVisibility(key);
+    if (forcedVisibility !== null) return forcedVisibility;
     return extensionUiVisibilitySettings[key] !== false;
   }
 
@@ -678,6 +707,17 @@
       const input = extensionUiSettingsPanelEl.querySelector(`input[${EXTENSION_UI_SETTINGS_INPUT_ATTR}="${definition.key}"]`);
       if (input instanceof HTMLInputElement) {
         input.checked = isExtensionUiSettingEnabled(definition.key);
+        input.disabled = isExtensionUiSettingLocked(definition.key);
+        input.title = isExtensionUiSettingLocked(definition.key)
+          ? 'Состояние зафиксировано в extension_ui_config.js'
+          : '';
+      }
+
+      const settingItem = input instanceof HTMLElement
+        ? input.closest(`.${EXTENSION_UI_SETTINGS_ITEM_CLASS}`)
+        : null;
+      if (settingItem instanceof HTMLElement) {
+        settingItem.classList.toggle('is-locked', isExtensionUiSettingLocked(definition.key));
       }
     });
   }
@@ -784,6 +824,10 @@
       const settingKey = String(input.getAttribute(EXTENSION_UI_SETTINGS_INPUT_ATTR) || '').trim();
       const definition = EXTENSION_UI_SETTING_DEF_BY_KEY[settingKey];
       if (!definition) return;
+      if (isExtensionUiSettingLocked(definition.key)) {
+        syncExtensionUiSettingsPanelState();
+        return;
+      }
 
       extensionUiVisibilitySettings = {
         ...extensionUiVisibilitySettings,

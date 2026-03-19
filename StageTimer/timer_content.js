@@ -71,6 +71,18 @@
     const EXTENSION_UI_SETTINGS_DESCRIPTION_CLASS = "dup-extension-ui-settings-description";
     const EXTENSION_UI_SETTINGS_INPUT_ATTR = "data-dup-ui-setting";
     const EXTENSION_UI_SETTINGS_HINT_TEXT = "Состояние сохраняется для всех страниц *.pyramid.vostok-electra.ru/*.";
+    const EXTENSION_UI_GLOBAL_CONFIG = (() => {
+        const rawConfig = window.PYRAMID_EXTENSION_UI_CONFIG && typeof window.PYRAMID_EXTENSION_UI_CONFIG === "object"
+            ? window.PYRAMID_EXTENSION_UI_CONFIG
+            : {};
+        const rawForcedVisibility = rawConfig.forcedVisibility && typeof rawConfig.forcedVisibility === "object"
+            ? rawConfig.forcedVisibility
+            : {};
+        return {
+            globalEnabled: rawConfig.globalEnabled !== false,
+            forcedVisibility: rawForcedVisibility
+        };
+    })();
     const TIMER_UI_SETTING_DEFS = Object.freeze([
         {
             key: "stageTimer",
@@ -108,7 +120,10 @@
     );
     const TIMER_UI_SETTINGS_DEFAULTS = Object.freeze(
         TIMER_UI_SETTING_DEFS.reduce((map, definition) => {
-            map[definition.key] = true;
+            const forcedVisibility = EXTENSION_UI_GLOBAL_CONFIG.forcedVisibility[definition.key];
+            map[definition.key] = typeof forcedVisibility === "boolean"
+                ? forcedVisibility
+                : EXTENSION_UI_GLOBAL_CONFIG.globalEnabled !== false;
             return map;
         }, Object.create(null))
     );
@@ -172,7 +187,15 @@
     }
 
     function isTimerUiSettingEnabled(key) {
+        if (EXTENSION_UI_GLOBAL_CONFIG.globalEnabled === false) return false;
+        const forcedVisibility = EXTENSION_UI_GLOBAL_CONFIG.forcedVisibility[key];
+        if (typeof forcedVisibility === "boolean") return forcedVisibility;
         return timerUiElementSettings[key] !== false;
+    }
+
+    function isTimerUiSettingLocked(key) {
+        return EXTENSION_UI_GLOBAL_CONFIG.globalEnabled === false
+            || typeof EXTENSION_UI_GLOBAL_CONFIG.forcedVisibility[key] === "boolean";
     }
 
     function syncTimerUiSettingsPanelState() {
@@ -182,6 +205,17 @@
             const input = timerUiSettingsPanelEl.querySelector(`input[${EXTENSION_UI_SETTINGS_INPUT_ATTR}="${definition.key}"]`);
             if (input instanceof HTMLInputElement) {
                 input.checked = isTimerUiSettingEnabled(definition.key);
+                input.disabled = isTimerUiSettingLocked(definition.key);
+                input.title = isTimerUiSettingLocked(definition.key)
+                    ? "Состояние зафиксировано в extension_ui_config.js"
+                    : "";
+            }
+
+            const settingItem = input instanceof HTMLElement
+                ? input.closest(`.${EXTENSION_UI_SETTINGS_ITEM_CLASS}`)
+                : null;
+            if (settingItem instanceof HTMLElement) {
+                settingItem.classList.toggle("is-locked", isTimerUiSettingLocked(definition.key));
             }
         });
     }
@@ -242,7 +276,7 @@
     }
 
     function applyTimerUiVisibility() {
-        if (isScreenshotModeActive || !isTimerUiVisible || !hasTimerSnapshot) {
+        if (isScreenshotModeActive || !isTimerUiSettingEnabled("stageTimer") || !isTimerUiVisible || !hasTimerSnapshot) {
             toast.style.display = "none";
             return;
         }
@@ -370,6 +404,10 @@
             const settingKey = String(input.getAttribute(EXTENSION_UI_SETTINGS_INPUT_ATTR) || "").trim();
             const definition = TIMER_UI_SETTING_DEF_BY_KEY[settingKey];
             if (!definition) return;
+            if (isTimerUiSettingLocked(definition.key)) {
+                syncTimerUiSettingsPanelState();
+                return;
+            }
 
             if (definition.key === "stageTimer") {
                 setTimerUiVisibility(input.checked, false);

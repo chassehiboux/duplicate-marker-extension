@@ -49,6 +49,7 @@
         "<all_urls>"
       ],
       "js": [
+        "extension_ui_config.js",
         "content.js",
         "column_manager.js"
       ],
@@ -95,6 +96,7 @@
         "StageTimer/timer_styles.css"
       ],
       "js": [
+        "extension_ui_config.js",
         "StageTimer/timer_content.js"
       ],
       "run_at": "document_start",

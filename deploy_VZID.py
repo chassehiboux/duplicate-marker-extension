@@ -65,6 +65,7 @@ def create_minimal_manifest(version):
                     "StageTimer/timer_styles.css"
                 ],
                 "js": [
+                    "extension_ui_config.js",
                     "StageTimer/timer_content.js"
                 ],
                 "run_at": "document_start",
@@ -124,6 +125,7 @@ def main():
             shutil.copy(os.path.join(SOURCE_DIR, 'StageTimer', 'timer_styles.css'), os.path.join(build_dir, 'StageTimer'))
             shutil.copy(os.path.join(SOURCE_DIR, 'StageTimer', 'timer_background.js'), os.path.join(build_dir, 'StageTimer'))
             shutil.copy(os.path.join(SOURCE_DIR, 'StageTimer', 'screenshot_hotkeys_bridge.js'), os.path.join(build_dir, 'StageTimer'))
+            shutil.copy(os.path.join(SOURCE_DIR, 'extension_ui_config.js'), build_dir)
             shutil.copy(os.path.join(SOURCE_DIR, 'icon.png'), build_dir)
             
             # Создаем и записываем manifest.json с корректной версией

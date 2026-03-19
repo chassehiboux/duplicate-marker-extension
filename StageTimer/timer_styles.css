@@ -244,6 +244,10 @@ html.dup-ext-screenshot-mode [aria-label="Показать таймер"] {
     border: 1px solid rgba(39, 64, 79, 0.12);
 }
 
+.dup-extension-ui-settings-item.is-locked {
+    opacity: 0.72;
+}
+
 .dup-extension-ui-settings-text {
     display: grid;
     gap: 4px;
@@ -271,6 +275,10 @@ html.dup-ext-screenshot-mode [aria-label="Показать таймер"] {
     margin-top: 2px;
     accent-color: #2f7d6b;
     cursor: pointer;
+}
+
+.dup-extension-ui-settings-item input[type="checkbox"]:disabled {
+    cursor: not-allowed;
 }
 
 .dup-extension-ui-settings-footer {
