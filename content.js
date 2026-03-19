@@ -263,6 +263,7 @@
       description: 'Кнопка пакетной проверки и её окна.',
       hideClass: 'dup-ui-hide-inn-batch-tools',
       hideCss: `
+        html.dup-ui-hide-inn-batch-tools .my-super-btn,
         html.dup-ui-hide-inn-batch-tools #batch-inn-check-btn,
         html.dup-ui-hide-inn-batch-tools #inn-toast-container,
         html.dup-ui-hide-inn-batch-tools #inn-batch-modal-overlay {
