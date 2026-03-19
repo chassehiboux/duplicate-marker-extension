@@ -18,7 +18,7 @@
     if (window.__dupScreenshotHotkeysFrameBridgeInstalled) return;
     window.__dupScreenshotHotkeysFrameBridgeInstalled = true;
 
-    function postScreenshotCommandToTop(command, source, eventType) {
+    function postScreenshotCommandToTop(command, source, eventType, triggerKey) {
         try {
             const topWindow = window.top;
             if (!topWindow || topWindow === window || typeof topWindow.postMessage !== "function") return;
@@ -26,7 +26,8 @@
                 type: SCREENSHOT_FRAME_BRIDGE_MESSAGE,
                 command,
                 source: source || "iframe-hotkey",
-                eventType: eventType || ""
+                eventType: eventType || "",
+                triggerKey: triggerKey || ""
             }, "*");
         } catch (e) {
             // ignore
@@ -100,7 +101,7 @@
         if (!triggerKey) return;
         if (event.type === "keydown" && event.repeat) return;
 
-        postScreenshotCommandToTop("schedule-autohide", `iframe-hotkey:${triggerKey}:${event.type}`, event.type);
+        postScreenshotCommandToTop("schedule-autohide", `iframe-hotkey:${triggerKey}:${event.type}`, event.type, triggerKey);
     }
 
     document.addEventListener("keydown", handleScreenshotToggleHotkey, true);

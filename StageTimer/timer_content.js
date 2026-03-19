@@ -12,8 +12,13 @@
     }
 
     const baseName = getBaseName();
-    // Получаем версию расширения
-    const extVersion = chrome.runtime.getManifest().version;
+    const manifest = chrome.runtime.getManifest();
+    const extVersion = manifest.version;
+    const isStandaloneStageTimerBuild = !!(
+        manifest &&
+        manifest.background &&
+        manifest.background.service_worker === "StageTimer/timer_background.js"
+    );
 
     if (window.location.pathname.includes("/login")) return;
 
@@ -38,19 +43,75 @@
     const TIMER_HOST_SYNC_INTERVAL_MS = 250;
     let lastTimerHostSyncMs = 0;
     const TIMER_BUTTON_SYNC_INTERVAL_MS = 1000;
-    const TIMER_VISIBILITY_STORAGE_KEY = "pyramid_stage_timer_ui_visible";
+    const LEGACY_TIMER_VISIBILITY_STORAGE_KEY = "pyramid_stage_timer_ui_visible";
+    const TIMER_VISIBILITY_STORAGE_KEY = "dup_ui_show_stage_timer";
+    const TIMER_TOGGLE_VISIBILITY_STORAGE_KEY = "dup_ui_show_stage_timer_toggle";
+    const TIMER_ABORT_VISIBILITY_STORAGE_KEY = "dup_ui_show_stage_timer_abort";
     const SCREENSHOT_MODE_CLASS = "dup-ext-screenshot-mode";
     const SCREENSHOT_HIDE_EVENT = "dup-ext-screenshot-visibility-change";
     const SCREENSHOT_FRAME_BRIDGE_MESSAGE = "dup-screenshot-hotkey-frame-bridge";
     const SCREENSHOT_HIDE_DURATION_MS = 2500;
     const SCREENSHOT_HIDE_ON_BLUR_DURATION_MS = 2500;
+    const SCREENSHOT_HIDE_PRINT_SCREEN_DURATION_MS = 5000;
+    const SCREENSHOT_HIDE_PRINT_SCREEN_ON_BLUR_DURATION_MS = 5000;
     const SCREENSHOT_THROTTLE_MS = 150;
     const KEY_CODE_F1 = 112;
+    const KEY_CODE_F2 = 113;
     const KEY_CODE_PRINT_SCREEN = 44;
     const KEY_CODE_F8 = 119;
     const SCREENSHOT_MANUAL_KEY = "S";
     const GRID_ABORT_REWRITE_EVENT = "dup-grid-abort-message";
     const GRID_ABORT_REWRITE_TEXT = "Загрузка/Фильтрация была прервана пользователем вручную. Повторите действие заново.";
+    const EXTENSION_UI_SETTINGS_OVERLAY_ID = "dup-extension-ui-settings-overlay";
+    const EXTENSION_UI_SETTINGS_PANEL_ID = "dup-extension-ui-settings-panel";
+    const EXTENSION_UI_SETTINGS_OVERLAY_CLASS = "dup-extension-ui-settings-overlay";
+    const EXTENSION_UI_SETTINGS_PANEL_CLASS = "dup-extension-ui-settings-panel";
+    const EXTENSION_UI_SETTINGS_ITEM_CLASS = "dup-extension-ui-settings-item";
+    const EXTENSION_UI_SETTINGS_TITLE_CLASS = "dup-extension-ui-settings-title";
+    const EXTENSION_UI_SETTINGS_DESCRIPTION_CLASS = "dup-extension-ui-settings-description";
+    const EXTENSION_UI_SETTINGS_INPUT_ATTR = "data-dup-ui-setting";
+    const EXTENSION_UI_SETTINGS_HINT_TEXT = "Состояние сохраняется для всех страниц *.pyramid.vostok-electra.ru/*.";
+    const TIMER_UI_SETTING_DEFS = Object.freeze([
+        {
+            key: "stageTimer",
+            storageKey: TIMER_VISIBILITY_STORAGE_KEY,
+            label: "Таймер загрузки/фильтрации",
+            description: "Плашка StageTimer над диалогами."
+        },
+        {
+            key: "stageTimerToggle",
+            storageKey: TIMER_TOGGLE_VISIBILITY_STORAGE_KEY,
+            label: "Кнопка скрытия таймера",
+            description: "Кнопка с глазом рядом с таймером."
+        },
+        {
+            key: "stageTimerAbort",
+            storageKey: TIMER_ABORT_VISIBILITY_STORAGE_KEY,
+            label: "Кнопка прерывания загрузки",
+            description: "Кнопка × для аварийной остановки."
+        }
+    ]);
+    const TIMER_UI_SETTINGS_STORAGE_KEYS = Object.freeze(
+        TIMER_UI_SETTING_DEFS.map((definition) => definition.storageKey)
+    );
+    const TIMER_UI_SETTING_DEF_BY_KEY = Object.freeze(
+        TIMER_UI_SETTING_DEFS.reduce((map, definition) => {
+            map[definition.key] = definition;
+            return map;
+        }, Object.create(null))
+    );
+    const TIMER_UI_SETTING_DEF_BY_STORAGE_KEY = Object.freeze(
+        TIMER_UI_SETTING_DEFS.reduce((map, definition) => {
+            map[definition.storageKey] = definition;
+            return map;
+        }, Object.create(null))
+    );
+    const TIMER_UI_SETTINGS_DEFAULTS = Object.freeze(
+        TIMER_UI_SETTING_DEFS.reduce((map, definition) => {
+            map[definition.key] = true;
+            return map;
+        }, Object.create(null))
+    );
 
     // UI
     const toast = document.createElement("div");
@@ -76,7 +137,11 @@
     let isScreenshotModeActive = false;
     let screenshotManualModeIsActive = false;
     let screenshotHideTimer = null;
+    let screenshotHideDurationMs = SCREENSHOT_HIDE_DURATION_MS;
     let lastScreenshotTriggerAtMs = 0;
+    let timerUiElementSettings = { ...TIMER_UI_SETTINGS_DEFAULTS };
+    let timerUiSettingsOverlayEl = null;
+    let timerUiSettingsPanelEl = null;
 
     function isElementVisible(element) {
         if (!element) return false;
@@ -86,9 +151,9 @@
         return rect.width > 0 && rect.height > 0;
     }
 
-    function readTimerUiVisibilityPreference() {
+    function readLegacyTimerUiVisibilityPreference() {
         try {
-            const rawValue = window.localStorage.getItem(TIMER_VISIBILITY_STORAGE_KEY);
+            const rawValue = window.localStorage.getItem(LEGACY_TIMER_VISIBILITY_STORAGE_KEY);
             if (rawValue === "0") return false;
             if (rawValue === "1") return true;
         } catch (e) {
@@ -98,11 +163,52 @@
     }
 
     function saveTimerUiVisibilityPreference(isVisible) {
+        chrome.storage.local.set({ [TIMER_VISIBILITY_STORAGE_KEY]: !!isVisible });
         try {
-            window.localStorage.setItem(TIMER_VISIBILITY_STORAGE_KEY, isVisible ? "1" : "0");
+            window.localStorage.setItem(LEGACY_TIMER_VISIBILITY_STORAGE_KEY, isVisible ? "1" : "0");
         } catch (e) {
             // ignore
         }
+    }
+
+    function isTimerUiSettingEnabled(key) {
+        return timerUiElementSettings[key] !== false;
+    }
+
+    function syncTimerUiSettingsPanelState() {
+        if (!(timerUiSettingsPanelEl instanceof HTMLElement)) return;
+
+        TIMER_UI_SETTING_DEFS.forEach((definition) => {
+            const input = timerUiSettingsPanelEl.querySelector(`input[${EXTENSION_UI_SETTINGS_INPUT_ATTR}="${definition.key}"]`);
+            if (input instanceof HTMLInputElement) {
+                input.checked = isTimerUiSettingEnabled(definition.key);
+            }
+        });
+    }
+
+    function loadTimerUiElementSettings() {
+        chrome.storage.local.get(TIMER_UI_SETTINGS_STORAGE_KEYS, (storedSettings) => {
+            const nextSettings = { ...TIMER_UI_SETTINGS_DEFAULTS };
+
+            TIMER_UI_SETTING_DEFS.forEach((definition) => {
+                if (typeof storedSettings[definition.storageKey] === "boolean") {
+                    nextSettings[definition.key] = storedSettings[definition.storageKey];
+                }
+            });
+
+            if (typeof storedSettings[TIMER_VISIBILITY_STORAGE_KEY] !== "boolean") {
+                const legacyValue = readLegacyTimerUiVisibilityPreference();
+                nextSettings.stageTimer = legacyValue;
+                if (legacyValue !== TIMER_UI_SETTINGS_DEFAULTS.stageTimer) {
+                    chrome.storage.local.set({ [TIMER_VISIBILITY_STORAGE_KEY]: legacyValue });
+                }
+            }
+
+            timerUiElementSettings = nextSettings;
+            setTimerUiVisibility(nextSettings.stageTimer, false);
+            applyControlButtonsVisibility();
+            syncTimerUiSettingsPanelState();
+        });
     }
 
     function updateTimerToggleButtonState() {
@@ -125,9 +231,14 @@
     }
 
     function applyControlButtonsVisibility() {
-        const displayValue = isScreenshotModeActive ? "none" : "inline-flex";
-        timerToggleButton.style.display = displayValue;
-        timerAbortButton.style.display = displayValue;
+        const toggleDisplayValue = (
+            isScreenshotModeActive || !isTimerUiSettingEnabled("stageTimerToggle")
+        ) ? "none" : "inline-flex";
+        const abortDisplayValue = (
+            isScreenshotModeActive || !isTimerUiSettingEnabled("stageTimerAbort")
+        ) ? "none" : "inline-flex";
+        timerToggleButton.style.display = toggleDisplayValue;
+        timerAbortButton.style.display = abortDisplayValue;
     }
 
     function applyTimerUiVisibility() {
@@ -140,12 +251,178 @@
 
     function setTimerUiVisibility(isVisible, shouldPersist = true) {
         isTimerUiVisible = !!isVisible;
+        timerUiElementSettings = {
+            ...timerUiElementSettings,
+            stageTimer: isTimerUiVisible
+        };
         if (shouldPersist) {
             saveTimerUiVisibilityPreference(isTimerUiVisible);
         }
         updateTimerToggleButtonState();
         applyControlButtonsVisibility();
         applyTimerUiVisibility();
+        syncTimerUiSettingsPanelState();
+    }
+
+    function getExternalExtensionUiSettingsController() {
+        const controller = window.__dupExtensionUiSettingsController;
+        if (!controller || typeof controller.togglePanel !== "function") return null;
+        return controller;
+    }
+
+    function closeTimerUiSettingsPanel() {
+        if (timerUiSettingsOverlayEl instanceof HTMLElement) {
+            timerUiSettingsOverlayEl.hidden = true;
+        }
+        if (timerUiSettingsPanelEl instanceof HTMLElement) {
+            timerUiSettingsPanelEl.hidden = true;
+        }
+    }
+
+    function ensureTimerUiSettingsPanel() {
+        if (timerUiSettingsOverlayEl instanceof HTMLElement && timerUiSettingsPanelEl instanceof HTMLElement) {
+            syncTimerUiSettingsPanelState();
+            return timerUiSettingsPanelEl;
+        }
+
+        const host = document.body || document.documentElement;
+        if (!(host instanceof HTMLElement)) return null;
+
+        const existingOverlay = document.getElementById(EXTENSION_UI_SETTINGS_OVERLAY_ID);
+        if (existingOverlay instanceof HTMLElement) {
+            timerUiSettingsOverlayEl = existingOverlay;
+        }
+
+        const existingPanel = document.getElementById(EXTENSION_UI_SETTINGS_PANEL_ID);
+        if (existingPanel instanceof HTMLElement) {
+            timerUiSettingsPanelEl = existingPanel;
+            syncTimerUiSettingsPanelState();
+            return existingPanel;
+        }
+
+        const overlay = document.createElement("div");
+        overlay.id = EXTENSION_UI_SETTINGS_OVERLAY_ID;
+        overlay.className = EXTENSION_UI_SETTINGS_OVERLAY_CLASS;
+        overlay.hidden = true;
+        overlay.addEventListener("click", () => closeTimerUiSettingsPanel(), { capture: true });
+
+        const panel = document.createElement("section");
+        panel.id = EXTENSION_UI_SETTINGS_PANEL_ID;
+        panel.className = EXTENSION_UI_SETTINGS_PANEL_CLASS;
+        panel.hidden = true;
+        panel.setAttribute("role", "dialog");
+        panel.setAttribute("aria-modal", "true");
+        panel.setAttribute("aria-label", "Настройки элементов расширения");
+
+        const header = document.createElement("div");
+        header.className = "dup-extension-ui-settings-header";
+        header.innerHTML = `
+            <div class="dup-extension-ui-settings-heading">
+                <div class="dup-extension-ui-settings-heading-title">Настройки элементов расширения</div>
+                <div class="dup-extension-ui-settings-heading-hint">${EXTENSION_UI_SETTINGS_HINT_TEXT}</div>
+            </div>
+        `;
+
+        const closeButton = document.createElement("button");
+        closeButton.type = "button";
+        closeButton.className = "dup-extension-ui-settings-close";
+        closeButton.setAttribute("aria-label", "Закрыть настройки элементов расширения");
+        closeButton.textContent = "×";
+        closeButton.addEventListener("click", () => closeTimerUiSettingsPanel(), { capture: true });
+        header.appendChild(closeButton);
+
+        const list = document.createElement("div");
+        list.className = "dup-extension-ui-settings-list";
+
+        TIMER_UI_SETTING_DEFS.forEach((definition) => {
+            const label = document.createElement("label");
+            label.className = EXTENSION_UI_SETTINGS_ITEM_CLASS;
+
+            const textBlock = document.createElement("span");
+            textBlock.className = "dup-extension-ui-settings-text";
+
+            const title = document.createElement("span");
+            title.className = EXTENSION_UI_SETTINGS_TITLE_CLASS;
+            title.textContent = definition.label;
+
+            const description = document.createElement("span");
+            description.className = EXTENSION_UI_SETTINGS_DESCRIPTION_CLASS;
+            description.textContent = definition.description;
+
+            textBlock.append(title, description);
+
+            const input = document.createElement("input");
+            input.type = "checkbox";
+            input.checked = isTimerUiSettingEnabled(definition.key);
+            input.setAttribute(EXTENSION_UI_SETTINGS_INPUT_ATTR, definition.key);
+            input.setAttribute("aria-label", definition.label);
+
+            label.append(textBlock, input);
+            list.appendChild(label);
+        });
+
+        list.addEventListener("change", (event) => {
+            const input = event.target instanceof HTMLInputElement
+                ? event.target
+                : null;
+            if (!input) return;
+
+            const settingKey = String(input.getAttribute(EXTENSION_UI_SETTINGS_INPUT_ATTR) || "").trim();
+            const definition = TIMER_UI_SETTING_DEF_BY_KEY[settingKey];
+            if (!definition) return;
+
+            if (definition.key === "stageTimer") {
+                setTimerUiVisibility(input.checked, false);
+            } else {
+                timerUiElementSettings = {
+                    ...timerUiElementSettings,
+                    [definition.key]: input.checked
+                };
+                applyControlButtonsVisibility();
+                syncTimerUiSettingsPanelState();
+            }
+
+            chrome.storage.local.set({ [definition.storageKey]: input.checked });
+        }, { capture: true });
+
+        const footer = document.createElement("div");
+        footer.className = "dup-extension-ui-settings-footer";
+        footer.textContent = "Горячая клавиша: F2";
+
+        panel.append(header, list, footer);
+        host.append(overlay, panel);
+
+        timerUiSettingsOverlayEl = overlay;
+        timerUiSettingsPanelEl = panel;
+        syncTimerUiSettingsPanelState();
+        return panel;
+    }
+
+    function toggleTimerUiSettingsPanel() {
+        const panel = ensureTimerUiSettingsPanel();
+        if (!(panel instanceof HTMLElement)) return false;
+
+        if (panel.hidden) {
+            if (timerUiSettingsOverlayEl instanceof HTMLElement) {
+                timerUiSettingsOverlayEl.hidden = false;
+            }
+            panel.hidden = false;
+            syncTimerUiSettingsPanelState();
+            return true;
+        }
+
+        closeTimerUiSettingsPanel();
+        return false;
+    }
+
+    function isExtensionUiSettingsHotkey(event) {
+        if (!event) return false;
+        if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return false;
+
+        const key = String(event.key || "");
+        const code = String(event.code || "");
+        const keyCode = Number(event.keyCode || event.which || 0);
+        return key === "F2" || code === "F2" || keyCode === KEY_CODE_F2;
     }
 
     function readScreenshotModeFromDom() {
@@ -182,6 +459,7 @@
             setScreenshotModeActive(true);
             return;
         }
+        screenshotHideDurationMs = SCREENSHOT_HIDE_DURATION_MS;
         setScreenshotModeActive(false);
     }
 
@@ -199,13 +477,29 @@
         syncScreenshotModeState();
     }
 
-    function scheduleScreenshotAutohide(_source) {
+    function resolveScreenshotHideDurationMs(triggerKey) {
+        return triggerKey === "PrintScreen"
+            ? SCREENSHOT_HIDE_PRINT_SCREEN_DURATION_MS
+            : SCREENSHOT_HIDE_DURATION_MS;
+    }
+
+    function resolveScreenshotHideOnBlurDurationMs() {
+        return Math.max(
+            screenshotHideDurationMs,
+            screenshotHideDurationMs >= SCREENSHOT_HIDE_PRINT_SCREEN_DURATION_MS
+                ? SCREENSHOT_HIDE_PRINT_SCREEN_ON_BLUR_DURATION_MS
+                : SCREENSHOT_HIDE_ON_BLUR_DURATION_MS
+        );
+    }
+
+    function scheduleScreenshotAutohide(_source, triggerKey = "") {
+        screenshotHideDurationMs = resolveScreenshotHideDurationMs(triggerKey);
         setScreenshotModeActive(true);
         if (screenshotHideTimer) clearTimeout(screenshotHideTimer);
         screenshotHideTimer = setTimeout(() => {
             screenshotHideTimer = null;
             finalizeScreenshotAutohide();
-        }, SCREENSHOT_HIDE_DURATION_MS);
+        }, screenshotHideDurationMs);
     }
 
     function resolveScreenshotTriggerKey(event) {
@@ -252,6 +546,45 @@
         if (typeof event.stopImmediatePropagation === "function") event.stopImmediatePropagation();
     }
 
+    function handleExtensionUiSettingsHotkey(event) {
+        if (!isExtensionUiSettingsHotkey(event)) return;
+        if (event.defaultPrevented) return;
+
+        suppressHotkeyEvent(event);
+        if (event.type !== "keydown" || event.repeat) return;
+
+        const externalController = getExternalExtensionUiSettingsController();
+        if (externalController) {
+            externalController.togglePanel();
+            return;
+        }
+
+        if (!isStandaloneStageTimerBuild) return;
+        toggleTimerUiSettingsPanel();
+    }
+
+    function handleExtensionUiSettingsEscape(event) {
+        if (!(timerUiSettingsPanelEl instanceof HTMLElement) || timerUiSettingsPanelEl.hidden) return;
+        if (event.defaultPrevented) return;
+        if (event.ctrlKey || event.altKey || event.metaKey) return;
+
+        const key = String(event.key || "");
+        const code = String(event.code || "");
+        const keyCode = Number(event.keyCode || event.which || 0);
+        if (key !== "Escape" && code !== "Escape" && keyCode !== 27) return;
+
+        suppressHotkeyEvent(event);
+        if (event.type !== "keydown" || event.repeat) return;
+        closeTimerUiSettingsPanel();
+    }
+
+    function initExtensionUiSettingsHotkeys() {
+        document.addEventListener("keydown", handleExtensionUiSettingsHotkey, true);
+        document.addEventListener("keyup", handleExtensionUiSettingsHotkey, true);
+        document.addEventListener("keydown", handleExtensionUiSettingsEscape, true);
+        document.addEventListener("keyup", handleExtensionUiSettingsEscape, true);
+    }
+
     function handleScreenshotToggleHotkey(event) {
         if (!isScreenshotToggleHotkey(event)) return;
 
@@ -279,7 +612,7 @@
         const nowMs = Date.now();
         if ((nowMs - lastScreenshotTriggerAtMs) < SCREENSHOT_THROTTLE_MS) return;
         lastScreenshotTriggerAtMs = nowMs;
-        scheduleScreenshotAutohide(`hotkey:${triggerKey}:${event.type}`);
+        scheduleScreenshotAutohide(`hotkey:${triggerKey}:${event.type}`, triggerKey);
     }
 
     function handleScreenshotFrameBridgeMessage(event) {
@@ -294,6 +627,9 @@
             ? data.source
             : "iframe-hotkey";
         const command = String(data.command || "");
+        const triggerKey = typeof data.triggerKey === "string"
+            ? data.triggerKey
+            : "";
 
         if (command === "toggle-manual") {
             setLocalManualScreenshotMode(!screenshotManualModeIsActive);
@@ -305,7 +641,7 @@
         const nowMs = Date.now();
         if ((nowMs - lastScreenshotTriggerAtMs) < SCREENSHOT_THROTTLE_MS) return;
         lastScreenshotTriggerAtMs = nowMs;
-        scheduleScreenshotAutohide(source);
+        scheduleScreenshotAutohide(source, triggerKey);
     }
 
     function initScreenshotAutohideMode() {
@@ -320,7 +656,7 @@
             screenshotHideTimer = setTimeout(() => {
                 screenshotHideTimer = null;
                 finalizeScreenshotAutohide();
-            }, SCREENSHOT_HIDE_ON_BLUR_DURATION_MS);
+            }, resolveScreenshotHideOnBlurDurationMs());
         });
     }
 
@@ -521,9 +857,41 @@
         syncScreenshotModeState();
     }, { capture: true });
 
-    setTimerUiVisibility(readTimerUiVisibilityPreference(), false);
+    chrome.storage.onChanged.addListener((changes, area) => {
+        if (area !== "local") return;
+
+        let shouldSyncControls = false;
+
+        Object.keys(changes).forEach((storageKey) => {
+            const definition = TIMER_UI_SETTING_DEF_BY_STORAGE_KEY[storageKey];
+            if (!definition) return;
+
+            const nextValue = typeof changes[storageKey].newValue === "boolean"
+                ? changes[storageKey].newValue
+                : TIMER_UI_SETTINGS_DEFAULTS[definition.key];
+
+            if (definition.key === "stageTimer") {
+                setTimerUiVisibility(nextValue, false);
+                return;
+            }
+
+            timerUiElementSettings = {
+                ...timerUiElementSettings,
+                [definition.key]: nextValue
+            };
+            shouldSyncControls = true;
+        });
+
+        if (shouldSyncControls) {
+            applyControlButtonsVisibility();
+            syncTimerUiSettingsPanelState();
+        }
+    });
+
+    loadTimerUiElementSettings();
     syncScreenshotModeState();
     initScreenshotAutohideMode();
+    initExtensionUiSettingsHotkeys();
     setInterval(() => {
         syncTimerHost();
     }, TIMER_BUTTON_SYNC_INTERVAL_MS);

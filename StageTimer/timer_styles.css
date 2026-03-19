@@ -15,6 +15,10 @@ html.dup-ext-screenshot-mode #pyramid-stage-timer-abort,
 html.dup-ext-screenshot-mode .pyramid-stage-timer-abort-btn,
 html.dup-ext-screenshot-mode .dup-stage-jump-btn,
 html.dup-ext-screenshot-mode [data-dup-stage-jump-btn="1"],
+html.dup-ext-screenshot-mode #dup-extension-ui-settings-overlay,
+html.dup-ext-screenshot-mode #dup-extension-ui-settings-panel,
+html.dup-ext-screenshot-mode .dup-extension-ui-settings-overlay,
+html.dup-ext-screenshot-mode .dup-extension-ui-settings-panel,
 html.dup-ext-screenshot-mode [title="Скрыть таймер"],
 html.dup-ext-screenshot-mode [aria-label="Скрыть таймер"],
 html.dup-ext-screenshot-mode [title="Показать таймер"],
@@ -157,4 +161,140 @@ html.dup-ext-screenshot-mode [aria-label="Показать таймер"] {
 @keyframes spin {
     0% { transform: rotate(0deg); }
     100% { transform: rotate(360deg); }
+}
+
+#dup-extension-ui-settings-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 2147483646;
+    background: rgba(18, 27, 33, 0.34);
+    backdrop-filter: blur(2px);
+}
+
+#dup-extension-ui-settings-panel {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 2147483647;
+    width: min(92vw, 540px);
+    max-height: min(82vh, 760px);
+    overflow: auto;
+    padding: 18px 18px 14px;
+    border: 1px solid rgba(24, 39, 52, 0.18);
+    border-radius: 16px;
+    background: linear-gradient(180deg, #f9fbfd 0%, #edf3f7 100%);
+    box-shadow: 0 18px 48px rgba(16, 29, 38, 0.26);
+    color: #10202a;
+    font-family: "Segoe UI", Arial, sans-serif;
+}
+
+#dup-extension-ui-settings-overlay[hidden],
+#dup-extension-ui-settings-panel[hidden] {
+    display: none !important;
+}
+
+.dup-extension-ui-settings-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 14px;
+}
+
+.dup-extension-ui-settings-heading-title {
+    font-size: 20px;
+    line-height: 1.2;
+    font-weight: 700;
+}
+
+.dup-extension-ui-settings-heading-hint {
+    margin-top: 6px;
+    font-size: 12px;
+    line-height: 1.45;
+    color: #51656f;
+}
+
+.dup-extension-ui-settings-close {
+    flex: 0 0 auto;
+    min-width: 34px;
+    height: 34px;
+    border: 0;
+    border-radius: 999px;
+    background: rgba(16, 32, 42, 0.08);
+    color: #10202a;
+    cursor: pointer;
+    font-size: 22px;
+    line-height: 1;
+}
+
+.dup-extension-ui-settings-list {
+    display: grid;
+    gap: 10px;
+}
+
+.dup-extension-ui-settings-item {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 14px;
+    padding: 11px 12px;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.85);
+    border: 1px solid rgba(39, 64, 79, 0.12);
+}
+
+.dup-extension-ui-settings-text {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+}
+
+.dup-extension-ui-settings-title {
+    display: block;
+    font-size: 14px;
+    line-height: 1.35;
+    font-weight: 600;
+}
+
+.dup-extension-ui-settings-description {
+    display: block;
+    font-size: 12px;
+    line-height: 1.4;
+    color: #5e737e;
+}
+
+.dup-extension-ui-settings-item input[type="checkbox"] {
+    flex: 0 0 auto;
+    width: 18px;
+    height: 18px;
+    margin-top: 2px;
+    accent-color: #2f7d6b;
+    cursor: pointer;
+}
+
+.dup-extension-ui-settings-footer {
+    margin-top: 14px;
+    font-size: 12px;
+    line-height: 1.4;
+    color: #5e737e;
+    text-align: right;
+}
+
+@media (max-width: 640px) {
+    #dup-extension-ui-settings-panel {
+        width: min(96vw, 540px);
+        max-height: 86vh;
+        padding: 14px 14px 12px;
+        border-radius: 14px;
+    }
+
+    .dup-extension-ui-settings-item {
+        gap: 10px;
+        padding: 10px 11px;
+    }
+
+    .dup-extension-ui-settings-title {
+        font-size: 13px;
+    }
 }

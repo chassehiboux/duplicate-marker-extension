@@ -11,9 +11,13 @@
   const SCREENSHOT_FRAME_BRIDGE_MESSAGE = 'dup-screenshot-hotkey-frame-bridge';
   const SCREENSHOT_HIDE_DURATION_MS = 2500;
   const SCREENSHOT_HIDE_ON_BLUR_DURATION_MS = 2500;
+  const SCREENSHOT_HIDE_PRINT_SCREEN_DURATION_MS = 5000;
+  const SCREENSHOT_HIDE_PRINT_SCREEN_ON_BLUR_DURATION_MS = 5000;
+  const SCREENSHOT_THROTTLE_MS = 150;
   const KEY_CODE_PAGE_DOWN = 34;
   const KEY_CODE_PRINT_SCREEN = 44;
   const KEY_CODE_F1 = 112;
+  const KEY_CODE_F2 = 113;
   const KEY_CODE_F8 = 119;
   const SCREENSHOT_MANUAL_KEY = 'S';
   const STAGE_JUMP_HASH_KEY = 'dup_stage_jump_debtid';
@@ -93,6 +97,220 @@
   const EPGU_REQUESTS_COLOR_RED = '#FFC9C9';
   const EPGU_REQUESTS_COLOR_GREEN = '#C8F2CC';
   const EPGU_REQUESTS_COLOR_YELLOW = '#FFF3B8';
+  const EXTENSION_UI_SETTINGS_STYLE_ID = 'dup-extension-ui-settings-style';
+  const EXTENSION_UI_SETTINGS_OVERLAY_ID = 'dup-extension-ui-settings-overlay';
+  const EXTENSION_UI_SETTINGS_PANEL_ID = 'dup-extension-ui-settings-panel';
+  const EXTENSION_UI_SETTINGS_OVERLAY_CLASS = 'dup-extension-ui-settings-overlay';
+  const EXTENSION_UI_SETTINGS_PANEL_CLASS = 'dup-extension-ui-settings-panel';
+  const EXTENSION_UI_SETTINGS_ITEM_CLASS = 'dup-extension-ui-settings-item';
+  const EXTENSION_UI_SETTINGS_TITLE_CLASS = 'dup-extension-ui-settings-title';
+  const EXTENSION_UI_SETTINGS_DESCRIPTION_CLASS = 'dup-extension-ui-settings-description';
+  const EXTENSION_UI_SETTINGS_INPUT_ATTR = 'data-dup-ui-setting';
+  const EXTENSION_UI_SETTINGS_HINT_TEXT = 'Состояние сохраняется для всех страниц *.pyramid.vostok-electra.ru/*.';
+  const EXTENSION_UI_SETTING_DEFS = Object.freeze([
+    {
+      key: 'duplicateHighlights',
+      storageKey: 'dup_ui_show_duplicate_highlights',
+      label: 'Подсветка дублей',
+      description: 'Обычные совпадения в таблицах.',
+      hideClass: 'dup-ui-hide-duplicate-highlights',
+      hideCss: `
+        html.dup-ui-hide-duplicate-highlights .${HIGHLIGHT_CLASS} {
+          background-color: transparent !important;
+          outline: none !important;
+        }
+      `
+    },
+    {
+      key: 'fsspDuplicateHighlights',
+      storageKey: 'dup_ui_show_fssp_duplicate_highlights',
+      label: 'Подсветка дублей ФССП',
+      description: 'Цветовая маркировка дублей в реестре ФССП.',
+      hideClass: 'dup-ui-hide-fssp-duplicate-highlights',
+      hideCss: `
+        html.dup-ui-hide-fssp-duplicate-highlights .${FSSP_REESTR_DUPLICATE_CLASS} {
+          background-color: transparent !important;
+          outline: none !important;
+        }
+      `
+    },
+    {
+      key: 'fsspStatusHighlights',
+      storageKey: 'dup_ui_show_fssp_status_highlights',
+      label: 'Подсветка статусов ФССП',
+      description: 'Подсветка колонок со статусом в реестре ФССП.',
+      hideClass: 'dup-ui-hide-fssp-status-highlights',
+      hideCss: `
+        html.dup-ui-hide-fssp-status-highlights .${FSSP_REESTR_STATUS_CLASS} {
+          background-color: transparent !important;
+          outline: none !important;
+        }
+      `
+    },
+    {
+      key: 'epguDuplicateHighlights',
+      storageKey: 'dup_ui_show_epgu_duplicate_highlights',
+      label: 'Подсветка дублей ЕПГУ',
+      description: 'Совпадения в журнале запросов ЕПГУ.',
+      hideClass: 'dup-ui-hide-epgu-duplicate-highlights',
+      hideCss: `
+        html.dup-ui-hide-epgu-duplicate-highlights .${EPGU_REQUESTS_DUPLICATE_CLASS} {
+          background-color: transparent !important;
+          outline: none !important;
+        }
+      `
+    },
+    {
+      key: 'epguFillHighlights',
+      storageKey: 'dup_ui_show_epgu_fill_highlights',
+      label: 'Подсветка заполненности ЕПГУ',
+      description: 'Цветовые отметки заполнения и статуса полей ЕПГУ.',
+      hideClass: 'dup-ui-hide-epgu-fill-highlights',
+      hideCss: `
+        html.dup-ui-hide-epgu-fill-highlights .${EPGU_REQUESTS_FILL_CLASS} {
+          background-color: transparent !important;
+          outline: none !important;
+        }
+      `
+    },
+    {
+      key: 'stageTimer',
+      storageKey: 'dup_ui_show_stage_timer',
+      label: 'Таймер загрузки/фильтрации',
+      description: 'Плашка StageTimer над диалогами.',
+      hideClass: 'dup-ui-hide-stage-timer',
+      hideCss: `
+        html.dup-ui-hide-stage-timer #pyramid-stage-timer {
+          display: none !important;
+        }
+      `
+    },
+    {
+      key: 'stageTimerToggle',
+      storageKey: 'dup_ui_show_stage_timer_toggle',
+      label: 'Кнопка скрытия таймера',
+      description: 'Кнопка с глазом рядом с таймером.',
+      hideClass: 'dup-ui-hide-stage-timer-toggle',
+      hideCss: `
+        html.dup-ui-hide-stage-timer-toggle #pyramid-stage-timer-toggle,
+        html.dup-ui-hide-stage-timer-toggle .pyramid-stage-timer-toggle-btn,
+        html.dup-ui-hide-stage-timer-toggle [title="Скрыть таймер"],
+        html.dup-ui-hide-stage-timer-toggle [aria-label="Скрыть таймер"],
+        html.dup-ui-hide-stage-timer-toggle [title="Показать таймер"],
+        html.dup-ui-hide-stage-timer-toggle [aria-label="Показать таймер"] {
+          display: none !important;
+        }
+      `
+    },
+    {
+      key: 'stageTimerAbort',
+      storageKey: 'dup_ui_show_stage_timer_abort',
+      label: 'Кнопка прерывания загрузки',
+      description: 'Кнопка × для аварийной остановки StageTimer.',
+      hideClass: 'dup-ui-hide-stage-timer-abort',
+      hideCss: `
+        html.dup-ui-hide-stage-timer-abort #pyramid-stage-timer-abort,
+        html.dup-ui-hide-stage-timer-abort .pyramid-stage-timer-abort-btn {
+          display: none !important;
+        }
+      `
+    },
+    {
+      key: 'stageJumpButtons',
+      storageKey: 'dup_ui_show_stage_jump_buttons',
+      label: 'Кнопки StageJump',
+      description: 'Кнопки перехода по StageJump в списках.',
+      hideClass: 'dup-ui-hide-stage-jump-buttons',
+      hideCss: `
+        html.dup-ui-hide-stage-jump-buttons .${STAGE_JUMP_BUTTON_CLASS},
+        html.dup-ui-hide-stage-jump-buttons [${STAGE_JUMP_BUTTON_MARK_ATTR}="1"] {
+          display: none !important;
+        }
+      `
+    },
+    {
+      key: 'fsspGroupingToggle',
+      storageKey: 'dup_ui_show_fssp_grouping_toggle',
+      label: 'Переключатель группировки дублей ФССП',
+      description: 'Чекбокс "Сгруппировать дубликаты" в реестре ФССП.',
+      hideClass: 'dup-ui-hide-fssp-grouping-toggle',
+      hideCss: `
+        html.dup-ui-hide-fssp-grouping-toggle #${FSSP_REESTR_GROUPING_TOGGLE_ID} {
+          display: none !important;
+        }
+      `
+    },
+    {
+      key: 'innBatchTools',
+      storageKey: 'dup_ui_show_inn_batch_tools',
+      label: 'Проверка ИНН/смерти',
+      description: 'Кнопка пакетной проверки и её окна.',
+      hideClass: 'dup-ui-hide-inn-batch-tools',
+      hideCss: `
+        html.dup-ui-hide-inn-batch-tools #batch-inn-check-btn,
+        html.dup-ui-hide-inn-batch-tools #inn-toast-container,
+        html.dup-ui-hide-inn-batch-tools #inn-batch-modal-overlay {
+          display: none !important;
+        }
+      `
+    },
+    {
+      key: 'newYearTheme',
+      storageKey: 'dup_ui_show_new_year_theme',
+      label: 'Новогоднее оформление',
+      description: 'Снег, гирлянды и зимний переключатель.',
+      hideClass: 'dup-ui-hide-new-year-theme',
+      hideCss: `
+        html.dup-ui-hide-new-year-theme .ny-header-item,
+        html.dup-ui-hide-new-year-theme #nySwicher,
+        html.dup-ui-hide-new-year-theme .material-switch-newYear,
+        html.dup-ui-hide-new-year-theme .ny-snow-container,
+        html.dup-ui-hide-new-year-theme .ny-garland-container,
+        html.dup-ui-hide-new-year-theme .ny-element,
+        html.dup-ui-hide-new-year-theme .snowflake {
+          display: none !important;
+        }
+      `
+    },
+    {
+      key: 'springTheme',
+      storageKey: 'dup_ui_show_spring_theme',
+      label: 'Весеннее оформление',
+      description: 'Лепестки и весенний переключатель.',
+      hideClass: 'dup-ui-hide-spring-theme',
+      hideCss: `
+        html.dup-ui-hide-spring-theme .spring-header-item,
+        html.dup-ui-hide-spring-theme #springSwitcher,
+        html.dup-ui-hide-spring-theme .material-switch-spring,
+        html.dup-ui-hide-spring-theme .spring-petal-layer,
+        html.dup-ui-hide-spring-theme .spring-petal,
+        html.dup-ui-hide-spring-theme .spring-element {
+          display: none !important;
+        }
+      `
+    }
+  ]);
+  const EXTENSION_UI_SETTINGS_STORAGE_KEYS = Object.freeze(
+    EXTENSION_UI_SETTING_DEFS.map((definition) => definition.storageKey)
+  );
+  const EXTENSION_UI_SETTING_DEF_BY_KEY = Object.freeze(
+    EXTENSION_UI_SETTING_DEFS.reduce((map, definition) => {
+      map[definition.key] = definition;
+      return map;
+    }, Object.create(null))
+  );
+  const EXTENSION_UI_SETTING_DEF_BY_STORAGE_KEY = Object.freeze(
+    EXTENSION_UI_SETTING_DEFS.reduce((map, definition) => {
+      map[definition.storageKey] = definition;
+      return map;
+    }, Object.create(null))
+  );
+  const EXTENSION_UI_SETTINGS_DEFAULTS = Object.freeze(
+    EXTENSION_UI_SETTING_DEFS.reduce((map, definition) => {
+      map[definition.key] = true;
+      return map;
+    }, Object.create(null))
+  );
   // Статическая карта стадий/статусов ВЗИД, зафиксированная по меню блока ВЗИД.
   const STAGE_JUMP_STATIC_MENU_LINKS = [
     { path: ['ОВЗИД','ИД принятые в работу из ПУ (новые)'], href: '/ovzid/status/32' },
@@ -152,8 +370,12 @@
   let screenshotAutoHideIsActive = false;
   let screenshotManualModeIsActive = false;
   let screenshotModeIsActive = false;
+  let screenshotAutoHideDurationMs = SCREENSHOT_HIDE_DURATION_MS;
   const screenshotThemeStateByDocument = new WeakMap();
   let lastScreenshotTriggerAtMs = 0;
+  let extensionUiVisibilitySettings = { ...EXTENSION_UI_SETTINGS_DEFAULTS };
+  let extensionUiSettingsOverlayEl = null;
+  let extensionUiSettingsPanelEl = null;
   let stageJumpCachedMenuIndex = null;
   let stageJumpActionMenuEl = null;
   let stageJumpActionMenuAnchor = null;
@@ -369,6 +591,306 @@
     scheduleGridAbortErrorMessageRewrite(message);
   }, { capture: true });
 
+  function isPyramidExtensionPage() {
+    const hostname = String(window.location.hostname || '').toLowerCase();
+    return hostname.endsWith('.pyramid.vostok-electra.ru') || hostname.endsWith('.pyramid-vostok.electra.ru');
+  }
+
+  function normalizeExtensionUiVisibilitySettings(rawSettings) {
+    const normalized = { ...EXTENSION_UI_SETTINGS_DEFAULTS };
+    if (!rawSettings || typeof rawSettings !== 'object') return normalized;
+
+    EXTENSION_UI_SETTING_DEFS.forEach((definition) => {
+      if (typeof rawSettings[definition.storageKey] === 'boolean') {
+        normalized[definition.key] = rawSettings[definition.storageKey];
+      }
+    });
+
+    return normalized;
+  }
+
+  function isExtensionUiSettingEnabled(key) {
+    return extensionUiVisibilitySettings[key] !== false;
+  }
+
+  function ensureExtensionUiSettingsStyle(targetDocument) {
+    const doc = targetDocument && typeof targetDocument.getElementById === 'function'
+      ? targetDocument
+      : document;
+    if (doc.getElementById(EXTENSION_UI_SETTINGS_STYLE_ID)) return;
+
+    const style = doc.createElement('style');
+    style.id = EXTENSION_UI_SETTINGS_STYLE_ID;
+    style.textContent = EXTENSION_UI_SETTING_DEFS.map((definition) => definition.hideCss).join('\n');
+    (doc.head || doc.documentElement).appendChild(style);
+  }
+
+  function syncExtensionUiVisibilityForDocument(targetDocument) {
+    const doc = targetDocument && targetDocument.documentElement
+      ? targetDocument
+      : document;
+    const root = doc.documentElement;
+    if (!root) return;
+
+    ensureExtensionUiSettingsStyle(doc);
+    EXTENSION_UI_SETTING_DEFS.forEach((definition) => {
+      root.classList.toggle(definition.hideClass, !isExtensionUiSettingEnabled(definition.key));
+    });
+  }
+
+  function syncExtensionUiSettingsPanelState() {
+    if (!(extensionUiSettingsPanelEl instanceof HTMLElement)) return;
+
+    EXTENSION_UI_SETTING_DEFS.forEach((definition) => {
+      const input = extensionUiSettingsPanelEl.querySelector(`input[${EXTENSION_UI_SETTINGS_INPUT_ATTR}="${definition.key}"]`);
+      if (input instanceof HTMLInputElement) {
+        input.checked = isExtensionUiSettingEnabled(definition.key);
+      }
+    });
+  }
+
+  function closeExtensionUiSettingsPanel() {
+    if (extensionUiSettingsOverlayEl instanceof HTMLElement) {
+      extensionUiSettingsOverlayEl.hidden = true;
+    }
+    if (extensionUiSettingsPanelEl instanceof HTMLElement) {
+      extensionUiSettingsPanelEl.hidden = true;
+    }
+  }
+
+  function ensureExtensionUiSettingsPanel() {
+    if (extensionUiSettingsOverlayEl instanceof HTMLElement && extensionUiSettingsPanelEl instanceof HTMLElement) {
+      syncExtensionUiSettingsPanelState();
+      return extensionUiSettingsPanelEl;
+    }
+
+    const host = document.body || document.documentElement;
+    if (!(host instanceof HTMLElement)) return null;
+
+    const existingOverlay = document.getElementById(EXTENSION_UI_SETTINGS_OVERLAY_ID);
+    if (existingOverlay instanceof HTMLElement) {
+      extensionUiSettingsOverlayEl = existingOverlay;
+    }
+
+    const existingPanel = document.getElementById(EXTENSION_UI_SETTINGS_PANEL_ID);
+    if (existingPanel instanceof HTMLElement) {
+      extensionUiSettingsPanelEl = existingPanel;
+      syncExtensionUiSettingsPanelState();
+      return existingPanel;
+    }
+
+    ensureExtensionUiSettingsStyle(document);
+
+    const overlay = document.createElement('div');
+    overlay.id = EXTENSION_UI_SETTINGS_OVERLAY_ID;
+    overlay.className = EXTENSION_UI_SETTINGS_OVERLAY_CLASS;
+    overlay.hidden = true;
+    overlay.addEventListener('click', () => closeExtensionUiSettingsPanel(), { capture: true });
+
+    const panel = document.createElement('section');
+    panel.id = EXTENSION_UI_SETTINGS_PANEL_ID;
+    panel.className = EXTENSION_UI_SETTINGS_PANEL_CLASS;
+    panel.hidden = true;
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-modal', 'true');
+    panel.setAttribute('aria-label', 'Настройки элементов расширения');
+
+    const header = document.createElement('div');
+    header.className = 'dup-extension-ui-settings-header';
+    header.innerHTML = `
+      <div class="dup-extension-ui-settings-heading">
+        <div class="dup-extension-ui-settings-heading-title">Настройки элементов расширения</div>
+        <div class="dup-extension-ui-settings-heading-hint">${EXTENSION_UI_SETTINGS_HINT_TEXT}</div>
+      </div>
+    `;
+
+    const closeButton = document.createElement('button');
+    closeButton.type = 'button';
+    closeButton.className = 'dup-extension-ui-settings-close';
+    closeButton.setAttribute('aria-label', 'Закрыть настройки элементов расширения');
+    closeButton.textContent = '×';
+    closeButton.addEventListener('click', () => closeExtensionUiSettingsPanel(), { capture: true });
+    header.appendChild(closeButton);
+
+    const list = document.createElement('div');
+    list.className = 'dup-extension-ui-settings-list';
+
+    EXTENSION_UI_SETTING_DEFS.forEach((definition) => {
+      const label = document.createElement('label');
+      label.className = EXTENSION_UI_SETTINGS_ITEM_CLASS;
+
+      const textBlock = document.createElement('span');
+      textBlock.className = 'dup-extension-ui-settings-text';
+
+      const title = document.createElement('span');
+      title.className = EXTENSION_UI_SETTINGS_TITLE_CLASS;
+      title.textContent = definition.label;
+
+      const description = document.createElement('span');
+      description.className = EXTENSION_UI_SETTINGS_DESCRIPTION_CLASS;
+      description.textContent = definition.description;
+
+      textBlock.append(title, description);
+
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.checked = isExtensionUiSettingEnabled(definition.key);
+      input.setAttribute(EXTENSION_UI_SETTINGS_INPUT_ATTR, definition.key);
+      input.setAttribute('aria-label', definition.label);
+
+      label.append(textBlock, input);
+      list.appendChild(label);
+    });
+
+    list.addEventListener('change', (event) => {
+      const input = event.target instanceof HTMLInputElement
+        ? event.target
+        : null;
+      if (!input) return;
+
+      const settingKey = String(input.getAttribute(EXTENSION_UI_SETTINGS_INPUT_ATTR) || '').trim();
+      const definition = EXTENSION_UI_SETTING_DEF_BY_KEY[settingKey];
+      if (!definition) return;
+
+      extensionUiVisibilitySettings = {
+        ...extensionUiVisibilitySettings,
+        [definition.key]: input.checked
+      };
+      applyExtensionUiVisibilitySettings('panel-change');
+      chrome.storage.local.set({ [definition.storageKey]: input.checked });
+    }, { capture: true });
+
+    const footer = document.createElement('div');
+    footer.className = 'dup-extension-ui-settings-footer';
+    footer.textContent = 'Горячая клавиша: F2';
+
+    panel.append(header, list, footer);
+    host.append(overlay, panel);
+
+    extensionUiSettingsOverlayEl = overlay;
+    extensionUiSettingsPanelEl = panel;
+    syncExtensionUiSettingsPanelState();
+    return panel;
+  }
+
+  function openExtensionUiSettingsPanel() {
+    const panel = ensureExtensionUiSettingsPanel();
+    if (!(panel instanceof HTMLElement)) return false;
+
+    if (extensionUiSettingsOverlayEl instanceof HTMLElement) {
+      extensionUiSettingsOverlayEl.hidden = false;
+    }
+    panel.hidden = false;
+    syncExtensionUiSettingsPanelState();
+    return true;
+  }
+
+  function toggleExtensionUiSettingsPanel() {
+    const panel = ensureExtensionUiSettingsPanel();
+    if (!(panel instanceof HTMLElement)) return false;
+
+    if (panel.hidden) {
+      return openExtensionUiSettingsPanel();
+    }
+
+    closeExtensionUiSettingsPanel();
+    return false;
+  }
+
+  function installExtensionUiSettingsController() {
+    try {
+      window.__dupExtensionUiSettingsController = {
+        openPanel() {
+          return openExtensionUiSettingsPanel();
+        },
+        closePanel() {
+          closeExtensionUiSettingsPanel();
+          return false;
+        },
+        togglePanel() {
+          return toggleExtensionUiSettingsPanel();
+        },
+        isPanelOpen() {
+          return !!(extensionUiSettingsPanelEl instanceof HTMLElement && !extensionUiSettingsPanelEl.hidden);
+        }
+      };
+    } catch (error) {
+      // ignore
+    }
+  }
+
+  function applyExtensionUiVisibilitySettings(_source) {
+    collectAccessibleScreenshotDocuments().forEach((targetDocument) => {
+      syncExtensionUiVisibilityForDocument(targetDocument);
+    });
+
+    if (!isExtensionUiSettingEnabled('stageJumpButtons')) {
+      closeStageJumpActionMenu();
+    }
+
+    if (!isExtensionUiSettingEnabled('fsspGroupingToggle')) {
+      detachFsspReestrGroupingToggle();
+    } else if (isFsspReestrPage()) {
+      ensureFsspReestrGroupingToggle();
+    }
+
+    syncExtensionUiSettingsPanelState();
+  }
+
+  function loadExtensionUiVisibilitySettings() {
+    if (!isPyramidExtensionPage()) return;
+
+    chrome.storage.local.get(EXTENSION_UI_SETTINGS_STORAGE_KEYS, (rawSettings) => {
+      extensionUiVisibilitySettings = normalizeExtensionUiVisibilitySettings(rawSettings);
+      applyExtensionUiVisibilitySettings('storage-init');
+    });
+  }
+
+  function isExtensionUiSettingsHotkey(event) {
+    if (!event) return false;
+    if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return false;
+
+    const key = String(event.key || '');
+    const code = String(event.code || '');
+    const keyCode = Number(event.keyCode || event.which || 0);
+    return key === 'F2' || code === 'F2' || keyCode === KEY_CODE_F2;
+  }
+
+  function handleExtensionUiSettingsHotkey(event) {
+    if (!isPyramidExtensionPage()) return;
+    if (!isExtensionUiSettingsHotkey(event)) return;
+    if (event.defaultPrevented) return;
+
+    suppressHotkeyEvent(event);
+    if (event.type !== 'keydown' || event.repeat) return;
+    toggleExtensionUiSettingsPanel();
+  }
+
+  function handleExtensionUiSettingsEscape(event) {
+    if (!(extensionUiSettingsPanelEl instanceof HTMLElement) || extensionUiSettingsPanelEl.hidden) return;
+    if (event.defaultPrevented) return;
+    if (event.ctrlKey || event.altKey || event.metaKey) return;
+
+    const key = String(event.key || '');
+    const code = String(event.code || '');
+    const keyCode = Number(event.keyCode || event.which || 0);
+    if (key !== 'Escape' && code !== 'Escape' && keyCode !== 27) return;
+
+    suppressHotkeyEvent(event);
+    if (event.type !== 'keydown' || event.repeat) return;
+    closeExtensionUiSettingsPanel();
+  }
+
+  function initExtensionUiSettings() {
+    if (!isPyramidExtensionPage()) return;
+    installExtensionUiSettingsController();
+    loadExtensionUiVisibilitySettings();
+    document.addEventListener('keydown', handleExtensionUiSettingsHotkey, true);
+    document.addEventListener('keyup', handleExtensionUiSettingsHotkey, true);
+    document.addEventListener('keydown', handleExtensionUiSettingsEscape, true);
+    document.addEventListener('keyup', handleExtensionUiSettingsEscape, true);
+  }
+
   function ensureScreenshotHideStyle(targetDocument) {
     const doc = targetDocument && typeof targetDocument.getElementById === 'function'
       ? targetDocument
@@ -559,6 +1081,7 @@
     if (!root) return;
 
     ensureScreenshotHideStyle(doc);
+    ensureExtensionUiSettingsStyle(doc);
 
     if (hidden) {
       toggleSeasonalThemeForScreenshot(doc, true);
@@ -586,6 +1109,9 @@
     const nextState = !!hidden;
     if (nextState === screenshotAutoHideIsActive) return;
     screenshotAutoHideIsActive = nextState;
+    if (!nextState) {
+      screenshotAutoHideDurationMs = SCREENSHOT_HIDE_DURATION_MS;
+    }
     applyScreenshotModeState(source);
   }
 
@@ -627,15 +1153,31 @@
     }
   }
 
-  function scheduleScreenshotHide(source) {
+  function resolveScreenshotHideDurationMs(triggerKey) {
+    return triggerKey === 'PrintScreen'
+      ? SCREENSHOT_HIDE_PRINT_SCREEN_DURATION_MS
+      : SCREENSHOT_HIDE_DURATION_MS;
+  }
+
+  function resolveScreenshotHideOnBlurDurationMs() {
+    return Math.max(
+      screenshotAutoHideDurationMs,
+      screenshotAutoHideDurationMs >= SCREENSHOT_HIDE_PRINT_SCREEN_DURATION_MS
+        ? SCREENSHOT_HIDE_PRINT_SCREEN_ON_BLUR_DURATION_MS
+        : SCREENSHOT_HIDE_ON_BLUR_DURATION_MS
+    );
+  }
+
+  function scheduleScreenshotHide(source, triggerKey) {
     ensureScreenshotHideStyle();
+    screenshotAutoHideDurationMs = resolveScreenshotHideDurationMs(triggerKey);
     setScreenshotAutoHideState(true, source);
 
     if (screenshotHideTimer) clearTimeout(screenshotHideTimer);
     screenshotHideTimer = setTimeout(() => {
       screenshotHideTimer = null;
       setScreenshotAutoHideState(false, 'timeout');
-    }, SCREENSHOT_HIDE_DURATION_MS);
+    }, screenshotAutoHideDurationMs);
   }
 
   function resolveScreenshotTriggerKey(event) {
@@ -707,9 +1249,9 @@
     if (event.type === 'keydown' && event.repeat) return;
 
     const nowMs = Date.now();
-    if ((nowMs - lastScreenshotTriggerAtMs) < 150) return;
+    if ((nowMs - lastScreenshotTriggerAtMs) < SCREENSHOT_THROTTLE_MS) return;
     lastScreenshotTriggerAtMs = nowMs;
-    scheduleScreenshotHide(`hotkey:${triggerKey}:${event.type}`);
+    scheduleScreenshotHide(`hotkey:${triggerKey}:${event.type}`, triggerKey);
   }
 
   function handleScreenshotFrameBridgeMessage(event) {
@@ -723,6 +1265,9 @@
       ? data.source
       : 'iframe-hotkey';
     const command = String(data.command || '');
+    const triggerKey = typeof data.triggerKey === 'string'
+      ? data.triggerKey
+      : '';
 
     if (command === 'toggle-manual') {
       setScreenshotManualModeState(!screenshotManualModeIsActive, source);
@@ -732,9 +1277,9 @@
     if (command !== 'schedule-autohide') return;
 
     const nowMs = Date.now();
-    if ((nowMs - lastScreenshotTriggerAtMs) < 150) return;
+    if ((nowMs - lastScreenshotTriggerAtMs) < SCREENSHOT_THROTTLE_MS) return;
     lastScreenshotTriggerAtMs = nowMs;
-    scheduleScreenshotHide(source);
+    scheduleScreenshotHide(source, triggerKey);
   }
 
   function initScreenshotHideMode() {
@@ -751,7 +1296,7 @@
       screenshotHideTimer = setTimeout(() => {
         screenshotHideTimer = null;
         setScreenshotAutoHideState(false, 'blur-timeout');
-      }, SCREENSHOT_HIDE_ON_BLUR_DURATION_MS);
+      }, resolveScreenshotHideOnBlurDurationMs());
     });
   }
 
@@ -951,7 +1496,7 @@
   }
 
   function ensureFsspReestrGroupingToggle() {
-    if (!isFsspReestrPage()) {
+    if (!isFsspReestrPage() || !isExtensionUiSettingEnabled('fsspGroupingToggle')) {
       detachFsspReestrGroupingToggle();
       return;
     }
@@ -1548,6 +2093,7 @@
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
     let highlightSettingsChanged = false;
+    let extensionUiSettingsChanged = false;
     for (let key in changes) {
       if (key === 'setting_copy_mode') {
         isCopyModeEnabled = !!changes[key].newValue;
@@ -1556,10 +2102,22 @@
         currentHighlightSettings[key] = changes[key].newValue;
         highlightSettingsChanged = true;
       }
+
+      const extensionSetting = EXTENSION_UI_SETTING_DEF_BY_STORAGE_KEY[key];
+      if (extensionSetting) {
+        extensionUiVisibilitySettings[extensionSetting.key] =
+          typeof changes[key].newValue === 'boolean'
+            ? changes[key].newValue
+            : EXTENSION_UI_SETTINGS_DEFAULTS[extensionSetting.key];
+        extensionUiSettingsChanged = true;
+      }
     }
     if (highlightSettingsChanged) {
       // Немедленно запускаем проверку, если изменились настройки
       runCheck();
+    }
+    if (extensionUiSettingsChanged) {
+      applyExtensionUiVisibilitySettings('storage-change');
     }
   });
 
@@ -2985,6 +3543,11 @@
   }
 
   function toggleStageJumpActionMenu(anchorButton) {
+    if (!isExtensionUiSettingEnabled('stageJumpButtons')) {
+      closeStageJumpActionMenu();
+      return;
+    }
+
     const menu = ensureStageJumpActionMenu();
     if (!menu || !anchorButton) return;
 
@@ -4493,9 +5056,10 @@
   initStageJumpDebtIdFilterFromHash();
   initStageJumpExecutionAnalysisFromStorage();
   initSlowsearchDebtIdFilterFromHash();
+  initScreenshotHideMode();
+  initExtensionUiSettings();
   initStageJumpButtons();
   initSlowsearchJumpButtons();
-  initScreenshotHideMode();
   init();
 
   // --- Логика модального окна для подтверждения действий ---
