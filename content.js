@@ -106,7 +106,7 @@
   const EXTENSION_UI_SETTINGS_TITLE_CLASS = 'dup-extension-ui-settings-title';
   const EXTENSION_UI_SETTINGS_DESCRIPTION_CLASS = 'dup-extension-ui-settings-description';
   const EXTENSION_UI_SETTINGS_INPUT_ATTR = 'data-dup-ui-setting';
-  const EXTENSION_UI_SETTINGS_HINT_TEXT = 'Состояние сохраняется для всех страниц *.pyramid.vostok-electra.ru/*.';
+  const EXTENSION_UI_SETTINGS_HINT_TEXT = 'Состояние сохраняется для pyramid.vostok-electra.ru и всех его поддоменов.';
   const LEGACY_SEASONAL_THEME_STORAGE_KEYS = Object.freeze([
     'dup_ui_show_new_year_theme',
     'dup_ui_show_spring_theme'
@@ -633,7 +633,12 @@
 
   function isPyramidExtensionPage() {
     const hostname = String(window.location.hostname || '').toLowerCase();
-    return hostname.endsWith('.pyramid.vostok-electra.ru') || hostname.endsWith('.pyramid-vostok.electra.ru');
+    return (
+      hostname === 'pyramid.vostok-electra.ru' ||
+      hostname === 'pyramid-vostok.electra.ru' ||
+      hostname.endsWith('.pyramid.vostok-electra.ru') ||
+      hostname.endsWith('.pyramid-vostok.electra.ru')
+    );
   }
 
   function normalizeExtensionUiVisibilitySettings(rawSettings) {

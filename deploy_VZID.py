@@ -58,7 +58,9 @@ def create_minimal_manifest(version):
         "content_scripts": [
             {
                 "matches": [
+                    "*://pyramid.vostok-electra.ru/*",
                     "*://*.pyramid.vostok-electra.ru/*",
+                    "*://pyramid-vostok.electra.ru/*",
                     "*://*.pyramid-vostok.electra.ru/*"
                 ],
                 "css": [
@@ -73,7 +75,9 @@ def create_minimal_manifest(version):
             },
             {
                 "matches": [
+                    "*://pyramid.vostok-electra.ru/*",
                     "*://*.pyramid.vostok-electra.ru/*",
+                    "*://pyramid-vostok.electra.ru/*",
                     "*://*.pyramid-vostok.electra.ru/*"
                 ],
                 "js": [

@@ -78,7 +78,9 @@
     },
     {
       "matches": [
+        "*://pyramid.vostok-electra.ru/*",
         "*://*.pyramid.vostok-electra.ru/*",
+        "*://pyramid-vostok.electra.ru/*",
         "*://*.pyramid-vostok.electra.ru/*"
       ],
       "js": [
@@ -89,7 +91,9 @@
     },
     {
       "matches": [
+        "*://pyramid.vostok-electra.ru/*",
         "*://*.pyramid.vostok-electra.ru/*",
+        "*://pyramid-vostok.electra.ru/*",
         "*://*.pyramid-vostok.electra.ru/*"
       ],
       "css": [
@@ -104,6 +108,7 @@
     },
     {
       "matches": [
+        "*://pyramid.vostok-electra.ru/*",
         "*://*.pyramid.vostok-electra.ru/*"
       ],
       "css": [

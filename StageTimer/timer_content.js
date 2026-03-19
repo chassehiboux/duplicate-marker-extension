@@ -70,7 +70,7 @@
     const EXTENSION_UI_SETTINGS_TITLE_CLASS = "dup-extension-ui-settings-title";
     const EXTENSION_UI_SETTINGS_DESCRIPTION_CLASS = "dup-extension-ui-settings-description";
     const EXTENSION_UI_SETTINGS_INPUT_ATTR = "data-dup-ui-setting";
-    const EXTENSION_UI_SETTINGS_HINT_TEXT = "Состояние сохраняется для всех страниц *.pyramid.vostok-electra.ru/*.";
+    const EXTENSION_UI_SETTINGS_HINT_TEXT = "Состояние сохраняется для pyramid.vostok-electra.ru и всех его поддоменов.";
     const EXTENSION_UI_GLOBAL_CONFIG = (() => {
         const rawConfig = window.PYRAMID_EXTENSION_UI_CONFIG && typeof window.PYRAMID_EXTENSION_UI_CONFIG === "object"
             ? window.PYRAMID_EXTENSION_UI_CONFIG
