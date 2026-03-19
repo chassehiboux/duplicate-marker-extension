@@ -548,7 +548,6 @@
 
     function handleExtensionUiSettingsHotkey(event) {
         if (!isExtensionUiSettingsHotkey(event)) return;
-        if (event.defaultPrevented) return;
 
         suppressHotkeyEvent(event);
         if (event.type !== "keydown" || event.repeat) return;
@@ -565,7 +564,6 @@
 
     function handleExtensionUiSettingsEscape(event) {
         if (!(timerUiSettingsPanelEl instanceof HTMLElement) || timerUiSettingsPanelEl.hidden) return;
-        if (event.defaultPrevented) return;
         if (event.ctrlKey || event.altKey || event.metaKey) return;
 
         const key = String(event.key || "");
@@ -630,6 +628,18 @@
         const triggerKey = typeof data.triggerKey === "string"
             ? data.triggerKey
             : "";
+
+        if (command === "toggle-ui-settings") {
+            const externalController = getExternalExtensionUiSettingsController();
+            if (externalController) {
+                externalController.togglePanel();
+                return;
+            }
+            if (isStandaloneStageTimerBuild) {
+                toggleTimerUiSettingsPanel();
+            }
+            return;
+        }
 
         if (command === "toggle-manual") {
             setLocalManualScreenshotMode(!screenshotManualModeIsActive);

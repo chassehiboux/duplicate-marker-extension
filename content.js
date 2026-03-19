@@ -107,6 +107,10 @@
   const EXTENSION_UI_SETTINGS_DESCRIPTION_CLASS = 'dup-extension-ui-settings-description';
   const EXTENSION_UI_SETTINGS_INPUT_ATTR = 'data-dup-ui-setting';
   const EXTENSION_UI_SETTINGS_HINT_TEXT = 'Состояние сохраняется для всех страниц *.pyramid.vostok-electra.ru/*.';
+  const LEGACY_SEASONAL_THEME_STORAGE_KEYS = Object.freeze([
+    'dup_ui_show_new_year_theme',
+    'dup_ui_show_spring_theme'
+  ]);
   const EXTENSION_UI_SETTING_DEFS = Object.freeze([
     {
       key: 'duplicateHighlights',
@@ -255,36 +259,56 @@
       `
     },
     {
-      key: 'newYearTheme',
-      storageKey: 'dup_ui_show_new_year_theme',
-      label: 'Новогоднее оформление',
-      description: 'Снег, гирлянды и зимний переключатель.',
-      hideClass: 'dup-ui-hide-new-year-theme',
+      key: 'seasonalTheme',
+      storageKey: 'dup_ui_show_seasonal_theme',
+      label: 'Сезонное оформление',
+      description: 'Новогодние и весенние декоративные элементы вместе.',
+      hideClass: 'dup-ui-hide-seasonal-theme',
       hideCss: `
-        html.dup-ui-hide-new-year-theme .ny-header-item,
-        html.dup-ui-hide-new-year-theme #nySwicher,
-        html.dup-ui-hide-new-year-theme .material-switch-newYear,
-        html.dup-ui-hide-new-year-theme .ny-snow-container,
-        html.dup-ui-hide-new-year-theme .ny-garland-container,
-        html.dup-ui-hide-new-year-theme .ny-element,
-        html.dup-ui-hide-new-year-theme .snowflake {
+        html.dup-ui-hide-seasonal-theme .ny-header-item,
+        html.dup-ui-hide-seasonal-theme #nySwicher,
+        html.dup-ui-hide-seasonal-theme .material-switch-newYear,
+        html.dup-ui-hide-seasonal-theme .spring-header-item,
+        html.dup-ui-hide-seasonal-theme #springSwitcher,
+        html.dup-ui-hide-seasonal-theme .material-switch-spring,
+        html.dup-ui-hide-seasonal-theme .ny-snow-container,
+        html.dup-ui-hide-seasonal-theme .ny-garland-container,
+        html.dup-ui-hide-seasonal-theme .spring-petal-layer,
+        html.dup-ui-hide-seasonal-theme .spring-petal,
+        html.dup-ui-hide-seasonal-theme .ny-element,
+        html.dup-ui-hide-seasonal-theme .snowflake,
+        html.dup-ui-hide-seasonal-theme .spring-element {
           display: none !important;
         }
       `
     },
     {
-      key: 'springTheme',
-      storageKey: 'dup_ui_show_spring_theme',
-      label: 'Весеннее оформление',
-      description: 'Лепестки и весенний переключатель.',
-      hideClass: 'dup-ui-hide-spring-theme',
+      key: 'seasonalThemeSettings',
+      storageKey: 'dup_ui_show_seasonal_theme_settings',
+      label: 'Настройки сезонного оформления',
+      description: 'Кнопка открытия и окно сезонных настроек.',
+      hideClass: 'dup-ui-hide-seasonal-theme-settings',
       hideCss: `
-        html.dup-ui-hide-spring-theme .spring-header-item,
-        html.dup-ui-hide-spring-theme #springSwitcher,
-        html.dup-ui-hide-spring-theme .material-switch-spring,
-        html.dup-ui-hide-spring-theme .spring-petal-layer,
-        html.dup-ui-hide-spring-theme .spring-petal,
-        html.dup-ui-hide-spring-theme .spring-element {
+        html.dup-ui-hide-seasonal-theme-settings #pyramid-seasonal-theme-settings-launcher,
+        html.dup-ui-hide-seasonal-theme-settings .seasonal-theme-settings-header-item,
+        html.dup-ui-hide-seasonal-theme-settings .seasonal-theme-settings-launcher,
+        html.dup-ui-hide-seasonal-theme-settings #pyramid-seasonal-theme-settings-overlay,
+        html.dup-ui-hide-seasonal-theme-settings .seasonal-theme-settings-overlay,
+        html.dup-ui-hide-seasonal-theme-settings .seasonal-theme-settings-panel,
+        html.dup-ui-hide-seasonal-theme-settings .seasonal-theme-settings-element {
+          display: none !important;
+        }
+      `
+    },
+    {
+      key: 'columnManager',
+      storageKey: 'dup_ui_show_column_manager',
+      label: 'Настройка столбцов',
+      description: 'Кнопка настройки столбцов и её модальное окно.',
+      hideClass: 'dup-ui-hide-column-manager',
+      hideCss: `
+        html.dup-ui-hide-column-manager #jqgrid-manager-btn,
+        html.dup-ui-hide-column-manager .jq-ext-modal-overlay {
           display: none !important;
         }
       `
@@ -606,6 +630,15 @@
       }
     });
 
+    if (typeof rawSettings.dup_ui_show_seasonal_theme !== 'boolean') {
+      const legacySeasonalValues = LEGACY_SEASONAL_THEME_STORAGE_KEYS
+        .map((storageKey) => rawSettings[storageKey])
+        .filter((value) => typeof value === 'boolean');
+      if (legacySeasonalValues.length > 0) {
+        normalized.seasonalTheme = legacySeasonalValues.every((value) => value !== false);
+      }
+    }
+
     return normalized;
   }
 
@@ -859,7 +892,6 @@
   function handleExtensionUiSettingsHotkey(event) {
     if (!isPyramidExtensionPage()) return;
     if (!isExtensionUiSettingsHotkey(event)) return;
-    if (event.defaultPrevented) return;
 
     suppressHotkeyEvent(event);
     if (event.type !== 'keydown' || event.repeat) return;
@@ -868,7 +900,6 @@
 
   function handleExtensionUiSettingsEscape(event) {
     if (!(extensionUiSettingsPanelEl instanceof HTMLElement) || extensionUiSettingsPanelEl.hidden) return;
-    if (event.defaultPrevented) return;
     if (event.ctrlKey || event.altKey || event.metaKey) return;
 
     const key = String(event.key || '');
@@ -1268,6 +1299,11 @@
     const triggerKey = typeof data.triggerKey === 'string'
       ? data.triggerKey
       : '';
+
+    if (command === 'toggle-ui-settings') {
+      toggleExtensionUiSettingsPanel();
+      return;
+    }
 
     if (command === 'toggle-manual') {
       setScreenshotManualModeState(!screenshotManualModeIsActive, source);

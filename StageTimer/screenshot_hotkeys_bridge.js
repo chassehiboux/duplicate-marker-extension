@@ -3,6 +3,7 @@
     const KEY_CODE_PAGE_DOWN = 34;
     const KEY_CODE_PRINT_SCREEN = 44;
     const KEY_CODE_F1 = 112;
+    const KEY_CODE_F2 = 113;
     const KEY_CODE_F8 = 119;
     const SCREENSHOT_MANUAL_KEY = "S";
 
@@ -80,6 +81,16 @@
         return key === "F1" || code === "F1" || keyCode === KEY_CODE_F1;
     }
 
+    function isExtensionUiSettingsHotkey(event) {
+        if (!event) return false;
+        if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return false;
+
+        const key = String(event.key || "");
+        const code = String(event.code || "");
+        const keyCode = Number(event.keyCode || event.which || 0);
+        return key === "F2" || code === "F2" || keyCode === KEY_CODE_F2;
+    }
+
     function suppressHotkeyEvent(event) {
         if (!event) return;
         if (typeof event.preventDefault === "function") event.preventDefault();
@@ -96,6 +107,15 @@
         postScreenshotCommandToTop("toggle-manual", "iframe-hotkey:F1", event.type);
     }
 
+    function handleExtensionUiSettingsHotkey(event) {
+        if (!isExtensionUiSettingsHotkey(event)) return;
+
+        suppressHotkeyEvent(event);
+        if (event.type !== "keydown" || event.repeat) return;
+
+        postScreenshotCommandToTop("toggle-ui-settings", "iframe-hotkey:F2", event.type, "F2");
+    }
+
     function handleScreenshotHotkey(event) {
         const triggerKey = resolveScreenshotTriggerKey(event);
         if (!triggerKey) return;
@@ -106,6 +126,8 @@
 
     document.addEventListener("keydown", handleScreenshotToggleHotkey, true);
     document.addEventListener("keyup", handleScreenshotToggleHotkey, true);
+    document.addEventListener("keydown", handleExtensionUiSettingsHotkey, true);
+    document.addEventListener("keyup", handleExtensionUiSettingsHotkey, true);
     document.addEventListener("keydown", handleScreenshotHotkey, true);
     document.addEventListener("keyup", handleScreenshotHotkey, true);
 })();
