@@ -561,22 +561,9 @@
     const seen = new Set();
 
     entries.forEach((entry) => {
-      if (!entry || !(entry.row instanceof HTMLTableRowElement)) return;
-
-      const rowCells = entry.row.querySelectorAll('td');
-      if (!rowCells.length) {
-        if (!seen.has(entry.row)) {
-          seen.add(entry.row);
-          uniqueElements.push(entry.row);
-        }
-        return;
-      }
-
-      rowCells.forEach((cell) => {
-        if (!(cell instanceof HTMLElement) || seen.has(cell)) return;
-        seen.add(cell);
-        uniqueElements.push(cell);
-      });
+      if (!entry || !(entry.cell instanceof HTMLElement) || seen.has(entry.cell)) return;
+      seen.add(entry.cell);
+      uniqueElements.push(entry.cell);
     });
 
     return uniqueElements;
