@@ -453,6 +453,86 @@
     return el.textContent.trim();
   }
 
+  function normalizeGridBulkCopyValue(rawValue) {
+    return String(rawValue || '')
+      .replace(/\r?\n+/g, ' ')
+      .replace(/\u00a0/g, ' ')
+      .trim();
+  }
+
+  function getGridBulkCopyTargetCell(target) {
+    const baseTarget = target instanceof Element
+      ? target
+      : target instanceof Node
+        ? target.parentElement
+        : null;
+    if (!(baseTarget instanceof Element)) return null;
+    const cell = baseTarget.closest('td[role="gridcell"], td[aria-describedby]');
+    return cell instanceof HTMLTableCellElement ? cell : null;
+  }
+
+  function getGridTableFromCell(cell) {
+    if (!(cell instanceof HTMLTableCellElement)) return null;
+
+    const directTable = cell.closest('table.ui-jqgrid-btable');
+    if (directTable instanceof HTMLTableElement) return directTable;
+
+    const jqGridRoot = cell.closest('.ui-jqgrid');
+    if (jqGridRoot) {
+      const rootTable = jqGridRoot.querySelector('table.ui-jqgrid-btable');
+      if (rootTable instanceof HTMLTableElement) return rootTable;
+    }
+
+    const fallbackTable = cell.closest('table');
+    return fallbackTable instanceof HTMLTableElement ? fallbackTable : null;
+  }
+
+  function findGridRowCellByAriaId(row, ariaId) {
+    if (!(row instanceof HTMLTableRowElement)) return null;
+    const normalizedAriaId = String(ariaId || '').trim();
+    if (!normalizedAriaId) return null;
+
+    const cells = row.querySelectorAll('td[aria-describedby]');
+    for (const cell of cells) {
+      if (!(cell instanceof HTMLTableCellElement)) continue;
+      if (String(cell.getAttribute('aria-describedby') || '').trim() === normalizedAriaId) {
+        return cell;
+      }
+    }
+
+    return null;
+  }
+
+  function getGridDataRows(gridTable) {
+    if (!(gridTable instanceof HTMLTableElement)) return [];
+
+    return Array.from(gridTable.querySelectorAll('tbody > tr')).filter((row) => {
+      if (!(row instanceof HTMLTableRowElement)) return false;
+      if (row.classList.contains('jqgfirstrow')) return false;
+      if (!row.querySelector('td[aria-describedby]')) return false;
+      return isStageJumpElementVisible(row);
+    });
+  }
+
+  function collectGridColumnValues(targetCell) {
+    if (!(targetCell instanceof HTMLTableCellElement)) return [];
+
+    const ariaId = String(targetCell.getAttribute('aria-describedby') || '').trim();
+    if (!ariaId) return [];
+
+    const gridTable = getGridTableFromCell(targetCell);
+    if (!(gridTable instanceof HTMLTableElement)) return [];
+
+    const values = [];
+    getGridDataRows(gridTable).forEach((row) => {
+      const cell = findGridRowCellByAriaId(row, ariaId);
+      if (!cell) return;
+      values.push(normalizeGridBulkCopyValue(getSmartValue(cell)));
+    });
+
+    return values;
+  }
+
   function captureInlineStyleSnapshot(element) {
     const snapshot = {};
     const style = element && element.style;
@@ -2252,6 +2332,34 @@
       const val = getSmartValue(targetCell);
       if (val) navigator.clipboard.writeText(val).then(() => showSuccessFeedback(targetCell));
     }
+  }, true);
+
+  document.addEventListener('mousedown', function(e) {
+    if (!isCopyModeEnabled) return;
+    if (!e || e.button !== 1) return;
+
+    const targetCell = getGridBulkCopyTargetCell(e.target);
+    if (!targetCell) return;
+    if (!String(targetCell.getAttribute('aria-describedby') || '').trim()) return;
+    if (!getGridTableFromCell(targetCell)) return;
+
+    e.preventDefault();
+  }, true);
+
+  document.addEventListener('auxclick', function(e) {
+    if (!isCopyModeEnabled) return;
+    if (!e || e.button !== 1) return;
+
+    const targetCell = getGridBulkCopyTargetCell(e.target);
+    if (!targetCell) return;
+
+    const values = collectGridColumnValues(targetCell);
+    if (!values.length) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    navigator.clipboard.writeText(values.join('\n')).then(() => showSuccessFeedback(targetCell));
   }, true);
 
   document.addEventListener('click', function(e) {
