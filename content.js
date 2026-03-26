@@ -533,6 +533,55 @@
     return values;
   }
 
+  function collectGridColumnCopyEntries(targetCell) {
+    if (!(targetCell instanceof HTMLTableCellElement)) return [];
+
+    const ariaId = String(targetCell.getAttribute('aria-describedby') || '').trim();
+    if (!ariaId) return [];
+
+    const gridTable = getGridTableFromCell(targetCell);
+    if (!(gridTable instanceof HTMLTableElement)) return [];
+
+    const entries = [];
+    getGridDataRows(gridTable).forEach((row) => {
+      const cell = findGridRowCellByAriaId(row, ariaId);
+      if (!cell) return;
+      entries.push({
+        row,
+        cell,
+        value: normalizeGridBulkCopyValue(getSmartValue(cell))
+      });
+    });
+
+    return entries;
+  }
+
+  function getGridBulkCopyFeedbackElements(entries) {
+    const uniqueElements = [];
+    const seen = new Set();
+
+    entries.forEach((entry) => {
+      if (!entry || !(entry.row instanceof HTMLTableRowElement)) return;
+
+      const rowCells = entry.row.querySelectorAll('td');
+      if (!rowCells.length) {
+        if (!seen.has(entry.row)) {
+          seen.add(entry.row);
+          uniqueElements.push(entry.row);
+        }
+        return;
+      }
+
+      rowCells.forEach((cell) => {
+        if (!(cell instanceof HTMLElement) || seen.has(cell)) return;
+        seen.add(cell);
+        uniqueElements.push(cell);
+      });
+    });
+
+    return uniqueElements;
+  }
+
   function captureInlineStyleSnapshot(element) {
     const snapshot = {};
     const style = element && element.style;
@@ -596,6 +645,13 @@
     successFeedbackState.set(element, {
       snapshot,
       timerId
+    });
+  }
+
+  function showSuccessFeedbackBatch(elements) {
+    if (!Array.isArray(elements) || !elements.length) return;
+    elements.forEach((element) => {
+      showSuccessFeedback(element);
     });
   }
 
@@ -2353,13 +2409,18 @@
     const targetCell = getGridBulkCopyTargetCell(e.target);
     if (!targetCell) return;
 
-    const values = collectGridColumnValues(targetCell);
-    if (!values.length) return;
+    const copyEntries = collectGridColumnCopyEntries(targetCell);
+    if (!copyEntries.length) return;
+
+    const values = copyEntries.map((entry) => entry.value);
+    const feedbackElements = getGridBulkCopyFeedbackElements(copyEntries);
 
     e.preventDefault();
     e.stopPropagation();
 
-    navigator.clipboard.writeText(values.join('\n')).then(() => showSuccessFeedback(targetCell));
+    navigator.clipboard.writeText(values.join('\n')).then(() => {
+      showSuccessFeedbackBatch(feedbackElements);
+    });
   }, true);
 
   document.addEventListener('click', function(e) {
