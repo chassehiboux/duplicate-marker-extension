@@ -38,11 +38,11 @@
             // Кнопка группировки записей ФССП.
             fsspGroupingToggle: null,
             // Инструменты пакетной проверки ИНН и смерти.
-            innBatchTools: null,
+            innBatchTools: false,
             // Новогоднее/весеннее сезонное оформление.
-            seasonalTheme: null,
+            seasonalTheme: false,
             // Кнопка "Настройки сезонного оформления" и связанные панели.
-            seasonalThemeSettings: null,
+            seasonalThemeSettings: false,
             // Кнопка "Настройка столбцов" и её модальное окно.
             columnManager: null
         }
