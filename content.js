@@ -18,6 +18,8 @@
   const KEY_CODE_PRINT_SCREEN = 44;
   const KEY_CODE_F1 = 112;
   const KEY_CODE_F2 = 113;
+  const KEY_CODE_F3 = 114;
+  const KEY_CODE_F4 = 115;
   const KEY_CODE_F8 = 119;
   const SCREENSHOT_MANUAL_KEY = 'S';
   const STAGE_JUMP_HASH_KEY = 'dup_stage_jump_debtid';
@@ -578,6 +580,24 @@
       if (!row.querySelector('td[aria-describedby]')) return false;
       return isStageJumpElementVisible(row);
     });
+  }
+
+  function isEditableInteractionTarget(target) {
+    const element = target instanceof Element
+      ? target
+      : target instanceof Node
+        ? target.parentElement
+        : null;
+    if (!(element instanceof Element)) return false;
+
+    if (element.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"], [role="textbox"]')) {
+      return true;
+    }
+
+    const activeElement = document.activeElement;
+    if (!(activeElement instanceof HTMLElement)) return false;
+    if (activeElement.isContentEditable) return true;
+    return activeElement.matches('input, textarea, select, [role="textbox"]');
   }
 
   function collectGridColumnValues(targetCell) {
@@ -1161,6 +1181,96 @@
     document.addEventListener('keyup', handleExtensionUiSettingsHotkey, true);
     document.addEventListener('keydown', handleExtensionUiSettingsEscape, true);
     document.addEventListener('keyup', handleExtensionUiSettingsEscape, true);
+  }
+
+  function resolveFilteredIdNavigationDirection(event) {
+    if (!event) return 0;
+    if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return 0;
+
+    const key = String(event.key || '');
+    const code = String(event.code || '');
+    const keyCode = Number(event.keyCode || event.which || 0);
+    if (key === 'F3' || code === 'F3' || keyCode === KEY_CODE_F3) return 1;
+    if (key === 'F4' || code === 'F4' || keyCode === KEY_CODE_F4) return -1;
+    return 0;
+  }
+
+  function getFilteredIdNavigationRows() {
+    const gridElement = getStageJumpGridElement();
+    if (!(gridElement instanceof HTMLTableElement)) return [];
+
+    return getGridDataRows(gridElement).filter((row) => {
+      return !!findGridRowCellByAriaId(row, 'list_DebtID');
+    });
+  }
+
+  function getCurrentFilteredIdNavigationRow(rows) {
+    if (!Array.isArray(rows) || rows.length === 0) return null;
+
+    const activeElement = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+
+    return rows.find((row) => {
+      if (!(row instanceof HTMLTableRowElement)) return false;
+      if (row.getAttribute('aria-selected') === 'true') return true;
+      if (row.classList.contains('ui-state-highlight')) return true;
+      const checkbox = row.querySelector('input.cbox[type="checkbox"]');
+      if (checkbox instanceof HTMLInputElement && checkbox.checked) return true;
+      return !!(activeElement && row.contains(activeElement));
+    }) || null;
+  }
+
+  function selectFilteredIdNavigationRow(row) {
+    if (!(row instanceof HTMLTableRowElement)) return false;
+
+    try {
+      row.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    } catch (error) {
+      // ignore
+    }
+
+    const rowId = String(row.id || '').trim();
+    if (rowId && window.jQuery && window.jQuery.fn && window.jQuery.fn.jqGrid) {
+      try {
+        window.jQuery('#list').jqGrid('setSelection', rowId, true);
+      } catch (error) {
+        // ignore
+      }
+    }
+
+    if (row.getAttribute('aria-selected') !== 'true' && !row.classList.contains('ui-state-highlight')) {
+      row.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    }
+
+    return row.getAttribute('aria-selected') === 'true' || row.classList.contains('ui-state-highlight');
+  }
+
+  function handleFilteredIdNavigationHotkey(event) {
+    const direction = resolveFilteredIdNavigationDirection(event);
+    if (!direction) return;
+    if (event.defaultPrevented) return;
+    if (event.type !== 'keydown' || event.repeat) return;
+    if (!isPyramidExtensionPage()) return;
+    if (isEditableInteractionTarget(event.target)) return;
+
+    const rows = getFilteredIdNavigationRows();
+    if (rows.length === 0) return;
+
+    suppressHotkeyEvent(event);
+
+    const currentRow = getCurrentFilteredIdNavigationRow(rows);
+    const currentIndex = currentRow ? rows.indexOf(currentRow) : -1;
+    const targetIndex = currentIndex >= 0
+      ? Math.min(Math.max(currentIndex + direction, 0), rows.length - 1)
+      : (direction > 0 ? 0 : rows.length - 1);
+
+    selectFilteredIdNavigationRow(rows[targetIndex]);
+  }
+
+  function initFilteredIdNavigationHotkeys() {
+    if (!isPyramidExtensionPage()) return;
+    document.addEventListener('keydown', handleFilteredIdNavigationHotkey, true);
   }
 
   function ensureScreenshotHideStyle(targetDocument) {
@@ -2961,24 +3071,24 @@
     style.textContent = `
       .${DEPARTMENT_DROPDOWN_TOGGLE_ROW_CLASS} {
         list-style: none;
-        padding: 4px 12px 6px;
+        padding: 2px 12px 1px;
         margin: 0;
       }
 
       .${DEPARTMENT_DROPDOWN_TOGGLE_LABEL_CLASS} {
         display: inline-flex;
         align-items: center;
-        gap: 6px;
+        gap: 4px;
         margin: 0;
-        font-size: 11px;
-        line-height: 1.2;
+        font-size: 10px;
+        line-height: 1.05;
         font-weight: 400;
         cursor: pointer;
       }
 
       .${DEPARTMENT_DROPDOWN_TOGGLE_CHECKBOX_CLASS} {
-        width: 12px;
-        height: 12px;
+        width: 11px;
+        height: 11px;
         margin: 0;
         flex: 0 0 auto;
       }
@@ -5606,6 +5716,7 @@
   initSlowsearchDebtIdFilterFromHash();
   initScreenshotHideMode();
   initExtensionUiSettings();
+  initFilteredIdNavigationHotkeys();
   initDepartmentDropdownFilter();
   initStageJumpButtons();
   initSlowsearchJumpButtons();
