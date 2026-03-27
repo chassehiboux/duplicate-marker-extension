@@ -35,6 +35,8 @@
             stageTimerAbort: null,
             // Кнопки быстрых переходов StageJump.
             stageJumpButtons: null,
+            // Фильтр depid и переключатель показа скрытых департаментов.
+            departmentDropdownFilter: null,
             // Кнопка группировки записей ФССП.
             fsspGroupingToggle: null,
             // Инструменты пакетной проверки ИНН и смерти.

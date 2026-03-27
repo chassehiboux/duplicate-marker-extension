@@ -49,6 +49,59 @@
   const SLOWSEARCH_JUMP_MARK_ATTR = 'data-dup-slowsearch-jump';
   const SLOWSEARCH_CITIES_TOGGLE_SELECTOR = 'button.btn-cities.dropdown-toggle';
   const SLOWSEARCH_CITIES_LINK_SELECTOR = 'a.department-switch';
+  const DEPARTMENT_DROPDOWN_STATE_STORAGE_KEY = 'dup_show_hidden_departments';
+  const DEPARTMENT_DROPDOWN_SEARCH_INPUT_SELECTOR = 'input#search-department-field';
+  const DEPARTMENT_DROPDOWN_MENU_SELECTOR = '.dropdown-menu-sub.show-depid';
+  const DEPARTMENT_DROPDOWN_TOGGLE_STYLE_ID = 'dup-show-hidden-departments-style';
+  const DEPARTMENT_DROPDOWN_TOGGLE_ROW_CLASS = 'dup-show-hidden-departments-toggle-row';
+  const DEPARTMENT_DROPDOWN_TOGGLE_LABEL_CLASS = 'dup-show-hidden-departments-toggle-label';
+  const DEPARTMENT_DROPDOWN_TOGGLE_CHECKBOX_CLASS = 'dup-show-hidden-departments-toggle-checkbox';
+  const DEPARTMENT_DROPDOWN_SHOW_HIDDEN_CLASS = 'dup-show-hidden-departments';
+  const DEPARTMENT_DROPDOWN_HIDDEN_ATTR = 'data-dup-hidden-department';
+  const DEPARTMENT_DROPDOWN_ORIGINAL_ORDER_ATTR = 'data-dup-original-order';
+  const DEPARTMENT_DROPDOWN_TOGGLE_TEXT = 'Показать скрытые департаменты';
+  const DEPARTMENT_ALLOWED_DEPIDS_ORDER = [
+    '39',
+    '43',
+    '40',
+    '61',
+    '16',
+    '62',
+    '24',
+    '14',
+    '60',
+    '82',
+    '72',
+    '68',
+    '19',
+    '11',
+    '66',
+    '59',
+    '12',
+    '67',
+    '69',
+    '41',
+    '83',
+    '6',
+    '36',
+    '34',
+    '32',
+    '28',
+    '29',
+    '56',
+    '27',
+    '30',
+    '31',
+    '35',
+    '37',
+    '33',
+    '38',
+    '70'
+  ];
+  const DEPARTMENT_ALLOWED_DEPIDS = new Set(DEPARTMENT_ALLOWED_DEPIDS_ORDER);
+  const DEPARTMENT_ALLOWED_DEPID_ORDER_INDEX = new Map(
+    DEPARTMENT_ALLOWED_DEPIDS_ORDER.map((depid, index) => [depid, index])
+  );
   const GRID_ABORT_REWRITE_EVENT = 'dup-grid-abort-message';
   const GRID_ABORT_REWRITE_TEXT = 'Загрузка/Фильтрация была прервана пользователем вручную. Повторите действие заново.';
   const FSSP_REESTR_PATH_PART = '/ovzid/fsspreestr';
@@ -245,6 +298,18 @@
       `
     },
     {
+      key: 'departmentDropdownFilter',
+      storageKey: 'dup_ui_show_department_dropdown_filter',
+      label: 'Фильтр depid',
+      description: 'Скрытие лишних департаментов и переключатель их показа в dropdown.',
+      hideClass: 'dup-ui-hide-department-dropdown-filter',
+      hideCss: `
+        html.dup-ui-hide-department-dropdown-filter .${DEPARTMENT_DROPDOWN_TOGGLE_ROW_CLASS} {
+          display: none !important;
+        }
+      `
+    },
+    {
       key: 'fsspGroupingToggle',
       storageKey: 'dup_ui_show_fssp_grouping_toggle',
       label: 'Переключатель группировки дублей ФССП',
@@ -426,6 +491,7 @@
   let stageJumpLastEditDocStartAtMs = 0;
   let stageJumpLastEditDocStopAtMs = 0;
   let stageJumpLastStageTimerErrorAtMs = 0;
+  let departmentDropdownShowHidden = false;
   const stageJumpExecutionRequestStates = new Map();
   const stageJumpExecutionButtonStates = new Map();
   const allDuplicateSettingKeys = [
@@ -1040,6 +1106,8 @@
       ensureFsspReestrGroupingToggle();
     }
 
+    syncDepartmentDropdownVisibility();
+
     syncExtensionUiSettingsPanelState();
   }
 
@@ -1155,6 +1223,7 @@
       html.${SCREENSHOT_MODE_CLASS} #pyramid-stage-timer-abort,
       html.${SCREENSHOT_MODE_CLASS} .pyramid-stage-timer-abort-btn,
       html.${SCREENSHOT_MODE_CLASS} #dup-fsspreestr-grouping-toggle,
+      html.${SCREENSHOT_MODE_CLASS} .${DEPARTMENT_DROPDOWN_TOGGLE_ROW_CLASS},
       html.${SCREENSHOT_MODE_CLASS} .${STAGE_JUMP_BUTTON_CLASS},
       html.${SCREENSHOT_MODE_CLASS} .${STAGE_JUMP_MENU_CLASS},
       html.${SCREENSHOT_MODE_CLASS} [${STAGE_JUMP_BUTTON_MARK_ATTR}="1"],
@@ -2320,6 +2389,10 @@
             : EXTENSION_UI_SETTINGS_DEFAULTS[extensionSetting.key];
         extensionUiSettingsChanged = true;
       }
+
+      if (key === DEPARTMENT_DROPDOWN_STATE_STORAGE_KEY) {
+        departmentDropdownShowHidden = changes[key].newValue === true;
+      }
     }
     if (highlightSettingsChanged) {
       // Немедленно запускаем проверку, если изменились настройки
@@ -2327,7 +2400,10 @@
     }
     if (extensionUiSettingsChanged) {
       applyExtensionUiVisibilitySettings('storage-change');
+      return;
     }
+
+    syncDepartmentDropdownVisibility();
   });
 
   // Запускаем проверку при изменениях на странице (динамический контент)
@@ -2871,6 +2947,236 @@
   function getSlowsearchDepartmentSwitchLinks() {
     return Array.from(document.querySelectorAll(SLOWSEARCH_CITIES_LINK_SELECTOR))
       .filter((link) => link instanceof HTMLAnchorElement);
+  }
+
+  function isDepartmentDropdownFilterEnabled() {
+    return isPyramidExtensionPage() && isExtensionUiSettingEnabled('departmentDropdownFilter');
+  }
+
+  function ensureDepartmentDropdownToggleStyle() {
+    if (document.getElementById(DEPARTMENT_DROPDOWN_TOGGLE_STYLE_ID)) return;
+
+    const style = document.createElement('style');
+    style.id = DEPARTMENT_DROPDOWN_TOGGLE_STYLE_ID;
+    style.textContent = `
+      .${DEPARTMENT_DROPDOWN_TOGGLE_ROW_CLASS} {
+        list-style: none;
+        padding: 4px 12px 6px;
+        margin: 0;
+      }
+
+      .${DEPARTMENT_DROPDOWN_TOGGLE_LABEL_CLASS} {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        margin: 0;
+        font-size: 11px;
+        line-height: 1.2;
+        font-weight: 400;
+        cursor: pointer;
+      }
+
+      .${DEPARTMENT_DROPDOWN_TOGGLE_CHECKBOX_CLASS} {
+        width: 12px;
+        height: 12px;
+        margin: 0;
+        flex: 0 0 auto;
+      }
+
+      ${DEPARTMENT_DROPDOWN_MENU_SELECTOR}:not(.${DEPARTMENT_DROPDOWN_SHOW_HIDDEN_CLASS}) li[${DEPARTMENT_DROPDOWN_HIDDEN_ATTR}="1"] {
+        display: none !important;
+      }
+    `;
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  function getDepartmentDropdownContents() {
+    return Array.from(document.querySelectorAll('.dropdown-content')).filter((content) => {
+      if (!(content instanceof HTMLElement)) return false;
+      return !!content.querySelector(DEPARTMENT_DROPDOWN_SEARCH_INPUT_SELECTOR)
+        && !!content.querySelector(DEPARTMENT_DROPDOWN_MENU_SELECTOR);
+    });
+  }
+
+  function removeDepartmentDropdownToggle(dropdownContent) {
+    if (!(dropdownContent instanceof HTMLElement)) return;
+    const toggleRow = dropdownContent.querySelector(`.${DEPARTMENT_DROPDOWN_TOGGLE_ROW_CLASS}`);
+    if (toggleRow instanceof HTMLElement) {
+      toggleRow.remove();
+    }
+  }
+
+  function ensureDepartmentDropdownToggle(dropdownContent) {
+    if (!(dropdownContent instanceof HTMLElement)) return null;
+
+    const headerItem = dropdownContent.querySelector('li.dropdown-menu-header');
+    if (!(headerItem instanceof HTMLLIElement)) return null;
+
+    let toggleRow = dropdownContent.querySelector(`.${DEPARTMENT_DROPDOWN_TOGGLE_ROW_CLASS}`);
+    if (!(toggleRow instanceof HTMLLIElement)) {
+      toggleRow = document.createElement('li');
+      toggleRow.className = DEPARTMENT_DROPDOWN_TOGGLE_ROW_CLASS;
+
+      const toggleLabel = document.createElement('label');
+      toggleLabel.className = DEPARTMENT_DROPDOWN_TOGGLE_LABEL_CLASS;
+
+      const toggleCheckbox = document.createElement('input');
+      toggleCheckbox.type = 'checkbox';
+      toggleCheckbox.className = DEPARTMENT_DROPDOWN_TOGGLE_CHECKBOX_CLASS;
+      toggleCheckbox.checked = departmentDropdownShowHidden;
+      toggleCheckbox.addEventListener('change', () => {
+        departmentDropdownShowHidden = toggleCheckbox.checked;
+        syncDepartmentDropdownVisibility();
+        chrome.storage.local.set({ [DEPARTMENT_DROPDOWN_STATE_STORAGE_KEY]: departmentDropdownShowHidden });
+      });
+
+      const toggleText = document.createElement('span');
+      toggleText.textContent = DEPARTMENT_DROPDOWN_TOGGLE_TEXT;
+
+      toggleLabel.append(toggleCheckbox, toggleText);
+      toggleRow.appendChild(toggleLabel);
+    }
+
+    if (toggleRow.parentElement !== dropdownContent || toggleRow.previousElementSibling !== headerItem) {
+      headerItem.insertAdjacentElement('afterend', toggleRow);
+    }
+
+    const toggleCheckbox = toggleRow.querySelector(`.${DEPARTMENT_DROPDOWN_TOGGLE_CHECKBOX_CLASS}`);
+    if (toggleCheckbox instanceof HTMLInputElement) {
+      toggleCheckbox.checked = departmentDropdownShowHidden;
+    }
+
+    return toggleRow;
+  }
+
+  function captureDepartmentDropdownOriginalOrder(departmentsMenu) {
+    if (!(departmentsMenu instanceof HTMLElement)) return [];
+
+    const items = Array.from(departmentsMenu.children)
+      .filter((node) => node instanceof HTMLLIElement);
+    items.forEach((item, index) => {
+      if (!item.hasAttribute(DEPARTMENT_DROPDOWN_ORIGINAL_ORDER_ATTR)) {
+        item.setAttribute(DEPARTMENT_DROPDOWN_ORIGINAL_ORDER_ATTR, String(index));
+      }
+    });
+    return items;
+  }
+
+  function getDepartmentDropdownOriginalOrder(item, fallbackIndex) {
+    const rawValue = String(item.getAttribute(DEPARTMENT_DROPDOWN_ORIGINAL_ORDER_ATTR) || '').trim();
+    const parsedValue = Number.parseInt(rawValue, 10);
+    return Number.isFinite(parsedValue) ? parsedValue : fallbackIndex;
+  }
+
+  function restoreDepartmentDropdownOriginalOrder(departmentsMenu) {
+    const items = captureDepartmentDropdownOriginalOrder(departmentsMenu);
+    items
+      .slice()
+      .sort((leftItem, rightItem) => (
+        getDepartmentDropdownOriginalOrder(leftItem, Number.MAX_SAFE_INTEGER) -
+        getDepartmentDropdownOriginalOrder(rightItem, Number.MAX_SAFE_INTEGER)
+      ))
+      .forEach((item) => departmentsMenu.appendChild(item));
+  }
+
+  function compareDepartmentDropdownItems(leftItem, rightItem) {
+    const leftLink = leftItem.querySelector(SLOWSEARCH_CITIES_LINK_SELECTOR);
+    const rightLink = rightItem.querySelector(SLOWSEARCH_CITIES_LINK_SELECTOR);
+    const leftDepid = String(leftLink && leftLink.getAttribute('data-depid') || '').trim();
+    const rightDepid = String(rightLink && rightLink.getAttribute('data-depid') || '').trim();
+    const leftOrderIndex = DEPARTMENT_ALLOWED_DEPID_ORDER_INDEX.get(leftDepid);
+    const rightOrderIndex = DEPARTMENT_ALLOWED_DEPID_ORDER_INDEX.get(rightDepid);
+    const hasLeftOrder = Number.isInteger(leftOrderIndex);
+    const hasRightOrder = Number.isInteger(rightOrderIndex);
+
+    if (hasLeftOrder && hasRightOrder && leftOrderIndex !== rightOrderIndex) {
+      return leftOrderIndex - rightOrderIndex;
+    }
+    if (hasLeftOrder && !hasRightOrder) return -1;
+    if (!hasLeftOrder && hasRightOrder) return 1;
+
+    const leftOriginalOrder = getDepartmentDropdownOriginalOrder(leftItem, Number.MAX_SAFE_INTEGER);
+    const rightOriginalOrder = getDepartmentDropdownOriginalOrder(rightItem, Number.MAX_SAFE_INTEGER);
+    return leftOriginalOrder - rightOriginalOrder;
+  }
+
+  function sortDepartmentDropdownItemsByConfigOrder(departmentsMenu) {
+    const items = captureDepartmentDropdownOriginalOrder(departmentsMenu);
+    if (items.length < 2) return;
+
+    items
+      .slice()
+      .sort(compareDepartmentDropdownItems)
+      .forEach((item) => departmentsMenu.appendChild(item));
+  }
+
+  function updateDepartmentDropdownVisibilityForDropdown(dropdownContent) {
+    if (!(dropdownContent instanceof HTMLElement)) return;
+
+    const departmentsMenu = dropdownContent.querySelector(DEPARTMENT_DROPDOWN_MENU_SELECTOR);
+    if (!(departmentsMenu instanceof HTMLElement)) return;
+
+    const departmentItems = captureDepartmentDropdownOriginalOrder(departmentsMenu);
+    const filterEnabled = isDepartmentDropdownFilterEnabled();
+    const showOriginalList = !filterEnabled || departmentDropdownShowHidden;
+
+    departmentItems.forEach((item) => {
+      const link = item.querySelector(SLOWSEARCH_CITIES_LINK_SELECTOR);
+      if (!(link instanceof HTMLAnchorElement)) return;
+
+      const depid = String(link.getAttribute('data-depid') || '').trim();
+      if (!filterEnabled || DEPARTMENT_ALLOWED_DEPIDS.has(depid)) {
+        item.removeAttribute(DEPARTMENT_DROPDOWN_HIDDEN_ATTR);
+      } else {
+        item.setAttribute(DEPARTMENT_DROPDOWN_HIDDEN_ATTR, '1');
+      }
+    });
+
+    if (showOriginalList) {
+      restoreDepartmentDropdownOriginalOrder(departmentsMenu);
+      departmentsMenu.classList.add(DEPARTMENT_DROPDOWN_SHOW_HIDDEN_CLASS);
+      return;
+    }
+
+    sortDepartmentDropdownItemsByConfigOrder(departmentsMenu);
+    departmentsMenu.classList.remove(DEPARTMENT_DROPDOWN_SHOW_HIDDEN_CLASS);
+  }
+
+  function syncDepartmentDropdownVisibility() {
+    if (!isPyramidExtensionPage()) return;
+
+    ensureDepartmentDropdownToggleStyle();
+    const dropdownContents = getDepartmentDropdownContents();
+    dropdownContents.forEach((dropdownContent) => {
+      if (isDepartmentDropdownFilterEnabled()) {
+        ensureDepartmentDropdownToggle(dropdownContent);
+      } else {
+        removeDepartmentDropdownToggle(dropdownContent);
+      }
+      updateDepartmentDropdownVisibilityForDropdown(dropdownContent);
+    });
+  }
+
+  const debouncedSyncDepartmentDropdownVisibility = debounce(syncDepartmentDropdownVisibility, 120);
+
+  function initDepartmentDropdownFilter() {
+    if (!isPyramidExtensionPage()) return;
+
+    chrome.storage.local.get([DEPARTMENT_DROPDOWN_STATE_STORAGE_KEY], (storedValues) => {
+      departmentDropdownShowHidden = storedValues[DEPARTMENT_DROPDOWN_STATE_STORAGE_KEY] === true;
+      syncDepartmentDropdownVisibility();
+    });
+
+    const observer = new MutationObserver(() => {
+      debouncedSyncDepartmentDropdownVisibility();
+    });
+    observeWithRetry(
+      observer,
+      () => document.body || document.documentElement,
+      { childList: true, subtree: true },
+      120,
+      100
+    );
   }
 
   function getSlowsearchDepartmentCurrentName() {
@@ -5300,6 +5606,7 @@
   initSlowsearchDebtIdFilterFromHash();
   initScreenshotHideMode();
   initExtensionUiSettings();
+  initDepartmentDropdownFilter();
   initStageJumpButtons();
   initSlowsearchJumpButtons();
   init();
