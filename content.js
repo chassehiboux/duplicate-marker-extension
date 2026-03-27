@@ -61,6 +61,8 @@
   const DEPARTMENT_DROPDOWN_SHOW_HIDDEN_CLASS = 'dup-show-hidden-departments';
   const DEPARTMENT_DROPDOWN_HIDDEN_ATTR = 'data-dup-hidden-department';
   const DEPARTMENT_DROPDOWN_ORIGINAL_ORDER_ATTR = 'data-dup-original-order';
+  const DEPARTMENT_DROPDOWN_ORIGINAL_MAX_HEIGHT_ATTR = 'data-dup-original-max-height';
+  const DEPARTMENT_DROPDOWN_ORIGINAL_MAX_HEIGHT_PX_ATTR = 'data-dup-original-max-height-px';
   const DEPARTMENT_DROPDOWN_TOGGLE_TEXT = 'Показать скрытые департаменты';
   const DEPARTMENT_ALLOWED_DEPIDS_ORDER = [
     '39',
@@ -3141,6 +3143,59 @@
     }
   }
 
+  function rememberDepartmentDropdownMenuMetrics(departmentsMenu) {
+    if (!(departmentsMenu instanceof HTMLElement)) return;
+    if (!departmentsMenu.hasAttribute(DEPARTMENT_DROPDOWN_ORIGINAL_MAX_HEIGHT_ATTR)) {
+      departmentsMenu.setAttribute(DEPARTMENT_DROPDOWN_ORIGINAL_MAX_HEIGHT_ATTR, departmentsMenu.style.maxHeight || '');
+    }
+    if (!departmentsMenu.hasAttribute(DEPARTMENT_DROPDOWN_ORIGINAL_MAX_HEIGHT_PX_ATTR)) {
+      const computedMaxHeight = Number.parseFloat(window.getComputedStyle(departmentsMenu).maxHeight || '');
+      if (Number.isFinite(computedMaxHeight) && computedMaxHeight > 0) {
+        departmentsMenu.setAttribute(DEPARTMENT_DROPDOWN_ORIGINAL_MAX_HEIGHT_PX_ATTR, String(computedMaxHeight));
+      }
+    }
+  }
+
+  function restoreDepartmentDropdownMenuMaxHeight(departmentsMenu) {
+    if (!(departmentsMenu instanceof HTMLElement)) return;
+    const originalInlineMaxHeight = departmentsMenu.getAttribute(DEPARTMENT_DROPDOWN_ORIGINAL_MAX_HEIGHT_ATTR);
+    if (typeof originalInlineMaxHeight === 'string' && originalInlineMaxHeight.length > 0) {
+      departmentsMenu.style.maxHeight = originalInlineMaxHeight;
+      return;
+    }
+    departmentsMenu.style.removeProperty('max-height');
+  }
+
+  function syncDepartmentDropdownMenuMaxHeight(dropdownContent) {
+    if (!(dropdownContent instanceof HTMLElement)) return;
+
+    const departmentsMenu = dropdownContent.querySelector(DEPARTMENT_DROPDOWN_MENU_SELECTOR);
+    if (!(departmentsMenu instanceof HTMLElement)) return;
+
+    rememberDepartmentDropdownMenuMetrics(departmentsMenu);
+
+    const outerDropdown = dropdownContent.closest('.dropdown-menu');
+    if (!(outerDropdown instanceof HTMLElement)) return;
+
+    const outerRect = outerDropdown.getBoundingClientRect();
+    const menuRect = departmentsMenu.getBoundingClientRect();
+    const originalMaxHeightPx = Number.parseFloat(
+      departmentsMenu.getAttribute(DEPARTMENT_DROPDOWN_ORIGINAL_MAX_HEIGHT_PX_ATTR) || ''
+    );
+    const availableHeight = Math.floor(outerRect.bottom - menuRect.top - 1);
+
+    if (!Number.isFinite(availableHeight) || availableHeight <= 0) {
+      restoreDepartmentDropdownMenuMaxHeight(departmentsMenu);
+      return;
+    }
+
+    const nextMaxHeight = Number.isFinite(originalMaxHeightPx) && originalMaxHeightPx > 0
+      ? Math.min(originalMaxHeightPx, availableHeight)
+      : availableHeight;
+
+    departmentsMenu.style.maxHeight = `${Math.max(nextMaxHeight, 48)}px`;
+  }
+
   function ensureDepartmentDropdownToggle(dropdownContent) {
     if (!(dropdownContent instanceof HTMLElement)) return null;
 
@@ -3270,11 +3325,13 @@
     if (showOriginalList) {
       restoreDepartmentDropdownOriginalOrder(departmentsMenu);
       departmentsMenu.classList.add(DEPARTMENT_DROPDOWN_SHOW_HIDDEN_CLASS);
+      syncDepartmentDropdownMenuMaxHeight(dropdownContent);
       return;
     }
 
     sortDepartmentDropdownItemsByConfigOrder(departmentsMenu);
     departmentsMenu.classList.remove(DEPARTMENT_DROPDOWN_SHOW_HIDDEN_CLASS);
+    syncDepartmentDropdownMenuMaxHeight(dropdownContent);
   }
 
   function syncDepartmentDropdownVisibility() {
@@ -3287,6 +3344,10 @@
         ensureDepartmentDropdownToggle(dropdownContent);
       } else {
         removeDepartmentDropdownToggle(dropdownContent);
+        const departmentsMenu = dropdownContent.querySelector(DEPARTMENT_DROPDOWN_MENU_SELECTOR);
+        if (departmentsMenu instanceof HTMLElement) {
+          restoreDepartmentDropdownMenuMaxHeight(departmentsMenu);
+        }
       }
       updateDepartmentDropdownVisibilityForDropdown(dropdownContent);
     });
