@@ -98,7 +98,12 @@
     '37',
     '33',
     '38',
-    '70'
+    '70',
+    '81',
+    '89',
+    '88',
+    '87',
+    '86'
   ];
   const DEPARTMENT_ALLOWED_DEPIDS = new Set(DEPARTMENT_ALLOWED_DEPIDS_ORDER);
   const DEPARTMENT_ALLOWED_DEPID_ORDER_INDEX = new Map(
