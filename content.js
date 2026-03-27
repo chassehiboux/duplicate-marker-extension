@@ -1183,94 +1183,114 @@
     document.addEventListener('keyup', handleExtensionUiSettingsEscape, true);
   }
 
-  function resolveFilteredIdNavigationDirection(event) {
+  function resolveDepartmentNavigationDirection(event) {
     if (!event) return 0;
     if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return 0;
 
     const key = String(event.key || '');
     const code = String(event.code || '');
     const keyCode = Number(event.keyCode || event.which || 0);
-    if (key === 'F3' || code === 'F3' || keyCode === KEY_CODE_F3) return 1;
-    if (key === 'F4' || code === 'F4' || keyCode === KEY_CODE_F4) return -1;
+    if (key === 'F3' || code === 'F3' || keyCode === KEY_CODE_F3) return -1;
+    if (key === 'F4' || code === 'F4' || keyCode === KEY_CODE_F4) return 1;
     return 0;
   }
 
-  function getFilteredIdNavigationRows() {
-    const gridElement = getStageJumpGridElement();
-    if (!(gridElement instanceof HTMLTableElement)) return [];
+  function getDepartmentNavigationItems() {
+    const dropdownContent = getDepartmentDropdownContents().find((content) => {
+      return !!content.querySelector(`${SLOWSEARCH_CITIES_LINK_SELECTOR}.active`);
+    }) || getDepartmentDropdownContents()[0] || null;
+    if (!(dropdownContent instanceof HTMLElement)) return [];
 
-    return getGridDataRows(gridElement).filter((row) => {
-      return !!findGridRowCellByAriaId(row, 'list_DebtID');
-    });
+    const departmentsMenu = dropdownContent.querySelector(DEPARTMENT_DROPDOWN_MENU_SELECTOR);
+    if (!(departmentsMenu instanceof HTMLElement)) return [];
+
+    return Array.from(departmentsMenu.children)
+      .filter((item) => item instanceof HTMLLIElement)
+      .map((item) => {
+        const link = item.querySelector(SLOWSEARCH_CITIES_LINK_SELECTOR);
+        if (!(link instanceof HTMLAnchorElement)) return null;
+        return { item, link };
+      })
+      .filter((entry) => !!entry);
   }
 
-  function getCurrentFilteredIdNavigationRow(rows) {
-    if (!Array.isArray(rows) || rows.length === 0) return null;
-
-    const activeElement = document.activeElement instanceof HTMLElement
-      ? document.activeElement
-      : null;
-
-    return rows.find((row) => {
-      if (!(row instanceof HTMLTableRowElement)) return false;
-      if (row.getAttribute('aria-selected') === 'true') return true;
-      if (row.classList.contains('ui-state-highlight')) return true;
-      const checkbox = row.querySelector('input.cbox[type="checkbox"]');
-      if (checkbox instanceof HTMLInputElement && checkbox.checked) return true;
-      return !!(activeElement && row.contains(activeElement));
-    }) || null;
+  function isDepartmentNavigationItemVisible(entry, includeHidden) {
+    if (!entry || !(entry.item instanceof HTMLElement)) return false;
+    if (includeHidden) return true;
+    return entry.item.getAttribute(DEPARTMENT_DROPDOWN_HIDDEN_ATTR) !== '1';
   }
 
-  function selectFilteredIdNavigationRow(row) {
-    if (!(row instanceof HTMLTableRowElement)) return false;
+  function buildDepartmentNavigationUrl(targetLink) {
+    if (!(targetLink instanceof HTMLAnchorElement)) return '';
+    const href = String(targetLink.getAttribute('href') || '').trim();
+    if (!href) return '';
 
     try {
-      row.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-    } catch (error) {
-      // ignore
-    }
+      const targetUrl = new URL(href, window.location.origin);
+      const currentUrl = new URL(window.location.href);
+      const depid = String(targetLink.getAttribute('data-depid') || '').trim();
+      const currentMatch = String(currentUrl.pathname || '').match(/^(.*?\/login\/department\/)\d+(\/.*)?$/);
+      const targetMatch = String(targetUrl.pathname || '').match(/^(.*?\/login\/department\/)\d+(\/.*)?$/);
 
-    const rowId = String(row.id || '').trim();
-    if (rowId && window.jQuery && window.jQuery.fn && window.jQuery.fn.jqGrid) {
-      try {
-        window.jQuery('#list').jqGrid('setSelection', rowId, true);
-      } catch (error) {
-        // ignore
+      if (depid && currentMatch && targetMatch) {
+        const currentSuffix = currentMatch[2] || '';
+        targetUrl.pathname = `${targetMatch[1]}${depid}${currentSuffix}`;
       }
-    }
 
-    if (row.getAttribute('aria-selected') !== 'true' && !row.classList.contains('ui-state-highlight')) {
-      row.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    }
+      if (!targetUrl.hash && currentUrl.hash) {
+        targetUrl.hash = currentUrl.hash;
+      }
 
-    return row.getAttribute('aria-selected') === 'true' || row.classList.contains('ui-state-highlight');
+      return targetUrl.toString();
+    } catch (error) {
+      return href;
+    }
   }
 
-  function handleFilteredIdNavigationHotkey(event) {
-    const direction = resolveFilteredIdNavigationDirection(event);
+  function navigateToDepartmentByHotkey(targetLink) {
+    if (!(targetLink instanceof HTMLAnchorElement)) return false;
+    const targetUrl = buildDepartmentNavigationUrl(targetLink);
+    if (!targetUrl) return false;
+    window.location.assign(targetUrl);
+    return true;
+  }
+
+  function handleDepartmentNavigationHotkey(event) {
+    const direction = resolveDepartmentNavigationDirection(event);
     if (!direction) return;
     if (event.defaultPrevented) return;
     if (event.type !== 'keydown' || event.repeat) return;
     if (!isPyramidExtensionPage()) return;
     if (isEditableInteractionTarget(event.target)) return;
 
-    const rows = getFilteredIdNavigationRows();
-    if (rows.length === 0) return;
+    const items = getDepartmentNavigationItems();
+    if (items.length === 0) return;
+
+    const includeHidden = departmentDropdownShowHidden === true || !isDepartmentDropdownFilterEnabled();
+    const currentIndex = items.findIndex((entry) => entry.link.classList.contains('active'));
+    if (currentIndex < 0) return;
+
+    let targetEntry = null;
+    for (
+      let nextIndex = currentIndex + direction;
+      nextIndex >= 0 && nextIndex < items.length;
+      nextIndex += direction
+    ) {
+      const candidate = items[nextIndex];
+      if (isDepartmentNavigationItemVisible(candidate, includeHidden)) {
+        targetEntry = candidate;
+        break;
+      }
+    }
+    if (!targetEntry) return;
 
     suppressHotkeyEvent(event);
-
-    const currentRow = getCurrentFilteredIdNavigationRow(rows);
-    const currentIndex = currentRow ? rows.indexOf(currentRow) : -1;
-    const targetIndex = currentIndex >= 0
-      ? Math.min(Math.max(currentIndex + direction, 0), rows.length - 1)
-      : (direction > 0 ? 0 : rows.length - 1);
-
-    selectFilteredIdNavigationRow(rows[targetIndex]);
+    navigateToDepartmentByHotkey(targetEntry.link);
   }
 
-  function initFilteredIdNavigationHotkeys() {
+  function initDepartmentNavigationHotkeys() {
     if (!isPyramidExtensionPage()) return;
-    document.addEventListener('keydown', handleFilteredIdNavigationHotkey, true);
+    document.addEventListener('keydown', handleDepartmentNavigationHotkey, true);
   }
 
   function ensureScreenshotHideStyle(targetDocument) {
@@ -5716,7 +5736,7 @@
   initSlowsearchDebtIdFilterFromHash();
   initScreenshotHideMode();
   initExtensionUiSettings();
-  initFilteredIdNavigationHotkeys();
+  initDepartmentNavigationHotkeys();
   initDepartmentDropdownFilter();
   initStageJumpButtons();
   initSlowsearchJumpButtons();
