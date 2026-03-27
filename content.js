@@ -501,6 +501,7 @@
   let stageJumpLastEditDocStopAtMs = 0;
   let stageJumpLastStageTimerErrorAtMs = 0;
   let departmentDropdownShowHidden = false;
+  let departmentDropdownInteractionLockUntilMs = 0;
   const stageJumpExecutionRequestStates = new Map();
   const stageJumpExecutionButtonStates = new Map();
   const allDuplicateSettingKeys = [
@@ -3258,15 +3259,31 @@
     return Number.isFinite(parsedValue) ? parsedValue : fallbackIndex;
   }
 
+  function applyDepartmentDropdownItemOrder(departmentsMenu, orderedItems) {
+    if (!(departmentsMenu instanceof HTMLElement) || !Array.isArray(orderedItems)) return;
+
+    const currentItems = Array.from(departmentsMenu.children)
+      .filter((node) => node instanceof HTMLLIElement);
+    if (currentItems.length !== orderedItems.length) {
+      orderedItems.forEach((item) => departmentsMenu.appendChild(item));
+      return;
+    }
+
+    const orderIsSame = orderedItems.every((item, index) => currentItems[index] === item);
+    if (orderIsSame) return;
+
+    orderedItems.forEach((item) => departmentsMenu.appendChild(item));
+  }
+
   function restoreDepartmentDropdownOriginalOrder(departmentsMenu) {
     const items = captureDepartmentDropdownOriginalOrder(departmentsMenu);
-    items
+    const orderedItems = items
       .slice()
       .sort((leftItem, rightItem) => (
         getDepartmentDropdownOriginalOrder(leftItem, Number.MAX_SAFE_INTEGER) -
         getDepartmentDropdownOriginalOrder(rightItem, Number.MAX_SAFE_INTEGER)
-      ))
-      .forEach((item) => departmentsMenu.appendChild(item));
+      ));
+    applyDepartmentDropdownItemOrder(departmentsMenu, orderedItems);
   }
 
   function compareDepartmentDropdownItems(leftItem, rightItem) {
@@ -3294,10 +3311,35 @@
     const items = captureDepartmentDropdownOriginalOrder(departmentsMenu);
     if (items.length < 2) return;
 
-    items
+    const orderedItems = items
       .slice()
       .sort(compareDepartmentDropdownItems)
-      .forEach((item) => departmentsMenu.appendChild(item));
+    applyDepartmentDropdownItemOrder(departmentsMenu, orderedItems);
+  }
+
+  function lockDepartmentDropdownInteraction(durationMs = 500) {
+    const safeDuration = Number.isFinite(Number(durationMs)) ? Number(durationMs) : 500;
+    departmentDropdownInteractionLockUntilMs = Date.now() + Math.max(safeDuration, 0);
+  }
+
+  function isDepartmentDropdownInteractionLocked() {
+    return Date.now() < departmentDropdownInteractionLockUntilMs;
+  }
+
+  function handleDepartmentDropdownLinkPointerDown(event) {
+    const target = event && event.target instanceof Element
+      ? event.target
+      : null;
+    if (!(target instanceof Element)) return;
+
+    const targetLink = target.closest(SLOWSEARCH_CITIES_LINK_SELECTOR);
+    if (!(targetLink instanceof HTMLAnchorElement)) return;
+
+    const dropdownContent = targetLink.closest('.dropdown-content');
+    if (!(dropdownContent instanceof HTMLElement)) return;
+    if (!dropdownContent.querySelector(DEPARTMENT_DROPDOWN_MENU_SELECTOR)) return;
+
+    lockDepartmentDropdownInteraction(600);
   }
 
   function updateDepartmentDropdownVisibilityForDropdown(dropdownContent) {
@@ -3336,6 +3378,7 @@
 
   function syncDepartmentDropdownVisibility() {
     if (!isPyramidExtensionPage()) return;
+    if (isDepartmentDropdownInteractionLocked()) return;
 
     ensureDepartmentDropdownToggleStyle();
     const dropdownContents = getDepartmentDropdownContents();
@@ -3362,6 +3405,8 @@
       departmentDropdownShowHidden = storedValues[DEPARTMENT_DROPDOWN_STATE_STORAGE_KEY] === true;
       syncDepartmentDropdownVisibility();
     });
+
+    document.addEventListener('mousedown', handleDepartmentDropdownLinkPointerDown, true);
 
     const observer = new MutationObserver(() => {
       debouncedSyncDepartmentDropdownVisibility();
