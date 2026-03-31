@@ -33,7 +33,7 @@
             stageTimerToggle: null,
             // Кнопка прерывания таймера.
             stageTimerAbort: null,
-            // Кнопки быстрых переходов StageJump.
+            // Кнопки и выпадающее меню быстрых действий StageJump.
             stageJumpButtons: null,
             // Фильтр depid и переключатель показа скрытых департаментов.
             departmentDropdownFilter: null,

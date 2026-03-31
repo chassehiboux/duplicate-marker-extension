@@ -40,9 +40,11 @@
   const STAGE_JUMP_MENU_ACTION_ATTR = 'data-dup-stage-jump-action';
   const STAGE_JUMP_MENU_ACTION_SLOWSEARCH = 'to_slowsearch';
   const STAGE_JUMP_MENU_ACTION_STAGE = 'to_stage';
+  const STAGE_JUMP_MENU_ACTION_COPY_INFO = 'copy_info';
   const STAGE_JUMP_MENU_ACTION_EXECUTION_ANALYSIS = 'to_execution_analysis';
   const STAGE_JUMP_MENU_ITEM_SLOWSEARCH_TEXT = 'Переход в Глобальный поиск';
   const STAGE_JUMP_MENU_ITEM_STAGE_TEXT = 'Переход к ИД на стадии';
+  const STAGE_JUMP_MENU_ITEM_COPY_INFO_TEXT = 'Скопировать инфо об ИД';
   const STAGE_JUMP_MENU_ITEM_EXECUTION_ANALYSIS_TEXT = 'Анализ исполнения';
   const STAGE_JUMP_PENDING_MODE_EXECUTION_ANALYSIS = 'execution_analysis';
   const STAGE_JUMP_ANALYSIS_DRAFT_STORAGE_KEY = 'dup_stage_jump_analysis_draft';
@@ -297,10 +299,11 @@
       key: 'stageJumpButtons',
       storageKey: 'dup_ui_show_stage_jump_buttons',
       label: 'Кнопки StageJump',
-      description: 'Кнопки перехода по StageJump в списках.',
+      description: 'Кнопки и меню переходов/копирования StageJump в списках.',
       hideClass: 'dup-ui-hide-stage-jump-buttons',
       hideCss: `
         html.dup-ui-hide-stage-jump-buttons .${STAGE_JUMP_BUTTON_CLASS},
+        html.dup-ui-hide-stage-jump-buttons .${STAGE_JUMP_MENU_CLASS},
         html.dup-ui-hide-stage-jump-buttons [${STAGE_JUMP_BUTTON_MARK_ATTR}="1"] {
           display: none !important;
         }
@@ -4158,22 +4161,214 @@
     };
   }
 
-  function getStageJumpSelectedExecutionButtons() {
-    const rows = Array.from(document.querySelectorAll('#list tbody > tr.jqgrow'));
-    return rows
-      .map((row) => {
-        const isSelected = (
-          row.getAttribute('aria-selected') === 'true' ||
-          row.classList.contains('ui-state-highlight')
-        );
-        if (!isSelected) return null;
+  function getStageJumpRowFromButton(button) {
+    if (!(button instanceof HTMLElement)) return null;
+    const row = button.closest('tr.jqgrow');
+    return row instanceof HTMLTableRowElement ? row : null;
+  }
 
+  function getStageJumpSelectedRows() {
+    return Array.from(document.querySelectorAll('#list tbody > tr.jqgrow'))
+      .filter((row) => (
+        row instanceof HTMLTableRowElement &&
+        (
+          row.getAttribute('aria-selected') === 'true' ||
+          row.classList.contains('ui-state-highlight') ||
+          row.classList.contains('active') ||
+          !!row.querySelector('input.cbox[type="checkbox"]:checked')
+        )
+      ));
+  }
+
+  function getStageJumpSelectedExecutionButtons() {
+    return getStageJumpSelectedRows()
+      .map((row) => {
         const jumpButton = row.querySelector(
           `.${STAGE_JUMP_BUTTON_CLASS}[${STAGE_JUMP_BUTTON_MARK_ATTR}="1"]:not([${SLOWSEARCH_JUMP_MARK_ATTR}="1"])`
         );
         return jumpButton instanceof HTMLElement ? jumpButton : null;
       })
       .filter((button) => button instanceof HTMLElement);
+  }
+
+  function buildStageJumpCopyInfoTmValue(stageName, statusName) {
+    const stage = String(stageName || '').trim();
+    const status = String(statusName || '').trim();
+    if (stage && status) return `${stage}/${status}`;
+    return stage || status;
+  }
+
+  function escapeStageJumpCopyInfoHtml(value) {
+    return String(value || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function buildStageJumpCopyInfoLineData(target) {
+    const departmentName = String(target && target.departmentName ? target.departmentName : '').trim();
+    const accountNumber = String(target && target.accountNumber ? target.accountNumber : '').trim();
+    const accountWithDepartment = accountNumber
+      ? (departmentName ? `${accountNumber} (${departmentName})` : accountNumber)
+      : (departmentName ? `(${departmentName})` : '');
+
+    return {
+      accountWithDepartment,
+      debtId: String(target && target.debtId ? target.debtId : '').trim(),
+      edocId: String(target && target.edocId ? target.edocId : '').trim(),
+      edNumber: String(target && target.edNumber ? target.edNumber : '').trim(),
+      fullName: String(target && target.fullName ? target.fullName : '').trim(),
+      tmValue: buildStageJumpCopyInfoTmValue(
+        target && target.stageName ? target.stageName : '',
+        target && target.statusName ? target.statusName : ''
+      )
+    };
+  }
+
+  function buildStageJumpCopyInfoPlainText(target) {
+    const lineData = buildStageJumpCopyInfoLineData(target);
+    return [
+      `ЛС: ${lineData.accountWithDepartment}`,
+      `DebtID: ${lineData.debtId}`,
+      `EDocID: ${lineData.edocId}`,
+      `НомерИД: ${lineData.edNumber}`,
+      `ФИО: ${lineData.fullName}`,
+      `ТМ: ${lineData.tmValue}`
+    ].join(' | ');
+  }
+
+  function buildStageJumpCopyInfoHtml(target) {
+    const lineData = buildStageJumpCopyInfoLineData(target);
+    return [
+      `<strong>ЛС:</strong> ${escapeStageJumpCopyInfoHtml(lineData.accountWithDepartment)}`,
+      `<strong>DebtID:</strong> ${escapeStageJumpCopyInfoHtml(lineData.debtId)}`,
+      `<strong>EDocID:</strong> ${escapeStageJumpCopyInfoHtml(lineData.edocId)}`,
+      `<strong>НомерИД:</strong> ${escapeStageJumpCopyInfoHtml(lineData.edNumber)}`,
+      `<strong>ФИО:</strong> ${escapeStageJumpCopyInfoHtml(lineData.fullName)}`,
+      `<strong>ТМ:</strong> ${escapeStageJumpCopyInfoHtml(lineData.tmValue)}`
+    ].join(' | ');
+  }
+
+  function collectStageJumpCopyInfoTargets(anchorButton) {
+    const summary = {
+      selectedRowsCount: 0,
+      targets: []
+    };
+
+    const selectedRows = getStageJumpSelectedRows();
+    summary.selectedRowsCount = selectedRows.length;
+    const sourceRows = selectedRows.length > 0
+      ? selectedRows
+      : [getStageJumpRowFromButton(anchorButton)].filter((row) => row instanceof HTMLTableRowElement);
+
+    const currentDepartmentName = getSlowsearchDepartmentCurrentName();
+    const seen = new Set();
+    sourceRows.forEach((row) => {
+      if (!(row instanceof HTMLTableRowElement)) return;
+
+      const debtId = getRowCellTextByAria(row, 'list_DebtID');
+      const edocId = getRowCellTextByAria(row, 'list_EDocID') || getRowCellTextByAria(row, 'list_EdocID');
+      const accountNumber = getRowCellTextByAria(row, 'list_AccAddress_AccountNumber');
+      const edNumber = getRowCellTextByAria(row, 'list_EDNumber');
+      const fullName = getRowCellTextByAria(row, 'list_Individual_FullName');
+      const stageName = getRowCellTextByAria(row, 'list_CaseStageName');
+      const statusName = getRowCellTextByAria(row, 'list_CaseStatusName');
+      const dedupeKey = String(row.id || '').trim() || [debtId, edocId, accountNumber, fullName].join('::');
+      if (seen.has(dedupeKey)) return;
+      seen.add(dedupeKey);
+
+      if (!dedupeKey.replace(/[:]/g, '').trim()) return;
+
+      summary.targets.push({
+        debtId,
+        edocId,
+        accountNumber,
+        edNumber,
+        fullName,
+        stageName,
+        statusName,
+        departmentName: currentDepartmentName
+      });
+    });
+
+    return summary;
+  }
+
+  function writeStageJumpPlainTextToClipboardFallback(text) {
+    return new Promise((resolve, reject) => {
+      const host = document.body || document.documentElement;
+      if (!host) {
+        reject(new Error('NO_DOCUMENT_HOST'));
+        return;
+      }
+
+      const textarea = document.createElement('textarea');
+      textarea.value = String(text || '');
+      textarea.setAttribute('readonly', 'readonly');
+      textarea.style.position = 'fixed';
+      textarea.style.top = '-1000px';
+      textarea.style.left = '-1000px';
+      textarea.style.opacity = '0';
+      host.appendChild(textarea);
+
+      textarea.focus();
+      textarea.select();
+      textarea.setSelectionRange(0, textarea.value.length);
+
+      let copied = false;
+      try {
+        copied = document.execCommand('copy');
+      } catch (error) {
+        copied = false;
+      }
+
+      textarea.remove();
+
+      if (copied) {
+        resolve(true);
+      } else {
+        reject(new Error('COPY_COMMAND_FAILED'));
+      }
+    });
+  }
+
+  async function writeStageJumpInfoTargetsToClipboard(targets) {
+    const plainText = targets.map((target) => buildStageJumpCopyInfoPlainText(target)).join('\n');
+    const htmlText = `<meta charset="utf-8">${targets.map((target) => `<div>${buildStageJumpCopyInfoHtml(target)}</div>`).join('')}`;
+
+    if (!plainText.trim()) {
+      throw new Error('EMPTY_COPY_TEXT');
+    }
+
+    if (
+      navigator.clipboard &&
+      typeof navigator.clipboard.write === 'function' &&
+      typeof window.ClipboardItem === 'function'
+    ) {
+      try {
+        const clipboardItem = new window.ClipboardItem({
+          'text/plain': new Blob([plainText], { type: 'text/plain;charset=utf-8' }),
+          'text/html': new Blob([htmlText], { type: 'text/html;charset=utf-8' })
+        });
+        await navigator.clipboard.write([clipboardItem]);
+        return;
+      } catch (error) {
+        // fallback to plain text below
+      }
+    }
+
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      try {
+        await navigator.clipboard.writeText(plainText);
+        return;
+      } catch (error) {
+        // fallback to execCommand below
+      }
+    }
+
+    await writeStageJumpPlainTextToClipboardFallback(plainText);
   }
 
   function collectStageJumpExecutionTargets(anchorButton) {
@@ -4232,6 +4427,24 @@
       const targetUrl = String(anchorButton.dataset.targetUrl || '').trim();
       if (!targetUrl) return;
       openStageJumpTarget(targetUrl, debtId);
+      return;
+    }
+
+    if (action === STAGE_JUMP_MENU_ACTION_COPY_INFO) {
+      const copyInfoSummary = collectStageJumpCopyInfoTargets(anchorButton);
+      if (!copyInfoSummary.targets.length) {
+        window.alert('Нет строк для копирования информации об ИД.');
+        return;
+      }
+
+      void writeStageJumpInfoTargetsToClipboard(copyInfoSummary.targets)
+        .then(() => {
+          showSuccessFeedback(anchorButton);
+        })
+        .catch((error) => {
+          console.warn('[StageJump] Не удалось скопировать информацию об ИД.', error);
+          window.alert('Не удалось скопировать информацию об ИД в буфер обмена.');
+        });
       return;
     }
 
@@ -4294,6 +4507,7 @@
     menu.className = STAGE_JUMP_MENU_CLASS;
     menu.hidden = true;
     menu.innerHTML = [
+      `<button type="button" class="${STAGE_JUMP_MENU_ITEM_CLASS}" ${STAGE_JUMP_MENU_ACTION_ATTR}="${STAGE_JUMP_MENU_ACTION_COPY_INFO}">${STAGE_JUMP_MENU_ITEM_COPY_INFO_TEXT} (0)</button>`,
       `<button type="button" class="${STAGE_JUMP_MENU_ITEM_CLASS}" ${STAGE_JUMP_MENU_ACTION_ATTR}="${STAGE_JUMP_MENU_ACTION_SLOWSEARCH}">${STAGE_JUMP_MENU_ITEM_SLOWSEARCH_TEXT}</button>`,
       `<button type="button" class="${STAGE_JUMP_MENU_ITEM_CLASS}" ${STAGE_JUMP_MENU_ACTION_ATTR}="${STAGE_JUMP_MENU_ACTION_STAGE}">${STAGE_JUMP_MENU_ITEM_STAGE_TEXT}</button>`,
       `<button type="button" class="${STAGE_JUMP_MENU_ITEM_CLASS}" ${STAGE_JUMP_MENU_ACTION_ATTR}="${STAGE_JUMP_MENU_ACTION_EXECUTION_ANALYSIS}">${STAGE_JUMP_MENU_ITEM_EXECUTION_ANALYSIS_TEXT}</button>`
@@ -4341,7 +4555,9 @@
     if (!menu || !anchorButton) return;
 
     const stageItem = menu.querySelector(`.${STAGE_JUMP_MENU_ITEM_CLASS}[${STAGE_JUMP_MENU_ACTION_ATTR}="${STAGE_JUMP_MENU_ACTION_STAGE}"]`);
+    const copyInfoItem = menu.querySelector(`.${STAGE_JUMP_MENU_ITEM_CLASS}[${STAGE_JUMP_MENU_ACTION_ATTR}="${STAGE_JUMP_MENU_ACTION_COPY_INFO}"]`);
     const executionAnalysisItem = menu.querySelector(`.${STAGE_JUMP_MENU_ITEM_CLASS}[${STAGE_JUMP_MENU_ACTION_ATTR}="${STAGE_JUMP_MENU_ACTION_EXECUTION_ANALYSIS}"]`);
+    const copyInfoSummary = collectStageJumpCopyInfoTargets(anchorButton);
     const executionTargetsSummary = collectStageJumpExecutionTargets(anchorButton);
     const hasStageTarget = String(anchorButton.dataset.targetUrl || '').trim().length > 0;
     if (stageItem instanceof HTMLButtonElement) {
@@ -4350,6 +4566,18 @@
         stageItem.title = 'Маршрут стадии/статуса не найден в статической карте ВЗИД.';
       } else {
         stageItem.removeAttribute('title');
+      }
+    }
+    if (copyInfoItem instanceof HTMLButtonElement) {
+      const copyCount = copyInfoSummary.targets.length;
+      copyInfoItem.textContent = `${STAGE_JUMP_MENU_ITEM_COPY_INFO_TEXT} (${copyCount})`;
+      copyInfoItem.disabled = copyCount < 1;
+      if (copyCount < 1) {
+        copyInfoItem.title = 'Нет строк для копирования информации об ИД.';
+      } else if (copyInfoSummary.selectedRowsCount > 1) {
+        copyInfoItem.title = `Будет скопировано строк: ${copyCount}`;
+      } else {
+        copyInfoItem.removeAttribute('title');
       }
     }
     if (executionAnalysisItem instanceof HTMLButtonElement) {
