@@ -23,6 +23,8 @@ html.dup-ext-screenshot-mode #dup-execution-analysis-manual-dialog,
 html.dup-ext-screenshot-mode .dup-execution-analysis-modal,
 html.dup-ext-screenshot-mode #dup-id-card-check-nav,
 html.dup-ext-screenshot-mode .dup-id-card-check-modal,
+html.dup-ext-screenshot-mode #dup-grid-card-check-nav,
+html.dup-ext-screenshot-mode .dup-grid-card-check-modal,
 html.dup-ext-screenshot-mode [title="Скрыть таймер"],
 html.dup-ext-screenshot-mode [aria-label="Скрыть таймер"],
 html.dup-ext-screenshot-mode [title="Показать таймер"],
@@ -513,6 +515,14 @@ html.dup-ext-screenshot-mode [aria-label="Показать таймер"] {
     min-width: 0;
     color: #465b66;
     overflow-wrap: anywhere;
+}
+
+.spring-card-modal .dup-grid-card-check-nav {
+    margin: 0;
+    border-left: 0;
+    border-right: 0;
+    border-radius: 0;
+    box-shadow: inset 0 -1px 0 rgba(39, 64, 79, 0.08);
 }
 
 .dup-id-card-check-choice-panel {
