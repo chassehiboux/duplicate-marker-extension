@@ -35,6 +35,8 @@
             stageTimerAbort: null,
             // Кнопки и выпадающее меню быстрых действий StageJump.
             stageJumpButtons: null,
+            // Блок "Занести анализ исполнения" во вкладке "Функции" меню F2.
+            executionAnalysisTools: null,
             // Фильтр depid и переключатель показа скрытых департаментов.
             departmentDropdownFilter: null,
             // Кнопка группировки записей ФССП.

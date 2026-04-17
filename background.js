@@ -166,84 +166,8 @@ const BIG_DEBTORS_MAP = {
 };
 
 const STAGE_MAX_WAITING_SEC = 2 * 60 * 60; // Жесткий лимит ожидания стадии: 2 часа.
-const STAGE_JUMP_PENDING_MODE_EXECUTION_ANALYSIS = 'execution_analysis';
 let stageRequests = {}; // requestId -> { startTime, tabId, loadType, requestUrl }
 let stageSessions = {}; // tabId -> { sessionId, baseName, userName, departmentName, stageName, loadType, requestUrl, version, startEpochMs }
-let stageJumpExecutionBackgroundJobs = {}; // targetTabId -> { sourceTabId, requestId, createdAtMs, payload }
-
-function sendStageJumpExecutionStatusToSource(sourceTabId, requestId, status, errorMessage = '') {
-    if (!Number.isInteger(sourceTabId)) return;
-    const normalizedRequestId = String(requestId || '').trim();
-    if (!normalizedRequestId) return;
-
-    const normalizedStatus = String(status || '').trim();
-    if (!normalizedStatus) return;
-
-    chrome.tabs.sendMessage(sourceTabId, {
-        action: 'STAGEJUMP_EXECUTION_ANALYSIS_STATUS',
-        data: {
-            requestId: normalizedRequestId,
-            status: normalizedStatus,
-            error: String(errorMessage || '')
-        }
-    }, () => {
-        // Ignore "receiving end does not exist", source tab could be closed/reloaded.
-        void chrome.runtime.lastError;
-    });
-}
-
-function normalizeStageJumpExecutionPayload(payload) {
-    if (!payload || typeof payload !== 'object') return null;
-
-    const modeRaw = String(payload.mode || '').trim();
-    if (modeRaw && modeRaw !== STAGE_JUMP_PENDING_MODE_EXECUTION_ANALYSIS) return null;
-
-    const path = String(payload.path || '').trim();
-    const debtId = String(payload.debtId || '').trim();
-    const edocId = String(payload.edocId || '').trim();
-    const analysisText = String(payload.analysisText || '').trim();
-    if (!path || !edocId || !analysisText) return null;
-
-    return {
-        mode: STAGE_JUMP_PENDING_MODE_EXECUTION_ANALYSIS,
-        path,
-        debtId,
-        edocId,
-        analysisText
-    };
-}
-
-function registerStageJumpExecutionBackgroundJob(targetTabId, sourceTabId, requestId, payload) {
-    if (!Number.isInteger(targetTabId)) return false;
-    if (!Number.isInteger(sourceTabId)) return false;
-
-    const normalizedRequestId = String(requestId || '').trim();
-    if (!normalizedRequestId) return false;
-    const normalizedPayload = normalizeStageJumpExecutionPayload(payload);
-    if (!normalizedPayload) return false;
-
-    stageJumpExecutionBackgroundJobs[targetTabId] = {
-        sourceTabId,
-        requestId: normalizedRequestId,
-        createdAtMs: Date.now(),
-        payload: normalizedPayload
-    };
-    return true;
-}
-
-function getStageJumpExecutionBackgroundJob(targetTabId) {
-    if (!Number.isInteger(targetTabId)) return null;
-    const job = stageJumpExecutionBackgroundJobs[targetTabId];
-    return job && typeof job === 'object' ? job : null;
-}
-
-function clearStageJumpExecutionBackgroundJob(targetTabId) {
-    if (!Number.isInteger(targetTabId)) return null;
-    const job = getStageJumpExecutionBackgroundJob(targetTabId);
-    if (!job) return null;
-    delete stageJumpExecutionBackgroundJobs[targetTabId];
-    return job;
-}
 
 function parseStageDurationSec(rawDuration) {
     if (rawDuration === undefined || rawDuration === null || rawDuration === "") return null;
@@ -505,13 +429,22 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             return false;
         }
 
-        case 'STAGEJUMP_OPEN_BACKGROUND_TAB': {
+        case 'EXECUTION_ANALYSIS_GET_TAB_ID': {
+            const tabId = sender && sender.tab ? sender.tab.id : null;
+            if (!Number.isInteger(tabId)) {
+                sendResponse({ success: false, error: 'NO_TAB_ID' });
+                return false;
+            }
+            sendResponse({ success: true, tabId });
+            return false;
+        }
+
+        case 'EXECUTION_ANALYSIS_OPEN_TAB': {
             const sourceTabId = sender && sender.tab ? sender.tab.id : null;
             const sourceWindowId = sender && sender.tab ? sender.tab.windowId : null;
             const data = request && request.data ? request.data : {};
             const targetUrl = String(data.url || '').trim();
-            const requestId = String(data.requestId || '').trim();
-            const payload = normalizeStageJumpExecutionPayload(data.payload || null);
+            const active = data.active === true;
 
             if (!Number.isInteger(sourceTabId)) {
                 sendResponse({ success: false, error: 'NO_SOURCE_TAB' });
@@ -523,19 +456,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 return false;
             }
 
-            if (!requestId) {
-                sendResponse({ success: false, error: 'EMPTY_REQUEST_ID' });
-                return false;
-            }
-
-            if (!payload) {
-                sendResponse({ success: false, error: 'INVALID_PAYLOAD' });
-                return false;
-            }
-
             const createProperties = {
                 url: targetUrl,
-                active: false
+                active
             };
             if (Number.isInteger(sourceWindowId)) {
                 createProperties.windowId = sourceWindowId;
@@ -556,77 +479,33 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     return;
                 }
 
-                const isRegistered = registerStageJumpExecutionBackgroundJob(targetTabId, sourceTabId, requestId, payload);
-                if (!isRegistered) {
-                    chrome.tabs.remove(targetTabId, () => {
-                        void chrome.runtime.lastError;
-                    });
-                    sendResponse({ success: false, error: 'REGISTER_JOB_FAILED' });
-                    return;
-                }
-
-                sendStageJumpExecutionStatusToSource(sourceTabId, requestId, 'running');
                 sendResponse({ success: true, tabId: targetTabId });
             });
 
             return true;
         }
 
-        case 'STAGEJUMP_GET_EXECUTION_ANALYSIS_PAYLOAD': {
-            const targetTabId = sender && sender.tab ? sender.tab.id : null;
-            if (!Number.isInteger(targetTabId)) {
-                sendResponse({ success: false, error: 'NO_TARGET_TAB' });
-                return false;
-            }
-
-            const job = getStageJumpExecutionBackgroundJob(targetTabId);
-            if (!job) {
-                sendResponse({ success: false, error: 'JOB_NOT_FOUND' });
-                return false;
-            }
-
-            const payload = normalizeStageJumpExecutionPayload(job.payload || null);
-            if (!payload) {
-                sendResponse({ success: false, error: 'PAYLOAD_NOT_FOUND' });
-                return false;
-            }
-
-            sendResponse({
-                success: true,
-                data: {
-                    ...payload,
-                    requestId: job.requestId
-                }
-            });
-            return false;
-        }
-
-        case 'STAGEJUMP_EXECUTION_ANALYSIS_FINISH': {
-            const targetTabId = sender && sender.tab ? sender.tab.id : null;
+        case 'EXECUTION_ANALYSIS_CLOSE_TAB': {
+            const senderTabId = sender && sender.tab ? sender.tab.id : null;
             const data = request && request.data ? request.data : {};
-            const isSuccess = !!(data.success === true);
-            const errorMessage = String(data.error || '').trim();
+            const requestedTabId = Number(data.tabId);
+            const targetTabId = Number.isInteger(requestedTabId) && requestedTabId > 0
+                ? requestedTabId
+                : senderTabId;
 
             if (!Number.isInteger(targetTabId)) {
                 sendResponse({ success: false, error: 'NO_TARGET_TAB' });
                 return false;
             }
 
-            const job = clearStageJumpExecutionBackgroundJob(targetTabId);
-            if (!job) {
-                sendResponse({ success: false, error: 'JOB_NOT_FOUND' });
-                return false;
-            }
-
-            const status = isSuccess ? 'success' : 'error';
-            const statusError = isSuccess ? '' : (errorMessage || 'EXECUTION_ANALYSIS_FAILED');
-            sendStageJumpExecutionStatusToSource(job.sourceTabId, job.requestId, status, statusError);
             chrome.tabs.remove(targetTabId, () => {
-                // If tab is already closed, nothing else required.
-                void chrome.runtime.lastError;
+                if (chrome.runtime.lastError) {
+                    sendResponse({ success: false, error: chrome.runtime.lastError.message || 'CLOSE_TAB_FAILED' });
+                    return;
+                }
+                sendResponse({ success: true });
             });
-            sendResponse({ success: true });
-            return false;
+            return true;
         }
 
         case 'STAGEJUMP_APPLY_DEBTID_MAIN_WORLD': {
@@ -986,33 +865,6 @@ let pendingEdocids = {};
 chrome.tabs.onRemoved.addListener((tabId) => {
   sendStageCancelForClosedTab(tabId);
   clearStageRequestsForTab(tabId);
-
-  // Если закрылась фоновая вкладка выполнения — завершаем job с ошибкой.
-  const closedExecutionJob = clearStageJumpExecutionBackgroundJob(tabId);
-  if (closedExecutionJob) {
-    sendStageJumpExecutionStatusToSource(
-      closedExecutionJob.sourceTabId,
-      closedExecutionJob.requestId,
-      'error',
-      'TARGET_TAB_CLOSED'
-    );
-  }
-
-  // Если закрылась вкладка-источник — закрываем все её фоновые вкладки выполнения.
-  const relatedTargetTabs = Object.keys(stageJumpExecutionBackgroundJobs)
-    .map((key) => Number.parseInt(key, 10))
-    .filter((targetTabId) => {
-      if (!Number.isInteger(targetTabId)) return false;
-      const job = getStageJumpExecutionBackgroundJob(targetTabId);
-      return !!job && job.sourceTabId === tabId;
-    });
-
-  relatedTargetTabs.forEach((targetTabId) => {
-    clearStageJumpExecutionBackgroundJob(targetTabId);
-    chrome.tabs.remove(targetTabId, () => {
-      void chrome.runtime.lastError;
-    });
-  });
 
   if (pendingEdocids[tabId]) {
     addLog(`Вкладка ${tabId} закрыта, удаляю ожидающий edocid: ${pendingEdocids[tabId]}`);

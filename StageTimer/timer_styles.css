@@ -19,6 +19,8 @@ html.dup-ext-screenshot-mode #dup-extension-ui-settings-overlay,
 html.dup-ext-screenshot-mode #dup-extension-ui-settings-panel,
 html.dup-ext-screenshot-mode .dup-extension-ui-settings-overlay,
 html.dup-ext-screenshot-mode .dup-extension-ui-settings-panel,
+html.dup-ext-screenshot-mode #dup-execution-analysis-manual-dialog,
+html.dup-ext-screenshot-mode .dup-execution-analysis-modal,
 html.dup-ext-screenshot-mode [title="Скрыть таймер"],
 html.dup-ext-screenshot-mode [aria-label="Скрыть таймер"],
 html.dup-ext-screenshot-mode [title="Показать таймер"],
@@ -228,6 +230,212 @@ html.dup-ext-screenshot-mode [aria-label="Показать таймер"] {
     line-height: 1;
 }
 
+.dup-extension-ui-settings-tabs {
+    display: flex;
+    gap: 8px;
+    margin: 0 0 12px;
+}
+
+.dup-extension-ui-settings-tab {
+    flex: 1 1 0;
+    min-height: 32px;
+    border: 1px solid rgba(39, 64, 79, 0.18);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.72);
+    color: #243943;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.dup-extension-ui-settings-tab.is-active {
+    background: #2f7d6b;
+    border-color: #2f7d6b;
+    color: #fff;
+}
+
+.dup-extension-ui-settings-pane {
+    display: none;
+}
+
+.dup-extension-ui-settings-pane.is-active {
+    display: block;
+}
+
+.dup-execution-analysis-block {
+    display: grid;
+    gap: 12px;
+    padding: 12px;
+    border: 1px solid rgba(39, 64, 79, 0.12);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.84);
+}
+
+.dup-execution-analysis-block-title {
+    font-size: 15px;
+    line-height: 1.3;
+    font-weight: 700;
+}
+
+.dup-execution-analysis-file-row,
+.dup-execution-analysis-actions,
+.dup-execution-analysis-modal-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.dup-execution-analysis-file-input {
+    display: none !important;
+}
+
+.dup-execution-analysis-file-name {
+    min-width: 0;
+    font-size: 12px;
+    line-height: 1.35;
+    color: #51656f;
+    overflow-wrap: anywhere;
+}
+
+.dup-execution-analysis-params {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: end;
+}
+
+.dup-execution-analysis-params[hidden],
+.dup-execution-analysis-statusbar[hidden],
+.dup-execution-analysis-modal[hidden] {
+    display: none !important;
+}
+
+.dup-execution-analysis-param,
+.dup-execution-analysis-field {
+    display: grid;
+    gap: 5px;
+    min-width: 0;
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.35;
+    color: #465b66;
+}
+
+.dup-execution-analysis-param input,
+.dup-execution-analysis-param select,
+.dup-execution-analysis-field textarea {
+    width: 100%;
+    min-width: 0;
+    border: 1px solid rgba(39, 64, 79, 0.22);
+    border-radius: 6px;
+    padding: 7px 8px;
+    background: #fff;
+    color: #10202a;
+    font: inherit;
+}
+
+.dup-execution-analysis-field textarea {
+    resize: vertical;
+}
+
+.dup-execution-analysis-param input,
+.dup-execution-analysis-param select {
+    box-sizing: border-box;
+    height: 34px;
+}
+
+.dup-execution-analysis-block button,
+.dup-execution-analysis-modal button {
+    min-height: 32px;
+    border: 1px solid rgba(39, 64, 79, 0.22);
+    border-radius: 8px;
+    padding: 0 10px;
+    background: #fff;
+    color: #10202a;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.dup-execution-analysis-block button:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.dup-execution-analysis-save-params {
+    align-self: end;
+    box-sizing: border-box;
+    height: 34px;
+}
+
+.dup-execution-analysis-start,
+.dup-execution-analysis-open-manual {
+    background: #2f7d6b !important;
+    border-color: #2f7d6b !important;
+    color: #fff !important;
+}
+
+.dup-execution-analysis-statusbar {
+    display: grid;
+    gap: 4px;
+    padding: 9px 10px;
+    border-radius: 8px;
+    background: rgba(47, 125, 107, 0.08);
+    color: #24443d;
+    font-size: 12px;
+    line-height: 1.35;
+}
+
+.dup-execution-analysis-status-text.is-error {
+    color: #b91c1c;
+}
+
+.dup-execution-analysis-batch-info {
+    overflow-wrap: anywhere;
+}
+
+.dup-execution-analysis-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 2147483647;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    background: rgba(18, 27, 33, 0.34);
+}
+
+.dup-execution-analysis-modal-panel {
+    width: min(92vw, 440px);
+    display: grid;
+    gap: 12px;
+    padding: 14px;
+    border-radius: 8px;
+    background: #f9fbfd;
+    color: #10202a;
+    box-shadow: 0 18px 48px rgba(16, 29, 38, 0.26);
+    font-family: "Segoe UI", Arial, sans-serif;
+}
+
+.dup-execution-analysis-modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.dup-execution-analysis-modal-title {
+    font-size: 16px;
+    font-weight: 700;
+}
+
+.dup-execution-analysis-modal-close {
+    width: 32px;
+    padding: 0 !important;
+    font-size: 18px !important;
+}
+
 .dup-extension-ui-settings-list {
     display: grid;
     gap: 10px;
@@ -304,5 +512,9 @@ html.dup-ext-screenshot-mode [aria-label="Показать таймер"] {
 
     .dup-extension-ui-settings-title {
         font-size: 13px;
+    }
+
+    .dup-execution-analysis-params {
+        grid-template-columns: 1fr;
     }
 }

@@ -41,13 +41,30 @@
   const STAGE_JUMP_MENU_ACTION_SLOWSEARCH = 'to_slowsearch';
   const STAGE_JUMP_MENU_ACTION_STAGE = 'to_stage';
   const STAGE_JUMP_MENU_ACTION_COPY_INFO = 'copy_info';
-  const STAGE_JUMP_MENU_ACTION_EXECUTION_ANALYSIS = 'to_execution_analysis';
   const STAGE_JUMP_MENU_ITEM_SLOWSEARCH_TEXT = 'Переход в Глобальный поиск';
   const STAGE_JUMP_MENU_ITEM_STAGE_TEXT = 'Переход к ИД на стадии';
   const STAGE_JUMP_MENU_ITEM_COPY_INFO_TEXT = 'Скопировать инфо об ИД';
-  const STAGE_JUMP_MENU_ITEM_EXECUTION_ANALYSIS_TEXT = 'Анализ исполнения';
-  const STAGE_JUMP_PENDING_MODE_EXECUTION_ANALYSIS = 'execution_analysis';
-  const STAGE_JUMP_ANALYSIS_DRAFT_STORAGE_KEY = 'dup_stage_jump_analysis_draft';
+  const EXECUTION_ANALYSIS_PATH = '/ovzid/actions/execution-analysis';
+  const EXECUTION_ANALYSIS_BLANK_PATH = '/pages/blank';
+  const EXECUTION_ANALYSIS_STATE_STORAGE_KEY = 'dup_execution_analysis_state_v1';
+  const EXECUTION_ANALYSIS_PARAMS_STORAGE_KEY = 'dup_execution_analysis_params_v1';
+  const EXECUTION_ANALYSIS_BATCH_SIZE_DEFAULT = 10;
+  const EXECUTION_ANALYSIS_INTERVAL_DEFAULT_MS = 0;
+  const EXECUTION_ANALYSIS_PROCESSED_TEXT = 'Да';
+  const EXECUTION_ANALYSIS_MANUAL_DIALOG_ID = 'dup-execution-analysis-manual-dialog';
+  const EXECUTION_ANALYSIS_FILE_INPUT_ID = 'dup-execution-analysis-file-input';
+  const EXECUTION_ANALYSIS_STATUS_IDLE = 'idle';
+  const EXECUTION_ANALYSIS_STATUS_READY = 'ready';
+  const EXECUTION_ANALYSIS_STATUS_RUNNING = 'running';
+  const EXECUTION_ANALYSIS_STATUS_PAUSED = 'paused';
+  const EXECUTION_ANALYSIS_STATUS_COMPLETED = 'completed';
+  const EXECUTION_ANALYSIS_STATUS_STOPPED = 'stopped';
+  const EXECUTION_ANALYSIS_INTERVAL_OPTIONS = Object.freeze([
+    { label: '0', value: 0 },
+    { label: '5 сек', value: 5000 },
+    { label: '10 сек', value: 10000 },
+    { label: '30 сек', value: 30000 }
+  ]);
   const SLOWSEARCH_TARGET_PATH = '/ovzid/status/all';
   const SLOWSEARCH_JUMP_BUTTON_TEXT = 'Перейти в ОВЗИД (status/all)';
   const SLOWSEARCH_JUMP_MARK_ATTR = 'data-dup-slowsearch-jump';
@@ -310,6 +327,19 @@
       `
     },
     {
+      key: 'executionAnalysisTools',
+      storageKey: 'dup_ui_show_execution_analysis_tools',
+      label: 'Занесение анализа исполнения',
+      description: 'Блок загрузки реестра и ручного открытия формы анализа.',
+      hideClass: 'dup-ui-hide-execution-analysis-tools',
+      hideCss: `
+        html.dup-ui-hide-execution-analysis-tools .dup-execution-analysis-block,
+        html.dup-ui-hide-execution-analysis-tools .dup-execution-analysis-modal {
+          display: none !important;
+        }
+      `
+    },
+    {
       key: 'departmentDropdownFilter',
       storageKey: 'dup_ui_show_department_dropdown_filter',
       label: 'Фильтр depid',
@@ -505,8 +535,13 @@
   let stageJumpLastStageTimerErrorAtMs = 0;
   let departmentDropdownShowHidden = false;
   let departmentDropdownInteractionLockUntilMs = 0;
-  const stageJumpExecutionRequestStates = new Map();
-  const stageJumpExecutionButtonStates = new Map();
+  const executionAnalysisPageId = createExecutionAnalysisPageId();
+  let executionAnalysisState = createEmptyExecutionAnalysisState();
+  let executionAnalysisParams = normalizeExecutionAnalysisParams(null);
+  let executionAnalysisElements = null;
+  let executionAnalysisLaunchTimer = null;
+  let executionAnalysisDownloadDoneForRunId = '';
+  let executionAnalysisProcessingTimer = null;
   const allDuplicateSettingKeys = [
     'setting_highlight_mode', 'list_DebtID', 'list_AccAddress_AccountNumber',
     'list_Individual_FullName', 'list_CaseNumber', 'list_EDNumber',
@@ -926,6 +961,1253 @@
     });
   }
 
+  function createExecutionAnalysisPageId() {
+    if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+      return window.crypto.randomUUID();
+    }
+    return `exec_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+  }
+
+  function normalizeExecutionAnalysisParams(rawParams) {
+    const raw = rawParams && typeof rawParams === 'object' ? rawParams : {};
+    const parsedBatchSize = Number.parseInt(String(raw.batchSize || ''), 10);
+    const batchSize = Number.isFinite(parsedBatchSize) && parsedBatchSize > 0
+      ? Math.min(500, parsedBatchSize)
+      : EXECUTION_ANALYSIS_BATCH_SIZE_DEFAULT;
+    const intervalMsRaw = Number(raw.intervalMs);
+    const allowedIntervals = new Set(EXECUTION_ANALYSIS_INTERVAL_OPTIONS.map((item) => item.value));
+    const intervalMs = allowedIntervals.has(intervalMsRaw)
+      ? intervalMsRaw
+      : EXECUTION_ANALYSIS_INTERVAL_DEFAULT_MS;
+    return { batchSize, intervalMs };
+  }
+
+  function createEmptyExecutionAnalysisState() {
+    return {
+      version: 1,
+      status: EXECUTION_ANALYSIS_STATUS_IDLE,
+      sourcePageId: '',
+      sourceOrigin: '',
+      runId: '',
+      fileName: '',
+      fileType: '',
+      headers: [],
+      rows: [],
+      processedColumnName: 'Обработано',
+      params: normalizeExecutionAnalysisParams(null),
+      currentBatch: null,
+      nextLaunchAt: 0,
+      lastError: '',
+      updatedAt: Date.now()
+    };
+  }
+
+  function normalizeExecutionAnalysisStatus(status) {
+    const normalized = String(status || '').trim();
+    const allowed = new Set([
+      EXECUTION_ANALYSIS_STATUS_IDLE,
+      EXECUTION_ANALYSIS_STATUS_READY,
+      EXECUTION_ANALYSIS_STATUS_RUNNING,
+      EXECUTION_ANALYSIS_STATUS_PAUSED,
+      EXECUTION_ANALYSIS_STATUS_COMPLETED,
+      EXECUTION_ANALYSIS_STATUS_STOPPED
+    ]);
+    return allowed.has(normalized) ? normalized : EXECUTION_ANALYSIS_STATUS_IDLE;
+  }
+
+  function normalizeExecutionAnalysisText(value) {
+    return String(value === undefined || value === null ? '' : value).trim();
+  }
+
+  function normalizeExecutionAnalysisProcessed(value) {
+    return normalizeExecutionAnalysisText(value).toLowerCase() === EXECUTION_ANALYSIS_PROCESSED_TEXT.toLowerCase()
+      ? EXECUTION_ANALYSIS_PROCESSED_TEXT
+      : '';
+  }
+
+  function normalizeExecutionAnalysisRow(row, index) {
+    const raw = row && typeof row === 'object' ? row : {};
+    const values = Array.isArray(raw.values)
+      ? raw.values.map((value) => String(value === undefined || value === null ? '' : value))
+      : [];
+    const id = normalizeExecutionAnalysisText(raw.id) || `row_${index + 1}`;
+    return {
+      id,
+      values,
+      edocId: normalizeExecutionAnalysisText(raw.edocId),
+      analysisText: normalizeExecutionAnalysisText(raw.analysisText),
+      processed: normalizeExecutionAnalysisProcessed(raw.processed)
+    };
+  }
+
+  function normalizeExecutionAnalysisState(rawState) {
+    const base = createEmptyExecutionAnalysisState();
+    const raw = rawState && typeof rawState === 'object' ? rawState : {};
+    const headers = Array.isArray(raw.headers)
+      ? raw.headers.map((header) => String(header === undefined || header === null ? '' : header))
+      : [];
+    const rows = Array.isArray(raw.rows)
+      ? raw.rows.map((row, index) => normalizeExecutionAnalysisRow(row, index))
+      : [];
+    const currentBatch = raw.currentBatch && typeof raw.currentBatch === 'object'
+      ? {
+          runId: normalizeExecutionAnalysisText(raw.currentBatch.runId),
+          rowIds: Array.isArray(raw.currentBatch.rowIds)
+            ? raw.currentBatch.rowIds.map((id) => normalizeExecutionAnalysisText(id)).filter(Boolean)
+            : [],
+          edocIds: Array.isArray(raw.currentBatch.edocIds)
+            ? raw.currentBatch.edocIds.map((id) => normalizeExecutionAnalysisText(id)).filter(Boolean)
+            : [],
+          analysisText: normalizeExecutionAnalysisText(raw.currentBatch.analysisText),
+          tabId: Number.isInteger(raw.currentBatch.tabId) ? raw.currentBatch.tabId : 0,
+          startedAt: Number(raw.currentBatch.startedAt || 0)
+        }
+      : null;
+
+    return {
+      ...base,
+      ...raw,
+      status: normalizeExecutionAnalysisStatus(raw.status),
+      sourcePageId: normalizeExecutionAnalysisText(raw.sourcePageId),
+      sourceOrigin: normalizeExecutionAnalysisText(raw.sourceOrigin),
+      runId: normalizeExecutionAnalysisText(raw.runId),
+      fileName: normalizeExecutionAnalysisText(raw.fileName),
+      fileType: normalizeExecutionAnalysisText(raw.fileType),
+      headers,
+      rows,
+      processedColumnName: normalizeExecutionAnalysisText(raw.processedColumnName) || 'Обработано',
+      params: normalizeExecutionAnalysisParams(raw.params),
+      currentBatch,
+      nextLaunchAt: Number(raw.nextLaunchAt || 0),
+      lastError: normalizeExecutionAnalysisText(raw.lastError),
+      updatedAt: Number(raw.updatedAt || 0) || Date.now()
+    };
+  }
+
+  function chromeStorageGet(keys) {
+    return new Promise((resolve) => {
+      try {
+        chrome.storage.local.get(keys, (result) => resolve(result || {}));
+      } catch (error) {
+        resolve({});
+      }
+    });
+  }
+
+  function chromeStorageSet(values) {
+    return new Promise((resolve) => {
+      try {
+        chrome.storage.local.set(values, () => resolve(true));
+      } catch (error) {
+        resolve(false);
+      }
+    });
+  }
+
+  function chromeStorageRemove(keys) {
+    return new Promise((resolve) => {
+      try {
+        chrome.storage.local.remove(keys, () => resolve(true));
+      } catch (error) {
+        resolve(false);
+      }
+    });
+  }
+
+  function sendRuntimeMessage(message) {
+    return new Promise((resolve) => {
+      if (!(chrome && chrome.runtime && typeof chrome.runtime.sendMessage === 'function')) {
+        resolve({ success: false, error: 'NO_RUNTIME' });
+        return;
+      }
+      try {
+        chrome.runtime.sendMessage(message, (response) => {
+          const runtimeError = chrome.runtime && chrome.runtime.lastError
+            ? chrome.runtime.lastError.message
+            : '';
+          if (runtimeError) {
+            resolve({ success: false, error: runtimeError });
+            return;
+          }
+          resolve(response || { success: false, error: 'NO_RESPONSE' });
+        });
+      } catch (error) {
+        resolve({ success: false, error: error && error.message ? error.message : 'SEND_FAILED' });
+      }
+    });
+  }
+
+  async function getCurrentTabIdForExecutionAnalysis() {
+    const response = await sendRuntimeMessage({ action: 'EXECUTION_ANALYSIS_GET_TAB_ID' });
+    return response && response.success === true && Number.isInteger(response.tabId)
+      ? response.tabId
+      : 0;
+  }
+
+  async function persistExecutionAnalysisState(nextState) {
+    const normalized = normalizeExecutionAnalysisState({
+      ...nextState,
+      updatedAt: Date.now()
+    });
+    executionAnalysisState = normalized;
+    syncExecutionAnalysisControls();
+    await chromeStorageSet({ [EXECUTION_ANALYSIS_STATE_STORAGE_KEY]: normalized });
+    return normalized;
+  }
+
+  async function persistExecutionAnalysisParams(nextParams) {
+    const normalized = normalizeExecutionAnalysisParams(nextParams);
+    executionAnalysisParams = normalized;
+    const nextState = normalizeExecutionAnalysisState({
+      ...executionAnalysisState,
+      params: normalized
+    });
+    executionAnalysisState = nextState;
+    syncExecutionAnalysisControls();
+    await chromeStorageSet({
+      [EXECUTION_ANALYSIS_PARAMS_STORAGE_KEY]: normalized,
+      [EXECUTION_ANALYSIS_STATE_STORAGE_KEY]: nextState
+    });
+    return normalized;
+  }
+
+  async function loadExecutionAnalysisStateAndParams() {
+    if (!isPyramidExtensionPage()) return;
+    const result = await chromeStorageGet([
+      EXECUTION_ANALYSIS_STATE_STORAGE_KEY,
+      EXECUTION_ANALYSIS_PARAMS_STORAGE_KEY
+    ]);
+    executionAnalysisParams = normalizeExecutionAnalysisParams(result[EXECUTION_ANALYSIS_PARAMS_STORAGE_KEY]);
+    executionAnalysisState = normalizeExecutionAnalysisState({
+      ...(result[EXECUTION_ANALYSIS_STATE_STORAGE_KEY] || {}),
+      params: executionAnalysisParams
+    });
+    syncExecutionAnalysisControls();
+    maybeScheduleExecutionAnalysisNextBatch('storage-init');
+  }
+
+  function splitExecutionAnalysisEdocIds(value) {
+    return String(value || '')
+      .split(/[\s,;]+/g)
+      .map((item) => normalizeExecutionAnalysisText(item))
+      .filter(Boolean);
+  }
+
+  function buildExecutionAnalysisUrl(edocIds, origin = window.location.origin) {
+    const ids = Array.isArray(edocIds)
+      ? edocIds.map((id) => normalizeExecutionAnalysisText(id)).filter(Boolean)
+      : splitExecutionAnalysisEdocIds(edocIds);
+    const url = new URL(EXECUTION_ANALYSIS_PATH, origin || window.location.origin);
+    url.searchParams.set('edocid', ids.join(','));
+    return url.toString();
+  }
+
+  function getExecutionAnalysisProcessedCount(state = executionAnalysisState) {
+    return normalizeExecutionAnalysisState(state).rows
+      .filter((row) => normalizeExecutionAnalysisProcessed(row.processed) === EXECUTION_ANALYSIS_PROCESSED_TEXT)
+      .length;
+  }
+
+  function getExecutionAnalysisPendingRows(state = executionAnalysisState) {
+    return normalizeExecutionAnalysisState(state).rows.filter((row) => (
+      normalizeExecutionAnalysisProcessed(row.processed) !== EXECUTION_ANALYSIS_PROCESSED_TEXT &&
+      normalizeExecutionAnalysisText(row.edocId) &&
+      normalizeExecutionAnalysisText(row.analysisText)
+    ));
+  }
+
+  function buildNextExecutionAnalysisBatch(state = executionAnalysisState) {
+    const normalized = normalizeExecutionAnalysisState(state);
+    const pendingRows = getExecutionAnalysisPendingRows(normalized);
+    if (!pendingRows.length) return null;
+
+    const batchSize = normalizeExecutionAnalysisParams(normalized.params).batchSize;
+    const targetText = pendingRows[0].analysisText;
+    const selectedRows = [];
+    const edocIdSet = new Set();
+    pendingRows.forEach((row) => {
+      if (row.analysisText !== targetText) return;
+      const edocId = normalizeExecutionAnalysisText(row.edocId);
+      if (!edocId) return;
+      if (!edocIdSet.has(edocId) && edocIdSet.size >= batchSize) return;
+      selectedRows.push(row);
+      edocIdSet.add(edocId);
+    });
+
+    if (!selectedRows.length || !edocIdSet.size) return null;
+    return {
+      runId: normalized.runId,
+      rowIds: selectedRows.map((row) => row.id),
+      edocIds: Array.from(edocIdSet),
+      analysisText: targetText,
+      tabId: 0,
+      startedAt: Date.now()
+    };
+  }
+
+  function setExecutionAnalysisStatusText(text, isError = false) {
+    if (!executionAnalysisElements || !(executionAnalysisElements.statusText instanceof HTMLElement)) return;
+    executionAnalysisElements.statusText.textContent = String(text || '');
+    executionAnalysisElements.statusText.classList.toggle('is-error', !!isError);
+  }
+
+  function getExecutionAnalysisStatusLabel(status) {
+    switch (normalizeExecutionAnalysisStatus(status)) {
+      case EXECUTION_ANALYSIS_STATUS_READY: return 'Файл готов';
+      case EXECUTION_ANALYSIS_STATUS_RUNNING: return 'В работе';
+      case EXECUTION_ANALYSIS_STATUS_PAUSED: return 'Пауза';
+      case EXECUTION_ANALYSIS_STATUS_COMPLETED: return 'Завершено';
+      case EXECUTION_ANALYSIS_STATUS_STOPPED: return 'Остановлено';
+      default: return 'Файл не выбран';
+    }
+  }
+
+  function syncExecutionAnalysisControls() {
+    if (!executionAnalysisElements) return;
+    const state = normalizeExecutionAnalysisState(executionAnalysisState);
+    const params = normalizeExecutionAnalysisParams(executionAnalysisParams);
+    const hasRows = state.rows.length > 0;
+    const pendingRows = getExecutionAnalysisPendingRows(state);
+    const processedCount = getExecutionAnalysisProcessedCount(state);
+    const currentBatch = state.currentBatch;
+    const isRunning = state.status === EXECUTION_ANALYSIS_STATUS_RUNNING;
+
+    if (executionAnalysisElements.fileName instanceof HTMLElement) {
+      executionAnalysisElements.fileName.textContent = hasRows
+        ? `${state.fileName || 'Файл'}: строк ${state.rows.length}`
+        : 'Файл не выбран';
+    }
+    if (executionAnalysisElements.paramsPanel instanceof HTMLElement) {
+      executionAnalysisElements.paramsPanel.hidden = !hasRows;
+    }
+    if (executionAnalysisElements.batchInput instanceof HTMLInputElement && document.activeElement !== executionAnalysisElements.batchInput) {
+      executionAnalysisElements.batchInput.value = String(params.batchSize);
+    }
+    if (executionAnalysisElements.intervalSelect instanceof HTMLSelectElement) {
+      executionAnalysisElements.intervalSelect.value = String(params.intervalMs);
+    }
+    if (executionAnalysisElements.startButton instanceof HTMLButtonElement) {
+      executionAnalysisElements.startButton.textContent = isRunning ? 'Пауза' : 'Старт';
+      executionAnalysisElements.startButton.disabled = !hasRows || (!isRunning && pendingRows.length < 1);
+    }
+    if (executionAnalysisElements.finishButton instanceof HTMLButtonElement) {
+      executionAnalysisElements.finishButton.disabled = !hasRows;
+    }
+    if (executionAnalysisElements.statusBar instanceof HTMLElement) {
+      executionAnalysisElements.statusBar.hidden = !hasRows;
+    }
+    if (executionAnalysisElements.counter instanceof HTMLElement) {
+      executionAnalysisElements.counter.textContent = `Обработано: ${processedCount}/${state.rows.length}. Осталось: ${pendingRows.length}.`;
+    }
+    if (executionAnalysisElements.batchInfo instanceof HTMLElement) {
+      executionAnalysisElements.batchInfo.textContent = currentBatch && currentBatch.edocIds && currentBatch.edocIds.length
+        ? `Текущий пакет: ${currentBatch.edocIds.join(', ')}`
+        : 'Текущий пакет: нет';
+    }
+
+    const errorText = state.lastError ? ` Ошибка: ${state.lastError}` : '';
+    setExecutionAnalysisStatusText(`${getExecutionAnalysisStatusLabel(state.status)}.${errorText}`, !!state.lastError);
+  }
+
+  function readExecutionAnalysisParamsFromControls() {
+    const batchInput = executionAnalysisElements && executionAnalysisElements.batchInput;
+    const intervalSelect = executionAnalysisElements && executionAnalysisElements.intervalSelect;
+    return normalizeExecutionAnalysisParams({
+      batchSize: batchInput instanceof HTMLInputElement ? batchInput.value : executionAnalysisParams.batchSize,
+      intervalMs: intervalSelect instanceof HTMLSelectElement ? Number(intervalSelect.value) : executionAnalysisParams.intervalMs
+    });
+  }
+
+  function normalizeExecutionAnalysisHeaderKey(value) {
+    return normalizeExecutionAnalysisText(value).toLowerCase().replace(/\s+/g, '');
+  }
+
+  function findExecutionAnalysisColumnIndex(headers, names) {
+    const wanted = new Set(names.map((name) => normalizeExecutionAnalysisHeaderKey(name)));
+    return headers.findIndex((header) => wanted.has(normalizeExecutionAnalysisHeaderKey(header)));
+  }
+
+  function buildExecutionAnalysisRowsFromTable(tableRows, fileName, fileType) {
+    const nonEmptyRows = tableRows
+      .map((row) => Array.isArray(row) ? row.map((value) => String(value === undefined || value === null ? '' : value)) : [])
+      .filter((row) => row.some((value) => normalizeExecutionAnalysisText(value)));
+    if (!nonEmptyRows.length) throw new Error('Файл не содержит строк.');
+
+    const headers = nonEmptyRows[0].map((header, index) => normalizeExecutionAnalysisText(header) || `Колонка ${index + 1}`);
+    const edocIndex = findExecutionAnalysisColumnIndex(headers, ['EdocID', 'EDocID', 'EdocId']);
+    const analysisIndex = findExecutionAnalysisColumnIndex(headers, ['Анализ исполнения']);
+    let processedIndex = findExecutionAnalysisColumnIndex(headers, ['Обработано']);
+    if (edocIndex < 0 || analysisIndex < 0) {
+      throw new Error('В файле должны быть столбцы EdocID и Анализ исполнения.');
+    }
+    if (processedIndex < 0) {
+      processedIndex = headers.length;
+      headers.push('Обработано');
+    }
+
+    const rows = nonEmptyRows.slice(1).map((sourceRow, index) => {
+      const values = headers.map((_, valueIndex) => String(sourceRow[valueIndex] === undefined || sourceRow[valueIndex] === null ? '' : sourceRow[valueIndex]));
+      const processed = normalizeExecutionAnalysisProcessed(values[processedIndex]);
+      values[processedIndex] = processed;
+      return {
+        id: `row_${Date.now()}_${index + 1}`,
+        values,
+        edocId: normalizeExecutionAnalysisText(values[edocIndex]),
+        analysisText: normalizeExecutionAnalysisText(values[analysisIndex]),
+        processed
+      };
+    }).filter((row) => row.values.some((value) => normalizeExecutionAnalysisText(value)));
+
+    if (!rows.length) throw new Error('В файле нет строк для обработки.');
+    return normalizeExecutionAnalysisState({
+      ...createEmptyExecutionAnalysisState(),
+      status: EXECUTION_ANALYSIS_STATUS_READY,
+      sourcePageId: executionAnalysisPageId,
+      sourceOrigin: window.location.origin,
+      runId: createExecutionAnalysisPageId(),
+      fileName,
+      fileType,
+      headers,
+      rows,
+      params: executionAnalysisParams,
+      updatedAt: Date.now()
+    });
+  }
+
+  function parseExecutionAnalysisDelimitedText(text, delimiter) {
+    const rows = [];
+    let row = [];
+    let value = '';
+    let inQuotes = false;
+    const source = String(text || '').replace(/^\uFEFF/, '');
+    for (let i = 0; i < source.length; i += 1) {
+      const char = source[i];
+      const nextChar = source[i + 1];
+      if (char === '"') {
+        if (inQuotes && nextChar === '"') {
+          value += '"';
+          i += 1;
+        } else {
+          inQuotes = !inQuotes;
+        }
+        continue;
+      }
+      if (!inQuotes && char === delimiter) {
+        row.push(value);
+        value = '';
+        continue;
+      }
+      if (!inQuotes && (char === '\n' || char === '\r')) {
+        if (char === '\r' && nextChar === '\n') i += 1;
+        row.push(value);
+        rows.push(row);
+        row = [];
+        value = '';
+        continue;
+      }
+      value += char;
+    }
+    row.push(value);
+    rows.push(row);
+    return rows;
+  }
+
+  function readZipUInt16(bytes, offset) {
+    return bytes[offset] | (bytes[offset + 1] << 8);
+  }
+
+  function readZipUInt32(bytes, offset) {
+    return (bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16) | (bytes[offset + 3] << 24)) >>> 0;
+  }
+
+  function decodeZipText(bytes) {
+    return new TextDecoder('utf-8').decode(bytes);
+  }
+
+  async function inflateZipEntry(bytes) {
+    if (typeof DecompressionStream !== 'function') {
+      throw new Error('Браузер не поддерживает распаковку XLSX.');
+    }
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  }
+
+  async function readExecutionAnalysisZipEntries(arrayBuffer) {
+    const bytes = new Uint8Array(arrayBuffer);
+    let eocdOffset = -1;
+    for (let offset = bytes.length - 22; offset >= Math.max(0, bytes.length - 66000); offset -= 1) {
+      if (readZipUInt32(bytes, offset) === 0x06054b50) {
+        eocdOffset = offset;
+        break;
+      }
+    }
+    if (eocdOffset < 0) throw new Error('Не удалось прочитать XLSX: не найден ZIP-каталог.');
+
+    const entryCount = readZipUInt16(bytes, eocdOffset + 10);
+    const centralOffset = readZipUInt32(bytes, eocdOffset + 16);
+    const entries = {};
+    let offset = centralOffset;
+    for (let index = 0; index < entryCount; index += 1) {
+      if (readZipUInt32(bytes, offset) !== 0x02014b50) break;
+      const method = readZipUInt16(bytes, offset + 10);
+      const compressedSize = readZipUInt32(bytes, offset + 20);
+      const uncompressedSize = readZipUInt32(bytes, offset + 24);
+      const fileNameLength = readZipUInt16(bytes, offset + 28);
+      const extraLength = readZipUInt16(bytes, offset + 30);
+      const commentLength = readZipUInt16(bytes, offset + 32);
+      const localOffset = readZipUInt32(bytes, offset + 42);
+      const nameStart = offset + 46;
+      const name = decodeZipText(bytes.slice(nameStart, nameStart + fileNameLength));
+      entries[name] = { method, compressedSize, uncompressedSize, localOffset };
+      offset = nameStart + fileNameLength + extraLength + commentLength;
+    }
+
+    const extracted = {};
+    for (const [name, entry] of Object.entries(entries)) {
+      if (readZipUInt32(bytes, entry.localOffset) !== 0x04034b50) continue;
+      const localNameLength = readZipUInt16(bytes, entry.localOffset + 26);
+      const localExtraLength = readZipUInt16(bytes, entry.localOffset + 28);
+      const dataStart = entry.localOffset + 30 + localNameLength + localExtraLength;
+      const compressed = bytes.slice(dataStart, dataStart + entry.compressedSize);
+      if (entry.method === 0) {
+        extracted[name] = compressed;
+      } else if (entry.method === 8) {
+        extracted[name] = await inflateZipEntry(compressed);
+      }
+    }
+    return extracted;
+  }
+
+  function parseExecutionAnalysisXml(text) {
+    return new DOMParser().parseFromString(String(text || ''), 'application/xml');
+  }
+
+  function getExecutionAnalysisXmlText(node) {
+    return Array.from(node.querySelectorAll('t')).map((item) => item.textContent || '').join('');
+  }
+
+  function columnNameToIndex(columnName) {
+    let index = 0;
+    const letters = String(columnName || '').toUpperCase();
+    for (let i = 0; i < letters.length; i += 1) {
+      const code = letters.charCodeAt(i);
+      if (code < 65 || code > 90) continue;
+      index = index * 26 + (code - 64);
+    }
+    return Math.max(0, index - 1);
+  }
+
+  function columnIndexToName(index) {
+    let value = Number(index) + 1;
+    let name = '';
+    while (value > 0) {
+      const modulo = (value - 1) % 26;
+      name = String.fromCharCode(65 + modulo) + name;
+      value = Math.floor((value - modulo) / 26);
+    }
+    return name || 'A';
+  }
+
+  function getXlsxCellValue(cell, sharedStrings) {
+    const type = cell.getAttribute('t') || '';
+    if (type === 'inlineStr') return getExecutionAnalysisXmlText(cell);
+    const valueNode = cell.querySelector('v');
+    const rawValue = valueNode ? String(valueNode.textContent || '') : '';
+    if (type === 's') {
+      const stringIndex = Number.parseInt(rawValue, 10);
+      return Number.isFinite(stringIndex) ? String(sharedStrings[stringIndex] || '') : '';
+    }
+    if (type === 'b') return rawValue === '1' ? 'TRUE' : 'FALSE';
+    return rawValue;
+  }
+
+  async function parseExecutionAnalysisXlsx(arrayBuffer) {
+    const entries = await readExecutionAnalysisZipEntries(arrayBuffer);
+    const readText = (name) => entries[name] ? decodeZipText(entries[name]) : '';
+    const workbookXml = readText('xl/workbook.xml');
+    if (!workbookXml) throw new Error('Не удалось найти книгу в XLSX.');
+
+    const sharedStringsXml = readText('xl/sharedStrings.xml');
+    const sharedStrings = sharedStringsXml
+      ? Array.from(parseExecutionAnalysisXml(sharedStringsXml).querySelectorAll('si')).map((si) => getExecutionAnalysisXmlText(si))
+      : [];
+    const workbookDoc = parseExecutionAnalysisXml(workbookXml);
+    const firstSheet = workbookDoc.querySelector('sheet');
+    const relId = firstSheet ? (firstSheet.getAttribute('r:id') || firstSheet.getAttribute('id') || '') : '';
+    const relsDoc = parseExecutionAnalysisXml(readText('xl/_rels/workbook.xml.rels'));
+    const rel = Array.from(relsDoc.querySelectorAll('Relationship')).find((item) => item.getAttribute('Id') === relId);
+    const relTarget = rel ? String(rel.getAttribute('Target') || '') : 'worksheets/sheet1.xml';
+    const sheetPath = relTarget.startsWith('/') ? relTarget.replace(/^\//, '') : `xl/${relTarget}`;
+    const sheetXml = readText(sheetPath) || readText('xl/worksheets/sheet1.xml');
+    if (!sheetXml) throw new Error('Не удалось найти первый лист XLSX.');
+
+    const sheetDoc = parseExecutionAnalysisXml(sheetXml);
+    return Array.from(sheetDoc.querySelectorAll('sheetData row')).map((rowNode) => {
+      const row = [];
+      Array.from(rowNode.querySelectorAll('c')).forEach((cell) => {
+        const ref = String(cell.getAttribute('r') || '');
+        const columnName = ref.replace(/[0-9]/g, '');
+        const columnIndex = columnName ? columnNameToIndex(columnName) : row.length;
+        row[columnIndex] = getXlsxCellValue(cell, sharedStrings);
+      });
+      return row.map((value) => String(value === undefined || value === null ? '' : value));
+    });
+  }
+
+  async function parseExecutionAnalysisFile(file) {
+    if (!(file instanceof File)) throw new Error('Файл не выбран.');
+    const fileName = file.name || 'registry';
+    const lowerName = fileName.toLowerCase();
+    if (lowerName.endsWith('.xlsx')) {
+      const rows = await parseExecutionAnalysisXlsx(await file.arrayBuffer());
+      return buildExecutionAnalysisRowsFromTable(rows, fileName, 'xlsx');
+    }
+    if (lowerName.endsWith('.csv') || lowerName.endsWith('.txt') || lowerName.endsWith('.tsv')) {
+      const arrayBuffer = await file.arrayBuffer();
+      let text = new TextDecoder('utf-8').decode(arrayBuffer);
+      if (text.includes('\uFFFD')) {
+        try {
+          text = new TextDecoder('windows-1251').decode(arrayBuffer);
+        } catch (error) {
+          // keep UTF-8 text
+        }
+      }
+      const delimiter = lowerName.endsWith('.tsv') ? '\t' : (text.includes(';') ? ';' : ',');
+      return buildExecutionAnalysisRowsFromTable(parseExecutionAnalysisDelimitedText(text, delimiter), fileName, lowerName.endsWith('.tsv') ? 'tsv' : 'csv');
+    }
+    throw new Error('Поддерживаются файлы .xlsx, .csv и .tsv.');
+  }
+
+  function escapeExecutionAnalysisXml(value) {
+    return String(value === undefined || value === null ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&apos;');
+  }
+
+  function buildExecutionAnalysisOutputRows(state = executionAnalysisState) {
+    const normalized = normalizeExecutionAnalysisState(state);
+    const headers = normalized.headers.length ? normalized.headers : ['EdocID', 'Анализ исполнения', 'Обработано'];
+    return [
+      headers,
+      ...normalized.rows.map((row) => headers.map((_, index) => String(row.values[index] === undefined || row.values[index] === null ? '' : row.values[index])))
+    ];
+  }
+
+  function buildExecutionAnalysisDelimitedOutput(state, delimiter) {
+    return buildExecutionAnalysisOutputRows(state).map((row) => row.map((value) => {
+      const text = String(value === undefined || value === null ? '' : value);
+      if (text.includes('"') || text.includes('\n') || text.includes('\r') || text.includes(delimiter)) {
+        return `"${text.replace(/"/g, '""')}"`;
+      }
+      return text;
+    }).join(delimiter)).join('\r\n');
+  }
+
+  function createCrc32Table() {
+    const table = new Uint32Array(256);
+    for (let n = 0; n < 256; n += 1) {
+      let c = n;
+      for (let k = 0; k < 8; k += 1) {
+        c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+      }
+      table[n] = c >>> 0;
+    }
+    return table;
+  }
+
+  const executionAnalysisCrc32Table = createCrc32Table();
+
+  function calculateCrc32(bytes) {
+    let crc = 0xffffffff;
+    for (let i = 0; i < bytes.length; i += 1) {
+      crc = executionAnalysisCrc32Table[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8);
+    }
+    return (crc ^ 0xffffffff) >>> 0;
+  }
+
+  function pushZipUInt16(target, value) {
+    target.push(value & 0xff, (value >>> 8) & 0xff);
+  }
+
+  function pushZipUInt32(target, value) {
+    target.push(value & 0xff, (value >>> 8) & 0xff, (value >>> 16) & 0xff, (value >>> 24) & 0xff);
+  }
+
+  function buildStoredZip(files) {
+    const encoder = new TextEncoder();
+    const chunks = [];
+    const centralRecords = [];
+    let offset = 0;
+
+    files.forEach((file) => {
+      const nameBytes = encoder.encode(file.name);
+      const dataBytes = typeof file.content === 'string'
+        ? encoder.encode(file.content)
+        : new Uint8Array(file.content || []);
+      const crc = calculateCrc32(dataBytes);
+      const local = [];
+      pushZipUInt32(local, 0x04034b50);
+      pushZipUInt16(local, 20);
+      pushZipUInt16(local, 0x0800);
+      pushZipUInt16(local, 0);
+      pushZipUInt16(local, 0);
+      pushZipUInt16(local, 0);
+      pushZipUInt32(local, crc);
+      pushZipUInt32(local, dataBytes.length);
+      pushZipUInt32(local, dataBytes.length);
+      pushZipUInt16(local, nameBytes.length);
+      pushZipUInt16(local, 0);
+      chunks.push(new Uint8Array(local), nameBytes, dataBytes);
+
+      const central = [];
+      pushZipUInt32(central, 0x02014b50);
+      pushZipUInt16(central, 20);
+      pushZipUInt16(central, 20);
+      pushZipUInt16(central, 0x0800);
+      pushZipUInt16(central, 0);
+      pushZipUInt16(central, 0);
+      pushZipUInt16(central, 0);
+      pushZipUInt32(central, crc);
+      pushZipUInt32(central, dataBytes.length);
+      pushZipUInt32(central, dataBytes.length);
+      pushZipUInt16(central, nameBytes.length);
+      pushZipUInt16(central, 0);
+      pushZipUInt16(central, 0);
+      pushZipUInt16(central, 0);
+      pushZipUInt16(central, 0);
+      pushZipUInt32(central, 0);
+      pushZipUInt32(central, offset);
+      centralRecords.push({ header: new Uint8Array(central), nameBytes });
+      offset += local.length + nameBytes.length + dataBytes.length;
+    });
+
+    const centralOffset = offset;
+    centralRecords.forEach((record) => {
+      chunks.push(record.header, record.nameBytes);
+      offset += record.header.length + record.nameBytes.length;
+    });
+    const centralSize = offset - centralOffset;
+    const eocd = [];
+    pushZipUInt32(eocd, 0x06054b50);
+    pushZipUInt16(eocd, 0);
+    pushZipUInt16(eocd, 0);
+    pushZipUInt16(eocd, files.length);
+    pushZipUInt16(eocd, files.length);
+    pushZipUInt32(eocd, centralSize);
+    pushZipUInt32(eocd, centralOffset);
+    pushZipUInt16(eocd, 0);
+    chunks.push(new Uint8Array(eocd));
+    return new Blob(chunks, { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  }
+
+  function buildExecutionAnalysisXlsxBlob(state = executionAnalysisState) {
+    const rows = buildExecutionAnalysisOutputRows(state);
+    const sharedStrings = [];
+    const sharedStringIndex = new Map();
+    const getSharedIndex = (value) => {
+      const text = String(value === undefined || value === null ? '' : value);
+      if (sharedStringIndex.has(text)) return sharedStringIndex.get(text);
+      const index = sharedStrings.length;
+      sharedStrings.push(text);
+      sharedStringIndex.set(text, index);
+      return index;
+    };
+    const sheetRows = rows.map((row, rowIndex) => {
+      const rowNumber = rowIndex + 1;
+      const cells = row.map((value, colIndex) => {
+        const ref = `${columnIndexToName(colIndex)}${rowNumber}`;
+        return `<c r="${ref}" t="s"><v>${getSharedIndex(value)}</v></c>`;
+      }).join('');
+      return `<row r="${rowNumber}">${cells}</row>`;
+    }).join('');
+
+    const sharedStringsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="${sharedStrings.length}" uniqueCount="${sharedStrings.length}">${sharedStrings.map((value) => `<si><t>${escapeExecutionAnalysisXml(value)}</t></si>`).join('')}</sst>`;
+    const sheetXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${sheetRows}</sheetData></worksheet>`;
+    const workbookXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Лист1" sheetId="1" r:id="rId1"/></sheets></workbook>';
+    const workbookRels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>';
+    const rootRels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>';
+    const contentTypes = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>';
+    const styles = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts><fills count="1"><fill><patternFill patternType="none"/></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs></styleSheet>';
+    return buildStoredZip([
+      { name: '[Content_Types].xml', content: contentTypes },
+      { name: '_rels/.rels', content: rootRels },
+      { name: 'xl/workbook.xml', content: workbookXml },
+      { name: 'xl/_rels/workbook.xml.rels', content: workbookRels },
+      { name: 'xl/worksheets/sheet1.xml', content: sheetXml },
+      { name: 'xl/sharedStrings.xml', content: sharedStringsXml },
+      { name: 'xl/styles.xml', content: styles }
+    ]);
+  }
+
+  function buildExecutionAnalysisOutputFileName(state = executionAnalysisState) {
+    const fileName = normalizeExecutionAnalysisState(state).fileName || 'execution-analysis.xlsx';
+    const dotIndex = fileName.lastIndexOf('.');
+    const baseName = dotIndex > 0 ? fileName.slice(0, dotIndex) : fileName;
+    const extension = dotIndex > 0 ? fileName.slice(dotIndex).toLowerCase() : '.xlsx';
+    if (extension === '.csv' || extension === '.tsv') return `${baseName}_обработано${extension}`;
+    return `${baseName}_обработано.xlsx`;
+  }
+
+  function downloadExecutionAnalysisResultFile(state = executionAnalysisState) {
+    const normalized = normalizeExecutionAnalysisState(state);
+    if (!normalized.rows.length) return false;
+    const extension = (normalized.fileType || '').toLowerCase();
+    let blob;
+    if (extension === 'csv' || extension === 'tsv') {
+      const delimiter = extension === 'tsv' ? '\t' : ';';
+      blob = new Blob([`\uFEFF${buildExecutionAnalysisDelimitedOutput(normalized, delimiter)}`], {
+        type: extension === 'tsv' ? 'text/tab-separated-values;charset=utf-8' : 'text/csv;charset=utf-8'
+      });
+    } else {
+      blob = buildExecutionAnalysisXlsxBlob(normalized);
+    }
+    const link = document.createElement('a');
+    const objectUrl = URL.createObjectURL(blob);
+    link.href = objectUrl;
+    link.download = buildExecutionAnalysisOutputFileName(normalized);
+    link.style.display = 'none';
+    (document.body || document.documentElement).appendChild(link);
+    link.click();
+    window.setTimeout(() => {
+      URL.revokeObjectURL(objectUrl);
+      link.remove();
+    }, 1000);
+    return true;
+  }
+
+  async function openExecutionAnalysisTab(url, active) {
+    return sendRuntimeMessage({
+      action: 'EXECUTION_ANALYSIS_OPEN_TAB',
+      data: {
+        url: String(url || ''),
+        active: active === true
+      }
+    });
+  }
+
+  async function handleExecutionAnalysisFileSelected(file) {
+    try {
+      setExecutionAnalysisStatusText('Читаю файл...');
+      const parsedState = await parseExecutionAnalysisFile(file);
+      executionAnalysisDownloadDoneForRunId = '';
+      await persistExecutionAnalysisState(parsedState);
+      setExecutionAnalysisStatusText('Файл загружен.');
+    } catch (error) {
+      const message = error && error.message ? error.message : 'Не удалось прочитать файл.';
+      window.alert(message);
+      setExecutionAnalysisStatusText(message, true);
+    }
+  }
+
+  async function saveExecutionAnalysisParamsFromUi() {
+    await persistExecutionAnalysisParams(readExecutionAnalysisParamsFromControls());
+    setExecutionAnalysisStatusText('Параметры сохранены.');
+  }
+
+  async function startOrPauseExecutionAnalysis() {
+    const state = normalizeExecutionAnalysisState(executionAnalysisState);
+    if (state.status === EXECUTION_ANALYSIS_STATUS_RUNNING) {
+      if (executionAnalysisLaunchTimer) {
+        clearTimeout(executionAnalysisLaunchTimer);
+        executionAnalysisLaunchTimer = null;
+      }
+      await persistExecutionAnalysisState({
+        ...state,
+        status: EXECUTION_ANALYSIS_STATUS_PAUSED,
+        lastError: ''
+      });
+      return;
+    }
+
+    const pendingRows = getExecutionAnalysisPendingRows(state);
+    if (!pendingRows.length) {
+      window.alert('Нет необработанных строк с EdocID и текстом анализа.');
+      return;
+    }
+
+    const params = readExecutionAnalysisParamsFromControls();
+    await persistExecutionAnalysisParams(params);
+    await persistExecutionAnalysisState({
+      ...executionAnalysisState,
+      status: EXECUTION_ANALYSIS_STATUS_RUNNING,
+      sourcePageId: executionAnalysisPageId,
+      sourceOrigin: window.location.origin,
+      runId: executionAnalysisState.runId || createExecutionAnalysisPageId(),
+      nextLaunchAt: Date.now(),
+      lastError: ''
+    });
+    maybeScheduleExecutionAnalysisNextBatch('start');
+  }
+
+  async function finishExecutionAnalysisProcess() {
+    const state = normalizeExecutionAnalysisState(executionAnalysisState);
+    if (!state.rows.length) return;
+    if (state.currentBatch && Number.isInteger(state.currentBatch.tabId) && state.currentBatch.tabId > 0) {
+      await sendRuntimeMessage({
+        action: 'EXECUTION_ANALYSIS_CLOSE_TAB',
+        data: { tabId: state.currentBatch.tabId }
+      });
+    }
+    downloadExecutionAnalysisResultFile(state);
+    executionAnalysisDownloadDoneForRunId = '';
+    executionAnalysisState = createEmptyExecutionAnalysisState();
+    syncExecutionAnalysisControls();
+    await chromeStorageRemove(EXECUTION_ANALYSIS_STATE_STORAGE_KEY);
+    if (executionAnalysisElements && executionAnalysisElements.fileInput instanceof HTMLInputElement) {
+      executionAnalysisElements.fileInput.value = '';
+    }
+  }
+
+  function maybeScheduleExecutionAnalysisNextBatch(_source) {
+    const state = normalizeExecutionAnalysisState(executionAnalysisState);
+    if (executionAnalysisLaunchTimer) {
+      clearTimeout(executionAnalysisLaunchTimer);
+      executionAnalysisLaunchTimer = null;
+    }
+    if (state.status !== EXECUTION_ANALYSIS_STATUS_RUNNING) return;
+    if (state.sourcePageId !== executionAnalysisPageId) return;
+    if (state.currentBatch) return;
+
+    const delayMs = Math.max(0, Number(state.nextLaunchAt || 0) - Date.now());
+    executionAnalysisLaunchTimer = window.setTimeout(() => {
+      executionAnalysisLaunchTimer = null;
+      void launchExecutionAnalysisNextBatch();
+    }, delayMs);
+  }
+
+  async function launchExecutionAnalysisNextBatch() {
+    let state = normalizeExecutionAnalysisState(executionAnalysisState);
+    if (state.status !== EXECUTION_ANALYSIS_STATUS_RUNNING) return;
+    if (state.sourcePageId !== executionAnalysisPageId) return;
+    if (state.currentBatch) return;
+
+    const batch = buildNextExecutionAnalysisBatch(state);
+    if (!batch) {
+      const completedState = await persistExecutionAnalysisState({
+        ...state,
+        status: EXECUTION_ANALYSIS_STATUS_COMPLETED,
+        currentBatch: null,
+        nextLaunchAt: 0,
+        lastError: ''
+      });
+      if (executionAnalysisDownloadDoneForRunId !== completedState.runId) {
+        executionAnalysisDownloadDoneForRunId = completedState.runId;
+        downloadExecutionAnalysisResultFile(completedState);
+      }
+      return;
+    }
+
+    state = await persistExecutionAnalysisState({
+      ...state,
+      currentBatch: batch,
+      nextLaunchAt: 0,
+      lastError: ''
+    });
+
+    const response = await openExecutionAnalysisTab(
+      buildExecutionAnalysisUrl(batch.edocIds, state.sourceOrigin || window.location.origin),
+      false
+    );
+    if (!response || response.success !== true || !Number.isInteger(response.tabId)) {
+      await persistExecutionAnalysisState({
+        ...state,
+        status: EXECUTION_ANALYSIS_STATUS_PAUSED,
+        currentBatch: null,
+        lastError: response && response.error ? String(response.error) : 'Не удалось открыть вкладку анализа.'
+      });
+      return;
+    }
+
+    await persistExecutionAnalysisState({
+      ...state,
+      currentBatch: {
+        ...batch,
+        tabId: response.tabId
+      }
+    });
+  }
+
+  async function markExecutionAnalysisBatchResult(success, errorMessage) {
+    const stored = await chromeStorageGet(EXECUTION_ANALYSIS_STATE_STORAGE_KEY);
+    const state = normalizeExecutionAnalysisState(stored[EXECUTION_ANALYSIS_STATE_STORAGE_KEY]);
+    const batch = state.currentBatch;
+    if (!batch) return false;
+
+    if (success) {
+      const rowIdSet = new Set(batch.rowIds || []);
+      const processedIndex = findExecutionAnalysisColumnIndex(state.headers, ['Обработано']);
+      const rows = state.rows.map((row) => {
+        if (!rowIdSet.has(row.id)) return row;
+        const values = [...row.values];
+        if (processedIndex >= 0) values[processedIndex] = EXECUTION_ANALYSIS_PROCESSED_TEXT;
+        return {
+          ...row,
+          values,
+          processed: EXECUTION_ANALYSIS_PROCESSED_TEXT
+        };
+      });
+      const nextStatus = state.status === EXECUTION_ANALYSIS_STATUS_PAUSED
+        ? EXECUTION_ANALYSIS_STATUS_PAUSED
+        : EXECUTION_ANALYSIS_STATUS_RUNNING;
+      await persistExecutionAnalysisState({
+        ...state,
+        rows,
+        status: nextStatus,
+        currentBatch: null,
+        nextLaunchAt: nextStatus === EXECUTION_ANALYSIS_STATUS_RUNNING
+          ? Date.now() + normalizeExecutionAnalysisParams(state.params).intervalMs
+          : 0,
+        lastError: ''
+      });
+      return true;
+    }
+
+    await persistExecutionAnalysisState({
+      ...state,
+      status: EXECUTION_ANALYSIS_STATUS_PAUSED,
+      currentBatch: null,
+      nextLaunchAt: 0,
+      lastError: normalizeExecutionAnalysisText(errorMessage) || 'Пакет не обработан.'
+    });
+    return false;
+  }
+
+  function getExecutionAnalysisFormContext() {
+    const input = document.querySelector('textarea[name="Note"], textarea.form-control, textarea');
+    const saveButton = Array.from(document.querySelectorAll('button, input[type="submit"], input[type="button"]'))
+      .find((el) => {
+        if (!isStageJumpElementVisible(el)) return false;
+        const text = normalizeStageJumpText(el.textContent || el.value || '');
+        return text.includes(normalizeStageJumpText('Сохранить информацию'));
+      });
+    if (!(input instanceof HTMLTextAreaElement || input instanceof HTMLInputElement)) return null;
+    if (!(saveButton instanceof HTMLElement)) return null;
+    return { input, saveButton };
+  }
+
+  function hasExecutionAnalysisSuccessMessage() {
+    const text = normalizeStageJumpText(document.body ? document.body.textContent || '' : '');
+    return text.includes(normalizeStageJumpText('Анализ исполнения успешно занес')) ||
+      text.includes(normalizeStageJumpText('Вы можете закрыть это окно'));
+  }
+
+  function getExecutionAnalysisServerErrorText() {
+    const text = normalizeExecutionAnalysisText(document.body ? document.body.textContent || '' : '');
+    if (!text) return '';
+    if (text.includes('ERROR EXCEPTION')) return text.slice(0, 500);
+    if (text.includes('No query results for model')) return text.slice(0, 500);
+    return '';
+  }
+
+  async function shouldProcessExecutionAnalysisPage(tabId) {
+    const stored = await chromeStorageGet(EXECUTION_ANALYSIS_STATE_STORAGE_KEY);
+    const state = normalizeExecutionAnalysisState(stored[EXECUTION_ANALYSIS_STATE_STORAGE_KEY]);
+    const batch = state.currentBatch;
+    if (!batch) return null;
+    if (batch.tabId > 0 && tabId > 0 && batch.tabId !== tabId) return null;
+    return { state, batch };
+  }
+
+  async function initExecutionAnalysisWorkerPage() {
+    if (!isPyramidExtensionPage()) return;
+    const pathname = String(window.location.pathname || '');
+    const isFormPath = pathname === EXECUTION_ANALYSIS_PATH;
+    const isBlankPath = pathname === EXECUTION_ANALYSIS_BLANK_PATH;
+    if (!isFormPath && !isBlankPath) return;
+
+    const tabId = await getCurrentTabIdForExecutionAnalysis();
+    const context = await shouldProcessExecutionAnalysisPage(tabId);
+    if (!context) return;
+
+    const { batch } = context;
+    if (isBlankPath && hasExecutionAnalysisSuccessMessage()) {
+      const ok = await markExecutionAnalysisBatchResult(true, '');
+      if (ok) {
+        await sendRuntimeMessage({
+          action: 'EXECUTION_ANALYSIS_CLOSE_TAB',
+          data: { tabId }
+        });
+      }
+      return;
+    }
+
+    const serverError = getExecutionAnalysisServerErrorText();
+    if (serverError) {
+      await markExecutionAnalysisBatchResult(false, serverError);
+      return;
+    }
+
+    if (!isFormPath || !window.location.search.includes('edocid=')) return;
+    const idsFromUrl = splitExecutionAnalysisEdocIds(new URL(window.location.href).searchParams.get('edocid') || '');
+    const expected = new Set(batch.edocIds || []);
+    if (!idsFromUrl.length || idsFromUrl.some((id) => !expected.has(id))) return;
+
+    const startedAt = Date.now();
+    const timeoutMs = 45 * 1000;
+    if (executionAnalysisProcessingTimer) clearInterval(executionAnalysisProcessingTimer);
+    executionAnalysisProcessingTimer = window.setInterval(async () => {
+      if ((Date.now() - startedAt) > timeoutMs) {
+        clearInterval(executionAnalysisProcessingTimer);
+        executionAnalysisProcessingTimer = null;
+        await markExecutionAnalysisBatchResult(false, 'Не найдена форма анализа исполнения.');
+        return;
+      }
+
+      const formContext = getExecutionAnalysisFormContext();
+      if (!formContext) return;
+
+      clearInterval(executionAnalysisProcessingTimer);
+      executionAnalysisProcessingTimer = null;
+      setNativeInputValue(formContext.input, batch.analysisText);
+      formContext.input.dispatchEvent(new Event('input', { bubbles: true }));
+      formContext.input.dispatchEvent(new Event('change', { bubbles: true }));
+      formContext.saveButton.click();
+    }, 200);
+  }
+
+  function createExecutionAnalysisManualDialog() {
+    const existing = document.getElementById(EXECUTION_ANALYSIS_MANUAL_DIALOG_ID);
+    if (existing instanceof HTMLElement) return existing;
+
+    const modal = document.createElement('div');
+    modal.id = EXECUTION_ANALYSIS_MANUAL_DIALOG_ID;
+    modal.className = 'dup-execution-analysis-modal';
+    modal.hidden = true;
+    modal.innerHTML = `
+      <div class="dup-execution-analysis-modal-panel" role="dialog" aria-modal="true" aria-label="Ручное занесение анализа исполнения">
+        <div class="dup-execution-analysis-modal-header">
+          <div class="dup-execution-analysis-modal-title">Вручную</div>
+          <button type="button" class="dup-execution-analysis-modal-close" aria-label="Закрыть">×</button>
+        </div>
+        <label class="dup-execution-analysis-field">
+          <span>EdocID построчно</span>
+          <textarea class="dup-execution-analysis-manual-input" rows="9" placeholder="13461137&#10;13461138"></textarea>
+        </label>
+        <div class="dup-execution-analysis-modal-actions">
+          <button type="button" class="dup-execution-analysis-open-manual">Открыть</button>
+          <button type="button" class="dup-execution-analysis-cancel-manual">Отмена</button>
+        </div>
+      </div>
+    `;
+
+    const close = () => { modal.hidden = true; };
+    modal.addEventListener('click', (event) => {
+      if (event.target === modal) close();
+    }, { capture: true });
+    modal.querySelector('.dup-execution-analysis-modal-close')?.addEventListener('click', close, { capture: true });
+    modal.querySelector('.dup-execution-analysis-cancel-manual')?.addEventListener('click', close, { capture: true });
+    modal.querySelector('.dup-execution-analysis-open-manual')?.addEventListener('click', () => {
+      const textarea = modal.querySelector('.dup-execution-analysis-manual-input');
+      const ids = textarea instanceof HTMLTextAreaElement ? splitExecutionAnalysisEdocIds(textarea.value) : [];
+      if (!ids.length) {
+        window.alert('Введите хотя бы один EdocID.');
+        return;
+      }
+      void openExecutionAnalysisTab(buildExecutionAnalysisUrl(ids), true);
+      close();
+    }, { capture: true });
+
+    (document.body || document.documentElement).appendChild(modal);
+    return modal;
+  }
+
+  function openExecutionAnalysisManualDialog() {
+    const modal = createExecutionAnalysisManualDialog();
+    modal.hidden = false;
+    const input = modal.querySelector('.dup-execution-analysis-manual-input');
+    if (input instanceof HTMLTextAreaElement) input.focus();
+  }
+
+  function createExecutionAnalysisFunctionBlock() {
+    const block = document.createElement('section');
+    block.className = 'dup-execution-analysis-block';
+    block.innerHTML = `
+      <div class="dup-execution-analysis-block-title">Занести анализ исполнения</div>
+      <div class="dup-execution-analysis-file-row">
+        <input id="${EXECUTION_ANALYSIS_FILE_INPUT_ID}" class="dup-execution-analysis-file-input" type="file" accept=".xlsx,.csv,.tsv,.txt" hidden>
+        <button type="button" class="dup-execution-analysis-select-file">Выбрать файл</button>
+        <span class="dup-execution-analysis-file-name">Файл не выбран</span>
+      </div>
+      <div class="dup-execution-analysis-params" hidden>
+        <label class="dup-execution-analysis-param">
+          <span>Количество EdocID за раз</span>
+          <input type="number" min="1" max="500" step="1" class="dup-execution-analysis-batch-size">
+        </label>
+        <label class="dup-execution-analysis-param">
+          <span>Интервал проставления</span>
+          <select class="dup-execution-analysis-interval"></select>
+        </label>
+        <button type="button" class="dup-execution-analysis-save-params">Сохранить параметры</button>
+      </div>
+      <div class="dup-execution-analysis-actions">
+        <button type="button" class="dup-execution-analysis-start">Старт</button>
+        <button type="button" class="dup-execution-analysis-finish">Завершить</button>
+        <button type="button" class="dup-execution-analysis-manual">Вручную</button>
+      </div>
+      <div class="dup-execution-analysis-statusbar" hidden>
+        <div class="dup-execution-analysis-status-text"></div>
+        <div class="dup-execution-analysis-counter"></div>
+        <div class="dup-execution-analysis-batch-info"></div>
+      </div>
+    `;
+
+    const intervalSelect = block.querySelector('.dup-execution-analysis-interval');
+    if (intervalSelect instanceof HTMLSelectElement) {
+      EXECUTION_ANALYSIS_INTERVAL_OPTIONS.forEach((option) => {
+        const optionEl = document.createElement('option');
+        optionEl.value = String(option.value);
+        optionEl.textContent = option.label;
+        intervalSelect.appendChild(optionEl);
+      });
+    }
+
+    executionAnalysisElements = {
+      block,
+      fileInput: block.querySelector(`#${EXECUTION_ANALYSIS_FILE_INPUT_ID}`),
+      fileName: block.querySelector('.dup-execution-analysis-file-name'),
+      paramsPanel: block.querySelector('.dup-execution-analysis-params'),
+      batchInput: block.querySelector('.dup-execution-analysis-batch-size'),
+      intervalSelect,
+      startButton: block.querySelector('.dup-execution-analysis-start'),
+      finishButton: block.querySelector('.dup-execution-analysis-finish'),
+      manualButton: block.querySelector('.dup-execution-analysis-manual'),
+      statusBar: block.querySelector('.dup-execution-analysis-statusbar'),
+      statusText: block.querySelector('.dup-execution-analysis-status-text'),
+      counter: block.querySelector('.dup-execution-analysis-counter'),
+      batchInfo: block.querySelector('.dup-execution-analysis-batch-info')
+    };
+
+    const selectFileButton = block.querySelector('.dup-execution-analysis-select-file');
+    selectFileButton?.addEventListener('click', () => {
+      if (executionAnalysisElements.fileInput instanceof HTMLInputElement) {
+        executionAnalysisElements.fileInput.click();
+      }
+    }, { capture: true });
+    executionAnalysisElements.fileInput?.addEventListener('change', (event) => {
+      const input = event.target instanceof HTMLInputElement ? event.target : null;
+      const file = input && input.files && input.files[0] ? input.files[0] : null;
+      if (file) void handleExecutionAnalysisFileSelected(file);
+    }, { capture: true });
+    executionAnalysisElements.startButton?.addEventListener('click', () => {
+      void startOrPauseExecutionAnalysis();
+    }, { capture: true });
+    executionAnalysisElements.finishButton?.addEventListener('click', () => {
+      void finishExecutionAnalysisProcess();
+    }, { capture: true });
+    executionAnalysisElements.manualButton?.addEventListener('click', () => {
+      openExecutionAnalysisManualDialog();
+    }, { capture: true });
+    block.querySelector('.dup-execution-analysis-save-params')?.addEventListener('click', () => {
+      void saveExecutionAnalysisParamsFromUi();
+    }, { capture: true });
+
+    syncExecutionAnalysisControls();
+    return block;
+  }
+
   function syncExtensionUiSettingsPanelState() {
     if (!(extensionUiSettingsPanelEl instanceof HTMLElement)) return;
 
@@ -992,13 +2274,13 @@
     panel.hidden = true;
     panel.setAttribute('role', 'dialog');
     panel.setAttribute('aria-modal', 'true');
-    panel.setAttribute('aria-label', 'Настройки элементов расширения');
+    panel.setAttribute('aria-label', 'Меню расширения');
 
     const header = document.createElement('div');
     header.className = 'dup-extension-ui-settings-header';
     header.innerHTML = `
       <div class="dup-extension-ui-settings-heading">
-        <div class="dup-extension-ui-settings-heading-title">Настройки элементов расширения</div>
+        <div class="dup-extension-ui-settings-heading-title">Меню расширения</div>
         <div class="dup-extension-ui-settings-heading-hint">${EXTENSION_UI_SETTINGS_HINT_TEXT}</div>
       </div>
     `;
@@ -1010,6 +2292,29 @@
     closeButton.textContent = '×';
     closeButton.addEventListener('click', () => closeExtensionUiSettingsPanel(), { capture: true });
     header.appendChild(closeButton);
+
+    const tabs = document.createElement('div');
+    tabs.className = 'dup-extension-ui-settings-tabs';
+    const functionsTab = document.createElement('button');
+    functionsTab.type = 'button';
+    functionsTab.className = 'dup-extension-ui-settings-tab is-active';
+    functionsTab.dataset.tab = 'functions';
+    functionsTab.textContent = 'Функции';
+    const settingsTab = document.createElement('button');
+    settingsTab.type = 'button';
+    settingsTab.className = 'dup-extension-ui-settings-tab';
+    settingsTab.dataset.tab = 'settings';
+    settingsTab.textContent = 'Настройки';
+    tabs.append(functionsTab, settingsTab);
+
+    const functionsPane = document.createElement('div');
+    functionsPane.className = 'dup-extension-ui-settings-pane is-active';
+    functionsPane.dataset.pane = 'functions';
+    functionsPane.appendChild(createExecutionAnalysisFunctionBlock());
+
+    const settingsPane = document.createElement('div');
+    settingsPane.className = 'dup-extension-ui-settings-pane';
+    settingsPane.dataset.pane = 'settings';
 
     const list = document.createElement('div');
     list.className = 'dup-extension-ui-settings-list';
@@ -1041,6 +2346,8 @@
       list.appendChild(label);
     });
 
+    settingsPane.appendChild(list);
+
     list.addEventListener('change', (event) => {
       const input = event.target instanceof HTMLInputElement
         ? event.target
@@ -1067,7 +2374,22 @@
     footer.className = 'dup-extension-ui-settings-footer';
     footer.textContent = 'Горячая клавиша: F2';
 
-    panel.append(header, list, footer);
+    tabs.addEventListener('click', (event) => {
+      const tab = event.target instanceof HTMLElement
+        ? event.target.closest('.dup-extension-ui-settings-tab')
+        : null;
+      if (!(tab instanceof HTMLButtonElement)) return;
+      const tabName = String(tab.dataset.tab || '').trim();
+      if (!tabName) return;
+      Array.from(tabs.querySelectorAll('.dup-extension-ui-settings-tab')).forEach((item) => {
+        item.classList.toggle('is-active', item === tab);
+      });
+      Array.from(panel.querySelectorAll('.dup-extension-ui-settings-pane')).forEach((pane) => {
+        pane.classList.toggle('is-active', pane instanceof HTMLElement && pane.dataset.pane === tabName);
+      });
+    }, { capture: true });
+
+    panel.append(header, tabs, functionsPane, settingsPane, footer);
     host.append(overlay, panel);
 
     extensionUiSettingsOverlayEl = overlay;
@@ -1188,6 +2510,7 @@
     if (!isPyramidExtensionPage()) return;
     installExtensionUiSettingsController();
     loadExtensionUiVisibilitySettings();
+    void loadExecutionAnalysisStateAndParams();
     document.addEventListener('keydown', handleExtensionUiSettingsHotkey, true);
     document.addEventListener('keyup', handleExtensionUiSettingsHotkey, true);
     document.addEventListener('keydown', handleExtensionUiSettingsEscape, true);
@@ -2534,6 +3857,17 @@
       if (key === DEPARTMENT_DROPDOWN_STATE_STORAGE_KEY) {
         departmentDropdownShowHidden = changes[key].newValue === true;
       }
+
+      if (key === EXECUTION_ANALYSIS_PARAMS_STORAGE_KEY) {
+        executionAnalysisParams = normalizeExecutionAnalysisParams(changes[key].newValue);
+        syncExecutionAnalysisControls();
+      }
+
+      if (key === EXECUTION_ANALYSIS_STATE_STORAGE_KEY) {
+        executionAnalysisState = normalizeExecutionAnalysisState(changes[key].newValue);
+        syncExecutionAnalysisControls();
+        maybeScheduleExecutionAnalysisNextBatch('storage-change');
+      }
     }
     if (highlightSettingsChanged) {
       // Немедленно запускаем проверку, если изменились настройки
@@ -3041,37 +4375,6 @@
       return false;
     }
     rememberStageTimerMessage(action, message.data || {});
-    return false;
-  });
-
-  chrome.runtime.onMessage.addListener((message) => {
-    if (!message || message.action !== 'STAGEJUMP_EXECUTION_ANALYSIS_STATUS') return false;
-    const data = message.data || {};
-    const requestId = String(data.requestId || '').trim();
-    const status = String(data.status || '').trim().toLowerCase();
-    if (!requestId) return false;
-
-    const stateKey = stageJumpExecutionRequestStates.get(requestId);
-    if (!stateKey) return false;
-
-    if (status === 'running') {
-      setStageJumpExecutionButtonState(stateKey, 'loading');
-      updateStageJumpButtons();
-      return false;
-    }
-
-    stageJumpExecutionRequestStates.delete(requestId);
-
-    if (status === 'success') {
-      setStageJumpExecutionButtonState(stateKey, 'success', 1000);
-      updateStageJumpButtons();
-      return false;
-    }
-
-    setStageJumpExecutionButtonState(stateKey, '');
-    updateStageJumpButtons();
-    const error = data && data.error ? String(data.error) : 'UNKNOWN_ERROR';
-    console.warn('[StageJump] Фоновый анализ исполнения завершился с ошибкой: ' + error);
     return false;
   });
 
@@ -3847,71 +5150,6 @@
     return null;
   }
 
-  function getStageJumpExecutionButtonStateKey(debtId, edocId) {
-    const normalizedDebtId = String(debtId || '').trim();
-    const normalizedEdocId = String(edocId || '').trim();
-    if (!normalizedDebtId || !normalizedEdocId) return '';
-    return `${normalizedDebtId}::${normalizedEdocId}`;
-  }
-
-  function setStageJumpExecutionButtonState(stateKey, state, ttlMs = 0) {
-    if (!stateKey) return;
-    const normalizedState = String(state || '').trim();
-    if (!normalizedState) {
-      stageJumpExecutionButtonStates.delete(stateKey);
-      return;
-    }
-
-    const safeTtlMs = Number(ttlMs) > 0 ? Number(ttlMs) : 0;
-    const expiresAt = safeTtlMs > 0 ? Date.now() + safeTtlMs : 0;
-    stageJumpExecutionButtonStates.set(stateKey, { state: normalizedState, expiresAt });
-
-    if (safeTtlMs > 0) {
-      window.setTimeout(() => {
-        const current = stageJumpExecutionButtonStates.get(stateKey);
-        if (!current) return;
-        if (current.expiresAt !== expiresAt) return;
-        stageJumpExecutionButtonStates.delete(stateKey);
-        updateStageJumpButtons();
-      }, safeTtlMs + 60);
-    }
-  }
-
-  function getStageJumpExecutionButtonState(stateKey) {
-    if (!stateKey) return '';
-    const current = stageJumpExecutionButtonStates.get(stateKey);
-    if (!current) return '';
-
-    if (current.expiresAt > 0 && current.expiresAt <= Date.now()) {
-      stageJumpExecutionButtonStates.delete(stateKey);
-      return '';
-    }
-
-    return String(current.state || '').trim();
-  }
-
-  function applyStageJumpExecutionButtonVisualState(button, debtId, edocId) {
-    if (!(button instanceof HTMLElement)) return;
-    const stateKey = getStageJumpExecutionButtonStateKey(debtId, edocId);
-    const state = getStageJumpExecutionButtonState(stateKey);
-
-    button.classList.remove('is-processing', 'is-success');
-    if (!state) return;
-
-    if (state === 'loading') {
-      button.classList.add('is-processing');
-      return;
-    }
-
-    if (state === 'success') {
-      button.classList.add('is-success');
-    }
-  }
-
-  function createStageJumpExecutionRequestId() {
-    return `sj_exec_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  }
-
   function ensureStageJumpStyle() {
     if (document.getElementById(STAGE_JUMP_STYLE_ID)) return;
 
@@ -4044,63 +5282,7 @@
         path: nextUrl.pathname,
         createdAt: Date.now()
       };
-      const mode = String(options && options.mode ? options.mode : '').trim();
-      const edocId = String(options && options.edocId ? options.edocId : '').trim();
-      const analysisText = String(options && options.analysisText ? options.analysisText : '').trim();
-      const requestId = String(options && options.requestId ? options.requestId : '').trim();
-      const openInBackground = !!(options && options.openInBackground === true);
-      const onResult = options && typeof options.onResult === 'function'
-        ? options.onResult
-        : null;
-      const isExecutionAnalysisBackground = (
-        openInBackground &&
-        mode === STAGE_JUMP_PENDING_MODE_EXECUTION_ANALYSIS
-      );
-
-      if (mode) pendingPayload.mode = mode;
-      if (edocId) pendingPayload.edocId = edocId;
-      if (analysisText) pendingPayload.analysisText = analysisText;
-      if (requestId) pendingPayload.requestId = requestId;
-      if (!isExecutionAnalysisBackground) {
-        saveStageJumpPendingPayloadToStorage(pendingPayload);
-      }
-
-      if (openInBackground) {
-        if (!(chrome && chrome.runtime && typeof chrome.runtime.sendMessage === 'function')) {
-          if (onResult) onResult({ success: false, error: 'NO_RUNTIME' });
-          return;
-        }
-
-        const backgroundRequestData = {
-          url: nextUrl.toString(),
-          requestId
-        };
-        if (isExecutionAnalysisBackground) {
-          backgroundRequestData.payload = {
-            mode: STAGE_JUMP_PENDING_MODE_EXECUTION_ANALYSIS,
-            path: nextUrl.pathname,
-            debtId: normalizedDebtId,
-            edocId,
-            analysisText
-          };
-        }
-
-        chrome.runtime.sendMessage({
-          action: 'STAGEJUMP_OPEN_BACKGROUND_TAB',
-          data: backgroundRequestData
-        }, (response) => {
-          if (!onResult) return;
-          const runtimeError = chrome.runtime && chrome.runtime.lastError
-            ? chrome.runtime.lastError.message
-            : '';
-          if (runtimeError) {
-            onResult({ success: false, error: runtimeError });
-            return;
-          }
-          onResult(response || { success: false, error: 'NO_RESPONSE' });
-        });
-        return;
-      }
+      saveStageJumpPendingPayloadToStorage(pendingPayload);
 
       window.open(nextUrl.toString(), '_blank', 'noopener');
     } catch (error) {
@@ -4112,53 +5294,6 @@
     if (!stageJumpActionMenuEl) return;
     stageJumpActionMenuEl.hidden = true;
     stageJumpActionMenuAnchor = null;
-  }
-
-  function startStageJumpExecutionAnalysisInBackground(targetUrl, debtId, edocId, analysisText) {
-    const stateKey = getStageJumpExecutionButtonStateKey(debtId, edocId);
-    if (!stateKey) return;
-
-    const requestId = createStageJumpExecutionRequestId();
-    stageJumpExecutionRequestStates.set(requestId, stateKey);
-    setStageJumpExecutionButtonState(stateKey, 'loading');
-    updateStageJumpButtons();
-
-    openStageJumpTarget(targetUrl, debtId, {
-      mode: STAGE_JUMP_PENDING_MODE_EXECUTION_ANALYSIS,
-      edocId,
-      analysisText,
-      requestId,
-      openInBackground: true,
-      onResult: (response) => {
-        const isSuccess = !!(response && response.success === true);
-        if (isSuccess) return;
-
-        stageJumpExecutionRequestStates.delete(requestId);
-        setStageJumpExecutionButtonState(stateKey, '');
-        updateStageJumpButtons();
-
-        const reason = response && response.error
-          ? String(response.error)
-          : 'UNKNOWN_ERROR';
-        console.warn('[StageJump] Не удалось запустить фоновый анализ исполнения: ' + reason);
-      }
-    });
-  }
-
-  function getStageJumpExecutionTargetFromButton(button) {
-    if (!(button instanceof HTMLElement)) return null;
-
-    const debtId = String(button.dataset.debtId || '').trim();
-    if (!debtId) return null;
-
-    const targetUrl = String(button.dataset.targetUrl || '').trim();
-    const edocId = String(button.dataset.edocId || '').trim();
-    return {
-      button,
-      debtId,
-      targetUrl,
-      edocId
-    };
   }
 
   function getStageJumpRowFromButton(button) {
@@ -4178,17 +5313,6 @@
           !!row.querySelector('input.cbox[type="checkbox"]:checked')
         )
       ));
-  }
-
-  function getStageJumpSelectedExecutionButtons() {
-    return getStageJumpSelectedRows()
-      .map((row) => {
-        const jumpButton = row.querySelector(
-          `.${STAGE_JUMP_BUTTON_CLASS}[${STAGE_JUMP_BUTTON_MARK_ATTR}="1"]:not([${SLOWSEARCH_JUMP_MARK_ATTR}="1"])`
-        );
-        return jumpButton instanceof HTMLElement ? jumpButton : null;
-      })
-      .filter((button) => button instanceof HTMLElement);
   }
 
   function buildStageJumpCopyInfoTmValue(stageName, statusName) {
@@ -4371,48 +5495,6 @@
     await writeStageJumpPlainTextToClipboardFallback(plainText);
   }
 
-  function collectStageJumpExecutionTargets(anchorButton) {
-    const summary = {
-      selectedButtonsCount: 0,
-      missingTargetCount: 0,
-      missingEdocCount: 0,
-      targets: []
-    };
-
-    const dedupeKeys = new Set();
-    const addTargetFromButton = (button) => {
-      const candidate = getStageJumpExecutionTargetFromButton(button);
-      if (!candidate) return;
-
-      if (!candidate.targetUrl) {
-        summary.missingTargetCount += 1;
-        return;
-      }
-
-      if (!candidate.edocId) {
-        summary.missingEdocCount += 1;
-        return;
-      }
-
-      const stateKey = getStageJumpExecutionButtonStateKey(candidate.debtId, candidate.edocId);
-      const dedupeKey = stateKey || `${candidate.debtId}::${candidate.edocId}`;
-      if (dedupeKeys.has(dedupeKey)) return;
-
-      dedupeKeys.add(dedupeKey);
-      summary.targets.push(candidate);
-    };
-
-    const selectedButtons = getStageJumpSelectedExecutionButtons();
-    summary.selectedButtonsCount = selectedButtons.length;
-    if (selectedButtons.length > 0) {
-      selectedButtons.forEach(addTargetFromButton);
-    } else {
-      addTargetFromButton(anchorButton);
-    }
-
-    return summary;
-  }
-
   function executeStageJumpMenuAction(action, anchorButton) {
     if (!anchorButton) return;
     const debtId = String(anchorButton.dataset.debtId || '').trim();
@@ -4448,35 +5530,6 @@
       return;
     }
 
-    if (action === STAGE_JUMP_MENU_ACTION_EXECUTION_ANALYSIS) {
-      const executionTargetsSummary = collectStageJumpExecutionTargets(anchorButton);
-      const executionTargets = executionTargetsSummary.targets;
-      if (!executionTargets.length) {
-        if (executionTargetsSummary.selectedButtonsCount > 0) {
-          window.alert('Нет подходящих выбранных строк для "Анализ исполнения". Проверьте маршрут стадии и EDocID.');
-        }
-        return;
-      }
-
-      const inputText = askStageJumpExecutionAnalysisText(getStageJumpAnalysisDraftText());
-      if (inputText === null) return;
-
-      const normalizedText = String(inputText || '').trim();
-      if (!normalizedText) {
-        window.alert('Текст для "Анализ исполнения" не введен.');
-        return;
-      }
-
-      setStageJumpAnalysisDraftText(normalizedText);
-      executionTargets.forEach((target) => {
-        startStageJumpExecutionAnalysisInBackground(
-          target.targetUrl,
-          target.debtId,
-          target.edocId,
-          normalizedText
-        );
-      });
-    }
   }
 
   function positionStageJumpActionMenu(anchorButton) {
@@ -4509,8 +5562,7 @@
     menu.innerHTML = [
       `<button type="button" class="${STAGE_JUMP_MENU_ITEM_CLASS}" ${STAGE_JUMP_MENU_ACTION_ATTR}="${STAGE_JUMP_MENU_ACTION_COPY_INFO}">${STAGE_JUMP_MENU_ITEM_COPY_INFO_TEXT} (0)</button>`,
       `<button type="button" class="${STAGE_JUMP_MENU_ITEM_CLASS}" ${STAGE_JUMP_MENU_ACTION_ATTR}="${STAGE_JUMP_MENU_ACTION_SLOWSEARCH}">${STAGE_JUMP_MENU_ITEM_SLOWSEARCH_TEXT}</button>`,
-      `<button type="button" class="${STAGE_JUMP_MENU_ITEM_CLASS}" ${STAGE_JUMP_MENU_ACTION_ATTR}="${STAGE_JUMP_MENU_ACTION_STAGE}">${STAGE_JUMP_MENU_ITEM_STAGE_TEXT}</button>`,
-      `<button type="button" class="${STAGE_JUMP_MENU_ITEM_CLASS}" ${STAGE_JUMP_MENU_ACTION_ATTR}="${STAGE_JUMP_MENU_ACTION_EXECUTION_ANALYSIS}">${STAGE_JUMP_MENU_ITEM_EXECUTION_ANALYSIS_TEXT}</button>`
+      `<button type="button" class="${STAGE_JUMP_MENU_ITEM_CLASS}" ${STAGE_JUMP_MENU_ACTION_ATTR}="${STAGE_JUMP_MENU_ACTION_STAGE}">${STAGE_JUMP_MENU_ITEM_STAGE_TEXT}</button>`
     ].join('');
 
     menu.addEventListener('click', (event) => {
@@ -4556,9 +5608,7 @@
 
     const stageItem = menu.querySelector(`.${STAGE_JUMP_MENU_ITEM_CLASS}[${STAGE_JUMP_MENU_ACTION_ATTR}="${STAGE_JUMP_MENU_ACTION_STAGE}"]`);
     const copyInfoItem = menu.querySelector(`.${STAGE_JUMP_MENU_ITEM_CLASS}[${STAGE_JUMP_MENU_ACTION_ATTR}="${STAGE_JUMP_MENU_ACTION_COPY_INFO}"]`);
-    const executionAnalysisItem = menu.querySelector(`.${STAGE_JUMP_MENU_ITEM_CLASS}[${STAGE_JUMP_MENU_ACTION_ATTR}="${STAGE_JUMP_MENU_ACTION_EXECUTION_ANALYSIS}"]`);
     const copyInfoSummary = collectStageJumpCopyInfoTargets(anchorButton);
-    const executionTargetsSummary = collectStageJumpExecutionTargets(anchorButton);
     const hasStageTarget = String(anchorButton.dataset.targetUrl || '').trim().length > 0;
     if (stageItem instanceof HTMLButtonElement) {
       stageItem.disabled = !hasStageTarget;
@@ -4580,37 +5630,6 @@
         copyInfoItem.removeAttribute('title');
       }
     }
-    if (executionAnalysisItem instanceof HTMLButtonElement) {
-      const selectedCount = executionTargetsSummary.selectedButtonsCount;
-      const readyCount = executionTargetsSummary.targets.length;
-      const labelSuffix = selectedCount > 1
-        ? (readyCount === selectedCount ? ` (${selectedCount})` : ` (${readyCount}/${selectedCount})`)
-        : '';
-      executionAnalysisItem.textContent = `${STAGE_JUMP_MENU_ITEM_EXECUTION_ANALYSIS_TEXT}${labelSuffix}`;
-
-      const isEnabled = readyCount > 0;
-      executionAnalysisItem.disabled = !isEnabled;
-      if (!isEnabled) {
-        if (selectedCount > 0) {
-          if (executionTargetsSummary.missingTargetCount > 0) {
-            executionAnalysisItem.title = 'Для выбранных строк не найден маршрут стадии.';
-          } else if (executionTargetsSummary.missingEdocCount > 0) {
-            executionAnalysisItem.title = 'Для выбранных строк нужен EDocID.';
-          } else {
-            executionAnalysisItem.title = 'Нет доступных выбранных строк.';
-          }
-        } else {
-          executionAnalysisItem.title = hasStageTarget
-            ? 'Для действия нужен EDocID в строке.'
-            : 'Маршрут стадии/статуса не найден в статической карте ВЗИД.';
-        }
-      } else if (selectedCount > 1) {
-        executionAnalysisItem.title = `Будет запущено: ${readyCount}`;
-      } else {
-        executionAnalysisItem.removeAttribute('title');
-      }
-    }
-
     if (!menu.hidden && stageJumpActionMenuAnchor === anchorButton) {
       closeStageJumpActionMenu();
       return;
@@ -4700,7 +5719,6 @@
             'Выберите действие:',
             `1) ${STAGE_JUMP_MENU_ITEM_SLOWSEARCH_TEXT}`,
             `2) ${STAGE_JUMP_MENU_ITEM_STAGE_TEXT}`,
-            `3) ${STAGE_JUMP_MENU_ITEM_EXECUTION_ANALYSIS_TEXT}${edocId ? '' : ' (недоступен: нет EDocID)'}`,
             `Маршрут: ${target.pathText || target.path.join(' > ')}`
           ].join('\n');
         } else {
@@ -4709,8 +5727,7 @@
             `DebtID: ${debtId}`,
             'Выберите действие:',
             `1) ${STAGE_JUMP_MENU_ITEM_SLOWSEARCH_TEXT}`,
-            `2) ${STAGE_JUMP_MENU_ITEM_STAGE_TEXT} (недоступен: маршрут не найден)`,
-            `3) ${STAGE_JUMP_MENU_ITEM_EXECUTION_ANALYSIS_TEXT} (недоступен: нет маршрута стадии)`
+            `2) ${STAGE_JUMP_MENU_ITEM_STAGE_TEXT} (недоступен: маршрут не найден)`
           ].join('\n');
         }
       } else {
@@ -4721,7 +5738,6 @@
         jumpButton.title = 'Не удалось определить DebtID строки.';
       }
 
-      applyStageJumpExecutionButtonVisualState(jumpButton, debtId, edocId);
     });
   }
 
@@ -4882,124 +5898,18 @@
     }
   }
 
-  function normalizeStageJumpExecutionAnalysisPayload(payload) {
-    if (!payload || typeof payload !== 'object') return null;
-
-    const modeRaw = String(payload.mode || '').trim();
-    if (modeRaw && modeRaw !== STAGE_JUMP_PENDING_MODE_EXECUTION_ANALYSIS) return null;
-
-    const edocId = String(payload.edocId || '').trim();
-    const analysisText = String(payload.analysisText || '').trim();
-    if (!edocId || !analysisText) return null;
-
-    return {
-      ...payload,
-      mode: STAGE_JUMP_PENDING_MODE_EXECUTION_ANALYSIS,
-      edocId,
-      analysisText
-    };
-  }
-
-  function getStageJumpExecutionAnalysisPayloadFromStorage() {
-    const payload = readStageJumpPendingPayloadFromStorage();
-    return normalizeStageJumpExecutionAnalysisPayload(payload);
-  }
-
-  function requestStageJumpExecutionAnalysisPayloadFromBackground() {
-    return new Promise((resolve) => {
-      if (!(chrome && chrome.runtime && typeof chrome.runtime.sendMessage === 'function')) {
-        resolve(null);
-        return;
-      }
-
-      try {
-        chrome.runtime.sendMessage(
-          { action: 'STAGEJUMP_GET_EXECUTION_ANALYSIS_PAYLOAD' },
-          (response) => {
-            const runtimeError = chrome.runtime && chrome.runtime.lastError
-              ? chrome.runtime.lastError.message
-              : '';
-            if (runtimeError) {
-              resolve(null);
-              return;
-            }
-
-            if (!response || response.success !== true) {
-              resolve(null);
-              return;
-            }
-
-            resolve(normalizeStageJumpExecutionAnalysisPayload(response.data || null));
-          }
-        );
-      } catch (error) {
-        resolve(null);
-      }
-    });
-  }
-
-  function getStageJumpAnalysisDraftText() {
-    try {
-      return String(window.localStorage.getItem(STAGE_JUMP_ANALYSIS_DRAFT_STORAGE_KEY) || '').trim();
-    } catch (error) {
-      return '';
-    }
-  }
-
-  function setStageJumpAnalysisDraftText(text) {
-    const normalizedText = String(text || '').trim();
-    if (!normalizedText) return;
-    try {
-      window.localStorage.setItem(STAGE_JUMP_ANALYSIS_DRAFT_STORAGE_KEY, normalizedText);
-    } catch (error) {
-      // ignore
-    }
-  }
-
-  function askStageJumpExecutionAnalysisText(defaultValue) {
-    const initialValue = String(defaultValue || '').trim();
-    const message = 'Введите текст для "Анализ исполнения":';
-    return window.prompt(message, initialValue);
-  }
-
   function getStageJumpDebtIdFromStorage() {
     const payload = readStageJumpPendingPayloadFromStorage();
     if (!payload) return '';
     return String(payload.debtId || '').trim();
   }
 
-  function clearStageJumpDebtIdStorage(options = null) {
-    const preserveExecution = !!(
-      options &&
-      typeof options === 'object' &&
-      options.preserveExecution === true
-    );
-
-    if (!preserveExecution) {
-      try {
-        window.localStorage.removeItem(STAGE_JUMP_STORAGE_KEY);
-      } catch (error) {
-        // ignore
-      }
-      return;
+  function clearStageJumpDebtIdStorage() {
+    try {
+      window.localStorage.removeItem(STAGE_JUMP_STORAGE_KEY);
+    } catch (error) {
+      // ignore
     }
-
-    const payload = getStageJumpExecutionAnalysisPayloadFromStorage();
-    if (!payload) {
-      try {
-        window.localStorage.removeItem(STAGE_JUMP_STORAGE_KEY);
-      } catch (error) {
-        // ignore
-      }
-      return;
-    }
-
-    const nextPayload = {
-      ...payload,
-      createdAt: Date.now()
-    };
-    delete nextPayload.debtId;
-    saveStageJumpPendingPayloadToStorage(nextPayload);
   }
 
   function getStageJumpActionPayloadForPath(pathname) {
@@ -5036,7 +5946,7 @@
     return getStageJumpDebtIdFromStorage();
   }
 
-  function clearStageJumpDebtIdFromHash(options = null) {
+  function clearStageJumpDebtIdFromHash() {
     let isChanged = false;
     const url = new URL(window.location.href);
 
@@ -5055,7 +5965,7 @@
       }
     }
 
-    clearStageJumpDebtIdStorage(options);
+    clearStageJumpDebtIdStorage();
 
     if (!isChanged) return;
     window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
@@ -5545,8 +6455,7 @@
     const finishSuccess = () => {
       clearInterval(timer);
       clearStageJumpDebtIdFilterInput();
-      const preserveExecution = !!getStageJumpExecutionAnalysisPayloadFromStorage();
-      clearStageJumpDebtIdFromHash({ preserveExecution });
+      clearStageJumpDebtIdFromHash();
       console.info('[StageJump] DebtID applied once.');
     };
 
@@ -5733,337 +6642,6 @@
     return rect.width > 0 && rect.height > 0;
   }
 
-  function findStageJumpRowByEdocId(edocId) {
-    const normalizedEdocId = String(edocId || '').trim();
-    if (!normalizedEdocId) return null;
-
-    const byId = document.getElementById(normalizedEdocId);
-    if (byId && byId.classList && byId.classList.contains('jqgrow')) return byId;
-
-    const rows = Array.from(document.querySelectorAll('#list tbody > tr.jqgrow'));
-    for (const row of rows) {
-      const cell = row.querySelector('td[aria-describedby="list_EDocID"], td[aria-describedby="list_EdocID"], td[aria-describedby$="_EDocID"], td[aria-describedby$="_EdocID"]');
-      if (!cell) continue;
-      const value = String(cell.textContent || '').trim();
-      if (value === normalizedEdocId) return row;
-    }
-    return null;
-  }
-
-  function selectStageJumpRowByEdocId(edocId) {
-    const row = findStageJumpRowByEdocId(edocId);
-    if (!(row instanceof HTMLElement)) return false;
-
-    const rowId = String(row.id || '').trim();
-    if (rowId && window.jQuery && window.jQuery.fn && window.jQuery.fn.jqGrid) {
-      try {
-        window.jQuery('#list').jqGrid('setSelection', rowId, true);
-      } catch (error) {
-        // ignore
-      }
-    }
-
-    const checkbox = row.querySelector('input.cbox[type="checkbox"]');
-    if (checkbox instanceof HTMLInputElement && !checkbox.checked) {
-      checkbox.click();
-    }
-
-    if (row.getAttribute('aria-selected') !== 'true' && !row.classList.contains('ui-state-highlight')) {
-      row.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    }
-
-    return row.getAttribute('aria-selected') === 'true' ||
-      row.classList.contains('ui-state-highlight') ||
-      (checkbox instanceof HTMLInputElement && checkbox.checked);
-  }
-
-  function clickStageJumpToolbarButtonByText(buttonText) {
-    const targetText = normalizeStageJumpText(buttonText);
-    if (!targetText) return false;
-
-    const labels = Array.from(document.querySelectorAll('.ui-pg-button .ui-pg-button-text, .ui-pg-button-text'));
-    for (const label of labels) {
-      if (!isStageJumpElementVisible(label)) continue;
-      const labelText = normalizeStageJumpText(label.textContent || '');
-      if (labelText !== targetText) continue;
-
-      const clickable = label.closest('.ui-pg-button, button, a');
-      if (clickable instanceof HTMLElement) {
-        if (clickable.matches('.ui-state-disabled, [disabled]')) return false;
-        clickable.click();
-        return true;
-      }
-
-      if (label instanceof HTMLElement) {
-        label.click();
-        return true;
-      }
-    }
-
-    return false;
-  }
-
-  function getStageJumpExecutionAnalysisDocuments() {
-    const docs = [document];
-    const iframeCandidates = Array.from(document.querySelectorAll('.ui-dialog iframe, iframe'));
-    iframeCandidates.forEach((iframe) => {
-      if (!(iframe instanceof HTMLIFrameElement)) return;
-      try {
-        if (iframe.contentDocument) docs.push(iframe.contentDocument);
-      } catch (error) {
-        // ignore cross-origin if any
-      }
-    });
-    return docs;
-  }
-
-  function getStageJumpExecutionAnalysisSuccessAlertCandidates() {
-    const alerts = [];
-    const docs = getStageJumpExecutionAnalysisDocuments();
-    docs.forEach((doc) => {
-      if (!doc) return;
-      const candidates = doc.querySelectorAll('.alert.alert-success.alert-dismissible[role="alert"], .alert.alert-success[role="alert"]');
-      candidates.forEach((candidate) => {
-        if (candidate && candidate.nodeType === 1) {
-          alerts.push(candidate);
-        }
-      });
-    });
-    return alerts;
-  }
-
-  function captureStageJumpExecutionAnalysisSuccessAlertState() {
-    const state = new Map();
-    const alerts = getStageJumpExecutionAnalysisSuccessAlertCandidates();
-    alerts.forEach((alert) => {
-      state.set(alert, {
-        visible: isStageJumpElementVisible(alert),
-        text: normalizeStageJumpText(alert.textContent || '')
-      });
-    });
-    return state;
-  }
-
-  function hasStageJumpExecutionAnalysisSaveSuccessAlert(previousState) {
-    const successText = normalizeStageJumpText('Анализ исполнения успешно занес');
-    if (!successText) return false;
-
-    const alerts = getStageJumpExecutionAnalysisSuccessAlertCandidates();
-    for (const alert of alerts) {
-      if (!isStageJumpElementVisible(alert)) continue;
-      const currentText = normalizeStageJumpText(alert.textContent || '');
-      if (!currentText.includes(successText)) continue;
-
-      if (!(previousState instanceof Map)) return true;
-      const previous = previousState.get(alert);
-      if (!previous) return true;
-      if (!previous.visible) return true;
-      if (!String(previous.text || '').includes(successText)) return true;
-    }
-
-    return false;
-  }
-
-  function getStageJumpExecutionAnalysisFormContext() {
-    const docs = getStageJumpExecutionAnalysisDocuments();
-
-    for (const doc of docs) {
-      if (!doc) continue;
-
-      const saveButton = Array.from(doc.querySelectorAll('button, input[type="submit"], input[type="button"], a.ui-button'))
-        .find((el) => {
-          if (!isStageJumpElementVisible(el)) return false;
-          const text = normalizeStageJumpText(el.textContent || el.value || '');
-          return text.includes(normalizeStageJumpText('Сохранить информацию'));
-        });
-      if (!saveButton) continue;
-
-      const inputCandidates = Array.from(doc.querySelectorAll('textarea, input[type="text"], input:not([type])'))
-        .filter((el) => isStageJumpElementVisible(el));
-      if (!inputCandidates.length) continue;
-
-      const preferredInput = inputCandidates.find((el) => {
-        const marker = normalizeStageJumpText([
-          el.id || '',
-          el.name || '',
-          el.className || '',
-          el.getAttribute('placeholder') || ''
-        ].join(' '));
-        return marker.includes('примеч') || marker.includes('коммент') || marker.includes('анализ');
-      }) || inputCandidates[0];
-      if (!preferredInput) continue;
-
-      return { input: preferredInput, saveButton };
-    }
-
-    return null;
-  }
-
-  function notifyStageJumpExecutionAnalysisResult(success, errorMessage) {
-    if (!(chrome && chrome.runtime && typeof chrome.runtime.sendMessage === 'function')) return;
-    try {
-      chrome.runtime.sendMessage({
-        action: 'STAGEJUMP_EXECUTION_ANALYSIS_FINISH',
-        data: {
-          success: !!success,
-          error: String(errorMessage || '')
-        }
-      });
-    } catch (error) {
-      // ignore
-    }
-  }
-
-  function runStageJumpExecutionAnalysisFlow(payload, options = null) {
-    const normalizedPayload = normalizeStageJumpExecutionAnalysisPayload(payload);
-    if (!normalizedPayload) return false;
-
-    const clearStorageOnFinish = !!(
-      options &&
-      typeof options === 'object' &&
-      options.clearStorageOnFinish === true
-    );
-    const edocId = String(normalizedPayload.edocId || '').trim();
-    const analysisText = String(normalizedPayload.analysisText || '').trim();
-    if (!edocId || !analysisText) {
-      if (clearStorageOnFinish) {
-        clearStageJumpPendingPayloadForCurrentPath();
-      }
-      notifyStageJumpExecutionAnalysisResult(false, 'EMPTY_PAYLOAD');
-      return false;
-    }
-
-    const startedAt = Date.now();
-    const timeoutMs = 90 * 1000;
-    const intervalMs = 180;
-    const saveStartTimeoutMs = 20 * 1000;
-    const saveCompleteTimeoutMs = 45 * 1000;
-    let timer = null;
-    let rowSelected = false;
-    let analysisOpened = false;
-    let saveClicked = false;
-    let saveClickAtMs = 0;
-    let saveRequestStarted = false;
-    let saveRequestStartAtMs = 0;
-    let saveSuccessAlertStateBeforeClick = null;
-
-    const finishSuccess = () => {
-      clearInterval(timer);
-      if (clearStorageOnFinish) {
-        clearStageJumpPendingPayloadForCurrentPath();
-      }
-      notifyStageJumpExecutionAnalysisResult(true, '');
-      console.info('[StageJump] Execution analysis completed in background for EDocID=' + edocId);
-    };
-
-    const finishFail = (reason) => {
-      clearInterval(timer);
-      if (clearStorageOnFinish) {
-        clearStageJumpPendingPayloadForCurrentPath();
-      }
-      notifyStageJumpExecutionAnalysisResult(false, reason);
-      console.warn('[StageJump] Execution analysis failed in background: ' + reason);
-    };
-
-    const runAttempt = () => {
-      if ((Date.now() - startedAt) >= timeoutMs) {
-        finishFail('TIMEOUT');
-        return;
-      }
-
-      if (!rowSelected) {
-        rowSelected = selectStageJumpRowByEdocId(edocId);
-        return;
-      }
-
-      if (!analysisOpened) {
-        analysisOpened = clickStageJumpToolbarButtonByText('Анализ исполнения');
-        return;
-      }
-
-      if (saveClicked) {
-        if (hasStageJumpExecutionAnalysisSaveSuccessAlert(saveSuccessAlertStateBeforeClick)) {
-          finishSuccess();
-          return;
-        }
-
-        const saveErrorDetected = stageJumpLastStageTimerErrorAtMs >= saveClickAtMs;
-        if (saveErrorDetected) {
-          finishFail('SAVE_REQUEST_ERROR');
-          return;
-        }
-
-        if (!saveRequestStarted) {
-          if (stageJumpLastEditDocStopAtMs >= saveClickAtMs) {
-            finishSuccess();
-            return;
-          }
-
-          if (stageJumpLastEditDocStartAtMs >= saveClickAtMs) {
-            saveRequestStarted = true;
-            saveRequestStartAtMs = stageJumpLastEditDocStartAtMs;
-            return;
-          }
-
-          if ((Date.now() - saveClickAtMs) >= saveStartTimeoutMs) {
-            finishFail('SAVE_REQUEST_NOT_STARTED');
-          }
-          return;
-        }
-
-        if (stageJumpLastEditDocStopAtMs >= saveRequestStartAtMs) {
-          finishSuccess();
-          return;
-        }
-
-        if ((Date.now() - saveRequestStartAtMs) >= saveCompleteTimeoutMs) {
-          finishFail('SAVE_REQUEST_TIMEOUT');
-        }
-        return;
-      }
-
-      const formContext = getStageJumpExecutionAnalysisFormContext();
-      if (!formContext) return;
-
-      const input = formContext.input;
-      const saveButton = formContext.saveButton;
-      if (!input || !saveButton) return;
-
-      setNativeInputValue(input, analysisText);
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-      input.dispatchEvent(new Event('change', { bubbles: true }));
-      saveSuccessAlertStateBeforeClick = captureStageJumpExecutionAnalysisSuccessAlertState();
-      saveButton.click();
-      saveClicked = true;
-      saveClickAtMs = Date.now();
-    };
-
-    runAttempt();
-    timer = setInterval(runAttempt, intervalMs);
-    return true;
-  }
-
-  function initStageJumpExecutionAnalysisFromStorage() {
-    if (!window.location.pathname.includes('/ovzid/')) return;
-
-    requestStageJumpExecutionAnalysisPayloadFromBackground()
-      .then((payloadFromBackground) => {
-        const payload = payloadFromBackground || getStageJumpExecutionAnalysisPayloadFromStorage();
-        if (!payload) return;
-
-        runStageJumpExecutionAnalysisFlow(payload, {
-          clearStorageOnFinish: !payloadFromBackground
-        });
-      })
-      .catch(() => {
-        const payload = getStageJumpExecutionAnalysisPayloadFromStorage();
-        if (!payload) return;
-        runStageJumpExecutionAnalysisFlow(payload, {
-          clearStorageOnFinish: true
-        });
-      });
-  }
-
   // --- Подсветка строк/колонок в Google Sheets (без изменений) ---
   if (window.location.hostname === 'docs.google.com' && window.location.pathname.includes('/spreadsheets/')) {
     // ... (код без изменений)
@@ -6071,10 +6649,10 @@
 
   // Запуск
   initStageJumpDebtIdFilterFromHash();
-  initStageJumpExecutionAnalysisFromStorage();
   initSlowsearchDebtIdFilterFromHash();
   initScreenshotHideMode();
   initExtensionUiSettings();
+  void initExecutionAnalysisWorkerPage();
   initDepartmentNavigationHotkeys();
   initDepartmentDropdownFilter();
   initStageJumpButtons();
