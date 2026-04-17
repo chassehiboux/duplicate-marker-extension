@@ -439,7 +439,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             return false;
         }
 
-        case 'EXECUTION_ANALYSIS_OPEN_TAB': {
+        case 'EXECUTION_ANALYSIS_OPEN_TAB':
+        case 'ID_CARD_CHECK_OPEN_TAB': {
             const sourceTabId = sender && sender.tab ? sender.tab.id : null;
             const sourceWindowId = sender && sender.tab ? sender.tab.windowId : null;
             const data = request && request.data ? request.data : {};

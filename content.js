@@ -53,6 +53,10 @@
   const EXECUTION_ANALYSIS_PROCESSED_TEXT = 'Да';
   const EXECUTION_ANALYSIS_MANUAL_DIALOG_ID = 'dup-execution-analysis-manual-dialog';
   const EXECUTION_ANALYSIS_FILE_INPUT_ID = 'dup-execution-analysis-file-input';
+  const ID_CARD_CHECK_STORAGE_KEY = 'dup_id_card_check_state_v1';
+  const ID_CARD_CHECK_INPUT_DIALOG_ID = 'dup-id-card-check-input-dialog';
+  const ID_CARD_CHECK_CHOICE_DIALOG_ID = 'dup-id-card-check-choice-dialog';
+  const ID_CARD_CHECK_NAV_ID = 'dup-id-card-check-nav';
   const EXECUTION_ANALYSIS_STATUS_IDLE = 'idle';
   const EXECUTION_ANALYSIS_STATUS_READY = 'ready';
   const EXECUTION_ANALYSIS_STATUS_RUNNING = 'running';
@@ -340,6 +344,20 @@
       `
     },
     {
+      key: 'idCardCheckTools',
+      storageKey: 'dup_ui_show_id_card_check_tools',
+      label: 'Проверка карточек ИД',
+      description: 'Загрузка списка EdocID и навигация по карточкам ИД.',
+      hideClass: 'dup-ui-hide-id-card-check-tools',
+      hideCss: `
+        html.dup-ui-hide-id-card-check-tools .dup-id-card-check-block,
+        html.dup-ui-hide-id-card-check-tools .dup-id-card-check-modal,
+        html.dup-ui-hide-id-card-check-tools #${ID_CARD_CHECK_NAV_ID} {
+          display: none !important;
+        }
+      `
+    },
+    {
       key: 'departmentDropdownFilter',
       storageKey: 'dup_ui_show_department_dropdown_filter',
       label: 'Фильтр depid',
@@ -542,6 +560,10 @@
   let executionAnalysisLaunchTimer = null;
   let executionAnalysisDownloadDoneForRunId = '';
   let executionAnalysisProcessingTimer = null;
+  let idCardCheckState = createEmptyIdCardCheckState();
+  let idCardCheckElements = null;
+  let idCardCheckNavEl = null;
+  let idCardCheckNavObserver = null;
   const allDuplicateSettingKeys = [
     'setting_highlight_mode', 'list_DebtID', 'list_AccAddress_AccountNumber',
     'list_Individual_FullName', 'list_CaseNumber', 'list_EDNumber',
@@ -2121,6 +2143,389 @@
     if (input instanceof HTMLTextAreaElement) input.focus();
   }
 
+  function createEmptyIdCardCheckState() {
+    return {
+      version: 1,
+      tabId: 0,
+      edocIds: [],
+      currentIndex: 0,
+      updatedAt: Date.now()
+    };
+  }
+
+  function normalizeIdCardCheckState(rawState) {
+    const raw = rawState && typeof rawState === 'object' ? rawState : {};
+    const edocIds = Array.isArray(raw.edocIds)
+      ? raw.edocIds.map((id) => normalizeExecutionAnalysisText(id)).filter(Boolean)
+      : [];
+    const uniqueEdocIds = [];
+    const seen = new Set();
+    edocIds.forEach((id) => {
+      if (seen.has(id)) return;
+      seen.add(id);
+      uniqueEdocIds.push(id);
+    });
+    const rawIndex = Number.parseInt(String(raw.currentIndex || 0), 10);
+    const currentIndex = uniqueEdocIds.length
+      ? Math.min(Math.max(Number.isFinite(rawIndex) ? rawIndex : 0, 0), uniqueEdocIds.length - 1)
+      : 0;
+    const rawTabId = Number(raw.tabId || 0);
+    return {
+      version: 1,
+      tabId: Number.isInteger(rawTabId) && rawTabId > 0 ? rawTabId : 0,
+      edocIds: uniqueEdocIds,
+      currentIndex,
+      updatedAt: Number(raw.updatedAt || 0) || Date.now()
+    };
+  }
+
+  async function persistIdCardCheckState(nextState) {
+    const normalized = normalizeIdCardCheckState({
+      ...nextState,
+      updatedAt: Date.now()
+    });
+    idCardCheckState = normalized;
+    await chromeStorageSet({ [ID_CARD_CHECK_STORAGE_KEY]: normalized });
+    syncIdCardCheckNavigation();
+    return normalized;
+  }
+
+  async function loadIdCardCheckState() {
+    const stored = await chromeStorageGet(ID_CARD_CHECK_STORAGE_KEY);
+    idCardCheckState = normalizeIdCardCheckState(stored[ID_CARD_CHECK_STORAGE_KEY]);
+    await syncIdCardCheckStateWithCurrentUrl();
+    syncIdCardCheckNavigation();
+    return idCardCheckState;
+  }
+
+  function isIdCardCheckFullcardPath(pathname = window.location.pathname) {
+    return /^\/ovzid\/fullcard\/[^/]+(?:\/.*)?$/i.test(String(pathname || ''));
+  }
+
+  function getIdCardCheckEdocIdFromPath(pathname = window.location.pathname) {
+    const match = String(pathname || '').match(/^\/ovzid\/fullcard\/([^/]+)(?:\/.*)?$/i);
+    return match ? decodeURIComponent(match[1]) : '';
+  }
+
+  function buildIdCardCheckFullcardUrl(edocId, origin = window.location.origin) {
+    const url = new URL(`/ovzid/fullcard/${encodeURIComponent(String(edocId || '').trim())}`, origin);
+    return url.toString();
+  }
+
+  function buildIdCardCheckNavigationUrl(edocId) {
+    const url = new URL(window.location.href);
+    const targetId = encodeURIComponent(String(edocId || '').trim());
+    const match = url.pathname.match(/^(\/ovzid\/fullcard\/)([^/]+)(.*)$/i);
+    url.pathname = match
+      ? `${match[1]}${targetId}${match[3] || ''}`
+      : `/ovzid/fullcard/${targetId}`;
+    return url.toString();
+  }
+
+  async function isCurrentIdCardCheckManagedTab() {
+    const tabId = await getCurrentTabIdForExecutionAnalysis();
+    return tabId > 0 && idCardCheckState.tabId > 0 && tabId === idCardCheckState.tabId;
+  }
+
+  async function syncIdCardCheckStateWithCurrentUrl() {
+    const state = normalizeIdCardCheckState(idCardCheckState);
+    if (!state.edocIds.length || !isIdCardCheckFullcardPath()) return state;
+    if (!(await isCurrentIdCardCheckManagedTab())) return state;
+
+    const currentEdocId = getIdCardCheckEdocIdFromPath();
+    const currentIndex = state.edocIds.indexOf(currentEdocId);
+    if (currentIndex < 0 || currentIndex === state.currentIndex) return state;
+    return persistIdCardCheckState({
+      ...state,
+      currentIndex
+    });
+  }
+
+  function removeIdCardCheckNavigation() {
+    if (idCardCheckNavEl instanceof HTMLElement) {
+      idCardCheckNavEl.remove();
+    }
+    idCardCheckNavEl = null;
+  }
+
+  function updateIdCardCheckNavigationButtons() {
+    if (!(idCardCheckNavEl instanceof HTMLElement)) return;
+    const state = normalizeIdCardCheckState(idCardCheckState);
+    const previousButton = idCardCheckNavEl.querySelector('.dup-id-card-check-prev');
+    const nextButton = idCardCheckNavEl.querySelector('.dup-id-card-check-next');
+    const status = idCardCheckNavEl.querySelector('.dup-id-card-check-status');
+    if (previousButton instanceof HTMLButtonElement) previousButton.disabled = state.currentIndex <= 0;
+    if (nextButton instanceof HTMLButtonElement) nextButton.disabled = state.currentIndex >= state.edocIds.length - 1;
+    if (status instanceof HTMLElement) {
+      const currentEdocId = state.edocIds[state.currentIndex] || '';
+      status.textContent = currentEdocId
+        ? `${state.currentIndex + 1}/${state.edocIds.length}: ${currentEdocId}`
+        : 'Список не загружен';
+    }
+  }
+
+  async function navigateIdCardCheckToIndex(index) {
+    const state = normalizeIdCardCheckState(idCardCheckState);
+    if (!state.edocIds.length) return;
+    const nextIndex = Math.min(Math.max(index, 0), state.edocIds.length - 1);
+    const targetEdocId = state.edocIds[nextIndex];
+    if (!targetEdocId) return;
+    await persistIdCardCheckState({
+      ...state,
+      currentIndex: nextIndex
+    });
+    window.location.assign(buildIdCardCheckNavigationUrl(targetEdocId));
+  }
+
+  function createIdCardCheckInputDialog() {
+    const existing = document.getElementById(ID_CARD_CHECK_INPUT_DIALOG_ID);
+    if (existing instanceof HTMLElement) return existing;
+
+    const modal = document.createElement('div');
+    modal.id = ID_CARD_CHECK_INPUT_DIALOG_ID;
+    modal.className = 'dup-execution-analysis-modal dup-id-card-check-modal';
+    modal.hidden = true;
+    modal.innerHTML = `
+      <div class="dup-execution-analysis-modal-panel" role="dialog" aria-modal="true" aria-label="Загрузка списка EdocID для проверки карточек">
+        <div class="dup-execution-analysis-modal-header">
+          <div class="dup-execution-analysis-modal-title">Проверка карточек ИД</div>
+          <button type="button" class="dup-execution-analysis-modal-close" aria-label="Закрыть">×</button>
+        </div>
+        <label class="dup-execution-analysis-field">
+          <span>EdocID построчно</span>
+          <textarea class="dup-id-card-check-input" rows="9" placeholder="47685198&#10;46748397&#10;45811490"></textarea>
+        </label>
+        <div class="dup-execution-analysis-modal-actions">
+          <button type="button" class="dup-id-card-check-save">Сохранить</button>
+          <button type="button" class="dup-id-card-check-cancel">Отмена</button>
+        </div>
+      </div>
+    `;
+
+    const close = () => { modal.hidden = true; };
+    modal.addEventListener('click', (event) => {
+      if (event.target === modal) close();
+    }, { capture: true });
+    modal.querySelector('.dup-execution-analysis-modal-close')?.addEventListener('click', close, { capture: true });
+    modal.querySelector('.dup-id-card-check-cancel')?.addEventListener('click', close, { capture: true });
+    modal.querySelector('.dup-id-card-check-save')?.addEventListener('click', async () => {
+      const textarea = modal.querySelector('.dup-id-card-check-input');
+      const ids = textarea instanceof HTMLTextAreaElement ? splitExecutionAnalysisEdocIds(textarea.value) : [];
+      if (!ids.length) {
+        window.alert('Введите хотя бы один EdocID.');
+        return;
+      }
+
+      if (textarea instanceof HTMLTextAreaElement) textarea.value = '';
+      close();
+      const response = await sendRuntimeMessage({
+        action: 'ID_CARD_CHECK_OPEN_TAB',
+        data: {
+          url: buildIdCardCheckFullcardUrl(ids[0]),
+          active: true
+        }
+      });
+      if (!response || response.success !== true || !Number.isInteger(response.tabId)) {
+        window.alert('Не удалось открыть вкладку карточки ИД.');
+        return;
+      }
+
+      await persistIdCardCheckState({
+        version: 1,
+        tabId: response.tabId,
+        edocIds: ids,
+        currentIndex: 0
+      });
+    }, { capture: true });
+
+    (document.body || document.documentElement).appendChild(modal);
+    return modal;
+  }
+
+  function openIdCardCheckInputDialog() {
+    const modal = createIdCardCheckInputDialog();
+    modal.hidden = false;
+    const input = modal.querySelector('.dup-id-card-check-input');
+    if (input instanceof HTMLTextAreaElement) input.focus();
+  }
+
+  function createIdCardCheckChoiceDialog() {
+    const existing = document.getElementById(ID_CARD_CHECK_CHOICE_DIALOG_ID);
+    if (existing instanceof HTMLElement) return existing;
+
+    const modal = document.createElement('div');
+    modal.id = ID_CARD_CHECK_CHOICE_DIALOG_ID;
+    modal.className = 'dup-execution-analysis-modal dup-id-card-check-modal';
+    modal.hidden = true;
+    modal.innerHTML = `
+      <div class="dup-execution-analysis-modal-panel dup-id-card-check-choice-panel" role="dialog" aria-modal="true" aria-label="Выбор EdocID">
+        <div class="dup-execution-analysis-modal-header">
+          <div class="dup-execution-analysis-modal-title">Выбор EdocID</div>
+          <button type="button" class="dup-execution-analysis-modal-close" aria-label="Закрыть">×</button>
+        </div>
+        <label class="dup-execution-analysis-field">
+          <span>Поиск</span>
+          <input class="dup-id-card-check-choice-search" type="search" placeholder="Введите EdocID">
+        </label>
+        <div class="dup-id-card-check-choice-hint">Нажмите на нужный EdocID.</div>
+        <div class="dup-id-card-check-choice-list" role="listbox"></div>
+      </div>
+    `;
+
+    const close = () => { modal.hidden = true; };
+    modal.addEventListener('click', (event) => {
+      if (event.target === modal) close();
+    }, { capture: true });
+    modal.querySelector('.dup-execution-analysis-modal-close')?.addEventListener('click', close, { capture: true });
+    modal.querySelector('.dup-id-card-check-choice-list')?.addEventListener('click', (event) => {
+      const item = event.target instanceof Element
+        ? event.target.closest('.dup-id-card-check-choice-item')
+        : null;
+      if (!(item instanceof HTMLElement)) return;
+      const index = Number.parseInt(String(item.dataset.index || ''), 10);
+      if (!Number.isInteger(index)) return;
+      close();
+      void navigateIdCardCheckToIndex(index);
+    }, { capture: true });
+    modal.querySelector('.dup-id-card-check-choice-search')?.addEventListener('input', (event) => {
+      const input = event.target instanceof HTMLInputElement ? event.target : null;
+      const query = normalizeExecutionAnalysisText(input ? input.value : '').toLowerCase();
+      modal.querySelectorAll('.dup-id-card-check-choice-item').forEach((item) => {
+        if (!(item instanceof HTMLElement)) return;
+        const edocId = normalizeExecutionAnalysisText(item.dataset.edocId).toLowerCase();
+        item.hidden = !!query && !edocId.includes(query);
+      });
+    }, { capture: true });
+
+    (document.body || document.documentElement).appendChild(modal);
+    return modal;
+  }
+
+  function openIdCardCheckChoiceDialog() {
+    const modal = createIdCardCheckChoiceDialog();
+    const list = modal.querySelector('.dup-id-card-check-choice-list');
+    const search = modal.querySelector('.dup-id-card-check-choice-search');
+    const state = normalizeIdCardCheckState(idCardCheckState);
+    if (search instanceof HTMLInputElement) search.value = '';
+    if (list instanceof HTMLElement) {
+      list.textContent = '';
+      state.edocIds.forEach((edocId, index) => {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'dup-id-card-check-choice-item';
+        item.dataset.index = String(index);
+        item.dataset.edocId = edocId;
+        item.textContent = `${index + 1}. ${edocId}`;
+        item.classList.toggle('is-active', index === state.currentIndex);
+        list.appendChild(item);
+      });
+    }
+    modal.hidden = false;
+    if (search instanceof HTMLInputElement) search.focus();
+  }
+
+  function createIdCardCheckFunctionBlock() {
+    const block = document.createElement('section');
+    block.className = 'dup-execution-analysis-block dup-id-card-check-block';
+    block.innerHTML = `
+      <div class="dup-execution-analysis-block-title">Проверка карточек ИД</div>
+      <div class="dup-execution-analysis-actions">
+        <button type="button" class="dup-id-card-check-load">Загрузить список EdocID</button>
+      </div>
+    `;
+
+    idCardCheckElements = {
+      block,
+      loadButton: block.querySelector('.dup-id-card-check-load')
+    };
+    idCardCheckElements.loadButton?.addEventListener('click', () => {
+      openIdCardCheckInputDialog();
+    }, { capture: true });
+    return block;
+  }
+
+  async function syncIdCardCheckNavigation() {
+    const state = normalizeIdCardCheckState(idCardCheckState);
+    if (
+      !isPyramidExtensionPage() ||
+      !isIdCardCheckFullcardPath() ||
+      !state.edocIds.length ||
+      !isExtensionUiSettingEnabled('idCardCheckTools')
+    ) {
+      removeIdCardCheckNavigation();
+      return;
+    }
+
+    if (!(await isCurrentIdCardCheckManagedTab())) {
+      removeIdCardCheckNavigation();
+      return;
+    }
+
+    const tabsHeader = document.querySelector('.custom-ui-tab.ui-tabs-nav, .ui-tabs-nav');
+    if (!(tabsHeader instanceof HTMLElement)) return;
+
+    if (!(idCardCheckNavEl instanceof HTMLElement)) {
+      const nav = document.createElement('div');
+      nav.id = ID_CARD_CHECK_NAV_ID;
+      nav.className = 'dup-id-card-check-nav';
+      nav.innerHTML = `
+        <button type="button" class="dup-id-card-check-nav-button dup-id-card-check-prev" aria-label="Назад" title="Назад">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M14.7 5.3a1 1 0 0 1 0 1.4L10.4 11H19a1 1 0 1 1 0 2h-8.6l4.3 4.3a1 1 0 0 1-1.4 1.4l-6-6a1 1 0 0 1 0-1.4l6-6a1 1 0 0 1 1.4 0z"></path>
+          </svg>
+        </button>
+        <button type="button" class="dup-id-card-check-nav-button dup-id-card-check-choice" aria-label="Выбор" title="Выбор">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M7 6a1 1 0 0 1 1-1h11a1 1 0 1 1 0 2H8a1 1 0 0 1-1-1zm0 6a1 1 0 0 1 1-1h11a1 1 0 1 1 0 2H8a1 1 0 0 1-1-1zm0 6a1 1 0 0 1 1-1h11a1 1 0 1 1 0 2H8a1 1 0 0 1-1-1zM4 5.5a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 0 1 0-2.5zm0 6a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 0 1 0-2.5zm0 6a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 0 1 0-2.5z"></path>
+          </svg>
+        </button>
+        <button type="button" class="dup-id-card-check-nav-button dup-id-card-check-next" aria-label="Вперед" title="Вперед">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M9.3 18.7a1 1 0 0 1 0-1.4l4.3-4.3H5a1 1 0 1 1 0-2h8.6L9.3 6.7a1 1 0 0 1 1.4-1.4l6 6a1 1 0 0 1 0 1.4l-6 6a1 1 0 0 1-1.4 0z"></path>
+          </svg>
+        </button>
+        <span class="dup-id-card-check-status"></span>
+      `;
+      nav.querySelector('.dup-id-card-check-prev')?.addEventListener('click', () => {
+        void navigateIdCardCheckToIndex(normalizeIdCardCheckState(idCardCheckState).currentIndex - 1);
+      }, { capture: true });
+      nav.querySelector('.dup-id-card-check-choice')?.addEventListener('click', () => {
+        openIdCardCheckChoiceDialog();
+      }, { capture: true });
+      nav.querySelector('.dup-id-card-check-next')?.addEventListener('click', () => {
+        void navigateIdCardCheckToIndex(normalizeIdCardCheckState(idCardCheckState).currentIndex + 1);
+      }, { capture: true });
+      idCardCheckNavEl = nav;
+    }
+
+    if (idCardCheckNavEl.parentElement !== tabsHeader.parentElement || idCardCheckNavEl.previousElementSibling !== tabsHeader) {
+      tabsHeader.insertAdjacentElement('afterend', idCardCheckNavEl);
+    }
+    updateIdCardCheckNavigationButtons();
+  }
+
+  const debouncedSyncIdCardCheckNavigation = debounce(() => {
+    void syncIdCardCheckNavigation();
+  }, 120);
+
+  function initIdCardCheckNavigation() {
+    if (!isPyramidExtensionPage()) return;
+    void loadIdCardCheckState();
+
+    if (!idCardCheckNavObserver) {
+      idCardCheckNavObserver = new MutationObserver(() => {
+        debouncedSyncIdCardCheckNavigation();
+      });
+      observeWithRetry(
+        idCardCheckNavObserver,
+        () => document.body || document.documentElement,
+        { childList: true, subtree: true },
+        120,
+        100
+      );
+    }
+  }
+
   function createExecutionAnalysisFunctionBlock() {
     const block = document.createElement('section');
     block.className = 'dup-execution-analysis-block';
@@ -2310,6 +2715,7 @@
     const functionsPane = document.createElement('div');
     functionsPane.className = 'dup-extension-ui-settings-pane is-active';
     functionsPane.dataset.pane = 'functions';
+    functionsPane.appendChild(createIdCardCheckFunctionBlock());
     functionsPane.appendChild(createExecutionAnalysisFunctionBlock());
 
     const settingsPane = document.createElement('div');
@@ -3867,6 +4273,12 @@
         executionAnalysisState = normalizeExecutionAnalysisState(changes[key].newValue);
         syncExecutionAnalysisControls();
         maybeScheduleExecutionAnalysisNextBatch('storage-change');
+      }
+
+      if (key === ID_CARD_CHECK_STORAGE_KEY) {
+        idCardCheckState = normalizeIdCardCheckState(changes[key].newValue);
+        void syncIdCardCheckStateWithCurrentUrl();
+        void syncIdCardCheckNavigation();
       }
     }
     if (highlightSettingsChanged) {
@@ -6652,6 +7064,7 @@
   initSlowsearchDebtIdFilterFromHash();
   initScreenshotHideMode();
   initExtensionUiSettings();
+  initIdCardCheckNavigation();
   void initExecutionAnalysisWorkerPage();
   initDepartmentNavigationHotkeys();
   initDepartmentDropdownFilter();

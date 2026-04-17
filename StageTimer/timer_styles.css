@@ -21,6 +21,8 @@ html.dup-ext-screenshot-mode .dup-extension-ui-settings-overlay,
 html.dup-ext-screenshot-mode .dup-extension-ui-settings-panel,
 html.dup-ext-screenshot-mode #dup-execution-analysis-manual-dialog,
 html.dup-ext-screenshot-mode .dup-execution-analysis-modal,
+html.dup-ext-screenshot-mode #dup-id-card-check-nav,
+html.dup-ext-screenshot-mode .dup-id-card-check-modal,
 html.dup-ext-screenshot-mode [title="Скрыть таймер"],
 html.dup-ext-screenshot-mode [aria-label="Скрыть таймер"],
 html.dup-ext-screenshot-mode [title="Показать таймер"],
@@ -324,6 +326,7 @@ html.dup-ext-screenshot-mode [aria-label="Показать таймер"] {
 
 .dup-execution-analysis-param input,
 .dup-execution-analysis-param select,
+.dup-execution-analysis-field input,
 .dup-execution-analysis-field textarea {
     width: 100%;
     min-width: 0;
@@ -434,6 +437,110 @@ html.dup-ext-screenshot-mode [aria-label="Показать таймер"] {
     width: 32px;
     padding: 0 !important;
     font-size: 18px !important;
+}
+
+.dup-id-card-check-nav {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 8px 0 12px;
+    padding: 8px 10px;
+    border: 1px solid rgba(39, 64, 79, 0.16);
+    border-radius: 8px;
+    background: #f9fbfd;
+    color: #10202a;
+    font-family: "Segoe UI", Arial, sans-serif;
+    font-size: 12px;
+    line-height: 1.35;
+}
+
+.dup-id-card-check-nav-button,
+.dup-id-card-check-choice-item {
+    min-height: 30px;
+    border: 1px solid rgba(39, 64, 79, 0.22);
+    border-radius: 8px;
+    padding: 0 10px;
+    background: #fff;
+    color: #10202a;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.dup-id-card-check-nav-button {
+    width: 36px;
+    height: 34px;
+    min-height: 34px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    background: #ffffff;
+    color: #24443d;
+    box-shadow: 0 1px 2px rgba(16, 29, 38, 0.08);
+}
+
+.dup-id-card-check-nav-button:hover:not(:disabled) {
+    border-color: #2f7d6b;
+    background: rgba(47, 125, 107, 0.08);
+    color: #1f6759;
+}
+
+.dup-id-card-check-nav-button svg {
+    width: 20px;
+    height: 20px;
+    fill: currentColor;
+}
+
+.dup-id-card-check-choice {
+    background: #2f7d6b;
+    border-color: #2f7d6b;
+    color: #fff;
+}
+
+.dup-id-card-check-choice:hover:not(:disabled) {
+    background: #286c5d;
+    color: #fff;
+}
+
+.dup-id-card-check-nav-button:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.dup-id-card-check-status {
+    min-width: 0;
+    color: #465b66;
+    overflow-wrap: anywhere;
+}
+
+.dup-id-card-check-choice-panel {
+    width: min(92vw, 360px);
+}
+
+.dup-id-card-check-choice-hint {
+    font-size: 12px;
+    line-height: 1.35;
+    color: #51656f;
+}
+
+.dup-id-card-check-choice-list {
+    display: grid;
+    gap: 6px;
+    max-height: min(50vh, 360px);
+    overflow: auto;
+}
+
+.dup-id-card-check-choice-item {
+    width: 100%;
+    text-align: left;
+}
+
+.dup-id-card-check-choice-item.is-active {
+    background: #2f7d6b;
+    border-color: #2f7d6b;
+    color: #fff;
 }
 
 .dup-extension-ui-settings-list {

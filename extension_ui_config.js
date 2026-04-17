@@ -37,6 +37,8 @@
             stageJumpButtons: null,
             // Блок "Занести анализ исполнения" во вкладке "Функции" меню F2.
             executionAnalysisTools: null,
+            // Блок "Проверка карточек ИД" и навигационная панель по загруженному списку EdocID.
+            idCardCheckTools: null,
             // Фильтр depid и переключатель показа скрытых департаментов.
             departmentDropdownFilter: null,
             // Кнопка группировки записей ФССП.
