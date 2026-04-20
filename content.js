@@ -2398,6 +2398,7 @@
           ? `${state.currentIndex + 1}/${state.edocIds.length}: ${currentEdocId}`
           : 'Список не загружен';
     }
+    syncIdCardCheckCurrentActionButton(idCardCheckNavEl, getIdCardCheckCurrentEdocId());
   }
 
   async function navigateIdCardCheckToIndex(index) {
@@ -2541,14 +2542,7 @@
           <span>Поиск</span>
           <input class="dup-id-card-check-choice-search" type="search" placeholder="Введите EdocID">
         </label>
-        <div class="dup-id-card-check-choice-tools">
-          <button type="button" class="dup-id-card-check-open-external" hidden>Открыть карточку ИД</button>
-          <button type="button" class="dup-id-card-check-nav-button dup-id-card-check-current-actions" hidden aria-label="Действия по текущему EdocID" title="Действия по текущему EdocID">
-            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <path d="M13 2 4 14h6l-1 8 11-14h-7l1-6z"></path>
-            </svg>
-          </button>
-        </div>
+        <button type="button" class="dup-id-card-check-open-external" hidden>Открыть карточку ИД</button>
         <div class="dup-id-card-check-choice-hint">Нажмите на нужный EdocID.</div>
         <div class="dup-id-card-check-choice-list" role="listbox"></div>
       </div>
@@ -2581,15 +2575,6 @@
       close();
       void navigateIdCardCheckToExternalEdocId(edocId);
     }, { capture: true });
-    modal.querySelector('.dup-id-card-check-current-actions')?.addEventListener('click', () => {
-      const button = modal.querySelector('.dup-id-card-check-current-actions');
-      const edocId = button instanceof HTMLButtonElement
-        ? normalizeExecutionAnalysisText(button.dataset.edocId)
-        : '';
-      if (!edocId) return;
-      close();
-      openIdCardCheckActionDialog(edocId);
-    }, { capture: true });
 
     (document.body || document.documentElement).appendChild(modal);
     return modal;
@@ -2616,7 +2601,6 @@
     }
     modal.hidden = false;
     syncIdCardCheckChoiceSearch(modal);
-    syncIdCardCheckCurrentActionButton(modal, getIdCardCheckCurrentEdocId());
     if (search instanceof HTMLInputElement) search.focus();
   }
 
@@ -2675,6 +2659,11 @@
             <path d="M7 6a1 1 0 0 1 1-1h11a1 1 0 1 1 0 2H8a1 1 0 0 1-1-1zm0 6a1 1 0 0 1 1-1h11a1 1 0 1 1 0 2H8a1 1 0 0 1-1-1zm0 6a1 1 0 0 1 1-1h11a1 1 0 1 1 0 2H8a1 1 0 0 1-1-1zM4 5.5a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 0 1 0-2.5zm0 6a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 0 1 0-2.5zm0 6a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 0 1 0-2.5z"></path>
           </svg>
         </button>
+        <button type="button" class="dup-id-card-check-nav-button dup-id-card-check-current-actions" hidden aria-label="Действия по текущему EdocID" title="Действия по текущему EdocID">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M13 2 4 14h6l-1 8 11-14h-7l1-6z"></path>
+          </svg>
+        </button>
         <button type="button" class="dup-id-card-check-nav-button dup-id-card-check-next" aria-label="Вперед" title="Вперед">
           <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
             <path d="M9.3 18.7a1 1 0 0 1 0-1.4l4.3-4.3H5a1 1 0 1 1 0-2h8.6L9.3 6.7a1 1 0 0 1 1.4-1.4l6 6a1 1 0 0 1 0 1.4l-6 6a1 1 0 0 1-1.4 0z"></path>
@@ -2687,6 +2676,9 @@
       }, { capture: true });
       nav.querySelector('.dup-id-card-check-choice')?.addEventListener('click', () => {
         openIdCardCheckChoiceDialog();
+      }, { capture: true });
+      nav.querySelector('.dup-id-card-check-current-actions')?.addEventListener('click', () => {
+        openIdCardCheckActionDialog(getIdCardCheckCurrentEdocId());
       }, { capture: true });
       nav.querySelector('.dup-id-card-check-next')?.addEventListener('click', () => {
         void navigateIdCardCheckToIndex(normalizeIdCardCheckState(idCardCheckState).currentIndex + 1);
@@ -2889,6 +2881,7 @@
           ? `${state.currentIndex + 1}/${state.edocIds.length}: ${currentEdocId}`
           : 'Список пуст';
     }
+    syncIdCardCheckCurrentActionButton(gridCardCheckNavEl, getGridCardCheckCurrentEdocId());
   }
 
   function navigateGridCardCheckToIndex(index) {
@@ -2937,14 +2930,7 @@
           <span>Поиск</span>
           <input class="dup-id-card-check-choice-search" type="search" placeholder="Введите EdocID">
         </label>
-        <div class="dup-id-card-check-choice-tools">
-          <button type="button" class="dup-id-card-check-open-external" hidden>Открыть карточку ИД</button>
-          <button type="button" class="dup-id-card-check-nav-button dup-id-card-check-current-actions" hidden aria-label="Действия по текущему EdocID" title="Действия по текущему EdocID">
-            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <path d="M13 2 4 14h6l-1 8 11-14h-7l1-6z"></path>
-            </svg>
-          </button>
-        </div>
+        <button type="button" class="dup-id-card-check-open-external" hidden>Открыть карточку ИД</button>
         <div class="dup-id-card-check-choice-hint">Нажмите на нужный EdocID.</div>
         <div class="dup-id-card-check-choice-list" role="listbox"></div>
       </div>
@@ -2977,15 +2963,6 @@
       close();
       navigateGridCardCheckToExternalEdocId(edocId);
     }, { capture: true });
-    modal.querySelector('.dup-id-card-check-current-actions')?.addEventListener('click', () => {
-      const button = modal.querySelector('.dup-id-card-check-current-actions');
-      const edocId = button instanceof HTMLButtonElement
-        ? normalizeExecutionAnalysisText(button.dataset.edocId)
-        : '';
-      if (!edocId) return;
-      close();
-      openIdCardCheckActionDialog(edocId);
-    }, { capture: true });
 
     (document.body || document.documentElement).appendChild(modal);
     return modal;
@@ -3012,7 +2989,6 @@
     }
     modal.hidden = false;
     syncIdCardCheckChoiceSearch(modal);
-    syncIdCardCheckCurrentActionButton(modal, getGridCardCheckCurrentEdocId());
     if (search instanceof HTMLInputElement) search.focus();
   }
 
@@ -3033,6 +3009,11 @@
           <path d="M7 6a1 1 0 0 1 1-1h11a1 1 0 1 1 0 2H8a1 1 0 0 1-1-1zm0 6a1 1 0 0 1 1-1h11a1 1 0 1 1 0 2H8a1 1 0 0 1-1-1zm0 6a1 1 0 0 1 1-1h11a1 1 0 1 1 0 2H8a1 1 0 0 1-1-1zM4 5.5a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 0 1 0-2.5zm0 6a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 0 1 0-2.5zm0 6a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 0 1 0-2.5z"></path>
         </svg>
       </button>
+      <button type="button" class="dup-id-card-check-nav-button dup-id-card-check-current-actions" hidden aria-label="Действия по текущему EdocID" title="Действия по текущему EdocID">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M13 2 4 14h6l-1 8 11-14h-7l1-6z"></path>
+        </svg>
+      </button>
       <button type="button" class="dup-id-card-check-nav-button dup-id-card-check-next" aria-label="Вперед" title="Вперед">
         <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
           <path d="M9.3 18.7a1 1 0 0 1 0-1.4l4.3-4.3H5a1 1 0 1 1 0-2h8.6L9.3 6.7a1 1 0 0 1 1.4-1.4l6 6a1 1 0 0 1 0 1.4l-6 6a1 1 0 0 1-1.4 0z"></path>
@@ -3045,6 +3026,9 @@
     }, { capture: true });
     nav.querySelector('.dup-id-card-check-choice')?.addEventListener('click', () => {
       openGridCardCheckChoiceDialog();
+    }, { capture: true });
+    nav.querySelector('.dup-id-card-check-current-actions')?.addEventListener('click', () => {
+      openIdCardCheckActionDialog(getGridCardCheckCurrentEdocId());
     }, { capture: true });
     nav.querySelector('.dup-id-card-check-next')?.addEventListener('click', () => {
       navigateGridCardCheckToIndex(normalizeGridCardCheckState(gridCardCheckState).currentIndex + 1);

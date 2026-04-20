@@ -535,13 +535,6 @@ html.dup-ext-screenshot-mode [aria-label="Показать таймер"] {
     color: #51656f;
 }
 
-.dup-id-card-check-choice-tools {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 8px;
-}
-
 .dup-id-card-check-choice-list {
     display: grid;
     gap: 6px;
