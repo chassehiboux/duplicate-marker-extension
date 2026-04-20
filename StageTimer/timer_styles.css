@@ -553,6 +553,18 @@ html.dup-ext-screenshot-mode [aria-label="Показать таймер"] {
     color: #fff;
 }
 
+.dup-id-card-check-open-external {
+    justify-self: start;
+    min-height: 32px;
+    background: #2f7d6b !important;
+    border-color: #2f7d6b !important;
+    color: #fff !important;
+}
+
+.dup-id-card-check-open-external[hidden] {
+    display: none !important;
+}
+
 .dup-extension-ui-settings-list {
     display: grid;
     gap: 10px;
