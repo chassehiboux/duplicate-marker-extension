@@ -56,6 +56,7 @@
   const ID_CARD_CHECK_STORAGE_KEY = 'dup_id_card_check_state_v1';
   const ID_CARD_CHECK_INPUT_DIALOG_ID = 'dup-id-card-check-input-dialog';
   const ID_CARD_CHECK_CHOICE_DIALOG_ID = 'dup-id-card-check-choice-dialog';
+  const ID_CARD_CHECK_ACTION_DIALOG_ID = 'dup-id-card-check-action-dialog';
   const ID_CARD_CHECK_NAV_ID = 'dup-id-card-check-nav';
   const GRID_CARD_CHECK_NAV_ID = 'dup-grid-card-check-nav';
   const GRID_CARD_CHECK_CHOICE_DIALOG_ID = 'dup-grid-card-check-choice-dialog';
@@ -2229,6 +2230,131 @@
     return url.toString();
   }
 
+  function getIdCardCheckCurrentEdocId() {
+    const state = normalizeIdCardCheckState(idCardCheckState);
+    return normalizeExecutionAnalysisText(getIdCardCheckEdocIdFromPath()) ||
+      normalizeExecutionAnalysisText(state.edocIds[state.currentIndex]);
+  }
+
+  function buildIdCardCheckActionUrl(actionKey, edocId, origin = window.location.origin) {
+    const normalizedEdocId = normalizeExecutionAnalysisText(edocId);
+    if (!normalizedEdocId) return '';
+    const url = new URL('/ovzid/actions/', origin || window.location.origin);
+    switch (String(actionKey || '')) {
+      case 'edit-info':
+        url.pathname = '/ovzid/actions/editedoc';
+        url.searchParams.set('edocid', normalizedEdocId);
+        url.searchParams.set('StatusID', 'all');
+        break;
+      case 'execution-analysis':
+        url.pathname = '/ovzid/actions/execution-analysis';
+        url.searchParams.set('edocid', normalizedEdocId);
+        break;
+      case 'solidarity-type':
+        url.pathname = '/ovzid/actions/setSolidarityType';
+        url.searchParams.set('EDocID', normalizedEdocId);
+        break;
+      case 'markers-ovzid':
+        url.pathname = '/ovzid/actions/markers_ovzid';
+        url.searchParams.set('EDocIDs', normalizedEdocId);
+        break;
+      default:
+        return '';
+    }
+    return url.toString();
+  }
+
+  async function openIdCardCheckActionTab(actionKey, edocId) {
+    const targetUrl = buildIdCardCheckActionUrl(actionKey, edocId);
+    if (!targetUrl) return false;
+    const response = await sendRuntimeMessage({
+      action: 'ID_CARD_CHECK_OPEN_TAB',
+      data: {
+        url: targetUrl,
+        active: true
+      }
+    });
+    if (response && response.success === true) return true;
+
+    const opened = window.open(targetUrl, '_blank', 'noopener');
+    return !!opened;
+  }
+
+  function syncIdCardCheckCurrentActionButton(modal, edocId) {
+    const button = modal instanceof HTMLElement
+      ? modal.querySelector('.dup-id-card-check-current-actions')
+      : null;
+    if (!(button instanceof HTMLButtonElement)) return;
+    const normalizedEdocId = normalizeExecutionAnalysisText(edocId);
+    button.hidden = !normalizedEdocId;
+    button.dataset.edocId = normalizedEdocId;
+    button.title = normalizedEdocId
+      ? `Действия по текущему EdocID ${normalizedEdocId}`
+      : 'Действия по текущему EdocID';
+  }
+
+  function createIdCardCheckActionDialog() {
+    const existing = document.getElementById(ID_CARD_CHECK_ACTION_DIALOG_ID);
+    if (existing instanceof HTMLElement) return existing;
+
+    const modal = document.createElement('div');
+    modal.id = ID_CARD_CHECK_ACTION_DIALOG_ID;
+    modal.className = 'dup-execution-analysis-modal dup-id-card-check-modal';
+    modal.hidden = true;
+    modal.innerHTML = `
+      <div class="dup-execution-analysis-modal-panel dup-id-card-check-action-panel" role="dialog" aria-modal="true" aria-label="Действия по EdocID">
+        <div class="dup-execution-analysis-modal-header">
+          <div class="dup-execution-analysis-modal-title">Действия по EdocID</div>
+          <button type="button" class="dup-execution-analysis-modal-close" aria-label="Закрыть">×</button>
+        </div>
+        <div class="dup-id-card-check-action-current"></div>
+        <div class="dup-id-card-check-action-list">
+          <button type="button" class="dup-id-card-check-action-item" data-action="edit-info">Редактирование информации</button>
+          <button type="button" class="dup-id-card-check-action-item" data-action="execution-analysis">Анализ исполнения</button>
+          <button type="button" class="dup-id-card-check-action-item" data-action="solidarity-type">Установить вид солидарности</button>
+          <button type="button" class="dup-id-card-check-action-item" data-action="markers-ovzid">Маркировка ВЗИД</button>
+        </div>
+      </div>
+    `;
+
+    const close = () => { modal.hidden = true; };
+    modal.addEventListener('click', (event) => {
+      if (event.target === modal) close();
+    }, { capture: true });
+    modal.querySelector('.dup-execution-analysis-modal-close')?.addEventListener('click', close, { capture: true });
+    modal.querySelector('.dup-id-card-check-action-list')?.addEventListener('click', (event) => {
+      const button = event.target instanceof Element
+        ? event.target.closest('.dup-id-card-check-action-item')
+        : null;
+      if (!(button instanceof HTMLButtonElement)) return;
+      const actionKey = normalizeExecutionAnalysisText(button.dataset.action);
+      const edocId = normalizeExecutionAnalysisText(modal.dataset.edocId);
+      if (!actionKey || !edocId) return;
+      close();
+      void openIdCardCheckActionTab(actionKey, edocId).then((success) => {
+        if (!success) window.alert('Не удалось открыть вкладку действия.');
+      });
+    }, { capture: true });
+
+    (document.body || document.documentElement).appendChild(modal);
+    return modal;
+  }
+
+  function openIdCardCheckActionDialog(edocId) {
+    const normalizedEdocId = normalizeExecutionAnalysisText(edocId);
+    if (!normalizedEdocId) {
+      window.alert('Не удалось определить текущий EdocID.');
+      return;
+    }
+    const modal = createIdCardCheckActionDialog();
+    modal.dataset.edocId = normalizedEdocId;
+    const current = modal.querySelector('.dup-id-card-check-action-current');
+    if (current instanceof HTMLElement) {
+      current.textContent = `Текущий EdocID: ${normalizedEdocId}`;
+    }
+    modal.hidden = false;
+  }
+
   async function isCurrentIdCardCheckManagedTab() {
     const tabId = await getCurrentTabIdForExecutionAnalysis();
     return tabId > 0 && idCardCheckState.tabId > 0 && tabId === idCardCheckState.tabId;
@@ -2415,7 +2541,14 @@
           <span>Поиск</span>
           <input class="dup-id-card-check-choice-search" type="search" placeholder="Введите EdocID">
         </label>
-        <button type="button" class="dup-id-card-check-open-external" hidden>Открыть карточку ИД</button>
+        <div class="dup-id-card-check-choice-tools">
+          <button type="button" class="dup-id-card-check-open-external" hidden>Открыть карточку ИД</button>
+          <button type="button" class="dup-id-card-check-nav-button dup-id-card-check-current-actions" hidden aria-label="Действия по текущему EdocID" title="Действия по текущему EdocID">
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M13 2 4 14h6l-1 8 11-14h-7l1-6z"></path>
+            </svg>
+          </button>
+        </div>
         <div class="dup-id-card-check-choice-hint">Нажмите на нужный EdocID.</div>
         <div class="dup-id-card-check-choice-list" role="listbox"></div>
       </div>
@@ -2448,6 +2581,15 @@
       close();
       void navigateIdCardCheckToExternalEdocId(edocId);
     }, { capture: true });
+    modal.querySelector('.dup-id-card-check-current-actions')?.addEventListener('click', () => {
+      const button = modal.querySelector('.dup-id-card-check-current-actions');
+      const edocId = button instanceof HTMLButtonElement
+        ? normalizeExecutionAnalysisText(button.dataset.edocId)
+        : '';
+      if (!edocId) return;
+      close();
+      openIdCardCheckActionDialog(edocId);
+    }, { capture: true });
 
     (document.body || document.documentElement).appendChild(modal);
     return modal;
@@ -2474,6 +2616,7 @@
     }
     modal.hidden = false;
     syncIdCardCheckChoiceSearch(modal);
+    syncIdCardCheckCurrentActionButton(modal, getIdCardCheckCurrentEdocId());
     if (search instanceof HTMLInputElement) search.focus();
   }
 
@@ -2644,6 +2787,14 @@
     }
   }
 
+  function getGridCardCheckCurrentEdocId() {
+    const iframe = getGridCardCheckIframe();
+    const state = normalizeGridCardCheckState(gridCardCheckState);
+    return getEdocIdFromFullcardUrl(getGridCardCheckIframeUrl(iframe)) ||
+      normalizeExecutionAnalysisText(iframe && iframe.dataset ? iframe.dataset.dupGridCardEdocId : '') ||
+      normalizeExecutionAnalysisText(state.edocIds[state.currentIndex]);
+  }
+
   function buildFullcardUrlWithEdocId(sourceUrl, edocId) {
     const targetId = encodeURIComponent(String(edocId || '').trim());
     const url = new URL(String(sourceUrl || window.location.href), window.location.origin);
@@ -2786,7 +2937,14 @@
           <span>Поиск</span>
           <input class="dup-id-card-check-choice-search" type="search" placeholder="Введите EdocID">
         </label>
-        <button type="button" class="dup-id-card-check-open-external" hidden>Открыть карточку ИД</button>
+        <div class="dup-id-card-check-choice-tools">
+          <button type="button" class="dup-id-card-check-open-external" hidden>Открыть карточку ИД</button>
+          <button type="button" class="dup-id-card-check-nav-button dup-id-card-check-current-actions" hidden aria-label="Действия по текущему EdocID" title="Действия по текущему EdocID">
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M13 2 4 14h6l-1 8 11-14h-7l1-6z"></path>
+            </svg>
+          </button>
+        </div>
         <div class="dup-id-card-check-choice-hint">Нажмите на нужный EdocID.</div>
         <div class="dup-id-card-check-choice-list" role="listbox"></div>
       </div>
@@ -2819,6 +2977,15 @@
       close();
       navigateGridCardCheckToExternalEdocId(edocId);
     }, { capture: true });
+    modal.querySelector('.dup-id-card-check-current-actions')?.addEventListener('click', () => {
+      const button = modal.querySelector('.dup-id-card-check-current-actions');
+      const edocId = button instanceof HTMLButtonElement
+        ? normalizeExecutionAnalysisText(button.dataset.edocId)
+        : '';
+      if (!edocId) return;
+      close();
+      openIdCardCheckActionDialog(edocId);
+    }, { capture: true });
 
     (document.body || document.documentElement).appendChild(modal);
     return modal;
@@ -2845,6 +3012,7 @@
     }
     modal.hidden = false;
     syncIdCardCheckChoiceSearch(modal);
+    syncIdCardCheckCurrentActionButton(modal, getGridCardCheckCurrentEdocId());
     if (search instanceof HTMLInputElement) search.focus();
   }
 

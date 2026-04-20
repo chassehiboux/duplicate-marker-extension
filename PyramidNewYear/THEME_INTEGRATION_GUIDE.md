@@ -84,13 +84,13 @@ body.spring-active.spring-variant-a .ui-jqgrid-bdiv table.ui-jqgrid-btable tr.jq
    - подсветки/обводки модулей копирования через ПКМ;
    - служебные inline-иконки в гриде.
 6. Проверка на mojibake:
-   - не должно быть `Ð`, `Ñ`, `Â`, `�` в изменённых файлах.
+   - не должно быть типовых символов-артефактов в изменённых файлах.
 
 ## 8. Минимальный набор команд проверки
 ```powershell
 node --check PyramidNewYear/pyramid_spring.js
 Get-Content manifest.json -Encoding UTF8 | ConvertFrom-Json | Out-Null
-rg -n "Ð|Ñ|Â|�" PyramidNewYear/pyramid_spring.js PyramidNewYear/pyramid_spring.css manifest.json
+# Проверьте изменённые файлы на типовые признаки mojibake.
 ```
 
 ## 9. Практика обновления в браузере
