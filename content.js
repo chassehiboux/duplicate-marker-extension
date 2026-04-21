@@ -2340,7 +2340,55 @@
     return modal;
   }
 
-  function openIdCardCheckActionDialog(edocId) {
+  function resetIdCardCheckAnchoredDialog(modal) {
+    if (!(modal instanceof HTMLElement)) return;
+    modal.classList.remove('dup-id-card-check-anchored-modal');
+    const panel = modal.querySelector('.dup-execution-analysis-modal-panel');
+    if (!(panel instanceof HTMLElement)) return;
+    panel.style.removeProperty('left');
+    panel.style.removeProperty('top');
+    panel.style.removeProperty('max-height');
+    panel.style.removeProperty('max-width');
+  }
+
+  function positionIdCardCheckAnchoredDialog(modal, anchorEl) {
+    resetIdCardCheckAnchoredDialog(modal);
+    if (!(modal instanceof HTMLElement) || !(anchorEl instanceof HTMLElement)) return;
+
+    const panel = modal.querySelector('.dup-execution-analysis-modal-panel');
+    if (!(panel instanceof HTMLElement)) return;
+
+    const anchor = anchorEl.closest('.dup-id-card-check-nav, .dup-grid-card-check-nav');
+    if (!(anchor instanceof HTMLElement)) return;
+
+    const gap = 8;
+    const viewportPadding = 12;
+    const docEl = document.documentElement;
+    const viewportWidth = Math.max(docEl ? docEl.clientWidth : 0, window.innerWidth || 0);
+    const viewportHeight = Math.max(docEl ? docEl.clientHeight : 0, window.innerHeight || 0);
+    const anchorRect = anchor.getBoundingClientRect();
+    const panelRect = panel.getBoundingClientRect();
+    const availableWidth = Math.max(160, viewportWidth - viewportPadding * 2);
+    const panelWidth = Math.min(
+      Math.max(260, panelRect.width || panel.offsetWidth || 360),
+      availableWidth
+    );
+    const panelHeight = panelRect.height || panel.offsetHeight || 320;
+    const maxLeft = Math.max(viewportPadding, viewportWidth - panelWidth - viewportPadding);
+    const maxTop = Math.max(viewportPadding, viewportHeight - panelHeight - viewportPadding);
+    const left = Math.min(Math.max(Math.round(anchorRect.left), viewportPadding), maxLeft);
+    const top = Math.min(Math.max(Math.round(anchorRect.bottom + gap), viewportPadding), maxTop);
+    const maxHeight = Math.max(180, viewportHeight - top - viewportPadding);
+    const maxWidth = availableWidth;
+
+    modal.classList.add('dup-id-card-check-anchored-modal');
+    panel.style.left = `${left}px`;
+    panel.style.top = `${top}px`;
+    panel.style.maxHeight = `${maxHeight}px`;
+    panel.style.maxWidth = `${maxWidth}px`;
+  }
+
+  function openIdCardCheckActionDialog(edocId, anchorEl = null) {
     const normalizedEdocId = normalizeExecutionAnalysisText(edocId);
     if (!normalizedEdocId) {
       window.alert('Не удалось определить текущий EdocID.');
@@ -2353,6 +2401,7 @@
       current.textContent = `Текущий EdocID: ${normalizedEdocId}`;
     }
     modal.hidden = false;
+    positionIdCardCheckAnchoredDialog(modal, anchorEl);
   }
 
   async function isCurrentIdCardCheckManagedTab() {
@@ -2580,7 +2629,7 @@
     return modal;
   }
 
-  function openIdCardCheckChoiceDialog() {
+  function openIdCardCheckChoiceDialog(anchorEl = null) {
     const modal = createIdCardCheckChoiceDialog();
     const list = modal.querySelector('.dup-id-card-check-choice-list');
     const search = modal.querySelector('.dup-id-card-check-choice-search');
@@ -2600,6 +2649,7 @@
       });
     }
     modal.hidden = false;
+    positionIdCardCheckAnchoredDialog(modal, anchorEl);
     syncIdCardCheckChoiceSearch(modal);
     if (search instanceof HTMLInputElement) search.focus();
   }
@@ -2674,11 +2724,11 @@
       nav.querySelector('.dup-id-card-check-prev')?.addEventListener('click', () => {
         void navigateIdCardCheckToIndex(normalizeIdCardCheckState(idCardCheckState).currentIndex - 1);
       }, { capture: true });
-      nav.querySelector('.dup-id-card-check-choice')?.addEventListener('click', () => {
-        openIdCardCheckChoiceDialog();
+      nav.querySelector('.dup-id-card-check-choice')?.addEventListener('click', (event) => {
+        openIdCardCheckChoiceDialog(event.currentTarget);
       }, { capture: true });
-      nav.querySelector('.dup-id-card-check-current-actions')?.addEventListener('click', () => {
-        openIdCardCheckActionDialog(getIdCardCheckCurrentEdocId());
+      nav.querySelector('.dup-id-card-check-current-actions')?.addEventListener('click', (event) => {
+        openIdCardCheckActionDialog(getIdCardCheckCurrentEdocId(), event.currentTarget);
       }, { capture: true });
       nav.querySelector('.dup-id-card-check-next')?.addEventListener('click', () => {
         void navigateIdCardCheckToIndex(normalizeIdCardCheckState(idCardCheckState).currentIndex + 1);
@@ -2968,7 +3018,7 @@
     return modal;
   }
 
-  function openGridCardCheckChoiceDialog() {
+  function openGridCardCheckChoiceDialog(anchorEl = null) {
     const modal = createGridCardCheckChoiceDialog();
     const list = modal.querySelector('.dup-id-card-check-choice-list');
     const search = modal.querySelector('.dup-id-card-check-choice-search');
@@ -2988,6 +3038,7 @@
       });
     }
     modal.hidden = false;
+    positionIdCardCheckAnchoredDialog(modal, anchorEl);
     syncIdCardCheckChoiceSearch(modal);
     if (search instanceof HTMLInputElement) search.focus();
   }
@@ -3024,11 +3075,11 @@
     nav.querySelector('.dup-id-card-check-prev')?.addEventListener('click', () => {
       navigateGridCardCheckToIndex(normalizeGridCardCheckState(gridCardCheckState).currentIndex - 1);
     }, { capture: true });
-    nav.querySelector('.dup-id-card-check-choice')?.addEventListener('click', () => {
-      openGridCardCheckChoiceDialog();
+    nav.querySelector('.dup-id-card-check-choice')?.addEventListener('click', (event) => {
+      openGridCardCheckChoiceDialog(event.currentTarget);
     }, { capture: true });
-    nav.querySelector('.dup-id-card-check-current-actions')?.addEventListener('click', () => {
-      openIdCardCheckActionDialog(getGridCardCheckCurrentEdocId());
+    nav.querySelector('.dup-id-card-check-current-actions')?.addEventListener('click', (event) => {
+      openIdCardCheckActionDialog(getGridCardCheckCurrentEdocId(), event.currentTarget);
     }, { capture: true });
     nav.querySelector('.dup-id-card-check-next')?.addEventListener('click', () => {
       navigateGridCardCheckToIndex(normalizeGridCardCheckState(gridCardCheckState).currentIndex + 1);

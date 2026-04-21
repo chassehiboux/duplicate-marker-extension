@@ -415,12 +415,24 @@ html.dup-ext-screenshot-mode [aria-label="Показать таймер"] {
     width: min(92vw, 440px);
     display: grid;
     gap: 12px;
+    max-height: calc(100vh - 32px);
+    overflow: auto;
     padding: 14px;
     border-radius: 8px;
     background: #f9fbfd;
     color: #10202a;
     box-shadow: 0 18px 48px rgba(16, 29, 38, 0.26);
     font-family: "Segoe UI", Arial, sans-serif;
+}
+
+.dup-execution-analysis-modal.dup-id-card-check-anchored-modal {
+    display: block;
+    padding: 0;
+}
+
+.dup-execution-analysis-modal.dup-id-card-check-anchored-modal .dup-execution-analysis-modal-panel {
+    position: fixed;
+    margin: 0;
 }
 
 .dup-execution-analysis-modal-header {
