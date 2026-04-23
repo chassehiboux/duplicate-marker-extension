@@ -2431,6 +2431,63 @@
     idCardCheckNavEl = null;
   }
 
+  function getIdCardCheckNavigationMountPoint() {
+    const tabsHeader = document.querySelector('.custom-ui-tab.ui-tabs-nav, .ui-tabs-nav');
+    if (tabsHeader instanceof HTMLElement) {
+      return {
+        target: tabsHeader,
+        position: 'afterend'
+      };
+    }
+
+    const hostRoot = document.body || document.documentElement;
+    if (!(hostRoot instanceof HTMLElement)) return null;
+
+    const firstVisibleBlock = Array.from(hostRoot.children).find((child) => {
+      if (!(child instanceof HTMLElement)) return false;
+      if (child === idCardCheckNavEl) return false;
+      if (child.id === ID_CARD_CHECK_NAV_ID) return false;
+      return !child.hidden;
+    });
+    if (firstVisibleBlock instanceof HTMLElement) {
+      return {
+        target: firstVisibleBlock,
+        position: 'beforebegin'
+      };
+    }
+
+    return {
+      target: hostRoot,
+      position: 'afterbegin'
+    };
+  }
+
+  function ensureIdCardCheckNavigationAttached(nav) {
+    if (!(nav instanceof HTMLElement)) return false;
+    const mountPoint = getIdCardCheckNavigationMountPoint();
+    if (!(mountPoint && mountPoint.target instanceof HTMLElement)) return false;
+
+    const { target, position } = mountPoint;
+    if (position === 'afterend') {
+      if (nav.parentElement !== target.parentElement || nav.previousElementSibling !== target) {
+        target.insertAdjacentElement('afterend', nav);
+      }
+      return true;
+    }
+
+    if (position === 'beforebegin') {
+      if (nav.parentElement !== target.parentElement || nav.nextElementSibling !== target) {
+        target.insertAdjacentElement('beforebegin', nav);
+      }
+      return true;
+    }
+
+    if (nav.parentElement !== target || target.firstElementChild !== nav) {
+      target.insertAdjacentElement('afterbegin', nav);
+    }
+    return true;
+  }
+
   function updateIdCardCheckNavigationButtons() {
     if (!(idCardCheckNavEl instanceof HTMLElement)) return;
     const state = normalizeIdCardCheckState(idCardCheckState);
@@ -2692,9 +2749,6 @@
       return;
     }
 
-    const tabsHeader = document.querySelector('.custom-ui-tab.ui-tabs-nav, .ui-tabs-nav');
-    if (!(tabsHeader instanceof HTMLElement)) return;
-
     if (!(idCardCheckNavEl instanceof HTMLElement)) {
       const nav = document.createElement('div');
       nav.id = ID_CARD_CHECK_NAV_ID;
@@ -2737,9 +2791,7 @@
       idCardCheckNavEl = nav;
     }
 
-    if (idCardCheckNavEl.parentElement !== tabsHeader.parentElement || idCardCheckNavEl.previousElementSibling !== tabsHeader) {
-      tabsHeader.insertAdjacentElement('afterend', idCardCheckNavEl);
-    }
+    if (!ensureIdCardCheckNavigationAttached(idCardCheckNavEl)) return;
     updateIdCardCheckNavigationButtons();
   }
 
