@@ -164,7 +164,7 @@
   ];
   const FSSP_REESTR_STATUS_COLOR_BY_TEXT = {
     'проведен': '#C8F2CC',
-    'проведен (нет данных)': '#FFF3B8',
+    'проведен (нет данных)': '#E6F8E8',
     'не проведен': '#FFC9C9'
   };
   const EPGU_REQUESTS_PATH_PART = '/ovzid/epgurequests';
@@ -185,6 +185,7 @@
   const EPGU_REQUESTS_COLOR_RED = '#FFC9C9';
   const EPGU_REQUESTS_COLOR_GREEN = '#C8F2CC';
   const EPGU_REQUESTS_COLOR_YELLOW = '#FFF3B8';
+  const EPGU_REQUESTS_COLOR_TRANSITION = '#FFDEC1';
   const EXTENSION_UI_SETTINGS_STYLE_ID = 'dup-extension-ui-settings-style';
   const EXTENSION_UI_SETTINGS_OVERLAY_ID = 'dup-extension-ui-settings-overlay';
   const EXTENSION_UI_SETTINGS_PANEL_ID = 'dup-extension-ui-settings-panel';
@@ -4361,8 +4362,9 @@
     if (!(statusCell instanceof HTMLElement)) return;
 
     const statusText = normalizeFsspReestrStatusKey(getSmartValue(statusCell));
-    const statusColor = FSSP_REESTR_STATUS_COLOR_BY_TEXT[statusText];
-    if (!statusColor) return;
+    if (!statusText) return;
+
+    const statusColor = FSSP_REESTR_STATUS_COLOR_BY_TEXT[statusText] || EPGU_REQUESTS_COLOR_YELLOW;
 
     statusCell.classList.add(FSSP_REESTR_STATUS_CLASS);
     statusCell.style.backgroundColor = statusColor;
@@ -4702,6 +4704,7 @@
     const normalizedStatus = normalizeEpguRequestsCellText(statusText).toLowerCase();
     if (normalizedStatus === 'ошибка') return EPGU_REQUESTS_COLOR_RED;
     if (normalizedStatus === 'услуга оказана') return EPGU_REQUESTS_COLOR_GREEN;
+    if (normalizedStatus === 'заявление получено ведомством') return EPGU_REQUESTS_COLOR_TRANSITION;
     return EPGU_REQUESTS_COLOR_YELLOW;
   }
 
