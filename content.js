@@ -2352,6 +2352,33 @@
     panel.style.removeProperty('max-width');
   }
 
+  function getIdCardCheckAnchoredDialogHost(anchorEl = null) {
+    const anchorHost = anchorEl instanceof HTMLElement
+      ? anchorEl.closest('.ui-dialog')
+      : null;
+    if (anchorHost instanceof HTMLElement) return anchorHost;
+    return document.body || document.documentElement;
+  }
+
+  function attachIdCardCheckAnchoredDialog(modal, anchorEl = null) {
+    if (!(modal instanceof HTMLElement)) return;
+    const host = getIdCardCheckAnchoredDialogHost(anchorEl);
+    if (host instanceof HTMLElement && modal.parentElement !== host) {
+      host.appendChild(modal);
+    }
+  }
+
+  function focusIdCardCheckSearchInput(input) {
+    if (!(input instanceof HTMLInputElement)) return;
+    const tryFocus = () => {
+      input.focus({ preventScroll: true });
+      input.select();
+    };
+    tryFocus();
+    window.requestAnimationFrame(tryFocus);
+    window.setTimeout(tryFocus, 0);
+  }
+
   function positionIdCardCheckAnchoredDialog(modal, anchorEl) {
     resetIdCardCheckAnchoredDialog(modal);
     if (!(modal instanceof HTMLElement) || !(anchorEl instanceof HTMLElement)) return;
@@ -2396,6 +2423,7 @@
       return;
     }
     const modal = createIdCardCheckActionDialog();
+    attachIdCardCheckAnchoredDialog(modal, anchorEl);
     modal.dataset.edocId = normalizedEdocId;
     const current = modal.querySelector('.dup-id-card-check-action-current');
     if (current instanceof HTMLElement) {
@@ -2692,6 +2720,7 @@
     const list = modal.querySelector('.dup-id-card-check-choice-list');
     const search = modal.querySelector('.dup-id-card-check-choice-search');
     const state = normalizeIdCardCheckState(idCardCheckState);
+    attachIdCardCheckAnchoredDialog(modal, anchorEl);
     if (search instanceof HTMLInputElement) search.value = '';
     if (list instanceof HTMLElement) {
       list.textContent = '';
@@ -2709,7 +2738,7 @@
     modal.hidden = false;
     positionIdCardCheckAnchoredDialog(modal, anchorEl);
     syncIdCardCheckChoiceSearch(modal);
-    if (search instanceof HTMLInputElement) search.focus();
+    focusIdCardCheckSearchInput(search);
   }
 
   function createIdCardCheckFunctionBlock() {
@@ -3076,6 +3105,7 @@
     const list = modal.querySelector('.dup-id-card-check-choice-list');
     const search = modal.querySelector('.dup-id-card-check-choice-search');
     const state = normalizeGridCardCheckState(gridCardCheckState);
+    attachIdCardCheckAnchoredDialog(modal, anchorEl);
     if (search instanceof HTMLInputElement) search.value = '';
     if (list instanceof HTMLElement) {
       list.textContent = '';
@@ -3093,7 +3123,7 @@
     modal.hidden = false;
     positionIdCardCheckAnchoredDialog(modal, anchorEl);
     syncIdCardCheckChoiceSearch(modal);
-    if (search instanceof HTMLInputElement) search.focus();
+    focusIdCardCheckSearchInput(search);
   }
 
   function ensureGridCardCheckNavigationElement() {
