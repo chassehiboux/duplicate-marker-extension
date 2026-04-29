@@ -16,7 +16,7 @@
             allowThemeOverlap: false,
             // Какая тема включается по умолчанию при первом запуске без сохраненного состояния.
             // Возможные значения: "none" | "newyear" | "spring"
-            defaultTheme: 'spring'
+            defaultTheme: 'none'
         },
         newYear: {
             // Включать ли тему "Новый год" по умолчанию, если нет сохраненного состояния.
@@ -44,7 +44,7 @@
         },
         spring: {
             // Включать ли тему "Весна!" по умолчанию, если нет сохраненного состояния.
-            enabledByDefault: true,
+            enabledByDefault: false,
             // Оставляем только оформление "Сакура".
             randomVariantOnReload: false,
             variants: ['a'],
