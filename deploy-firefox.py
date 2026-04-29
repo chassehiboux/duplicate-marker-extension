@@ -10,6 +10,7 @@ import stat
 import subprocess
 import tempfile
 from pathlib import Path
+from urllib.parse import quote
 
 SOURCE_DIR = Path(__file__).resolve().parent
 MANIFEST_PATH = SOURCE_DIR / 'manifest.json'
@@ -20,6 +21,13 @@ PROJECT_NAME = SOURCE_DIR.name
 FIREFOX_PROJECT_NAME = f'{PROJECT_NAME}-firefox'
 FIREFOX_DESTINATION_DIR = DESTINATION_REPO / FIREFOX_PROJECT_NAME
 FIREFOX_GECKO_ID = 'pyramid-helper@vostok-electra.local'
+FIREFOX_MIN_VERSION = '140.0'
+FIREFOX_UPDATE_BASE_URL = 'https://188.253.23.149.sslip.io/duplicate-marker-extension-firefox'
+FIREFOX_REMOTE_SSH_HOST = '188.253.23.149'
+FIREFOX_REMOTE_SSH_PORT = 44044
+FIREFOX_REMOTE_SSH_USER = 'jassco'
+FIREFOX_REMOTE_DEPLOY_DIR = '/var/www/duplicate-marker-extension-firefox'
+SSH_NULL_CONFIG = 'NUL' if os.name == 'nt' else '/dev/null'
 SIGNING_APPROVAL_TIMEOUT_MS = 30 * 60 * 1000
 
 ROOT_FILES = [
@@ -86,6 +94,26 @@ def write_json(path, data):
     with open(path, 'w', encoding='utf-8', newline='\n') as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
         f.write('\n')
+
+
+def normalize_base_url(base_url):
+    return base_url.strip().rstrip('/')
+
+
+def make_update_manifest_url(base_url):
+    return f'{normalize_base_url(base_url)}/updates.json'
+
+
+def make_xpi_download_url(base_url, xpi_name):
+    return f'{normalize_base_url(base_url)}/{quote(xpi_name)}'
+
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def bump_root_version():
@@ -303,7 +331,7 @@ def existing_background_imports():
     ]
 
 
-def create_firefox_manifest(version):
+def create_firefox_manifest(version, update_manifest_url):
     manifest = read_json(MANIFEST_PATH)
     manifest['version'] = version
     manifest['background'] = {
@@ -334,7 +362,8 @@ def create_firefox_manifest(version):
     manifest['browser_specific_settings'] = {
         'gecko': {
             'id': FIREFOX_GECKO_ID,
-            'strict_min_version': '140.0',
+            'strict_min_version': FIREFOX_MIN_VERSION,
+            'update_url': update_manifest_url,
             'data_collection_permissions': {
                 'required': [
                     'personallyIdentifyingInfo',
@@ -347,7 +376,7 @@ def create_firefox_manifest(version):
     return manifest
 
 
-def build_firefox_extension(version, build_dir):
+def build_firefox_extension(version, build_dir, update_manifest_url):
     print(f"[INFO] Сборка Firefox-исходников: {build_dir}")
     build_dir.mkdir(parents=True, exist_ok=True)
 
@@ -369,7 +398,7 @@ def build_firefox_extension(version, build_dir):
             else:
                 copy_file(relative_path, build_dir)
 
-    write_json(build_dir / 'manifest.json', create_firefox_manifest(version))
+    write_json(build_dir / 'manifest.json', create_firefox_manifest(version, update_manifest_url))
     write_json(build_dir / 'version.json', {'version': version})
     print("[OK] Firefox-исходники собраны.")
 
@@ -485,11 +514,38 @@ def prepare_destination_dir(destination_dir):
     destination_dir.mkdir(parents=True, exist_ok=True)
 
 
-def write_install_guide(destination_dir, xpi_name):
+def create_update_manifest(version, xpi_url, xpi_path):
+    return {
+        'addons': {
+            FIREFOX_GECKO_ID: {
+                'updates': [
+                    {
+                        'version': version,
+                        'update_link': xpi_url,
+                        'update_hash': f'sha256:{sha256_file(xpi_path)}',
+                    },
+                ],
+            },
+        },
+    }
+
+
+def write_install_guide(destination_dir, xpi_name, update_base_url):
+    update_manifest_url = make_update_manifest_url(update_base_url)
+    xpi_url = make_xpi_download_url(update_base_url, xpi_name)
     guide = f"""Firefox-версия расширения
 
 Установочный файл:
 {xpi_name}
+
+HTTPS-страница установки:
+{update_base_url}
+
+Файл автообновлений:
+{update_manifest_url}
+
+Прямая HTTPS-ссылка на .xpi:
+{xpi_url}
 
 Как установить:
 1. Открыть Firefox.
@@ -499,8 +555,36 @@ def write_install_guide(destination_dir, xpi_name):
 5. Выбрать файл {xpi_name}.
 
 Это подписанная unlisted-версия. Она ставится постоянно и не пропадает после перезапуска Firefox.
+Автообновление заработает после установки версии, в которой уже есть update_url.
 """
     (destination_dir / 'INSTALL_FIREFOX.txt').write_text(guide, encoding='utf-8', newline='\n')
+
+
+def write_web_install_page(destination_dir, version, xpi_name, update_base_url):
+    xpi_url = make_xpi_download_url(update_base_url, xpi_name)
+    update_manifest_url = make_update_manifest_url(update_base_url)
+    html = f"""<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Помощник по Пирамиде для Firefox</title>
+  <style>
+    body {{ font-family: Arial, sans-serif; max-width: 760px; margin: 40px auto; padding: 0 20px; line-height: 1.5; }}
+    code {{ background: #f2f2f2; padding: 2px 5px; border-radius: 4px; }}
+    a.button {{ display: inline-block; margin: 12px 0; padding: 10px 14px; background: #0b57d0; color: #fff; text-decoration: none; border-radius: 6px; }}
+  </style>
+</head>
+<body>
+  <h1>Помощник по Пирамиде для Firefox</h1>
+  <p>Актуальная версия: <strong>{version}</strong></p>
+  <p><a class="button" href="{xpi_url}">Скачать подписанное расширение</a></p>
+  <p>Файл обновлений: <code>{update_manifest_url}</code></p>
+  <p>Если Firefox не предлагает установку сам, скачай файл и установи его через <code>about:addons</code> -> шестеренка -> <code>Install Add-on From File...</code>.</p>
+</body>
+</html>
+"""
+    (destination_dir / 'index.html').write_text(html, encoding='utf-8', newline='\n')
 
 
 def sign_firefox_extension(web_ext, source_dir, artifacts_dir, api_key, api_secret):
@@ -513,6 +597,7 @@ def sign_firefox_extension(web_ext, source_dir, artifacts_dir, api_key, api_secr
         'lint',
         '--source-dir',
         str(source_dir),
+        '--self-hosted',
     ])
 
     run_checked([
@@ -531,6 +616,75 @@ def sign_firefox_extension(web_ext, source_dir, artifacts_dir, api_key, api_secr
     return find_signed_xpi(artifacts_dir)
 
 
+def build_ssh_target(user, host):
+    return f'{user}@{host}'
+
+
+def ssh_base_command(port):
+    return [
+        'ssh',
+        '-F',
+        SSH_NULL_CONFIG,
+        '-p',
+        str(port),
+        '-o',
+        'StrictHostKeyChecking=accept-new',
+        '-o',
+        'BatchMode=yes',
+    ]
+
+
+def scp_base_command(port):
+    return [
+        'scp',
+        '-F',
+        SSH_NULL_CONFIG,
+        '-P',
+        str(port),
+        '-o',
+        'StrictHostKeyChecking=accept-new',
+        '-o',
+        'BatchMode=yes',
+    ]
+
+
+def shell_quote(value):
+    return "'" + value.replace("'", "'\"'\"'") + "'"
+
+
+def deploy_to_server(server_host, server_port, server_user, remote_dir, files):
+    ssh = shutil.which('ssh')
+    scp = shutil.which('scp')
+    if not ssh or not scp:
+        print("[ERROR] Для деплоя на HTTPS-сервер нужны ssh и scp в PATH.")
+        raise SystemExit(1)
+
+    target = build_ssh_target(server_user, server_host)
+    remote_dir_quoted = shell_quote(remote_dir)
+
+    run_checked([
+        *ssh_base_command(server_port),
+        target,
+        f'mkdir -p {remote_dir_quoted}',
+    ])
+
+    run_checked([
+        *scp_base_command(server_port),
+        *[str(path) for path in files],
+        f'{target}:{remote_dir}/',
+    ])
+
+
+def collect_deploy_files(destination_dir, xpi_name):
+    return [
+        destination_dir / xpi_name,
+        destination_dir / 'updates.json',
+        destination_dir / 'version.json',
+        destination_dir / 'INSTALL_FIREFOX.txt',
+        destination_dir / 'index.html',
+    ]
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description='Собрать, подписать и задеплоить Firefox .xpi.')
     parser.add_argument(
@@ -538,12 +692,45 @@ def parse_args():
         default=str(FIREFOX_DESTINATION_DIR),
         help='Сетевая папка, куда будет скопирован подписанный .xpi.',
     )
+    parser.add_argument(
+        '--update-base-url',
+        default=os.environ.get('FIREFOX_UPDATE_BASE_URL', FIREFOX_UPDATE_BASE_URL),
+        help='HTTPS-база, где будут лежать updates.json и подписанный .xpi.',
+    )
+    parser.add_argument(
+        '--server-host',
+        default=os.environ.get('FIREFOX_UPDATE_SERVER_HOST', FIREFOX_REMOTE_SSH_HOST),
+        help='SSH-хост HTTPS-сервера для деплоя Firefox-обновлений.',
+    )
+    parser.add_argument(
+        '--server-port',
+        type=int,
+        default=int(os.environ.get('FIREFOX_UPDATE_SERVER_PORT', FIREFOX_REMOTE_SSH_PORT)),
+        help='SSH-порт HTTPS-сервера.',
+    )
+    parser.add_argument(
+        '--server-user',
+        default=os.environ.get('FIREFOX_UPDATE_SERVER_USER', FIREFOX_REMOTE_SSH_USER),
+        help='SSH-пользователь HTTPS-сервера.',
+    )
+    parser.add_argument(
+        '--server-dir',
+        default=os.environ.get('FIREFOX_UPDATE_SERVER_DIR', FIREFOX_REMOTE_DEPLOY_DIR),
+        help='Папка на HTTPS-сервере, которую отдает веб-сервер.',
+    )
+    parser.add_argument(
+        '--no-server-deploy',
+        action='store_true',
+        help='Не загружать результат на HTTPS-сервер, только собрать и скопировать в сетевую папку.',
+    )
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
     destination_dir = Path(args.destination)
+    update_base_url = normalize_base_url(args.update_base_url)
+    update_manifest_url = make_update_manifest_url(update_base_url)
     web_ext = require_web_ext()
     api_key, api_secret = prompt_amo_credentials()
 
@@ -555,18 +742,37 @@ def main():
         artifacts_dir = build_root / 'artifacts'
         artifacts_dir.mkdir(parents=True, exist_ok=True)
 
-        build_firefox_extension(version, source_dir)
+        build_firefox_extension(version, source_dir, update_manifest_url)
         signed_xpi = sign_firefox_extension(web_ext, source_dir, artifacts_dir, api_key, api_secret)
 
         prepare_destination_dir(destination_dir)
         destination_xpi = destination_dir / signed_xpi.name
         shutil.copy2(signed_xpi, destination_xpi)
+
+        xpi_url = make_xpi_download_url(update_base_url, signed_xpi.name)
+        write_json(destination_dir / 'updates.json', create_update_manifest(version, xpi_url, signed_xpi))
         write_json(destination_dir / 'version.json', {'version': version})
-        write_install_guide(destination_dir, destination_xpi.name)
+        write_install_guide(destination_dir, destination_xpi.name, update_base_url)
+        write_web_install_page(destination_dir, version, destination_xpi.name, update_base_url)
+
+        if not args.no_server_deploy:
+            print("\n[INFO] Деплой Firefox-обновления на HTTPS-сервер.")
+            deploy_to_server(
+                args.server_host,
+                args.server_port,
+                args.server_user,
+                args.server_dir,
+                collect_deploy_files(destination_dir, destination_xpi.name),
+            )
+        else:
+            print("\n[WARN] Деплой на HTTPS-сервер пропущен по --no-server-deploy.")
 
     print("\n[OK] Подписанный Firefox .xpi собран и отправлен в сетевую папку.")
     print(f"Папка: {destination_dir}")
     print(f"Файл:  {destination_xpi}")
+    print(f"Update manifest: {update_manifest_url}")
+    if not args.no_server_deploy:
+        print(f"HTTPS-сервер:    {update_base_url}")
 
 
 if __name__ == '__main__':
