@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import argparse
 import getpass
+import hashlib
 import json
 import os
 import re
@@ -389,15 +390,80 @@ def run_checked(command, cwd=None, env=None):
         raise SystemExit(result.returncode)
 
 
-def prompt_amo_credentials():
-    print("\nВведите ключи Mozilla Add-ons. Они не сохраняются в файлы проекта.")
-    api_key = getpass.getpass("JWT issuer / WEB_EXT_API_KEY: ").strip()
-    api_secret = getpass.getpass("JWT secret / WEB_EXT_API_SECRET: ").strip()
+def mask_credential(value, visible_prefix=6, visible_suffix=4):
+    if len(value) <= visible_prefix + visible_suffix:
+        return '*' * len(value)
+    return f'{value[:visible_prefix]}...{value[-visible_suffix:]}'
+
+
+def validate_amo_credentials(api_key, api_secret):
+    errors = []
+    warnings = []
 
     if not api_key or not api_secret:
-        print("[ERROR] Оба значения обязательны для unlisted-подписания.")
+        errors.append('Оба значения обязательны для unlisted-подписания.')
+
+    if api_key and any(ch.isspace() for ch in api_key):
+        errors.append('JWT issuer содержит пробелы или переносы строк.')
+
+    if api_secret and any(ch.isspace() for ch in api_secret):
+        errors.append('JWT secret содержит пробелы или переносы строк.')
+
+    if api_key and (api_key[0] in {'"', "'"} or api_key[-1] in {'"', "'"}):
+        errors.append('JWT issuer вставлен с кавычками. Вставлять надо только значение ключа.')
+
+    if api_secret and (api_secret[0] in {'"', "'"} or api_secret[-1] in {'"', "'"}):
+        errors.append('JWT secret вставлен с кавычками. Вставлять надо только значение секрета.')
+
+    if api_key and (not api_key.startswith('user:') or api_key.count(':') < 2):
+        warnings.append('JWT issuer обычно выглядит как user:число:строка. Проверь, что скопирован именно JWT issuer.')
+
+    if api_secret and len(api_secret) < 32:
+        warnings.append('JWT secret выглядит коротким. Проверь, что скопирован именно JWT secret целиком.')
+
+    if errors:
+        for error in errors:
+            print(f"[ERROR] {error}")
         raise SystemExit(1)
 
+    for warning in warnings:
+        print(f"[WARN] {warning}")
+
+
+def confirm_credentials(api_key, api_secret):
+    secret_fingerprint = hashlib.sha256(api_secret.encode('utf-8')).hexdigest()[:12]
+
+    print("\nПроверь введенные значения:")
+    print(f"JWT issuer: {mask_credential(api_key)} (длина: {len(api_key)})")
+    print(f"JWT secret: скрыт (длина: {len(api_secret)}, контрольный отпечаток: {secret_fingerprint})")
+
+    answer = input("Продолжить подпись с этими значениями? Напиши YES: ").strip()
+    if answer != 'YES':
+        print("[ERROR] Подписание отменено пользователем.")
+        raise SystemExit(1)
+
+
+def prompt_amo_credentials():
+    print("\nВведите ключи Mozilla Add-ons. Они не сохраняются в файлы проекта.")
+    api_key_raw = getpass.getpass("JWT issuer / WEB_EXT_API_KEY: ")
+    api_secret_raw = getpass.getpass("JWT secret / WEB_EXT_API_SECRET: ")
+    api_secret_repeat_raw = getpass.getpass("Повтори JWT secret: ")
+
+    api_key = api_key_raw.strip()
+    api_secret = api_secret_raw.strip()
+    api_secret_repeat = api_secret_repeat_raw.strip()
+
+    if api_key != api_key_raw:
+        print("[WARN] У JWT issuer были пробелы по краям, они удалены.")
+    if api_secret != api_secret_raw or api_secret_repeat != api_secret_repeat_raw:
+        print("[WARN] У JWT secret были пробелы по краям, они удалены.")
+
+    if api_secret != api_secret_repeat:
+        print("[ERROR] Два ввода JWT secret не совпали. Подписание не запущено.")
+        raise SystemExit(1)
+
+    validate_amo_credentials(api_key, api_secret)
+    confirm_credentials(api_key, api_secret)
     return api_key, api_secret
 
 
