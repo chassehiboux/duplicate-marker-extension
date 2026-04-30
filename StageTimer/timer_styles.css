@@ -679,10 +679,25 @@ html.dup-ext-screenshot-mode [aria-label="Показать таймер"] {
 }
 
 .dup-extension-ui-settings-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px 14px;
     margin-top: 14px;
     font-size: 12px;
     line-height: 1.4;
     color: #5e737e;
+    text-align: left;
+}
+
+.dup-extension-ui-settings-version,
+.dup-extension-ui-settings-hotkey {
+    min-width: 0;
+}
+
+.dup-extension-ui-settings-hotkey {
+    margin-left: auto;
     text-align: right;
 }
 

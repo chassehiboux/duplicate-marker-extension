@@ -967,6 +967,23 @@
     return extensionUiVisibilitySettings[key] !== false;
   }
 
+  function getExtensionVersionText() {
+    try {
+      const runtime = typeof chrome !== 'undefined' && chrome.runtime
+        ? chrome.runtime
+        : null;
+      const manifest = runtime && typeof runtime.getManifest === 'function'
+        ? runtime.getManifest()
+        : null;
+      const version = manifest && typeof manifest.version === 'string'
+        ? manifest.version.trim()
+        : '';
+      return `Версия: ${version || 'неизвестна'}`;
+    } catch (error) {
+      return 'Версия: неизвестна';
+    }
+  }
+
   function ensureExtensionUiSettingsStyle(targetDocument) {
     const doc = targetDocument && typeof targetDocument.getElementById === 'function'
       ? targetDocument
@@ -3472,7 +3489,13 @@
 
     const footer = document.createElement('div');
     footer.className = 'dup-extension-ui-settings-footer';
-    footer.textContent = 'Горячая клавиша: F2';
+    const versionNote = document.createElement('span');
+    versionNote.className = 'dup-extension-ui-settings-version';
+    versionNote.textContent = getExtensionVersionText();
+    const hotkeyNote = document.createElement('span');
+    hotkeyNote.className = 'dup-extension-ui-settings-hotkey';
+    hotkeyNote.textContent = 'Горячая клавиша: F2';
+    footer.append(versionNote, hotkeyNote);
 
     tabs.addEventListener('click', (event) => {
       const tab = event.target instanceof HTMLElement

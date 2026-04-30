@@ -13,7 +13,8 @@ from urllib.parse import quote
 
 SOURCE_DIR = Path(__file__).resolve().parent
 MANIFEST_PATH = SOURCE_DIR / 'manifest.json'
-VERSION_FILE_PATH = SOURCE_DIR / 'version.json'
+ROOT_VERSION_FILE_PATH = SOURCE_DIR / 'version.json'
+FIREFOX_VERSION_FILE_PATH = SOURCE_DIR / 'version-firefox.json'
 
 DESTINATION_REPO = Path(r'\\corp.vostok-electra.ru\Kgn\Отделы\Отдел взыскания по исполнительным документам\Зуйкевич Данил Иванович\Repository')
 PROJECT_NAME = SOURCE_DIR.name
@@ -115,17 +116,46 @@ def sha256_file(path):
     return digest.hexdigest()
 
 
-def bump_root_version():
-    manifest = read_json(MANIFEST_PATH)
-    old_version = manifest['version']
+def read_source_version():
+    try:
+        manifest = read_json(MANIFEST_PATH)
+        version = str(manifest.get('version', '')).strip()
+        if version:
+            return version
+    except FileNotFoundError:
+        pass
+
+    version_data = read_json(ROOT_VERSION_FILE_PATH)
+    return str(version_data.get('version', '')).strip()
+
+
+def bump_patch_version(old_version):
     version_parts = old_version.split('.')
     version_parts[-1] = str(int(version_parts[-1]) + 1)
-    new_version = '.'.join(version_parts)
-    manifest['version'] = new_version
+    return '.'.join(version_parts)
 
-    write_json(MANIFEST_PATH, manifest)
-    write_json(VERSION_FILE_PATH, {'version': new_version})
-    print(f"[OK] Версия обновлена: {old_version} -> {new_version}")
+
+def bump_firefox_version():
+    if FIREFOX_VERSION_FILE_PATH.exists():
+        version_data = read_json(FIREFOX_VERSION_FILE_PATH)
+        old_version = str(version_data.get('version', '')).strip()
+    else:
+        old_version = read_source_version()
+        print(f"[INFO] {FIREFOX_VERSION_FILE_PATH.name} не найден, стартуем от версии основного расширения: {old_version}")
+
+    if not old_version:
+        print("[ERROR] Не удалось определить текущую Firefox-версию.")
+        raise SystemExit(1)
+
+    try:
+        new_version = bump_patch_version(old_version)
+    except (ValueError, IndexError) as e:
+        print(f"[ERROR] Некорректный формат Firefox-версии {old_version!r}: {e}")
+        raise SystemExit(1)
+
+    write_json(FIREFOX_VERSION_FILE_PATH, {'version': new_version})
+    print(f"[OK] Firefox-версия обновлена: {old_version} -> {new_version}")
+    print("[INFO] manifest.json и version.json основного расширения не изменялись.")
     return new_version
 
 
@@ -663,7 +693,7 @@ def main():
     web_ext = require_web_ext()
     api_key, api_secret = prompt_amo_credentials()
 
-    version = bump_root_version()
+    version = bump_firefox_version()
 
     with tempfile.TemporaryDirectory(prefix='firefox-extension-build-') as build_temp:
         build_root = Path(build_temp)

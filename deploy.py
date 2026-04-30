@@ -27,6 +27,7 @@ IGNORE_PATTERNS = shutil.ignore_patterns(
     'dist',
     'web-ext-artifacts',
     'deploy.py',
+    'version-firefox.json',
 )
 
 

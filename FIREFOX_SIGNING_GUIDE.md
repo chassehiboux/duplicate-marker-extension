@@ -25,7 +25,7 @@ python deploy-firefox.py
 Скрипт:
 
 1. спросит `JWT issuer` и `JWT secret` видимым вводом;
-2. увеличит версию в `manifest.json` и `version.json`;
+2. увеличит Firefox-версию в `version-firefox.json`, не меняя `manifest.json` и `version.json` основного расширения;
 3. соберет Firefox-версию во временную папку;
 4. добавит в Firefox-манифест `update_url`;
 5. проверит сборку через `web-ext lint --self-hosted`;

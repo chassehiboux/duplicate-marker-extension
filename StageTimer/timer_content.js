@@ -198,6 +198,13 @@
             || typeof EXTENSION_UI_GLOBAL_CONFIG.forcedVisibility[key] === "boolean";
     }
 
+    function getExtensionVersionText() {
+        const version = typeof extVersion === "string"
+            ? extVersion.trim()
+            : "";
+        return `Версия: ${version || "неизвестна"}`;
+    }
+
     function syncTimerUiSettingsPanelState() {
         if (!(timerUiSettingsPanelEl instanceof HTMLElement)) return;
 
@@ -425,7 +432,13 @@
 
         const footer = document.createElement("div");
         footer.className = "dup-extension-ui-settings-footer";
-        footer.textContent = "Горячая клавиша: F2";
+        const versionNote = document.createElement("span");
+        versionNote.className = "dup-extension-ui-settings-version";
+        versionNote.textContent = getExtensionVersionText();
+        const hotkeyNote = document.createElement("span");
+        hotkeyNote.className = "dup-extension-ui-settings-hotkey";
+        hotkeyNote.textContent = "Горячая клавиша: F2";
+        footer.append(versionNote, hotkeyNote);
 
         panel.append(header, list, footer);
         host.append(overlay, panel);
