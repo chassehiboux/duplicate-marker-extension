@@ -13,6 +13,9 @@
   const ACTION_BUTTON_CLASS = 'support-reminder-action-button';
   const ACTION_MENU_ID = 'support-reminder-action-menu';
   const SNAPSHOT_READY_DELAY_MS = 20000;
+  const RATING_ARCHIVE_POLL_MS = 500;
+  const RATING_ARCHIVE_TIMEOUT_MS = 30000;
+  const FINAL_STATUS_TOKENS = ['завершен', 'закрыт', 'закрыто', 'отменен', 'отменено'];
   const TRACKED_FILTERS = {
     requestFilter1: { type: 'open', label: 'Открытые обращения' },
     requestFilter4: { type: 'my_tasks', label: 'Мои задачи' },
@@ -45,6 +48,8 @@
   const scriptStartedAt = Date.now();
   let refreshTimer = null;
   let periodicSyncTimer = null;
+  let acceptedRatingArchiveTimer = null;
+  let pendingAcceptedRating = null;
   let lastSyncHash = '';
 
   function normalizeText(value) {
@@ -52,6 +57,45 @@
       .replace(/\s+/g, ' ')
       .trim()
       .toLowerCase();
+  }
+
+  function normalizeSupportRequestNumber(value) {
+    const text = String(value || '').replace(/\s+/g, ' ').trim();
+    const match = text.match(/(\d{4})-(\d+)/);
+    if (!match) return text;
+
+    const significant = match[2].replace(/^0+/, '') || '0';
+    return `${match[1]}-${significant.padStart(6, '0')}`;
+  }
+
+  function getCurrentRequestDialogId() {
+    const heading = Array.from(document.querySelectorAll('h1, h2, h3, h4, .modal-title'))
+      .find((node) => /Запрос\s*№/i.test(String(node.textContent || '')));
+    return heading ? normalizeSupportRequestNumber(heading.textContent) : '';
+  }
+
+  function getAcceptedRatingButton(target) {
+    const button = target && target.closest
+      ? target.closest('button.ratetask')
+      : null;
+    if (!button) return null;
+    if (String(button.getAttribute('objectrate') || '').trim() !== '1') return null;
+    if (!String(button.getAttribute('onclick') || '').includes('rateTaskButtonSelect')) return null;
+    return button;
+  }
+
+  function isFinalStatus(status) {
+    const normalizedStatus = normalizeText(status);
+    if (!normalizedStatus) return false;
+    return FINAL_STATUS_TOKENS.some((token) => (
+      normalizedStatus === token || normalizedStatus.startsWith(`${token} `)
+    ));
+  }
+
+  function isFinalRequest(request) {
+    const normalizedStage = normalizeText(request && request.stage);
+    if (normalizedStage === 'завершено' || normalizedStage === 'закрыто') return true;
+    return isFinalStatus(request && request.status);
   }
 
   function ensureStyles() {
@@ -589,6 +633,74 @@
     refresh(true);
   }
 
+  function findRequestInSnapshot(snapshot, requestId) {
+    const normalizedRequestId = normalizeSupportRequestNumber(requestId);
+    return snapshot.requests.find((request) => (
+      request.requestId === normalizedRequestId
+      || normalizeSupportRequestNumber(request.requestNumber) === normalizedRequestId
+    )) || null;
+  }
+
+  async function archiveAcceptedRatingReminder(requestId, request) {
+    const response = await sendRuntimeMessage('SUPPORT_ARCHIVE_AFTER_ACCEPTED_RATING', {
+      requestId,
+      request
+    });
+    applyReminderCacheFromResponse(response);
+    refresh(true);
+  }
+
+  function scheduleAcceptedRatingArchiveCheck(delay) {
+    if (acceptedRatingArchiveTimer) {
+      clearTimeout(acceptedRatingArchiveTimer);
+    }
+
+    acceptedRatingArchiveTimer = setTimeout(() => {
+      acceptedRatingArchiveTimer = null;
+      checkAcceptedRatingArchive();
+    }, delay);
+  }
+
+  async function checkAcceptedRatingArchive() {
+    if (!pendingAcceptedRating) return;
+
+    const pending = pendingAcceptedRating;
+    const snapshot = extractSnapshot();
+    latestSnapshot = snapshot;
+    applyRowDecorations(snapshot);
+
+    const request = findRequestInSnapshot(snapshot, pending.requestId);
+    if (request && isFinalRequest(request)) {
+      pendingAcceptedRating = null;
+      try {
+        await archiveAcceptedRatingReminder(pending.requestId, request);
+      } catch (error) {
+        console.error('Не удалось перенести напоминание support в архив после оценки:', error);
+      }
+      return;
+    }
+
+    if (Date.now() - pending.startedAt >= RATING_ARCHIVE_TIMEOUT_MS) {
+      pendingAcceptedRating = null;
+      return;
+    }
+
+    scheduleAcceptedRatingArchiveCheck(RATING_ARCHIVE_POLL_MS);
+  }
+
+  function trackAcceptedRatingClick(event) {
+    if (!getAcceptedRatingButton(event.target)) return;
+
+    const requestId = getCurrentRequestDialogId();
+    if (!requestId) return;
+
+    pendingAcceptedRating = {
+      requestId,
+      startedAt: Date.now()
+    };
+    scheduleAcceptedRatingArchiveCheck(RATING_ARCHIVE_POLL_MS);
+  }
+
   function applyRowDecorations(snapshot) {
     clearHighlights();
     ensureActionHeader();
@@ -646,6 +758,8 @@
   }
 
   async function handleDocumentClick(event) {
+    trackAcceptedRatingClick(event);
+
     const actionButton = event.target.closest(`button.${ACTION_BUTTON_CLASS}`);
     if (actionButton) {
       event.preventDefault();

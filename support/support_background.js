@@ -2,8 +2,6 @@
   const STORAGE_KEY = 'support_reminders_state_v1';
   const TARGET_STAGE = '2.4 Подтверждение решения и закрытие Запроса';
   const TARGET_STAGE_NORMALIZED = normalizeText(TARGET_STAGE);
-  const CLOSED_FILTER_TYPE = 'closed';
-  const FINAL_STATUS_TOKENS = ['завершен', 'закрыт', 'закрыто', 'отменен', 'отменено'];
 
   function normalizeText(value) {
     return String(value || '')
@@ -145,42 +143,6 @@
     });
   }
 
-  function isFinalStatus(status) {
-    const normalizedStatus = normalizeText(status);
-    if (!normalizedStatus) return false;
-    return FINAL_STATUS_TOKENS.some((token) => (
-      normalizedStatus === token || normalizedStatus.startsWith(`${token} `)
-    ));
-  }
-
-  function isClosedRequest(request, filterTypeOverride) {
-    const filterType = String(filterTypeOverride || request?.filterType || '').trim();
-    if (filterType === CLOSED_FILTER_TYPE) return true;
-
-    const normalizedStage = normalizeText(request?.stage);
-    if (normalizedStage === 'завершено' || normalizedStage === 'закрыто') {
-      return true;
-    }
-
-    return isFinalStatus(request?.status);
-  }
-
-  function getArchiveReason(request, filterTypeOverride) {
-    const filterType = String(filterTypeOverride || request?.filterType || '').trim();
-    if (filterType === CLOSED_FILTER_TYPE) return 'closed_request_list';
-
-    const normalizedStage = normalizeText(request?.stage);
-    if (normalizedStage === 'завершено' || normalizedStage === 'закрыто') {
-      return 'final_stage_detected';
-    }
-
-    if (isFinalStatus(request?.status)) {
-      return 'final_status_detected';
-    }
-
-    return 'closed_request_detected';
-  }
-
   function archiveReminder(state, reminder, reason) {
     state.archive[reminder.requestId] = {
       requestId: reminder.requestId,
@@ -221,7 +183,7 @@
       updatedAt: now,
       lastSeenAt: now,
       lastNotifiedStage: existingReminder?.lastNotifiedStage || '',
-      skipAutoArchive: !!(existingReminder?.skipAutoArchive && isClosedRequest(request)),
+      skipAutoArchive: false,
       lastKnown: request
     };
 
@@ -233,11 +195,28 @@
       reminder.lastNotifiedStage = '';
     }
 
-    if (isClosedRequest(request)) {
-      archiveReminder(state, reminder, getArchiveReason(request));
-    } else {
-      state.reminders[request.requestId] = reminder;
+    state.reminders[request.requestId] = reminder;
+    await saveState(state);
+
+    return stateToResponse(state);
+  }
+
+  async function archiveReminderAfterRating(data) {
+    const request = normalizeRequest(data && data.request);
+    const requestId = String((request && request.requestId) || (data && data.requestId) || '').trim();
+    if (!requestId) throw new Error('requestId is required.');
+
+    const state = await getState();
+    const reminder = state.reminders[requestId];
+    if (!reminder) {
+      return stateToResponse(state);
     }
+
+    reminder.lastSeenAt = nowIso();
+    if (request) {
+      reminder.lastKnown = request;
+    }
+    archiveReminder(state, reminder, 'accepted_rating_confirmed');
     await saveState(state);
 
     return stateToResponse(state);
@@ -332,20 +311,6 @@
       const lastKnownChanged = JSON.stringify(previousKnown) !== JSON.stringify(currentRequest);
       const lastSeenMissing = !reminder.lastSeenAt;
 
-      if (isClosedRequest(currentRequest, filterType)) {
-        reminder.lastSeenAt = now;
-        reminder.lastKnown = currentRequest;
-        if (reminder.skipAutoArchive) {
-          if (lastKnownChanged || lastSeenMissing) {
-            changed = true;
-          }
-          return;
-        }
-        archiveReminder(state, reminder, getArchiveReason(currentRequest, filterType));
-        changed = true;
-        return;
-      }
-
       if (lastKnownChanged) {
         changed = true;
       }
@@ -413,6 +378,12 @@
 
       case 'SUPPORT_RESTORE_ARCHIVE':
         restoreArchivedReminder(request.data)
+          .then((stateResponse) => sendResponse({ success: true, ...stateResponse }))
+          .catch((error) => sendResponse({ success: false, error: error.message }));
+        return true;
+
+      case 'SUPPORT_ARCHIVE_AFTER_ACCEPTED_RATING':
+        archiveReminderAfterRating(request.data)
           .then((stateResponse) => sendResponse({ success: true, ...stateResponse }))
           .catch((error) => sendResponse({ success: false, error: error.message }));
         return true;
