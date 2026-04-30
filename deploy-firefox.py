@@ -238,6 +238,10 @@ def replace_stage_timer_message_promises(content):
     return content
 
 
+def replace_notification_icon_paths(content):
+    return content.replace("iconUrl: 'icon.png'", "iconUrl: 'icons/icon-128.png'")
+
+
 def inject_firefox_background_helpers(content):
     helper = r'''
 // --- Firefox compatibility helpers ---
@@ -300,8 +304,7 @@ def transform_main_background(content):
         'openExtensionPanel(tab);',
     )
     content = content.replace('chrome.storage.session.', 'getExtensionSessionStorage().')
-    content = content.replace("iconUrl: 'icon.png'", "iconUrl: 'icons/icon-128.png'")
-    return content
+    return replace_notification_icon_paths(content)
 
 
 def inject_stage_timer_background_helpers(content):
@@ -327,7 +330,7 @@ def transform_stage_timer_background(content):
 
 
 def transform_support_background(content):
-    return content.replace("iconUrl: 'icon.png'", "iconUrl: 'icons/icon-128.png'")
+    return replace_notification_icon_paths(content)
 
 
 def create_firefox_icons(build_dir):

@@ -133,13 +133,26 @@
     return `Заявка ${requestNumber} перешла на этап 2.4.${subject}${noteLine}`.slice(0, 240);
   }
 
+  function createNotificationSafe(notificationId, options) {
+    if (!chrome.notifications || typeof chrome.notifications.create !== 'function') return;
+
+    try {
+      chrome.notifications.create(notificationId, options, () => {
+        if (chrome.runtime.lastError) {
+          console.warn('Не удалось показать support-уведомление:', chrome.runtime.lastError.message);
+        }
+      });
+    } catch (error) {
+      console.warn('Не удалось показать support-уведомление:', error);
+    }
+  }
+
   function createTargetStageNotification(reminder, request) {
-    chrome.notifications.create(`support-stage-${reminder.requestId}-${Date.now()}`, {
+    createNotificationSafe(`support-stage-${reminder.requestId}-${Date.now()}`, {
       type: 'basic',
       iconUrl: 'icon.png',
       title: 'Напоминание по заявке',
-      message: buildNotificationMessage(request, reminder.note),
-      silent: false
+      message: buildNotificationMessage(request, reminder.note)
     });
   }
 

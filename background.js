@@ -55,6 +55,20 @@ const addLog = (message) => {
   }
 };
 
+function createExtensionNotification(options) {
+    if (!chrome.notifications || typeof chrome.notifications.create !== 'function') return;
+
+    try {
+        chrome.notifications.create(options, () => {
+            if (chrome.runtime.lastError) {
+                addLog(`Ошибка уведомления: ${chrome.runtime.lastError.message}`);
+            }
+        });
+    } catch (e) {
+        addLog(`Ошибка уведомления: ${e.message}`);
+    }
+}
+
 // --- Функция надежной отправки (POST + Retry) ---
 async function sendWithRetry(url, payload, retries = TELEMETRY_RETRIES) {
     for (let i = 0; i < retries; i++) {
@@ -974,12 +988,11 @@ function processCounterLogic(edocids, tabId) { // Change parameter name
             // Проверяем настройку перед отправкой уведомления
             chrome.storage.local.get('setting_notify_execution', (settings) => {
                 if (settings.setting_notify_execution !== false) {
-                    chrome.notifications.create({
+                    createExtensionNotification({
                         type: 'basic',
                         iconUrl: 'icon.png',
                         title: 'Счетчик обновлен',
-                        message: `Анализ исполнения засчитан! Сегодня: ${newCount} шт. (Новых: ${newlyProcessedCount})`,
-                        silent: true
+                        message: `Анализ исполнения засчитан! Сегодня: ${newCount} шт. (Новых: ${newlyProcessedCount})`
                     });
                 }
             });
@@ -1203,12 +1216,11 @@ function _incrementEditingCounter(edocid, path) {
             // Проверяем настройку перед отправкой уведомления
             chrome.storage.local.get('setting_notify_editing', (settings) => {
                 if (settings.setting_notify_editing !== false) {
-                    chrome.notifications.create({
+                    createExtensionNotification({
                         type: 'basic',
                         iconUrl: 'icon.png',
                         title: 'Счетчик обновлен',
-                        message: `Действие: ${actionName}\nВсего за день: ${dayTotal} (Новых для ${actionName}: ${actionCount})`,
-                        silent: true
+                        message: `Действие: ${actionName}\nВсего за день: ${dayTotal} (Новых для ${actionName}: ${actionCount})`
                     });
                 }
             });
