@@ -5044,10 +5044,12 @@
     }
     const targetHeader = getManualGridHeaderTrigger(e.target);
     if (targetHeader) {
-      const columnCodeName = ensureManualGridColumnCodeTooltip(targetHeader);
-      if (columnCodeName) {
+      const headerValue = e.shiftKey
+        ? getManualGridHeaderCaption(targetHeader)
+        : ensureManualGridColumnCodeTooltip(targetHeader);
+      if (headerValue) {
         e.preventDefault();
-        navigator.clipboard.writeText(columnCodeName).then(() => showSuccessFeedback(targetHeader));
+        navigator.clipboard.writeText(headerValue).then(() => showSuccessFeedback(targetHeader));
         return;
       }
     }
@@ -5061,7 +5063,31 @@
 
   document.addEventListener('mousedown', function(e) {
     if (!isCopyModeEnabled) return;
+
+    if (e && e.button === 2 && e.shiftKey) {
+      const targetHeader = getManualGridHeaderTrigger(e.target);
+      if (targetHeader) {
+        const headerCaption = getManualGridHeaderCaption(targetHeader);
+        if (!headerCaption) return;
+
+        e.preventDefault();
+        e.stopPropagation();
+
+        navigator.clipboard.writeText(headerCaption).then(() => showSuccessFeedback(targetHeader));
+        return;
+      }
+    }
+
     if (!e || e.button !== 1) return;
+
+    const targetHeader = getManualGridHeaderTrigger(e.target);
+    if (targetHeader) {
+      const headerEntries = collectManualGridHeaderCopyEntries(targetHeader, e.shiftKey ? 'caption' : 'code');
+      if (!headerEntries.length) return;
+
+      e.preventDefault();
+      return;
+    }
 
     const targetCell = getGridBulkCopyTargetCell(e.target);
     if (!targetCell) return;
@@ -5074,6 +5100,23 @@
   document.addEventListener('auxclick', function(e) {
     if (!isCopyModeEnabled) return;
     if (!e || e.button !== 1) return;
+
+    const targetHeader = getManualGridHeaderTrigger(e.target);
+    if (targetHeader) {
+      const headerEntries = collectManualGridHeaderCopyEntries(targetHeader, e.shiftKey ? 'caption' : 'code');
+      if (!headerEntries.length) return;
+
+      const values = headerEntries.map((entry) => entry.value);
+      const feedbackElements = getManualGridHeaderCopyFeedbackElements(headerEntries);
+
+      e.preventDefault();
+      e.stopPropagation();
+
+      navigator.clipboard.writeText(values.join('\t')).then(() => {
+        showSuccessFeedbackBatch(feedbackElements);
+      });
+      return;
+    }
 
     const targetCell = getGridBulkCopyTargetCell(e.target);
     if (!targetCell) return;
@@ -5288,6 +5331,16 @@
     return sortable;
   }
 
+  function getManualGridHeaderCell(header) {
+    if (!(header instanceof HTMLElement)) return null;
+
+    const headerCell = header.closest('th');
+    if (!(headerCell instanceof HTMLTableCellElement)) return null;
+    if (!headerCell.closest('.ui-jqgrid-hdiv')) return null;
+
+    return headerCell;
+  }
+
   function getManualGridHeaderTrigger(target) {
     if (!(target instanceof Element)) return null;
 
@@ -5296,9 +5349,7 @@
     const header = byJqghId instanceof HTMLElement ? byJqghId : byRole;
     if (!(header instanceof HTMLElement)) return null;
 
-    const headerCell = header.closest('th');
-    if (!(headerCell instanceof HTMLTableCellElement)) return null;
-    if (!headerCell.closest('.ui-jqgrid-hdiv')) return null;
+    if (!getManualGridHeaderCell(header)) return null;
 
     return header;
   }
@@ -5337,6 +5388,67 @@
 
     sortableEl.title = columnCodeName;
     return columnCodeName;
+  }
+
+  function getManualGridHeaderCaption(header) {
+    if (!(header instanceof HTMLElement)) return '';
+
+    const headerClone = header.cloneNode(true);
+    if (!(headerClone instanceof HTMLElement)) return '';
+
+    headerClone.querySelectorAll('.s-ico, .ui-grid-ico-sort, .ui-jqgrid-resize').forEach((element) => {
+      element.remove();
+    });
+
+    return normalizeGridBulkCopyValue(headerClone.textContent);
+  }
+
+  function getManualGridHeaderFromCell(headerCell) {
+    if (!(headerCell instanceof HTMLTableCellElement)) return null;
+
+    const header = headerCell.querySelector('div[id^="jqgh_"], div[role="columnheader"]');
+    return header instanceof HTMLElement ? header : null;
+  }
+
+  function collectManualGridHeaderCopyEntries(startHeader, valueMode) {
+    const headerCell = getManualGridHeaderCell(startHeader);
+    if (!headerCell) return [];
+
+    const headerRow = headerCell.closest('tr');
+    if (!(headerRow instanceof HTMLTableRowElement)) return [];
+
+    const entries = [];
+    Array.from(headerRow.children).forEach((cell) => {
+      if (!(cell instanceof HTMLTableCellElement)) return;
+      if (!isStageJumpElementVisible(cell)) return;
+
+      const header = getManualGridHeaderFromCell(cell);
+      if (!(header instanceof HTMLElement)) return;
+
+      const headerCaption = getManualGridHeaderCaption(header);
+      const value = valueMode === 'caption'
+        ? headerCaption
+        : ensureManualGridColumnCodeTooltip(header);
+      if (!value) return;
+      if (valueMode !== 'caption' && !headerCaption && (value === 'cb' || value === 'rn')) return;
+
+      entries.push({ cell, header, value });
+    });
+
+    return entries;
+  }
+
+  function getManualGridHeaderCopyFeedbackElements(entries) {
+    const uniqueElements = [];
+    const seen = new Set();
+
+    entries.forEach((entry) => {
+      if (!entry || !(entry.header instanceof HTMLElement) || seen.has(entry.header)) return;
+      seen.add(entry.header);
+      uniqueElements.push(entry.header);
+    });
+
+    return uniqueElements;
   }
 
   document.addEventListener('mouseover', function(e) {
