@@ -457,6 +457,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         case 'ID_CARD_CHECK_OPEN_TAB': {
             const sourceTabId = sender && sender.tab ? sender.tab.id : null;
             const sourceWindowId = sender && sender.tab ? sender.tab.windowId : null;
+            const sourceCookieStoreId = sender && sender.tab && typeof sender.tab.cookieStoreId === 'string'
+                ? sender.tab.cookieStoreId.trim()
+                : '';
             const data = request && request.data ? request.data : {};
             const targetUrl = String(data.url || '').trim();
             const active = data.active === true;
@@ -478,24 +481,41 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             if (Number.isInteger(sourceWindowId)) {
                 createProperties.windowId = sourceWindowId;
             }
+            if (Number.isInteger(sourceTabId)) {
+                createProperties.openerTabId = sourceTabId;
+            }
+            if (sourceCookieStoreId) {
+                createProperties.cookieStoreId = sourceCookieStoreId;
+            }
 
-            chrome.tabs.create(createProperties, (tab) => {
-                if (chrome.runtime.lastError) {
-                    sendResponse({
-                        success: false,
-                        error: chrome.runtime.lastError.message || 'CREATE_TAB_FAILED'
-                    });
-                    return;
-                }
+            const createTab = (properties, allowCookieStoreRetry = true) => {
+                chrome.tabs.create(properties, (tab) => {
+                    if (chrome.runtime.lastError && properties.cookieStoreId && allowCookieStoreRetry) {
+                        const fallbackProperties = { ...properties };
+                        delete fallbackProperties.cookieStoreId;
+                        createTab(fallbackProperties, false);
+                        return;
+                    }
 
-                const targetTabId = tab && Number.isInteger(tab.id) ? tab.id : null;
-                if (!Number.isInteger(targetTabId)) {
-                    sendResponse({ success: false, error: 'NO_TARGET_TAB' });
-                    return;
-                }
+                    if (chrome.runtime.lastError) {
+                        sendResponse({
+                            success: false,
+                            error: chrome.runtime.lastError.message || 'CREATE_TAB_FAILED'
+                        });
+                        return;
+                    }
 
-                sendResponse({ success: true, tabId: targetTabId });
-            });
+                    const targetTabId = tab && Number.isInteger(tab.id) ? tab.id : null;
+                    if (!Number.isInteger(targetTabId)) {
+                        sendResponse({ success: false, error: 'NO_TARGET_TAB' });
+                        return;
+                    }
+
+                    sendResponse({ success: true, tabId: targetTabId });
+                });
+            };
+
+            createTab(createProperties);
 
             return true;
         }

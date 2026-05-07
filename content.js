@@ -58,6 +58,7 @@
   const ID_CARD_CHECK_CHOICE_DIALOG_ID = 'dup-id-card-check-choice-dialog';
   const ID_CARD_CHECK_ACTION_DIALOG_ID = 'dup-id-card-check-action-dialog';
   const ID_CARD_CHECK_NAV_ID = 'dup-id-card-check-nav';
+  const ID_CARD_CHECK_TAB_REBIND_TTL_MS = 10 * 60 * 1000;
   const GRID_CARD_CHECK_NAV_ID = 'dup-grid-card-check-nav';
   const GRID_CARD_CHECK_CHOICE_DIALOG_ID = 'dup-grid-card-check-choice-dialog';
   const EXECUTION_ANALYSIS_STATUS_IDLE = 'idle';
@@ -2458,13 +2459,29 @@
   async function syncIdCardCheckStateWithCurrentUrl() {
     const state = normalizeIdCardCheckState(idCardCheckState);
     if (!state.edocIds.length || !isIdCardCheckFullcardPath()) return state;
-    if (!(await isCurrentIdCardCheckManagedTab())) return state;
 
     const currentEdocId = getIdCardCheckEdocIdFromPath();
     const currentIndex = state.edocIds.indexOf(currentEdocId);
-    if (currentIndex < 0 || currentIndex === state.currentIndex) return state;
+    if (currentIndex < 0) return state;
+
+    const tabId = await getCurrentTabIdForExecutionAnalysis();
+    if (tabId <= 0) return state;
+
+    const isManagedTab = state.tabId > 0 && tabId === state.tabId;
+    if (!isManagedTab) {
+      const expectedEdocId = state.edocIds[state.currentIndex] || '';
+      const ageMs = Date.now() - (Number(state.updatedAt || 0) || 0);
+      const canRebindTab = currentEdocId === expectedEdocId &&
+        ageMs >= 0 &&
+        ageMs <= ID_CARD_CHECK_TAB_REBIND_TTL_MS;
+
+      if (!canRebindTab) return state;
+    }
+
+    if (isManagedTab && currentIndex === state.currentIndex) return state;
     return persistIdCardCheckState({
       ...state,
+      tabId,
       currentIndex
     });
   }
