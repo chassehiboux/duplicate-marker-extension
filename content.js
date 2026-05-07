@@ -2286,16 +2286,23 @@
   async function openIdCardCheckActionTab(actionKey, edocId) {
     const targetUrl = buildIdCardCheckActionUrl(actionKey, edocId);
     if (!targetUrl) return false;
+    return openIdCardCheckUrlInTab(targetUrl);
+  }
+
+  async function openIdCardCheckUrlInTab(targetUrl) {
+    const normalizedUrl = String(targetUrl || '').trim();
+    if (!normalizedUrl) return false;
+
     const response = await sendRuntimeMessage({
       action: 'ID_CARD_CHECK_OPEN_TAB',
       data: {
-        url: targetUrl,
+        url: normalizedUrl,
         active: true
       }
     });
     if (response && response.success === true) return true;
 
-    const opened = window.open(targetUrl, '_blank', 'noopener');
+    const opened = window.open(normalizedUrl, '_blank', 'noopener');
     return !!opened;
   }
 
@@ -2332,6 +2339,7 @@
           <button type="button" class="dup-id-card-check-action-item" data-action="execution-analysis">Анализ исполнения</button>
           <button type="button" class="dup-id-card-check-action-item" data-action="solidarity-type">Установить вид солидарности</button>
           <button type="button" class="dup-id-card-check-action-item" data-action="markers-ovzid">Маркировка ВЗИД</button>
+          <button type="button" class="dup-id-card-check-action-item" data-action="open-card-tab" disabled>Открыть карточку в отдельной вкладке</button>
         </div>
       </div>
     `;
@@ -2350,6 +2358,14 @@
       const edocId = normalizeExecutionAnalysisText(modal.dataset.edocId);
       if (!actionKey || !edocId) return;
       close();
+      if (actionKey === 'open-card-tab') {
+        const cardUrl = normalizeExecutionAnalysisText(modal.dataset.iframeCardUrl);
+        if (!cardUrl) return;
+        void openIdCardCheckUrlInTab(cardUrl).then((success) => {
+          if (!success) window.alert('Не удалось открыть карточку ИД в отдельной вкладке.');
+        });
+        return;
+      }
       void openIdCardCheckActionTab(actionKey, edocId).then((success) => {
         if (!success) window.alert('Не удалось открыть вкладку действия.');
       });
@@ -2357,6 +2373,39 @@
 
     (document.body || document.documentElement).appendChild(modal);
     return modal;
+  }
+
+  function resolveIdCardCheckIframeCardUrl(anchorEl, edocId) {
+    const anchor = anchorEl instanceof HTMLElement
+      ? anchorEl.closest('.dup-grid-card-check-nav')
+      : null;
+    if (!(anchor instanceof HTMLElement)) return '';
+
+    const iframe = getGridCardCheckIframe();
+    const normalizedEdocId = normalizeExecutionAnalysisText(edocId);
+    if (!(iframe instanceof HTMLIFrameElement) || !normalizedEdocId) return '';
+
+    const iframeUrl = getGridCardCheckIframeUrl(iframe);
+    const iframeEdocId = getEdocIdFromFullcardUrl(iframeUrl) ||
+      normalizeExecutionAnalysisText(iframe.dataset.dupGridCardEdocId) ||
+      getEdocIdFromFullcardUrl(iframe.src);
+    if (iframeEdocId && iframeEdocId !== normalizedEdocId) return '';
+
+    return iframeUrl || buildIdCardCheckFullcardUrl(normalizedEdocId);
+  }
+
+  function syncIdCardCheckOpenCardTabAction(modal, cardUrl) {
+    const button = modal instanceof HTMLElement
+      ? modal.querySelector('.dup-id-card-check-action-item[data-action="open-card-tab"]')
+      : null;
+    if (!(button instanceof HTMLButtonElement)) return;
+
+    const normalizedUrl = normalizeExecutionAnalysisText(cardUrl);
+    modal.dataset.iframeCardUrl = normalizedUrl;
+    button.disabled = !normalizedUrl;
+    button.title = normalizedUrl
+      ? 'Открыть текущую iframe-карточку ИД в отдельной вкладке'
+      : 'Доступно только для карточки ИД, открытой в iframe';
   }
 
   function resetIdCardCheckAnchoredDialog(modal) {
@@ -2443,6 +2492,7 @@
     const modal = createIdCardCheckActionDialog();
     attachIdCardCheckAnchoredDialog(modal, anchorEl);
     modal.dataset.edocId = normalizedEdocId;
+    syncIdCardCheckOpenCardTabAction(modal, resolveIdCardCheckIframeCardUrl(anchorEl, normalizedEdocId));
     const current = modal.querySelector('.dup-id-card-check-action-current');
     if (current instanceof HTMLElement) {
       current.textContent = `Текущий EdocID: ${normalizedEdocId}`;

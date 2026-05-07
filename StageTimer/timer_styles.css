@@ -625,6 +625,16 @@ html.dup-ext-screenshot-mode [aria-label="Показать таймер"] {
     background: rgba(47, 125, 107, 0.08);
 }
 
+.dup-id-card-check-action-item:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+}
+
+.dup-id-card-check-action-item:disabled:hover {
+    border-color: rgba(47, 125, 107, 0.28);
+    background: #fff;
+}
+
 .dup-extension-ui-settings-list {
     display: grid;
     gap: 10px;
