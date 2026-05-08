@@ -458,12 +458,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   const inputsStrict = ['strict_CaseNumber', 'strict_EDNumber'];
   const copyModeToggle = document.getElementById('setting_copy_mode');
   const highlightModeToggle = document.getElementById('setting_highlight_mode');
+  const departmentContainersToggle = document.getElementById('setting_department_containers');
   
   const allSettings = [
     ...inputsSearch, 
     ...inputsStrict, 
     'setting_copy_mode', 
     'setting_highlight_mode', 
+    'setting_department_containers',
     'setting_notify_execution', 
     'setting_notify_editing'
   ];
@@ -482,6 +484,10 @@ document.addEventListener('DOMContentLoaded', async () => {
       items['setting_notify_editing'] = true;
       chrome.storage.local.set({ 'setting_notify_editing': true });
     }
+    if (items['setting_department_containers'] === undefined) {
+      items['setting_department_containers'] = true;
+      chrome.storage.local.set({ 'setting_department_containers': true });
+    }
     inputsSearch.forEach(id => {
       if (items[id] === undefined) {
         items[id] = true; // По умолчанию включены
@@ -492,6 +498,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Применение загруженных или установленных по умолчанию значений
     if (copyModeToggle) copyModeToggle.checked = items['setting_copy_mode'];
     if (highlightModeToggle) highlightModeToggle.checked = items['setting_highlight_mode'] || false;
+    if (departmentContainersToggle) departmentContainersToggle.checked = items['setting_department_containers'] !== false;
     if (notifyExecutionToggle) notifyExecutionToggle.checked = items['setting_notify_execution'];
     if (notifyEditingToggle) notifyEditingToggle.checked = items['setting_notify_editing'];
     
@@ -519,6 +526,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Применение слушателей
   createSettingChangeListener('setting_copy_mode');
   createSettingChangeListener('setting_highlight_mode');
+  createSettingChangeListener('setting_department_containers');
   createSettingChangeListener('setting_notify_execution');
   createSettingChangeListener('setting_notify_editing');
 

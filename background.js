@@ -36,6 +36,8 @@ function createVzidToken() {
 // --- Утилита для логирования ---
 const LOG_KEY = 'extension_logs'; // Ключ для хранения логов в chrome.storage
 const MAX_LOG_ENTRIES = 100; // Максимальное количество записей в логе
+const DEPARTMENT_CONTAINER_STORAGE_KEY = 'dup_department_container_cookie_stores_v1';
+const DEPARTMENT_CONTAINER_ICON = 'briefcase';
 
 const addLog = (message) => {
   try {
@@ -67,6 +69,185 @@ function createExtensionNotification(options) {
     } catch (e) {
         addLog(`Ошибка уведомления: ${e.message}`);
     }
+}
+
+function getContextualIdentitiesApi() {
+    if (typeof browser !== 'undefined' && browser.contextualIdentities) {
+        return { api: browser.contextualIdentities, promise: true };
+    }
+    if (typeof chrome !== 'undefined' && chrome.contextualIdentities) {
+        return { api: chrome.contextualIdentities, promise: false };
+    }
+    return null;
+}
+
+function isDepartmentContainerSupported() {
+    return !!(
+        getContextualIdentitiesApi() &&
+        chrome.tabs &&
+        typeof chrome.tabs.create === 'function'
+    );
+}
+
+function callContextualIdentityApi(method, ...args) {
+    const apiInfo = getContextualIdentitiesApi();
+    if (!apiInfo || typeof apiInfo.api[method] !== 'function') {
+        return Promise.reject(new Error('CONTEXTUAL_IDENTITIES_UNSUPPORTED'));
+    }
+
+    if (apiInfo.promise) {
+        return apiInfo.api[method](...args);
+    }
+
+    return new Promise((resolve, reject) => {
+        try {
+            apiInfo.api[method](...args, (result) => {
+                const runtimeError = chrome.runtime && chrome.runtime.lastError
+                    ? chrome.runtime.lastError.message
+                    : '';
+                if (runtimeError) {
+                    reject(new Error(runtimeError));
+                    return;
+                }
+                resolve(result);
+            });
+        } catch (error) {
+            reject(error);
+        }
+    });
+}
+
+function chromeStorageGetAsync(keys) {
+    return new Promise((resolve) => {
+        try {
+            chrome.storage.local.get(keys, (result) => resolve(result || {}));
+        } catch (error) {
+            resolve({});
+        }
+    });
+}
+
+function chromeStorageSetAsync(values) {
+    return new Promise((resolve) => {
+        try {
+            chrome.storage.local.set(values, () => resolve(true));
+        } catch (error) {
+            resolve(false);
+        }
+    });
+}
+
+function normalizeDepartmentContainerTarget(data) {
+    const raw = data && typeof data === 'object' ? data : {};
+    const depid = String(raw.depid || '').trim();
+    const url = String(raw.url || '').trim();
+    const title = String(raw.title || '').trim();
+    const color = String(raw.color || '').trim();
+    const allowedColors = new Set(['blue', 'turquoise', 'green', 'yellow', 'orange', 'red', 'pink', 'purple', 'toolbar']);
+
+    if (!depid || !url || !title || !allowedColors.has(color)) return null;
+
+    try {
+        const parsedUrl = new URL(url);
+        if (parsedUrl.protocol !== 'https:') return null;
+    } catch (error) {
+        return null;
+    }
+
+    return {
+        depid,
+        url,
+        title,
+        color,
+        icon: DEPARTMENT_CONTAINER_ICON
+    };
+}
+
+async function getDepartmentContainerMap() {
+    const stored = await chromeStorageGetAsync(DEPARTMENT_CONTAINER_STORAGE_KEY);
+    const rawMap = stored[DEPARTMENT_CONTAINER_STORAGE_KEY];
+    return rawMap && typeof rawMap === 'object' ? rawMap : {};
+}
+
+async function setDepartmentContainerMap(nextMap) {
+    await chromeStorageSetAsync({ [DEPARTMENT_CONTAINER_STORAGE_KEY]: nextMap || {} });
+}
+
+async function queryAllContextualIdentities() {
+    try {
+        const identities = await callContextualIdentityApi('query', {});
+        return Array.isArray(identities) ? identities : [];
+    } catch (error) {
+        return [];
+    }
+}
+
+async function ensureDepartmentContainer(target) {
+    if (!isDepartmentContainerSupported()) {
+        throw new Error('CONTEXTUAL_IDENTITIES_UNSUPPORTED');
+    }
+
+    const map = await getDepartmentContainerMap();
+    const identities = await queryAllContextualIdentities();
+    const storedCookieStoreId = String(map[target.depid] || '').trim();
+    let identity = storedCookieStoreId
+        ? identities.find((item) => item && item.cookieStoreId === storedCookieStoreId)
+        : null;
+
+    if (!identity) {
+        identity = identities.find((item) => item && item.name === target.title) || null;
+    }
+
+    if (identity && identity.cookieStoreId) {
+        if (identity.name !== target.title || identity.color !== target.color || identity.icon !== target.icon) {
+            try {
+                identity = await callContextualIdentityApi('update', identity.cookieStoreId, {
+                    name: target.title,
+                    color: target.color,
+                    icon: target.icon
+                });
+            } catch (error) {
+                addLog(`Не удалось обновить контейнер ${target.title}: ${error.message || error}`);
+            }
+        }
+        if (map[target.depid] !== identity.cookieStoreId) {
+            map[target.depid] = identity.cookieStoreId;
+            await setDepartmentContainerMap(map);
+        }
+        return identity;
+    }
+
+    const created = await callContextualIdentityApi('create', {
+        name: target.title,
+        color: target.color,
+        icon: target.icon
+    });
+    if (!created || !created.cookieStoreId) {
+        throw new Error('CONTAINER_CREATE_FAILED');
+    }
+
+    map[target.depid] = created.cookieStoreId;
+    await setDepartmentContainerMap(map);
+    return created;
+}
+
+function createTabAsync(createProperties) {
+    return new Promise((resolve, reject) => {
+        try {
+            chrome.tabs.create(createProperties, (tab) => {
+                const runtimeError = chrome.runtime && chrome.runtime.lastError
+                    ? chrome.runtime.lastError.message
+                    : '';
+                if (runtimeError) {
+                    reject(new Error(runtimeError));
+                    return;
+                }
+                resolve(tab || null);
+            });
+        } catch (error) {
+            reject(error);
+        }
+    });
 }
 
 // --- Функция надежной отправки (POST + Retry) ---
@@ -451,6 +632,72 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             }
             sendResponse({ success: true, tabId });
             return false;
+        }
+
+        case 'DEPARTMENT_CONTAINER_GET_SUPPORT': {
+            sendResponse({
+                success: true,
+                supported: isDepartmentContainerSupported()
+            });
+            return false;
+        }
+
+        case 'DEPARTMENT_CONTAINER_OPEN_TAB': {
+            const sourceTabId = sender && sender.tab ? sender.tab.id : null;
+            const sourceWindowId = sender && sender.tab ? sender.tab.windowId : null;
+            const target = normalizeDepartmentContainerTarget(request && request.data);
+
+            if (!Number.isInteger(sourceTabId)) {
+                sendResponse({ success: false, error: 'NO_SOURCE_TAB' });
+                return false;
+            }
+
+            if (!target) {
+                sendResponse({ success: false, error: 'INVALID_DEPARTMENT_CONTAINER_TARGET' });
+                return false;
+            }
+
+            if (!isDepartmentContainerSupported()) {
+                sendResponse({ success: false, error: 'CONTEXTUAL_IDENTITIES_UNSUPPORTED' });
+                return false;
+            }
+
+            (async () => {
+                try {
+                    const identity = await ensureDepartmentContainer(target);
+                    const createProperties = {
+                        url: target.url,
+                        active: true,
+                        cookieStoreId: identity.cookieStoreId
+                    };
+                    if (Number.isInteger(sourceWindowId)) {
+                        createProperties.windowId = sourceWindowId;
+                    }
+                    if (Number.isInteger(sourceTabId)) {
+                        createProperties.openerTabId = sourceTabId;
+                    }
+
+                    const tab = await createTabAsync(createProperties);
+                    const targetTabId = tab && Number.isInteger(tab.id) ? tab.id : null;
+                    if (!Number.isInteger(targetTabId)) {
+                        sendResponse({ success: false, error: 'NO_TARGET_TAB' });
+                        return;
+                    }
+
+                    sendResponse({
+                        success: true,
+                        tabId: targetTabId,
+                        cookieStoreId: identity.cookieStoreId
+                    });
+                } catch (error) {
+                    sendResponse({
+                        success: false,
+                        error: error && error.message ? error.message : 'DEPARTMENT_CONTAINER_OPEN_FAILED'
+                    });
+                }
+            })();
+
+            return true;
         }
 
         case 'EXECUTION_ANALYSIS_OPEN_TAB':

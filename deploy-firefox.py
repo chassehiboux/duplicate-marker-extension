@@ -376,8 +376,9 @@ def create_firefox_manifest(version, update_manifest_url):
         permission for permission in manifest.get('permissions', [])
         if permission not in {'sidePanel', 'debugger'}
     ]
-    if 'cookies' not in manifest['permissions']:
-        manifest['permissions'].append('cookies')
+    for firefox_permission in ('cookies', 'contextualIdentities'):
+        if firefox_permission not in manifest['permissions']:
+            manifest['permissions'].append(firefox_permission)
 
     firefox_icons = {
         '16': 'icons/icon-16.png',

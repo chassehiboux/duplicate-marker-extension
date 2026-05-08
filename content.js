@@ -138,6 +138,75 @@
   const DEPARTMENT_ALLOWED_DEPID_ORDER_INDEX = new Map(
     DEPARTMENT_ALLOWED_DEPIDS_ORDER.map((depid, index) => [depid, index])
   );
+  const DEPARTMENT_CONTAINER_MODE_STORAGE_KEY = 'setting_department_containers';
+  const DEPARTMENT_CONTAINER_HOST_COLORS = Object.freeze({
+    'kgn.pyramid.vostok-electra.ru': 'green',
+    'pyramid.vostok-electra.ru': 'blue',
+    'yuric.pyramid.vostok-electra.ru': 'yellow',
+    '81.pyramid.vostok-electra.ru': 'red'
+  });
+  const DEPARTMENT_CONTAINER_CONFIG = Object.freeze({
+    '6': { title: 'Ноябрьск', host: 'pyramid.vostok-electra.ru' },
+    '11': { title: 'Тюмень', host: 'pyramid.vostok-electra.ru' },
+    '12': { title: 'Ялуторовск', host: 'pyramid.vostok-electra.ru' },
+    '14': { title: 'Заводоуковск', host: 'pyramid.vostok-electra.ru' },
+    '16': { title: 'Ишим', host: 'pyramid.vostok-electra.ru' },
+    '19': { title: 'Тобольск', host: 'pyramid.vostok-electra.ru' },
+    '24': { title: 'Демьянка', host: 'pyramid.vostok-electra.ru' },
+    '26': { title: 'Тюменьремстрой', host: 'pyramid.vostok-electra.ru' },
+    '27': { title: 'Надым', host: 'pyramid.vostok-electra.ru' },
+    '28': { title: 'Муравленко', host: 'pyramid.vostok-electra.ru' },
+    '29': { title: 'Салехард', host: 'pyramid.vostok-electra.ru' },
+    '30': { title: 'Приуральский', host: 'pyramid.vostok-electra.ru' },
+    '31': { title: 'Пуровский', host: 'pyramid.vostok-electra.ru' },
+    '32': { title: 'Лабытнанги', host: 'pyramid.vostok-electra.ru' },
+    '33': { title: 'Шурышкарский', host: 'pyramid.vostok-electra.ru' },
+    '34': { title: 'Губкинский', host: 'pyramid.vostok-electra.ru' },
+    '35': { title: 'Тазовский', host: 'pyramid.vostok-electra.ru' },
+    '36': { title: 'Газ-Сале', host: 'pyramid.vostok-electra.ru' },
+    '37': { title: 'Харп', host: 'pyramid.vostok-electra.ru' },
+    '38': { title: 'Яр-Сале', host: 'pyramid.vostok-electra.ru' },
+    '39': { title: 'Курган', host: 'kgn.pyramid.vostok-electra.ru' },
+    '40': { title: 'Шадринск', host: 'kgn.pyramid.vostok-electra.ru' },
+    '41': { title: 'РИЦ', host: 'pyramid.vostok-electra.ru' },
+    '43': { title: 'Курган-Восточный', host: 'kgn.pyramid.vostok-electra.ru' },
+    '44': { title: 'УК Юг', host: 'pyramid.vostok-electra.ru' },
+    '45': { title: 'УК Север', host: 'pyramid.vostok-electra.ru' },
+    '46': { title: 'Уют', host: 'pyramid.vostok-electra.ru' },
+    '47': { title: 'ЗапСибУК', host: 'pyramid.vostok-electra.ru' },
+    '50': { title: 'УК Запад', host: 'pyramid.vostok-electra.ru' },
+    '51': { title: 'ЖилсервисУют', host: 'pyramid.vostok-electra.ru' },
+    '52': { title: 'Комфортный дом', host: 'pyramid.vostok-electra.ru' },
+    '53': { title: 'Шанс', host: 'pyramid.vostok-electra.ru' },
+    '54': { title: 'Утешево', host: 'pyramid.vostok-electra.ru' },
+    '55': { title: 'Тюменьремстрой 2', host: 'pyramid.vostok-electra.ru' },
+    '56': { title: 'Красноселькуп', host: 'pyramid.vostok-electra.ru' },
+    '57': { title: 'Гармония', host: 'pyramid.vostok-electra.ru' },
+    '58': { title: 'ЖЭУ 9', host: 'pyramid.vostok-electra.ru' },
+    '59': { title: 'Ялуторовск (СУЭНКО)', host: 'pyramid.vostok-electra.ru' },
+    '60': { title: 'Заводоуковск (СУЭНКО)', host: 'pyramid.vostok-electra.ru' },
+    '61': { title: 'Ишим (СУЭНКО)', host: 'pyramid.vostok-electra.ru' },
+    '62': { title: 'Дударева', host: 'pyramid.vostok-electra.ru' },
+    '63': { title: 'ЖСК 32', host: 'pyramid.vostok-electra.ru' },
+    '64': { title: 'УК ЖКХ', host: 'pyramid.vostok-electra.ru' },
+    '66': { title: 'Тюм. и Тюм. уч. АСРН', host: 'pyramid.vostok-electra.ru' },
+    '67': { title: 'Оренбург', host: 'pyramid.vostok-electra.ru' },
+    '68': { title: 'ТЭО (ТРИЦ)', host: 'pyramid.vostok-electra.ru' },
+    '69': { title: 'РИФЕЙ', host: 'pyramid.vostok-electra.ru' },
+    '70': { title: 'ЮРИЦ', host: 'yuric.pyramid.vostok-electra.ru' },
+    '71': { title: 'МКП Водоканал', host: 'kgn.pyramid.vostok-electra.ru' },
+    '72': { title: 'ТЭО', host: 'pyramid.vostok-electra.ru' },
+    '77': { title: 'Югра-Экология', host: 'yuric.pyramid.vostok-electra.ru' },
+    '81': { title: 'ЧЭС', host: '81.pyramid.vostok-electra.ru' },
+    '82': { title: 'ТКС', host: 'pyramid.vostok-electra.ru' },
+    '83': { title: 'Новый Уренгой', host: 'pyramid.vostok-electra.ru' },
+    '84': { title: 'Фонд капит. ремонта', host: 'pyramid.vostok-electra.ru' },
+    '86': { title: 'Объед. ЕРИЦ', host: 'pyramid.vostok-electra.ru' },
+    '87': { title: 'Объед. РИЦ', host: 'pyramid.vostok-electra.ru' },
+    '88': { title: 'Объед. Восток', host: 'pyramid.vostok-electra.ru' },
+    '89': { title: 'Объед. Курган', host: 'pyramid.vostok-electra.ru' },
+    '92': { title: 'ЗАСК', host: 'yuric.pyramid.vostok-electra.ru' }
+  });
   const GRID_ABORT_REWRITE_EVENT = 'dup-grid-abort-message';
   const GRID_ABORT_REWRITE_TEXT = 'Загрузка/Фильтрация была прервана пользователем вручную. Повторите действие заново.';
   const FSSP_REESTR_PATH_PART = '/ovzid/fsspreestr';
@@ -560,6 +629,8 @@
   let stageJumpLastStageTimerErrorAtMs = 0;
   let departmentDropdownShowHidden = false;
   let departmentDropdownInteractionLockUntilMs = 0;
+  let departmentContainerModeEnabled = true;
+  let departmentContainersSupported = false;
   const executionAnalysisPageId = createExecutionAnalysisPageId();
   let executionAnalysisState = createEmptyExecutionAnalysisState();
   let executionAnalysisParams = normalizeExecutionAnalysisParams(null);
@@ -3719,6 +3790,163 @@
     return 0;
   }
 
+  function normalizeDepartmentContainerHost(hostname) {
+    return String(hostname || '').trim().toLowerCase();
+  }
+
+  function getDepartmentContainerColor(hostname) {
+    const normalizedHost = normalizeDepartmentContainerHost(hostname);
+    return DEPARTMENT_CONTAINER_HOST_COLORS[normalizedHost] || 'blue';
+  }
+
+  function getDepartmentLinkDepid(targetLink) {
+    if (!(targetLink instanceof HTMLAnchorElement)) return '';
+
+    const attrDepid = String(
+      targetLink.getAttribute('data-depid') ||
+      targetLink.getAttribute('depid') ||
+      ''
+    ).trim();
+    if (attrDepid) return attrDepid;
+
+    try {
+      const targetUrl = new URL(targetLink.href || targetLink.getAttribute('href') || '', window.location.origin);
+      const match = String(targetUrl.pathname || '').match(/\/login\/department\/(\d+)(?:\/|$)/i);
+      return match ? match[1] : '';
+    } catch (error) {
+      return '';
+    }
+  }
+
+  function getDepartmentContainerTarget(targetLink, targetUrlValue = '') {
+    if (!(targetLink instanceof HTMLAnchorElement)) return null;
+
+    const depid = getDepartmentLinkDepid(targetLink);
+    const config = DEPARTMENT_CONTAINER_CONFIG[depid];
+    if (!depid || !config) return null;
+
+    const targetUrlText = String(targetUrlValue || buildDepartmentNavigationUrl(targetLink) || '').trim();
+    if (!targetUrlText) return null;
+
+    let targetUrl = null;
+    try {
+      targetUrl = new URL(targetUrlText, window.location.origin);
+    } catch (error) {
+      return null;
+    }
+
+    const targetHost = normalizeDepartmentContainerHost(targetUrl.hostname || config.host);
+    const expectedHost = normalizeDepartmentContainerHost(config.host || targetHost);
+    const colorHost = DEPARTMENT_CONTAINER_HOST_COLORS[targetHost] ? targetHost : expectedHost;
+
+    return {
+      depid,
+      url: targetUrl.toString(),
+      title: String(config.title || '').trim(),
+      host: expectedHost || targetHost,
+      color: getDepartmentContainerColor(colorHost)
+    };
+  }
+
+  async function refreshDepartmentContainersSupport() {
+    const response = await sendRuntimeMessage({ action: 'DEPARTMENT_CONTAINER_GET_SUPPORT' });
+    departmentContainersSupported = !!(response && response.success === true && response.supported === true);
+    return departmentContainersSupported;
+  }
+
+  function getActiveDepartmentContainerTarget() {
+    const activeLink = document.querySelector(`${SLOWSEARCH_CITIES_LINK_SELECTOR}.active`);
+    if (activeLink instanceof HTMLAnchorElement) {
+      const target = getDepartmentContainerTarget(activeLink);
+      if (target) return target;
+    }
+
+    const currentUrl = new URL(window.location.href);
+    const host = normalizeDepartmentContainerHost(currentUrl.hostname);
+    const candidates = Object.entries(DEPARTMENT_CONTAINER_CONFIG)
+      .filter(([, config]) => normalizeDepartmentContainerHost(config.host) === host);
+    return candidates.length === 1
+      ? {
+          depid: candidates[0][0],
+          url: window.location.href,
+          title: candidates[0][1].title,
+          host,
+          color: getDepartmentContainerColor(host)
+        }
+      : null;
+  }
+
+  function syncDepartmentContainerPageTitle() {
+    if (!departmentContainerModeEnabled || !departmentContainersSupported || !isPyramidExtensionPage()) return;
+    const target = getActiveDepartmentContainerTarget();
+    if (!target || !target.title) return;
+    if (document.title !== target.title) {
+      document.title = target.title;
+    }
+  }
+
+  function scheduleDepartmentContainerTitleSync() {
+    window.setTimeout(syncDepartmentContainerPageTitle, 0);
+    window.setTimeout(syncDepartmentContainerPageTitle, 500);
+    window.setTimeout(syncDepartmentContainerPageTitle, 1500);
+    window.setTimeout(syncDepartmentContainerPageTitle, 4000);
+  }
+
+  async function openDepartmentContainerTab(targetLink, targetUrlValue = '') {
+    if (!departmentContainerModeEnabled || !departmentContainersSupported) return false;
+
+    const target = getDepartmentContainerTarget(targetLink, targetUrlValue);
+    if (!target) return false;
+
+    const response = await sendRuntimeMessage({
+      action: 'DEPARTMENT_CONTAINER_OPEN_TAB',
+      data: target
+    });
+    return !!(response && response.success === true);
+  }
+
+  function isDepartmentContainerClickEvent(event) {
+    if (!event || event.defaultPrevented) return false;
+    if (event.type !== 'click') return false;
+    if (event.button !== 0) return false;
+    if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return false;
+    if (event.isTrusted === false) return false;
+    return true;
+  }
+
+  function handleDepartmentContainerClick(event) {
+    if (!departmentContainerModeEnabled || !departmentContainersSupported) return;
+    if (!isPyramidExtensionPage()) return;
+    if (!isDepartmentContainerClickEvent(event)) return;
+
+    const targetLink = event.target instanceof Element
+      ? event.target.closest(SLOWSEARCH_CITIES_LINK_SELECTOR)
+      : null;
+    if (!(targetLink instanceof HTMLAnchorElement)) return;
+
+    const targetUrl = buildDepartmentNavigationUrl(targetLink);
+    if (!targetUrl || !getDepartmentContainerTarget(targetLink, targetUrl)) return;
+
+    suppressHotkeyEvent(event);
+    void openDepartmentContainerTab(targetLink, targetUrl).then((opened) => {
+      if (!opened) {
+        window.location.assign(targetUrl);
+      }
+    });
+  }
+
+  function initDepartmentContainerMode() {
+    if (!isPyramidExtensionPage()) return;
+
+    document.addEventListener('click', handleDepartmentContainerClick, true);
+    chrome.storage.local.get([DEPARTMENT_CONTAINER_MODE_STORAGE_KEY], (settings) => {
+      departmentContainerModeEnabled = settings[DEPARTMENT_CONTAINER_MODE_STORAGE_KEY] !== false;
+      void refreshDepartmentContainersSupport().then(() => {
+        scheduleDepartmentContainerTitleSync();
+      });
+    });
+  }
+
   function getDepartmentNavigationItems() {
     const dropdownContent = getDepartmentDropdownContents().find((content) => {
       return !!content.querySelector(`${SLOWSEARCH_CITIES_LINK_SELECTOR}.active`);
@@ -3771,10 +3999,11 @@
     }
   }
 
-  function navigateToDepartmentByHotkey(targetLink) {
+  async function navigateToDepartmentByHotkey(targetLink) {
     if (!(targetLink instanceof HTMLAnchorElement)) return false;
     const targetUrl = buildDepartmentNavigationUrl(targetLink);
     if (!targetUrl) return false;
+    if (await openDepartmentContainerTab(targetLink, targetUrl)) return true;
     window.location.assign(targetUrl);
     return true;
   }
@@ -3809,7 +4038,7 @@
     if (!targetEntry) return;
 
     suppressHotkeyEvent(event);
-    navigateToDepartmentByHotkey(targetEntry.link);
+    void navigateToDepartmentByHotkey(targetEntry.link);
   }
 
   function initDepartmentNavigationHotkeys() {
@@ -5048,6 +5277,11 @@
 
       if (key === DEPARTMENT_DROPDOWN_STATE_STORAGE_KEY) {
         departmentDropdownShowHidden = changes[key].newValue === true;
+      }
+
+      if (key === DEPARTMENT_CONTAINER_MODE_STORAGE_KEY) {
+        departmentContainerModeEnabled = changes[key].newValue !== false;
+        scheduleDepartmentContainerTitleSync();
       }
 
       if (key === EXECUTION_ANALYSIS_PARAMS_STORAGE_KEY) {
@@ -7965,6 +8199,7 @@
   initIdCardCheckNavigation();
   initGridCardCheckNavigation();
   void initExecutionAnalysisWorkerPage();
+  initDepartmentContainerMode();
   initDepartmentNavigationHotkeys();
   initDepartmentDropdownFilter();
   initStageJumpButtons();
