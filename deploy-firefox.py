@@ -15,6 +15,7 @@ SOURCE_DIR = Path(__file__).resolve().parent
 MANIFEST_PATH = SOURCE_DIR / 'manifest.json'
 ROOT_VERSION_FILE_PATH = SOURCE_DIR / 'version.json'
 FIREFOX_VERSION_FILE_PATH = SOURCE_DIR / 'version-firefox.json'
+ENV_FILE_PATH = SOURCE_DIR / '.env'
 
 DESTINATION_REPO = Path(r'\\corp.vostok-electra.ru\Kgn\Отделы\Отдел взыскания по исполнительным документам\Зуйкевич Данил Иванович\Repository')
 PROJECT_NAME = SOURCE_DIR.name
@@ -94,6 +95,44 @@ def write_json(path, data):
     with open(path, 'w', encoding='utf-8', newline='\n') as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
         f.write('\n')
+
+
+def parse_env_value(raw_value):
+    value = str(raw_value or '').strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+        value = value[1:-1]
+    return value
+
+
+def load_env_file(path=ENV_FILE_PATH):
+    path = Path(path)
+    if not path.exists():
+        return []
+
+    loaded_keys = []
+    with open(path, 'r', encoding='utf-8') as f:
+        for line_number, raw_line in enumerate(f, start=1):
+            line = raw_line.strip()
+            if not line or line.startswith('#'):
+                continue
+            if line.startswith('export '):
+                line = line[len('export '):].strip()
+            if '=' not in line:
+                print(f"[WARN] .env:{line_number}: строка без '=' пропущена.")
+                continue
+
+            key, raw_value = line.split('=', 1)
+            key = key.strip()
+            if not key or not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', key):
+                print(f"[WARN] .env:{line_number}: некорректное имя переменной пропущено.")
+                continue
+            if key in os.environ:
+                continue
+
+            os.environ[key] = parse_env_value(raw_value)
+            loaded_keys.append(key)
+
+    return loaded_keys
 
 
 def normalize_base_url(base_url):
@@ -455,10 +494,21 @@ def run_checked(command, cwd=None, env=None):
 
 
 def prompt_amo_credentials():
-    print("\nВведите ключи Mozilla Add-ons. Ввод видимый, значения не сохраняются в файлы проекта.")
+    print("\nWEB_EXT_API_KEY/WEB_EXT_API_SECRET не найдены в окружении или .env.")
+    print("Можно заполнить .env в корне проекта, чтобы не вводить ключи вручную.")
+    print("Ввод видимый, значения не сохраняются в файлы проекта.")
     api_key = input("JWT issuer / WEB_EXT_API_KEY: ")
     api_secret = input("JWT secret / WEB_EXT_API_SECRET: ")
     return api_key, api_secret
+
+
+def get_amo_credentials():
+    api_key = os.environ.get('WEB_EXT_API_KEY', '').strip()
+    api_secret = os.environ.get('WEB_EXT_API_SECRET', '').strip()
+    if api_key and api_secret:
+        print("[OK] Ключи Mozilla Add-ons загружены из окружения/.env.")
+        return api_key, api_secret
+    return prompt_amo_credentials()
 
 
 def find_signed_xpi(artifacts_dir):
@@ -651,6 +701,10 @@ def collect_deploy_files(destination_dir, xpi_name):
 
 
 def parse_args():
+    loaded_env_keys = load_env_file()
+    if loaded_env_keys:
+        print(f"[INFO] Загружен .env: {', '.join(loaded_env_keys)}")
+
     parser = argparse.ArgumentParser(description='Собрать, подписать и задеплоить Firefox .xpi.')
     parser.add_argument(
         '--destination',
@@ -697,7 +751,7 @@ def main():
     update_base_url = normalize_base_url(args.update_base_url)
     update_manifest_url = make_update_manifest_url(update_base_url)
     web_ext = require_web_ext()
-    api_key, api_secret = prompt_amo_credentials()
+    api_key, api_secret = get_amo_credentials()
 
     version = bump_firefox_version()
 
