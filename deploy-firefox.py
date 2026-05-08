@@ -61,6 +61,11 @@ DIR_FILES = {
     'redirector': [
         'redirect_rules.json',
     ],
+    'GoogleSheets': [
+        'problem_picker_background.js',
+        'problem_picker_config.js',
+        'problem_picker_content.js',
+    ],
     'StageTimer': [
         'screenshot_hotkeys_bridge.js',
         'timer_background.js',
@@ -77,6 +82,7 @@ DIR_FILES = {
 FIREFOX_BACKGROUND_IMPORTS = [
     'Check_INN_DeathDate/inn_death_background.js',
     'support/support_background.js',
+    'GoogleSheets/problem_picker_background.js',
 ]
 
 

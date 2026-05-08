@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Помощник по Пирамиде",
-  "version": "2.0.42",
+  "version": "2.0.50",
   "description": "Авто-режим + Проверка ИНН/Смерти + Мониторинг скорости стадий",
   "permissions": [
     "activeTab",
@@ -54,6 +54,17 @@
         "column_manager.js"
       ],
       "run_at": "document_end",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "https://docs.google.com/spreadsheets/d/1A7bsMpcMegLvTIpdRBa06TD5RxGi64Cw3goYydbujNo/*"
+      ],
+      "js": [
+        "GoogleSheets/problem_picker_config.js",
+        "GoogleSheets/problem_picker_content.js"
+      ],
+      "run_at": "document_idle",
       "all_frames": false
     },
     {
