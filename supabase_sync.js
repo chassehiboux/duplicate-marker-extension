@@ -256,16 +256,59 @@
     return headers;
   }
 
+  function extractSupabaseErrorMessage(error) {
+    if (!error) return '';
+    if (typeof error === 'string') return error;
+    if (error instanceof Error && error.message) return error.message;
+
+    if (typeof error === 'object') {
+      const fields = [
+        'message',
+        'error_description',
+        'error',
+        'msg',
+        'detail',
+        'hint',
+        'code'
+      ];
+
+      for (const field of fields) {
+        const value = error[field];
+        if (typeof value === 'string' && value.trim()) {
+          return value.trim();
+        }
+        if (value && typeof value === 'object') {
+          const nestedMessage = extractSupabaseErrorMessage(value);
+          if (nestedMessage) return nestedMessage;
+        }
+      }
+
+      if (Array.isArray(error.errors) && error.errors.length) {
+        const nestedMessage = extractSupabaseErrorMessage(error.errors[0]);
+        if (nestedMessage) return nestedMessage;
+      }
+
+      try {
+        return JSON.stringify(error);
+      } catch (jsonError) {
+        return '';
+      }
+    }
+
+    return String(error);
+  }
+
   function localizeSupabaseError(error) {
-    const rawMessage = error && error.message ? String(error.message) : String(error || '');
-    const message = rawMessage || 'Неизвестная ошибка Supabase.';
+    const message = extractSupabaseErrorMessage(error) || 'Неизвестная ошибка Supabase.';
     const lower = message.toLowerCase();
     if (lower.includes('invalid login credentials')) return 'Неверная почта или пароль.';
     if (lower.includes('email not confirmed')) return 'Почта еще не подтверждена. Проверь письмо от Supabase и затем войди снова.';
-    if (lower.includes('user already registered')) return 'Пользователь с такой почтой уже зарегистрирован.';
-    if (lower.includes('password should be at least')) return 'Пароль слишком короткий.';
+    if (lower.includes('user already registered') || lower.includes('user already exists') || lower.includes('email_exists')) return 'Пользователь с такой почтой уже зарегистрирован.';
+    if (lower.includes('password should be at least') || lower.includes('weak_password')) return 'Пароль слишком короткий.';
+    if (lower.includes('email address') && lower.includes('invalid')) return 'Некорректная почта.';
+    if (lower.includes('signup_disabled')) return 'Регистрация отключена в настройках Supabase Auth.';
     if (lower.includes('token has expired') || lower.includes('invalid token')) return 'Код восстановления неверный или уже истек.';
-    if (lower.includes('rate limit')) return 'Слишком много попыток. Подожди немного и попробуй снова.';
+    if (lower.includes('rate limit') || lower.includes('over_email_send_rate_limit')) return 'Слишком много попыток. Подожди немного и попробуй снова.';
     return message;
   }
 

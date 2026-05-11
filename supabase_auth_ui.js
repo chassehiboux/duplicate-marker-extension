@@ -45,6 +45,22 @@
     });
   }
 
+  function stringifyStatusText(value) {
+    if (!value) return '';
+    if (typeof value === 'string') return value;
+    if (value && typeof value === 'object') {
+      if (typeof value.message === 'string') return value.message;
+      if (typeof value.error_description === 'string') return value.error_description;
+      if (typeof value.error === 'string') return value.error;
+      try {
+        return JSON.stringify(value);
+      } catch (error) {
+        return String(value);
+      }
+    }
+    return String(value);
+  }
+
   function initSupabaseAuthUi() {
     const root = $('supabase-auth-root');
     const mainButton = $('supabase-auth-main');
@@ -88,7 +104,7 @@
     let currentStatus = null;
 
     function setStatusText(text, isError = false) {
-      statusLine.textContent = text || '';
+      statusLine.textContent = stringifyStatusText(text);
       statusLine.classList.toggle('is-error', !!isError);
       root.classList.toggle('is-error', !!isError);
     }
