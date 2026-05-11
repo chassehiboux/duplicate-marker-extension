@@ -1,0 +1,16 @@
+interface:
+  display_name: "Supabase"
+  short_description: "Work with this project's Supabase backend"
+  brand_color: "#3ECF8E"
+  default_prompt: "Use $supabase to inspect and update this project's Supabase backend safely."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "supabase"
+      description: "Project-scoped Supabase MCP server with write access for database, docs, development, debugging, functions, storage, and branching tools."
+      transport: "streamable_http"
+      url: "https://mcp.supabase.com/mcp?project_ref=odljanxhmjysnduylvxz&features=account,database,debugging,development,docs,functions,storage,branching"
+
+policy:
+  allow_implicit_invocation: true
