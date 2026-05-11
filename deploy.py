@@ -22,10 +22,15 @@ DESTINATION_DIR = os.path.join(DESTINATION_REPO, PROJECT_NAME)
 # This prevents copying version control, caches, local build artifacts, and this script itself.
 IGNORE_PATTERNS = shutil.ignore_patterns(
     '.git',
+    '.agents',
+    '.codex',
+    '.mcp.json',
     '__pycache__',
     '*.pyc',
     'dist',
+    'supabase',
     'web-ext-artifacts',
+    'AGENTS.md',
     'deploy.py',
     'version-firefox.json',
 )

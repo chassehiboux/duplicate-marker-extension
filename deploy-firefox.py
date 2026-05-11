@@ -38,6 +38,8 @@ ROOT_FILES = [
     'extension_ui_config.js',
     'popup.html',
     'popup.js',
+    'supabase_auth_ui.js',
+    'supabase_sync.js',
     'version.json',
     'vzid_capture_preview.html',
     'vzid_capture_preview.js',
@@ -80,6 +82,7 @@ DIR_FILES = {
 }
 
 FIREFOX_BACKGROUND_IMPORTS = [
+    'supabase_sync.js',
     'Check_INN_DeathDate/inn_death_background.js',
     'support/support_background.js',
     'GoogleSheets/problem_picker_background.js',

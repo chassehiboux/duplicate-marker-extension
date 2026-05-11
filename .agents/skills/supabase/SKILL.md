@@ -22,6 +22,20 @@ metadata:
 - Logs: https://supabase.com/dashboard/project/odljanxhmjysnduylvxz/logs/explorer
 - Advisors: https://supabase.com/dashboard/project/odljanxhmjysnduylvxz/advisors
 
+## Extension Sync
+
+The browser extension syncs durable user data through `public.extension_user_state`.
+
+- One row per Supabase Auth user: `user_id uuid primary key references auth.users(id)`.
+- User data lives in `state jsonb`; `state_version` starts at `1`.
+- RLS is enabled. Authenticated users can select/insert/update/delete only their own row.
+- Local migration files live in `supabase/migrations/`.
+- Browser code uses only the publishable key and the user's Supabase Auth session. Never add service-role keys to extension files.
+
+When adding a new permanent extension storage key, update `supabase_sync.js` so the key is either synced or explicitly excluded. StageTimer data must stay outside Supabase sync and continue using Google Sheets.
+
+Password recovery in the sidepanel expects a recovery code from email. If the default Supabase recovery email sends only a link, update the Recovery email template in the Dashboard to include `{{ .Token }}`.
+
 ## Connection
 
 This repository stores portable MCP setup in git:

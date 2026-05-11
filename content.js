@@ -621,6 +621,7 @@
   let stageJumpActionMenuEl = null;
   let stageJumpActionMenuAnchor = null;
   let fsspReestrGroupingCurrentHost = null;
+  let fsspReestrGroupingPreference = null;
   let stageJumpLastStageLoadStartAtMs = 0;
   let stageJumpLastStageLoadType = '';
   let stageJumpLastStageLoadRequestUrl = '';
@@ -4535,6 +4536,9 @@
   }
 
   function isFsspReestrGroupingEnabled() {
+    if (typeof fsspReestrGroupingPreference === 'boolean') {
+      return fsspReestrGroupingPreference;
+    }
     try {
       const rawValue = window.localStorage.getItem(FSSP_REESTR_GROUPING_STORAGE_KEY);
       if (rawValue === '0' || rawValue === 'false') return false;
@@ -4545,12 +4549,38 @@
     return true;
   }
 
-  function saveFsspReestrGroupingPreference(isEnabled) {
+  function applyFsspReestrGroupingPreference(isEnabled, options = {}) {
+    const enabled = !!isEnabled;
+    fsspReestrGroupingPreference = enabled;
     try {
-      window.localStorage.setItem(FSSP_REESTR_GROUPING_STORAGE_KEY, isEnabled ? '1' : '0');
+      window.localStorage.setItem(FSSP_REESTR_GROUPING_STORAGE_KEY, enabled ? '1' : '0');
     } catch (error) {
       // ignore
     }
+    if (options.persist !== false) {
+      chrome.storage.local.set({ [FSSP_REESTR_GROUPING_STORAGE_KEY]: enabled });
+    }
+  }
+
+  function saveFsspReestrGroupingPreference(isEnabled) {
+    applyFsspReestrGroupingPreference(isEnabled, { persist: true });
+  }
+
+  function loadFsspReestrGroupingPreference() {
+    chrome.storage.local.get([FSSP_REESTR_GROUPING_STORAGE_KEY], (result) => {
+      const storedValue = result[FSSP_REESTR_GROUPING_STORAGE_KEY];
+      if (typeof storedValue === 'boolean') {
+        applyFsspReestrGroupingPreference(storedValue, { persist: false });
+        if (isFsspReestrPage()) {
+          ensureFsspReestrGroupingToggle();
+          runCheck();
+        }
+        return;
+      }
+
+      const localValue = isFsspReestrGroupingEnabled();
+      applyFsspReestrGroupingPreference(localValue, { persist: true });
+    });
   }
 
   function dispatchFsspReestrGroupingChange(isEnabled) {
@@ -5277,6 +5307,13 @@
 
       if (key === DEPARTMENT_DROPDOWN_STATE_STORAGE_KEY) {
         departmentDropdownShowHidden = changes[key].newValue === true;
+      }
+
+      if (key === FSSP_REESTR_GROUPING_STORAGE_KEY) {
+        applyFsspReestrGroupingPreference(changes[key].newValue !== false, { persist: false });
+        if (isFsspReestrPage()) {
+          dispatchFsspReestrGroupingChange(isFsspReestrGroupingEnabled());
+        }
       }
 
       if (key === DEPARTMENT_CONTAINER_MODE_STORAGE_KEY) {
@@ -6250,6 +6287,8 @@
 
   function initDepartmentDropdownFilter() {
     if (!isPyramidExtensionPage()) return;
+
+    loadFsspReestrGroupingPreference();
 
     chrome.storage.local.get([DEPARTMENT_DROPDOWN_STATE_STORAGE_KEY], (storedValues) => {
       departmentDropdownShowHidden = storedValues[DEPARTMENT_DROPDOWN_STATE_STORAGE_KEY] === true;

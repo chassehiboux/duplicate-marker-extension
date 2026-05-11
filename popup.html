@@ -161,9 +161,170 @@
         background-color: #f0f0f0;
         font-size: 12px;
     }
+
+    /* SUPABASE AUTH */
+    .supabase-auth-root {
+      margin-bottom: 12px;
+      border: 1px solid #d7dde3;
+      border-radius: 8px;
+      background: #f8fafc;
+      overflow: hidden;
+    }
+    .supabase-auth-main {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 10px;
+      border: 0;
+      background: transparent;
+      cursor: pointer;
+      text-align: left;
+      color: #1f2933;
+    }
+    .supabase-auth-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: #9aa5b1;
+      flex: 0 0 auto;
+    }
+    .supabase-auth-root.is-authenticated .supabase-auth-dot { background: #22a06b; }
+    .supabase-auth-root.is-error .supabase-auth-dot { background: #d64545; }
+    .supabase-auth-text {
+      min-width: 0;
+      flex: 1;
+    }
+    .supabase-auth-title {
+      display: block;
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1.2;
+    }
+    .supabase-auth-subtitle {
+      display: block;
+      margin-top: 2px;
+      font-size: 11px;
+      color: #52616b;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .supabase-auth-chevron {
+      color: #697886;
+      font-size: 12px;
+    }
+    .supabase-auth-panel {
+      border-top: 1px solid #d7dde3;
+      padding: 10px;
+      background: #fff;
+    }
+    .supabase-auth-panel[hidden] {
+      display: none;
+    }
+    .supabase-auth-fields {
+      display: grid;
+      gap: 7px;
+    }
+    .supabase-auth-fields input {
+      box-sizing: border-box;
+      width: 100%;
+      padding: 8px;
+      border: 1px solid #cbd5df;
+      border-radius: 6px;
+      font-size: 12px;
+    }
+    .supabase-auth-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 7px;
+      margin-top: 8px;
+    }
+    .supabase-auth-btn {
+      border: 1px solid #cbd5df;
+      border-radius: 6px;
+      padding: 7px 8px;
+      background: #eef2f7;
+      color: #1f2933;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .supabase-auth-btn.primary {
+      border-color: #1f7a4d;
+      background: #238a57;
+      color: #fff;
+    }
+    .supabase-auth-btn.link {
+      border: 0;
+      background: transparent;
+      color: #2563a8;
+      padding: 6px 0;
+      text-align: left;
+      font-weight: 500;
+    }
+    .supabase-auth-btn.full {
+      width: 100%;
+      margin-top: 7px;
+    }
+    .supabase-auth-reset {
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid #edf1f5;
+    }
+    .supabase-auth-reset[hidden] {
+      display: none;
+    }
+    .supabase-auth-status {
+      margin-top: 8px;
+      min-height: 15px;
+      font-size: 11px;
+      line-height: 1.35;
+      color: #52616b;
+    }
+    .supabase-auth-status.is-error {
+      color: #ba2525;
+    }
   </style>
 </head>
 <body>
+  <div id="supabase-auth-root" class="supabase-auth-root">
+    <button id="supabase-auth-main" class="supabase-auth-main" type="button" title="Синхронизация Supabase">
+      <span id="supabase-auth-dot" class="supabase-auth-dot" aria-hidden="true"></span>
+      <span class="supabase-auth-text">
+        <span id="supabase-auth-title" class="supabase-auth-title">Синхронизация</span>
+        <span id="supabase-auth-subtitle" class="supabase-auth-subtitle">Локальное хранение</span>
+      </span>
+      <span id="supabase-auth-chevron" class="supabase-auth-chevron" aria-hidden="true">▾</span>
+    </button>
+    <div id="supabase-auth-panel" class="supabase-auth-panel" hidden>
+      <div id="supabase-auth-signed-out">
+        <div class="supabase-auth-fields">
+          <input id="supabase-auth-email" type="email" autocomplete="email" placeholder="Почта">
+          <input id="supabase-auth-password" type="password" autocomplete="current-password" placeholder="Пароль">
+        </div>
+        <div class="supabase-auth-actions">
+          <button id="supabase-auth-sign-in" class="supabase-auth-btn primary" type="button">Войти</button>
+          <button id="supabase-auth-sign-up" class="supabase-auth-btn" type="button">Создать</button>
+        </div>
+        <button id="supabase-auth-reset-toggle" class="supabase-auth-btn link" type="button">Забыли пароль?</button>
+        <div id="supabase-auth-reset" class="supabase-auth-reset" hidden>
+          <div class="supabase-auth-fields">
+            <input id="supabase-auth-reset-email" type="email" autocomplete="email" placeholder="Почта для восстановления">
+            <button id="supabase-auth-reset-send" class="supabase-auth-btn full" type="button">Отправить письмо</button>
+            <input id="supabase-auth-reset-code" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="Код из письма">
+            <input id="supabase-auth-reset-password" type="password" autocomplete="new-password" placeholder="Новый пароль">
+            <button id="supabase-auth-reset-confirm" class="supabase-auth-btn primary full" type="button">Обновить пароль</button>
+          </div>
+        </div>
+      </div>
+      <div id="supabase-auth-signed-in" hidden>
+        <button id="supabase-auth-sync-now" class="supabase-auth-btn full" type="button">Синхронизировать сейчас</button>
+        <button id="supabase-auth-sign-out" class="supabase-auth-btn full" type="button">Выйти</button>
+      </div>
+      <div id="supabase-auth-status" class="supabase-auth-status"></div>
+    </div>
+  </div>
   <div id="support-reminder-root" style="display: none;"></div>
   <div id="default-popup-root">
 
@@ -286,6 +447,7 @@
   </div>
 
   </div>
+  <script src="supabase_auth_ui.js"></script>
   <script src="support/support_popup.js"></script>
   <script src="popup.js"></script>
 

@@ -613,12 +613,40 @@ document.addEventListener('DOMContentLoaded', async () => {
   // === БЛОК УПРАВЛЕНИЯ ДАННЫМИ ===
   const btnExport = document.getElementById('btn-export-data');
   const btnImport = document.getElementById('btn-import-data');
+  const protectedExportKeys = new Set([
+    'dup_supabase_auth_session_v1',
+    'dup_supabase_sync_meta_v1',
+    'dup_supabase_pre_login_backup_v1',
+    'extension_logs',
+    'pending_actions',
+    'pendingEditingActions',
+    'dup_department_container_cookie_stores_v1',
+    'dup_stage_jump_pending',
+    'pyramid_christmas_enabled_cache_v1',
+    'pyramid_spring_enabled_cache_v1',
+    'pyramid_theme_feature_settings_cache_v1'
+  ]);
+
+  function isProtectedStorageKey(key) {
+    const normalizedKey = String(key || '');
+    return protectedExportKeys.has(normalizedKey)
+      || normalizedKey.startsWith('dup_supabase_')
+      || normalizedKey.startsWith('logs_');
+  }
+
+  function removeProtectedStorageKeys(data) {
+    Object.keys(data || {}).forEach((key) => {
+      if (isProtectedStorageKey(key)) {
+        delete data[key];
+      }
+    });
+    return data;
+  }
 
   if (btnExport) {
     btnExport.addEventListener('click', () => {
       chrome.storage.local.get(null, (data) => {
-        // Исключаем лог из экспорта для чистоты
-        delete data.extension_logs;
+        removeProtectedStorageKeys(data);
 
         const jsonString = JSON.stringify(data, null, 2);
         const blob = new Blob([jsonString], { type: 'application/json' });
@@ -650,14 +678,28 @@ document.addEventListener('DOMContentLoaded', async () => {
         reader.onload = (event) => {
           try {
             const importedData = JSON.parse(event.target.result);
+            removeProtectedStorageKeys(importedData);
             
             if (confirm("Вы уверены, что хотите импортировать данные? Все текущие настройки и история счетчиков будут ПЕРЕЗАПИСАНЫ. Это действие необратимо.")) {
-              // Важно: сначала очищаем, потом устанавливаем новые данные
-              chrome.storage.local.clear(() => {
-                chrome.storage.local.set(importedData, () => {
-                  alert('Импорт успешно завершен!');
-                  // UI обновится автоматически благодаря chrome.storage.onChanged
-                });
+              chrome.storage.local.get(null, (currentData) => {
+                const keysToRemove = Object.keys(currentData || {}).filter((key) => !isProtectedStorageKey(key));
+                const finishImport = () => {
+                  chrome.storage.local.set(importedData, () => {
+                    chrome.runtime.sendMessage({ action: 'DUP_SUPABASE_SYNC_NOW' }, () => {
+                      if (chrome.runtime.lastError) {
+                        // Пользователь может быть не авторизован, тогда импорт остается локальным.
+                      }
+                    });
+                    alert('Импорт успешно завершен!');
+                    // UI обновится автоматически благодаря chrome.storage.onChanged
+                  });
+                };
+
+                if (keysToRemove.length) {
+                  chrome.storage.local.remove(keysToRemove, finishImport);
+                } else {
+                  finishImport();
+                }
               });
             }
           } catch (error) {
