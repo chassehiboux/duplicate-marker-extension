@@ -96,38 +96,6 @@
     return result.trim();
   }
 
-  async function writeClipboardText(text) {
-    const value = String(text || '');
-
-    try {
-      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-        await navigator.clipboard.writeText(value);
-        return true;
-      }
-    } catch (error) {
-      // Firefox/Chrome могут запретить Clipboard API в части контекстов расширения.
-    }
-
-    try {
-      if (typeof document !== 'undefined' && document.body && typeof document.execCommand === 'function') {
-        const textarea = document.createElement('textarea');
-        textarea.value = value;
-        textarea.setAttribute('readonly', '');
-        textarea.style.position = 'fixed';
-        textarea.style.left = '-10000px';
-        document.body.appendChild(textarea);
-        textarea.select();
-        const copied = document.execCommand('copy');
-        textarea.remove();
-        return !!copied;
-      }
-    } catch (error) {
-      // Fallback ниже.
-    }
-
-    return false;
-  }
-
   async function postBridge(url, payload) {
     const response = await fetch(normalizeBridgeUrl(url), {
       method: 'POST',
@@ -238,8 +206,7 @@
     if (!itilNumber) throw new Error('Не передан номер ITIL.');
 
     const tab = await getOrCreateItilTab();
-    const clipboardPrepared = await writeClipboardText(itilNumber);
-    const result = await executeInTab(tab.id, collectItilRequestData, [itilNumber, clipboardPrepared]);
+    const result = await executeInTab(tab.id, collectItilRequestData, [itilNumber]);
     if (!result || result.success !== true) {
       throw new Error(result && result.error ? result.error : 'Не удалось получить данные из ITIL.');
     }
@@ -271,9 +238,8 @@
     };
   }
 
-  async function collectItilRequestData(itilNumber, clipboardPrepared) {
+  async function collectItilRequestData(itilNumber) {
     const number = String(itilNumber || '').trim();
-    let canUseClipboardPaste = !!clipboardPrepared;
     if (!number) return { success: false, error: 'Пустой номер ITIL.' };
 
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -333,31 +299,6 @@
       }));
     }
 
-    function dispatchPointerLike(element, type, options) {
-      if (typeof PointerEvent !== 'function') return;
-
-      const eventOptions = options || {};
-      const point = getElementPoint(element);
-      const button = Number.isInteger(eventOptions.button) ? eventOptions.button : 0;
-      const buttons = Number.isInteger(eventOptions.buttons)
-        ? eventOptions.buttons
-        : (type === 'pointerup' ? 0 : 1);
-
-      element.dispatchEvent(new PointerEvent(type, {
-        bubbles: true,
-        cancelable: true,
-        pointerId: 1,
-        pointerType: 'mouse',
-        isPrimary: true,
-        clientX: point.clientX,
-        clientY: point.clientY,
-        screenX: window.screenX + point.clientX,
-        screenY: window.screenY + point.clientY,
-        button,
-        buttons
-      }));
-    }
-
     async function clickLikeUser(element) {
       element.scrollIntoView({ block: 'center', inline: 'center' });
       await sleep(50);
@@ -379,65 +320,6 @@
       await sleep(250);
     }
 
-    function findPasteMenuItem() {
-      const byId = document.querySelector('#popupItem4');
-      if (isVisible(byId) && normalizeText(byId.textContent).includes('Вставить')) return byId;
-
-      return Array.from(document.querySelectorAll('.submenuBlock,.menuItem,.popupItem,div'))
-        .find((element) => {
-          if (!isVisible(element)) return false;
-          const text = normalizeText(element.textContent);
-          return text === 'Вставить Ctrl+V'
-            || text === 'Вставить'
-            || (text.includes('Вставить') && text.includes('Ctrl+V'));
-        }) || null;
-    }
-
-    async function clickPasteMenuItemLikeUser(menuItem) {
-      const point = getElementPoint(menuItem);
-      const hitTarget = document.elementFromPoint(point.clientX, point.clientY);
-      const clickTargets = [
-        hitTarget && menuItem.contains(hitTarget) ? hitTarget : null,
-        menuItem.querySelector('.submenuText'),
-        menuItem.querySelector('.submenuName'),
-        menuItem
-      ].filter((element, index, list) => element && isVisible(element) && list.indexOf(element) === index);
-
-      for (let index = 0; index < clickTargets.length; index++) {
-        const target = clickTargets[index];
-        dispatchPointerLike(target, 'pointerover', { buttons: 0 });
-        dispatchMouseLike(target, 'mouseover', 0, { buttons: 0 });
-        dispatchPointerLike(target, 'pointermove', { buttons: 0 });
-        dispatchMouseLike(target, 'mousemove', 0, { buttons: 0 });
-        dispatchPointerLike(target, 'pointerdown', { button: 0, buttons: 1 });
-        dispatchMouseLike(target, 'mousedown', 1, { button: 0, buttons: 1 });
-        dispatchPointerLike(target, 'pointerup', { button: 0, buttons: 0 });
-        dispatchMouseLike(target, 'mouseup', 1, { button: 0, buttons: 0 });
-        dispatchMouseLike(target, 'click', 1, { button: 0, buttons: 0 });
-
-        if (typeof target.click === 'function') {
-          target.click();
-        }
-
-        await sleep(120);
-      }
-    }
-
-    async function openSearchInputContextMenu(input) {
-      input.scrollIntoView({ block: 'center', inline: 'center' });
-      await sleep(50);
-      input.focus();
-      if (typeof input.select === 'function') input.select();
-
-      dispatchMouseLike(input, 'mouseover', 0);
-      dispatchMouseLike(input, 'mousemove', 0);
-      dispatchMouseLike(input, 'mousedown', 1, { button: 2, buttons: 2 });
-      dispatchMouseLike(input, 'mouseup', 1, { button: 2, buttons: 0 });
-      dispatchMouseLike(input, 'contextmenu', 1, { button: 2, buttons: 0 });
-
-      return waitFor(findPasteMenuItem, 2500, 'пункт «Вставить» в контекстном меню поиска');
-    }
-
     function findServiceDeskLauncher() {
       const byId = document.querySelector('#favsCell_cmd_0');
       if (isVisible(byId) && normalizeText(byId.textContent) === 'Service Desk') return byId;
@@ -446,99 +328,138 @@
         .find((element) => isVisible(element) && normalizeText(element.textContent) === 'Service Desk') || null;
     }
 
-    function findSearchInput() {
-      const byId = document.querySelector('#form2_ДополнениеСтрокаПоиска_i0');
-      if (isVisible(byId)) return byId;
-
+    function findServiceDeskSearchInput() {
       return Array.from(document.querySelectorAll('input[type="text"],input:not([type])'))
         .find((input) => isVisible(input) && String(input.id || '').includes('ДополнениеСтрокаПоиска')) || null;
     }
 
-    async function clearSearchInputLikeUser(input) {
+    function findFindDialog() {
+      return Array.from(document.querySelectorAll('.cloud.panelsBorder,.cloud,.panelsBorder'))
+        .find((element) => {
+          if (!isVisible(element)) return false;
+          const title = element.querySelector('.toplineBoxTitle,[id$="headerTopLine_title"]');
+          const titleBox = element.querySelector('.toplineBox[data-title]');
+          const titleText = title
+            ? normalizeText(title.getAttribute('title') || title.textContent)
+            : '';
+          const dataTitle = titleBox ? normalizeText(titleBox.getAttribute('data-title')) : '';
+          return titleText === 'Найти' || dataTitle === 'Найти';
+        }) || null;
+    }
+
+    function findFindDialogInput(dialog, partName) {
+      return Array.from(dialog.querySelectorAll('input[type="text"],input:not([type])'))
+        .find((input) => isVisible(input) && String(input.id || '').includes(partName)) || null;
+    }
+
+    function findFindDialogButton(dialog) {
+      const byId = Array.from(dialog.querySelectorAll('a[id$="_Find"],.pressCommand'))
+        .find((element) => isVisible(element) && normalizeText(element.textContent).includes('Найти'));
+      if (byId) return byId;
+
+      return Array.from(dialog.querySelectorAll('a,span,div'))
+        .find((element) => isVisible(element) && normalizeText(element.textContent) === 'Найти') || null;
+    }
+
+    function setInputValueLikeUser(input, value, inputType) {
       input.focus();
       if (typeof input.select === 'function') input.select();
 
-      input.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Backspace', code: 'Backspace' }));
-      try {
-        document.execCommand('delete');
-      } catch (error) {
-        // Не все браузеры разрешают execCommand в content script.
+      const text = String(value || '');
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+      if (setter && typeof setter.set === 'function') {
+        setter.set.call(input, text);
+      } else {
+        input.value = text;
       }
 
-      if (String(input.value || '')) {
-        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
-        if (setter && typeof setter.set === 'function') {
-          setter.set.call(input, '');
-        } else {
-          input.value = '';
-        }
-      }
-
+      input.dispatchEvent(new InputEvent('beforeinput', {
+        bubbles: true,
+        cancelable: true,
+        inputType: inputType || 'insertText',
+        data: text
+      }));
       input.dispatchEvent(new InputEvent('input', {
         bubbles: true,
         cancelable: true,
-        inputType: 'deleteContentBackward',
-        data: null
+        inputType: inputType || 'insertText',
+        data: text
       }));
       input.dispatchEvent(new Event('change', { bubbles: true }));
-      input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, cancelable: true, key: 'Backspace', code: 'Backspace' }));
+    }
+
+    function dispatchAltF(target) {
+      const options = {
+        bubbles: true,
+        cancelable: true,
+        key: 'f',
+        code: 'KeyF',
+        altKey: true,
+        keyCode: 70,
+        which: 70
+      };
+
+      const receivers = [target, document.activeElement, document.body, document, window]
+        .filter((item, index, list) => item && list.indexOf(item) === index);
+      receivers.forEach((receiver) => {
+        receiver.dispatchEvent(new KeyboardEvent('keydown', options));
+        receiver.dispatchEvent(new KeyboardEvent('keypress', options));
+        receiver.dispatchEvent(new KeyboardEvent('keyup', options));
+      });
+    }
+
+    async function openFindDialog() {
+      let dialog = findFindDialog();
+      if (dialog) return dialog;
+
+      const searchInput = findServiceDeskSearchInput();
+      if (searchInput) await clickLikeUser(searchInput);
+      dispatchAltF(searchInput || document.body);
+      dialog = await waitFor(findFindDialog, 5000, 'окно «Найти» после Alt+F');
+      await sleep(250);
+      return dialog;
+    }
+
+    async function selectFindFieldNumber(dialog) {
+      const fieldInput = findFindDialogInput(dialog, 'FieldSelector');
+      if (!fieldInput) throw new Error('В окне «Найти» не найдено поле «Где искать».');
+
+      if (normalizeText(fieldInput.value) === 'Номер') return;
+
+      setInputValueLikeUser(fieldInput, 'Номер', 'insertText');
+      fieldInput.dispatchEvent(new KeyboardEvent('keydown', {
+        bubbles: true,
+        cancelable: true,
+        key: 'Enter',
+        code: 'Enter',
+        keyCode: 13,
+        which: 13
+      }));
+      fieldInput.dispatchEvent(new KeyboardEvent('keyup', {
+        bubbles: true,
+        cancelable: true,
+        key: 'Enter',
+        code: 'Enter',
+        keyCode: 13,
+        which: 13
+      }));
+      await sleep(350);
+    }
+
+    async function findByNumberInDialog(value) {
+      const dialog = await openFindDialog();
+      await selectFindFieldNumber(dialog);
+
+      const patternInput = findFindDialogInput(dialog, 'Pattern');
+      if (!patternInput) throw new Error('В окне «Найти» не найдено поле «Что искать».');
+
+      setInputValueLikeUser(patternInput, value, 'insertText');
       await sleep(150);
-    }
 
-    async function prepareClipboardInPage(value) {
-      const text = String(value || '');
-      if (!text) return false;
-
-      try {
-        if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-          await navigator.clipboard.writeText(text);
-          return true;
-        }
-      } catch (error) {
-        // На http-странице Clipboard API может быть недоступен; ниже fallback через DOM.
-      }
-
-      try {
-        const activeElement = document.activeElement;
-        const textarea = document.createElement('textarea');
-        textarea.value = text;
-        textarea.setAttribute('readonly', '');
-        textarea.style.position = 'fixed';
-        textarea.style.left = '-10000px';
-        textarea.style.top = '0';
-        textarea.style.opacity = '0';
-        document.body.appendChild(textarea);
-        textarea.focus();
-        textarea.select();
-        const copied = document.execCommand('copy');
-        textarea.remove();
-
-        if (activeElement && typeof activeElement.focus === 'function') {
-          activeElement.focus();
-        }
-
-        return !!copied;
-      } catch (error) {
-        return false;
-      }
-    }
-
-    async function pasteNumberLikeUser(input, value) {
-      if (!canUseClipboardPaste) {
-        canUseClipboardPaste = await prepareClipboardInPage(value);
-      }
-
-      if (!canUseClipboardPaste) {
-        throw new Error('Не удалось подготовить clipboard для вставки номера ITIL.');
-      }
-
-      input.focus();
-      if (typeof input.select === 'function') input.select();
-
-      const pasteMenuItem = await openSearchInputContextMenu(input);
-      await clickPasteMenuItemLikeUser(pasteMenuItem);
-      await waitFor(() => String(input.value || '') === value, 3000, `вставка номера ${value} через контекстное меню`);
-      await sleep(300);
+      const findButton = findFindDialogButton(dialog);
+      if (!findButton) throw new Error('В окне «Найти» не найдена кнопка «Найти».');
+      await clickLikeUser(findButton);
+      await sleep(500);
     }
 
     function findGridNumberCell() {
@@ -607,17 +528,14 @@
     try {
       await waitFor(() => document.querySelector('.toplineBox'), 90000, 'личный кабинет ITIL');
 
-      let searchInput = findSearchInput();
+      let searchInput = findServiceDeskSearchInput();
       if (!searchInput) {
         const launcher = await waitFor(findServiceDeskLauncher, 30000, 'пункт Service Desk');
         await clickLikeUser(launcher);
-        searchInput = await waitFor(findSearchInput, 60000, 'поле поиска Service Desk');
+        searchInput = await waitFor(findServiceDeskSearchInput, 60000, 'поле поиска Service Desk');
       }
 
-      await clickLikeUser(searchInput);
-      await clearSearchInputLikeUser(searchInput);
-      await sleep(200);
-      await pasteNumberLikeUser(searchInput, number);
+      await findByNumberInDialog(number);
 
       const numberCell = await waitFor(findGridNumberCell, 60000, `строка ITIL ${number}`);
       const gridCell = numberCell.closest('.gridBox') || numberCell;
