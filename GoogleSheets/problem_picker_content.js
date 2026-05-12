@@ -15,11 +15,18 @@
   const PROBLEM_HEADER = 'Проблемы';
   const DEFAULT_VALUE = 'Публикация/Некорректная публикация/Ошибки публикации';
   const SAVE_ACTION = 'GOOGLE_SHEETS_PROBLEM_PICKER_SAVE';
+  const ITIL_FILL_ACTION = 'GOOGLE_SHEETS_ITIL_FILL_ROW';
+  const ITIL_NUMBER_HEADER = 'Номер ITIL';
+  const SUPP_NUMBER_HEADER = 'Номер СУПП (последний)';
+  const ITIL_INFO_HEADER = 'Информация из СУПП/ITIL';
   const ROOT_ID = 'dup-google-sheets-problem-picker-root';
   const MODAL_ID = 'dup-google-sheets-problem-picker-modal';
+  const MENU_ID = 'dup-google-sheets-problem-picker-menu';
+  const MENU_OVERLAY_ID = 'dup-google-sheets-problem-picker-menu-overlay';
   const STYLE_ID = 'dup-google-sheets-problem-picker-style';
   const AUTO_OPEN_AFTER_EDIT_DELAY_MS = 1500;
   const AUTO_OPEN_AFTER_EDIT_COOLDOWN_MS = 2500;
+  const KEY_CODE_F2 = 113;
 
   const OPTIONS = Object.freeze([
     'Публикация/Некорректная публикация/Ошибки публикации',
@@ -55,8 +62,96 @@
   let autoOpenTimer = 0;
   let autoOpenInProgress = false;
   let lastAutoOpenAtMs = 0;
+  let menuStatusText = '';
+  let menuStatusIsError = false;
+  let itilRunId = 0;
+
+  let itilState = {
+    queue: [],
+    currentIndex: 0,
+    successCount: 0,
+    failedCount: 0,
+    currentItem: null,
+    sheetName: '',
+    gid: '',
+    rowsCount: 0,
+    isRunning: false,
+    statusText: 'Ожидание запуска.',
+    lastError: ''
+  };
 
   const $ = (selector, root = document) => root.querySelector(selector);
+  const FILE_NAME_ONLY_LINE_RE = /^\s*[^\r\n\\/:*?"<>|]+\.(?:png|jpe?g|gif|bmp|webp|svg|heic|pdf|docx?|xlsx?|pptx?|txt|rtf|csv|xml|json|zip|rar|7z)\s*$/i;
+
+  function isFileNameOnlyLine(line) {
+    return !!line && FILE_NAME_ONLY_LINE_RE.test(String(line).trim());
+  }
+
+  function extractFirstItilMessageBody(text) {
+    if (!text) return '';
+
+    const normalized = String(text).replace(/\r\n?/g, '\n');
+    const lines = normalized.split('\n');
+    const authorLineRe = /^\s*[^\r\n()]+?\s+\(\d{2}\.\d{2}\.\d{4}\s+\d{2}:\d{2}:\d{2}\):\s*$/;
+
+    const markers = [];
+    for (let index = 0; index < lines.length; index++) {
+      if (authorLineRe.test(lines[index])) {
+        markers.push(index);
+        if (markers.length >= 2) break;
+      }
+    }
+
+    if (markers.length < 2) return normalized;
+
+    const bodyLines = lines.slice(markers[0] + 1, markers[1]);
+    const cleaned = [];
+    let prevEmpty = false;
+
+    for (let index = 0; index < bodyLines.length; index++) {
+      const rightTrimmed = bodyLines[index].replace(/[ \t]+$/g, '');
+      const trimmed = rightTrimmed.trim();
+
+      if (isFileNameOnlyLine(trimmed)) continue;
+
+      if (!trimmed) {
+        if (!prevEmpty && cleaned.length > 0) {
+          cleaned.push('');
+          prevEmpty = true;
+        }
+        continue;
+      }
+
+      cleaned.push(rightTrimmed);
+      prevEmpty = false;
+    }
+
+    while (cleaned.length && cleaned[cleaned.length - 1] === '') cleaned.pop();
+    return cleaned.join('\n');
+  }
+
+  function processRequestText(text) {
+    if (!text) return '';
+
+    let result = String(text);
+    result = extractFirstItilMessageBody(result);
+
+    const startMarker = 'Детальное описание:';
+    const endMarker = 'Причина возникновения инцидента:';
+    const startIdx = result.toLowerCase().indexOf(startMarker.toLowerCase());
+    if (startIdx !== -1) result = result.substring(startIdx + startMarker.length);
+
+    const endIdx = result.toLowerCase().indexOf(endMarker.toLowerCase());
+    if (endIdx !== -1) result = result.substring(0, endIdx);
+
+    result = result.replace(/ЗНО\s+[\d-]+:(?:\s+.*?\(\d{2}\.\d{2}\.\d{4}.*?\))?\s*:?\s*/gi, '');
+    result = result.replace(/\r/g, '');
+    result = result.replace(/[ \t]+$/gm, '');
+    result = result.replace(/^\n+/, '');
+    result = result.replace(/\n{3,}/g, '\n\n');
+
+    return result.trim();
+  }
 
   function isTargetSpreadsheet() {
     return location.hostname === 'docs.google.com'
@@ -225,6 +320,60 @@
     };
   }
 
+  async function loadItilQueue() {
+    const sheetName = getActiveSheetName();
+    const allowedSheets = Array.isArray(CONFIG.allowedSheetNames) ? CONFIG.allowedSheetNames : [];
+    if (!allowedSheets.includes(sheetName)) {
+      throw new Error('Открой лист «Заявки» или «Заявки (наши)».');
+    }
+
+    const gid = getActiveGid();
+    if (!gid) throw new Error('Не удалось определить gid активного листа.');
+
+    const response = await fetch(getCsvUrl(gid), { credentials: 'omit' });
+    if (!response.ok) throw new Error(`CSV-экспорт вернул HTTP ${response.status}.`);
+
+    const rows = parseCsv(await response.text());
+    const headers = rows[0] || [];
+    const itilColumnIndex = headers.indexOf(ITIL_NUMBER_HEADER);
+    const suppColumnIndex = headers.indexOf(SUPP_NUMBER_HEADER);
+    const textColumnIndex = headers.indexOf(TEXT_HEADER);
+    const infoColumnIndex = headers.indexOf(ITIL_INFO_HEADER);
+
+    if (itilColumnIndex < 0 || suppColumnIndex < 0 || textColumnIndex < 0 || infoColumnIndex < 0) {
+      throw new Error('Не найдены колонки «Номер ITIL», «Номер СУПП (последний)», «Текст заявки» или «Информация из СУПП/ITIL».');
+    }
+
+    const queue = [];
+    for (let index = 1; index < rows.length; index++) {
+      const row = rows[index] || [];
+      const itilNumber = String(row[itilColumnIndex] || '').trim();
+      const suppNumber = String(row[suppColumnIndex] || '').trim();
+      const text = String(row[textColumnIndex] || '').trim();
+
+      if (itilNumber && suppNumber === '–' && !text) {
+        queue.push({
+          row: index + 1,
+          itilNumber
+        });
+      }
+    }
+
+    itilState = {
+      ...itilState,
+      queue,
+      currentIndex: 0,
+      successCount: 0,
+      failedCount: 0,
+      currentItem: null,
+      sheetName,
+      gid,
+      rowsCount: rows.length,
+      lastError: '',
+      statusText: queue.length ? 'Очередь ITIL собрана.' : 'Строк для заполнения из ITIL не найдено.'
+    };
+  }
+
   function getCurrentItem() {
     return state.queue[state.currentIndex] || null;
   }
@@ -242,8 +391,29 @@
       #${ROOT_ID} .gs-problem-picker-url{min-width:44px}
       #${ROOT_ID} .gs-problem-picker-status{max-width:360px;min-height:18px;padding:5px 8px;border-radius:6px;background:rgba(255,255,255,.94);color:#24513a;font-size:12px;box-shadow:0 6px 18px rgba(15,23,42,.12)}
       #${ROOT_ID} .gs-problem-picker-status.is-error,#${MODAL_ID} .gs-problem-picker-message.is-error{color:#b3261e}
+      #${MENU_OVERLAY_ID}{position:fixed;inset:0;z-index:2147483644;background:rgba(17,24,39,.38);font-family:"Segoe UI",Tahoma,sans-serif}
+      #${MENU_ID}{position:fixed;right:24px;top:76px;z-index:2147483645;width:min(560px,calc(100vw - 32px));max-height:calc(100vh - 110px);overflow:auto;box-sizing:border-box;padding:18px;border:1px solid #d5dce8;border-radius:8px;background:#fbfcfe;color:#172033;box-shadow:0 24px 70px rgba(15,23,42,.24);font-family:"Segoe UI",Tahoma,sans-serif}
+      #${MENU_OVERLAY_ID}[hidden],#${MENU_ID}[hidden]{display:none!important}
+      #${MENU_ID} .gs-problem-picker-menu-header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px}
+      #${MENU_ID} .gs-problem-picker-menu-title{font-size:20px;line-height:1.2;font-weight:700}
+      #${MENU_ID} .gs-problem-picker-menu-subtitle{margin-top:4px;color:#566176;font-size:13px}
+      #${MENU_ID} .gs-problem-picker-menu-close{width:34px;height:34px;padding:0;font-size:22px;line-height:1}
+      #${MENU_ID} .gs-problem-picker-menu-section{display:grid;gap:10px;border-top:1px solid #e3e8f0;padding-top:14px;margin-top:14px}
+      #${MENU_ID} .gs-problem-picker-menu-section:first-of-type{border-top:0;padding-top:0;margin-top:0}
+      #${MENU_ID} .gs-problem-picker-menu-section-title{font-size:14px;font-weight:700;color:#253044}
+      #${MENU_ID} .gs-problem-picker-menu-actions{display:flex;flex-wrap:wrap;gap:8px}
+      #${MENU_ID} .gs-problem-picker-itil-grid{display:grid;grid-template-columns:150px 1fr;gap:6px 12px;font-size:13px;color:#39465c}
+      #${MENU_ID} .gs-problem-picker-itil-grid dt{font-weight:700;color:#5d6678}
+      #${MENU_ID} .gs-problem-picker-itil-grid dd{margin:0;min-width:0;overflow-wrap:anywhere}
+      #${MENU_ID} .gs-problem-picker-status{min-height:18px;color:#24513a;font-size:13px}
+      #${MENU_ID} .gs-problem-picker-status.is-error,#${MENU_ID} .gs-problem-picker-itil-status.is-error{color:#b3261e}
+      #${MENU_ID} .gs-problem-picker-itil-status{min-height:18px;color:#24513a;font-size:13px;overflow-wrap:anywhere}
+      #${ROOT_ID} button,#${MODAL_ID} button,#${MENU_ID} button{border:1px solid #b7c2d3;border-radius:7px;background:#fff;color:#162033;cursor:pointer;font:600 13px/1.2 "Segoe UI",Tahoma,sans-serif;padding:8px 12px}
+      #${MENU_ID} button:disabled{opacity:.58;cursor:default}
+      #${MENU_ID} .gs-problem-picker-open,#${MENU_ID} .gs-problem-picker-itil-start,#${MODAL_ID} .gs-problem-picker-save{border-color:#1155cc;background:#1155cc;color:#fff;box-shadow:0 8px 22px rgba(17,85,204,.2)}
+      #${MENU_ID} .gs-problem-picker-itil-stop{border-color:#b3261e;color:#b3261e}
       #${MODAL_ID}{position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;background:rgba(17,24,39,.42);font-family:"Segoe UI",Tahoma,sans-serif}
-      #${MODAL_ID}[hidden],html.dup-ext-screenshot-mode #${ROOT_ID},html.dup-ext-screenshot-mode #${MODAL_ID}{display:none!important}
+      #${MODAL_ID}[hidden],html.dup-ext-screenshot-mode #${ROOT_ID},html.dup-ext-screenshot-mode #${MODAL_ID},html.dup-ext-screenshot-mode #${MENU_ID},html.dup-ext-screenshot-mode #${MENU_OVERLAY_ID}{display:none!important}
       #${MODAL_ID} .gs-problem-picker-panel{width:min(980px,calc(100vw - 32px));height:min(680px,calc(100vh - 32px));display:grid;grid-template-rows:auto auto minmax(0,1fr) auto auto;gap:14px;box-sizing:border-box;padding:22px;border:1px solid #d6dce8;border-radius:8px;background:#fbfcfe;color:#172033;box-shadow:0 24px 70px rgba(15,23,42,.26)}
       #${MODAL_ID} .gs-problem-picker-header,#${MODAL_ID} .gs-problem-picker-footer{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}
       #${MODAL_ID} .gs-problem-picker-title{font-size:22px;line-height:1.2;font-weight:700}
@@ -262,10 +432,19 @@
   }
 
   function updateLauncherStatus(text, isError) {
-    const status = $(`#${ROOT_ID} .gs-problem-picker-status`);
-    if (!(status instanceof HTMLElement)) return;
-    status.textContent = String(text || '');
-    status.classList.toggle('is-error', !!isError);
+    menuStatusText = String(text || '');
+    menuStatusIsError = !!isError;
+
+    const statuses = [
+      $(`#${ROOT_ID} .gs-problem-picker-status`),
+      $(`#${MENU_ID} .gs-problem-picker-status`)
+    ];
+
+    statuses.forEach((status) => {
+      if (!(status instanceof HTMLElement)) return;
+      status.textContent = menuStatusText;
+      status.classList.toggle('is-error', menuStatusIsError);
+    });
   }
 
   function setModalMessage(text, isError) {
@@ -275,32 +454,170 @@
     message.classList.toggle('is-error', !!isError);
   }
 
-  function ensureLauncher() {
+  function getItilCurrentText() {
+    const item = itilState.currentItem || itilState.queue[itilState.currentIndex] || null;
+    return item ? `строка ${item.row}, ITIL ${item.itilNumber}` : 'нет';
+  }
+
+  function renderItilStatus() {
+    const menu = document.getElementById(MENU_ID);
+    if (!(menu instanceof HTMLElement)) return;
+
+    const total = itilState.queue.length;
+    const processed = Math.min(total, itilState.successCount + itilState.failedCount);
+
+    const collected = $('.gs-problem-picker-itil-collected', menu);
+    const progress = $('.gs-problem-picker-itil-progress', menu);
+    const current = $('.gs-problem-picker-itil-current', menu);
+    const status = $('.gs-problem-picker-itil-status', menu);
+    const startButton = $('.gs-problem-picker-itil-start', menu);
+    const stopButton = $('.gs-problem-picker-itil-stop', menu);
+
+    if (collected instanceof HTMLElement) collected.textContent = String(total);
+    if (progress instanceof HTMLElement) progress.textContent = `${processed}/${total}`;
+    if (current instanceof HTMLElement) current.textContent = getItilCurrentText();
+    if (status instanceof HTMLElement) {
+      status.textContent = itilState.lastError || itilState.statusText || '';
+      status.classList.toggle('is-error', !!itilState.lastError);
+    }
+    if (startButton instanceof HTMLButtonElement) startButton.disabled = itilState.isRunning;
+    if (stopButton instanceof HTMLButtonElement) stopButton.disabled = !itilState.isRunning;
+  }
+
+  function closeMenu() {
+    const overlay = document.getElementById(MENU_OVERLAY_ID);
+    const menu = document.getElementById(MENU_ID);
+    if (overlay instanceof HTMLElement) overlay.hidden = true;
+    if (menu instanceof HTMLElement) menu.hidden = true;
+  }
+
+  function ensureMenu() {
     ensureStyle();
 
-    const existing = document.getElementById(ROOT_ID);
-    if (existing instanceof HTMLElement) return existing;
+    let overlay = document.getElementById(MENU_OVERLAY_ID);
+    let menu = document.getElementById(MENU_ID);
+    const host = document.body || document.documentElement;
+    if (!(host instanceof HTMLElement)) return null;
 
-    const root = document.createElement('div');
-    root.id = ROOT_ID;
-    root.innerHTML = `
-      <div class="gs-problem-picker-actions">
-        <button type="button" class="gs-problem-picker-open">Классификация</button>
-        <button type="button" class="gs-problem-picker-url" title="Настроить URL bridge">URL</button>
-      </div>
-      <div class="gs-problem-picker-status" aria-live="polite"></div>
+    if (overlay instanceof HTMLElement && menu instanceof HTMLElement) {
+      renderItilStatus();
+      updateLauncherStatus(menuStatusText, menuStatusIsError);
+      return menu;
+    }
+
+    overlay = document.createElement('div');
+    overlay.id = MENU_OVERLAY_ID;
+    overlay.hidden = true;
+    overlay.addEventListener('click', closeMenu, { capture: true });
+
+    menu = document.createElement('section');
+    menu.id = MENU_ID;
+    menu.hidden = true;
+    menu.setAttribute('role', 'dialog');
+    menu.setAttribute('aria-modal', 'true');
+    menu.setAttribute('aria-label', 'Меню Google Sheets');
+    menu.innerHTML = `
+      <header class="gs-problem-picker-menu-header">
+        <div>
+          <div class="gs-problem-picker-menu-title">Меню Google Sheets</div>
+          <div class="gs-problem-picker-menu-subtitle">Горячая клавиша: F2</div>
+        </div>
+        <button type="button" class="gs-problem-picker-menu-close" aria-label="Закрыть">×</button>
+      </header>
+
+      <section class="gs-problem-picker-menu-section">
+        <div class="gs-problem-picker-menu-section-title">Классификация</div>
+        <div class="gs-problem-picker-menu-actions">
+          <button type="button" class="gs-problem-picker-open">Классификация</button>
+          <button type="button" class="gs-problem-picker-url">URL bridge</button>
+        </div>
+        <div class="gs-problem-picker-status" aria-live="polite"></div>
+      </section>
+
+      <section class="gs-problem-picker-menu-section">
+        <div class="gs-problem-picker-menu-section-title">ITIL: заполнить текст заявок</div>
+        <div class="gs-problem-picker-menu-actions">
+          <button type="button" class="gs-problem-picker-itil-start">Старт</button>
+          <button type="button" class="gs-problem-picker-itil-stop" disabled>Стоп</button>
+        </div>
+        <dl class="gs-problem-picker-itil-grid">
+          <dt>Собрано строк</dt>
+          <dd class="gs-problem-picker-itil-collected">0</dd>
+          <dt>Обработано</dt>
+          <dd class="gs-problem-picker-itil-progress">0/0</dd>
+          <dt>Сейчас</dt>
+          <dd class="gs-problem-picker-itil-current">нет</dd>
+          <dt>Статус</dt>
+          <dd class="gs-problem-picker-itil-status" aria-live="polite">Ожидание запуска.</dd>
+        </dl>
+      </section>
     `;
 
-    $('.gs-problem-picker-open', root)?.addEventListener('click', () => {
+    $('.gs-problem-picker-menu-close', menu)?.addEventListener('click', closeMenu, { capture: true });
+    $('.gs-problem-picker-open', menu)?.addEventListener('click', () => {
       void openPicker();
     }, { capture: true });
-
-    $('.gs-problem-picker-url', root)?.addEventListener('click', () => {
+    $('.gs-problem-picker-url', menu)?.addEventListener('click', () => {
       void promptBridgeUrl();
     }, { capture: true });
+    $('.gs-problem-picker-itil-start', menu)?.addEventListener('click', () => {
+      void startItilFill();
+    }, { capture: true });
+    $('.gs-problem-picker-itil-stop', menu)?.addEventListener('click', () => {
+      stopItilFill();
+    }, { capture: true });
 
-    (document.body || document.documentElement).appendChild(root);
-    return root;
+    host.append(overlay, menu);
+    updateLauncherStatus(menuStatusText, menuStatusIsError);
+    renderItilStatus();
+    return menu;
+  }
+
+  function openMenu() {
+    const menu = ensureMenu();
+    const overlay = document.getElementById(MENU_OVERLAY_ID);
+    if (!(menu instanceof HTMLElement)) return false;
+    if (overlay instanceof HTMLElement) overlay.hidden = false;
+    menu.hidden = false;
+    renderItilStatus();
+    updateLauncherStatus(menuStatusText, menuStatusIsError);
+    return true;
+  }
+
+  function toggleMenu() {
+    const menu = ensureMenu();
+    if (!(menu instanceof HTMLElement)) return false;
+    if (menu.hidden) return openMenu();
+    closeMenu();
+    return false;
+  }
+
+  function isF2Hotkey(event) {
+    const key = event && event.key ? String(event.key) : '';
+    const code = event && event.code ? String(event.code) : '';
+    const keyCode = Number(event && event.keyCode);
+    return key === 'F2' || code === 'F2' || keyCode === KEY_CODE_F2;
+  }
+
+  function handleMenuHotkey(event) {
+    if (event.type !== 'keydown' || event.repeat || !isF2Hotkey(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    toggleMenu();
+  }
+
+  function handleMenuEscape(event) {
+    if (event.type !== 'keydown' || event.repeat || event.key !== 'Escape') return;
+    const menu = document.getElementById(MENU_ID);
+    if (menu instanceof HTMLElement && !menu.hidden) {
+      event.preventDefault();
+      closeMenu();
+    }
+  }
+
+  function removeLegacyLauncher() {
+    const root = document.getElementById(ROOT_ID);
+    if (root instanceof HTMLElement) root.remove();
   }
 
   async function promptBridgeUrl() {
@@ -411,12 +728,12 @@
       if (saveButton instanceof HTMLButtonElement) {
         saveButton.disabled = !state.bridgeUrl;
         saveButton.textContent = 'Сохранить и далее';
-        saveButton.title = state.bridgeUrl ? '' : 'Нажми кнопку URL на странице и задай Apps Script bridge.';
+        saveButton.title = state.bridgeUrl ? '' : 'Нажми F2, затем «URL bridge» и задай Apps Script bridge.';
       }
     }
 
     if (!state.bridgeUrl) {
-      setModalMessage('URL bridge не задан. Нажми кнопку URL на странице.', true);
+      setModalMessage('URL bridge не задан. Нажми F2, затем «URL bridge».', true);
     } else if (state.failedSaveCount) {
       setModalMessage(state.lastBackgroundError || `Есть ошибки фонового сохранения: ${state.failedSaveCount}.`, true);
     } else if (state.pendingSaveCount) {
@@ -473,7 +790,8 @@
           spreadsheetId: CONFIG.spreadsheetId,
           sheetName,
           row,
-          value
+          value,
+          cleanText: processRequestText(item && item.text ? item.text : '')
         }
       }
     }).then((response) => {
@@ -511,7 +829,7 @@
     }
 
     if (!state.bridgeUrl) {
-      setModalMessage('URL bridge не задан. Нажми кнопку URL на странице.', true);
+      setModalMessage('URL bridge не задан. Нажми F2, затем «URL bridge».', true);
       return;
     }
 
@@ -525,13 +843,163 @@
     if (nextSelect instanceof HTMLSelectElement && !nextSelect.disabled) nextSelect.focus();
   }
 
+  function stopItilFill() {
+    itilRunId += 1;
+    itilState = {
+      queue: [],
+      currentIndex: 0,
+      successCount: 0,
+      failedCount: 0,
+      currentItem: null,
+      sheetName: '',
+      gid: '',
+      rowsCount: 0,
+      isRunning: false,
+      statusText: 'Остановлено.',
+      lastError: ''
+    };
+    renderItilStatus();
+  }
+
+  async function startItilFill() {
+    if (itilState.isRunning) return;
+
+    const runId = itilRunId + 1;
+    itilRunId = runId;
+
+    itilState = {
+      ...itilState,
+      queue: [],
+      currentIndex: 0,
+      successCount: 0,
+      failedCount: 0,
+      currentItem: null,
+      isRunning: true,
+      statusText: 'Собираю строки для заполнения из ITIL...',
+      lastError: ''
+    };
+    renderItilStatus();
+
+    try {
+      await loadBridgeUrl();
+      if (!state.bridgeUrl) throw new Error('URL bridge не задан. Нажми «URL bridge» и задай Apps Script bridge.');
+
+      await loadItilQueue();
+      if (runId !== itilRunId) return;
+
+      if (!itilState.queue.length) {
+        itilState = {
+          ...itilState,
+          isRunning: false,
+          currentItem: null,
+          statusText: 'Строк для заполнения из ITIL не найдено.',
+          lastError: ''
+        };
+        renderItilStatus();
+        return;
+      }
+
+      itilState = {
+        ...itilState,
+        isRunning: true,
+        statusText: `В очереди ITIL строк: ${itilState.queue.length}.`,
+        lastError: ''
+      };
+      renderItilStatus();
+
+      for (let index = 0; index < itilState.queue.length; index++) {
+        if (runId !== itilRunId) return;
+
+        const item = itilState.queue[index];
+        itilState = {
+          ...itilState,
+          currentIndex: index,
+          currentItem: item,
+          statusText: `Ищу ITIL ${item.itilNumber} для строки ${item.row}...`,
+          lastError: ''
+        };
+        renderItilStatus();
+
+        const response = await sendRuntimeMessage({
+          action: ITIL_FILL_ACTION,
+          data: {
+            bridgeUrl: state.bridgeUrl,
+            payload: {
+              spreadsheetId: CONFIG.spreadsheetId,
+              sheetName: itilState.sheetName,
+              row: item.row,
+              itilNumber: item.itilNumber
+            }
+          }
+        });
+
+        if (runId !== itilRunId) return;
+
+        if (!response || response.success !== true) {
+          const errorText = response && response.error ? response.error : 'неизвестная ошибка';
+          itilState = {
+            ...itilState,
+            failedCount: itilState.failedCount + 1,
+            isRunning: false,
+            statusText: '',
+            lastError: `Строка ${item.row}, ITIL ${item.itilNumber}: ${errorText}`
+          };
+          renderItilStatus();
+          return;
+        }
+
+        const result = response.result || {};
+        const textLength = Number(result.requestTextLength || 0);
+        const solutionLength = Number(result.solutionTextLength || 0);
+        itilState = {
+          ...itilState,
+          currentIndex: index + 1,
+          successCount: itilState.successCount + 1,
+          currentItem: null,
+          statusText: `Строка ${item.row} заполнена. Текст: ${textLength} симв., решение: ${solutionLength} симв.`,
+          lastError: ''
+        };
+        renderItilStatus();
+      }
+
+      if (runId !== itilRunId) return;
+
+      itilState = {
+        ...itilState,
+        isRunning: false,
+        currentItem: null,
+        statusText: `Готово. Заполнено строк: ${itilState.successCount}/${itilState.queue.length}.`,
+        lastError: ''
+      };
+      renderItilStatus();
+    } catch (error) {
+      if (runId !== itilRunId) return;
+      const message = error && error.message ? error.message : 'Не удалось запустить заполнение из ITIL.';
+      itilState = {
+        ...itilState,
+        isRunning: false,
+        currentItem: null,
+        statusText: '',
+        lastError: message
+      };
+      renderItilStatus();
+    }
+  }
+
   function isInsideProblemPickerUi(target) {
     if (!(target instanceof Node)) return false;
 
     const root = document.getElementById(ROOT_ID);
     const modal = document.getElementById(MODAL_ID);
+    const menu = document.getElementById(MENU_ID);
+    const menuOverlay = document.getElementById(MENU_OVERLAY_ID);
 
-    return !!((root && root.contains(target)) || (modal && modal.contains(target)));
+    return !!(
+      (root && root.contains(target))
+      || (modal && modal.contains(target))
+      || (menu && menu.contains(target))
+      || (menuOverlay && menuOverlay.contains(target))
+    );
   }
 
   async function openPickerIfQueueHasRows(source) {
@@ -606,8 +1074,11 @@
   function init() {
     if (!isTargetSpreadsheet()) return;
 
-    ensureLauncher();
+    removeLegacyLauncher();
+    ensureMenu();
     installAutoOpenListeners();
+    document.addEventListener('keydown', handleMenuHotkey, true);
+    document.addEventListener('keydown', handleMenuEscape, true);
     void loadBridgeUrl();
   }
 
