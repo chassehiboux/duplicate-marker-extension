@@ -303,10 +303,16 @@
       throw new Error(`Не дождался: ${label}.`);
     }
 
-    function dispatchMouseLike(element, type, detail) {
+    function dispatchMouseLike(element, type, detail, options) {
+      const eventOptions = options || {};
       const rect = element.getBoundingClientRect();
       const clientX = rect.left + Math.max(1, Math.min(rect.width - 1, rect.width / 2));
       const clientY = rect.top + Math.max(1, Math.min(rect.height - 1, rect.height / 2));
+      const button = Number.isInteger(eventOptions.button) ? eventOptions.button : 0;
+      const buttons = Number.isInteger(eventOptions.buttons)
+        ? eventOptions.buttons
+        : (type === 'mouseup' || type === 'click' || type === 'dblclick' || type === 'contextmenu' ? 0 : 1);
+
       element.dispatchEvent(new MouseEvent(type, {
         bubbles: true,
         cancelable: true,
@@ -314,8 +320,8 @@
         detail: detail || 1,
         clientX,
         clientY,
-        button: 0,
-        buttons: type === 'mouseup' || type === 'click' || type === 'dblclick' ? 0 : 1
+        button,
+        buttons
       }));
     }
 
@@ -338,6 +344,35 @@
       dispatchMouseLike(element, 'click', 2);
       dispatchMouseLike(element, 'dblclick', 2);
       await sleep(250);
+    }
+
+    function findPasteMenuItem() {
+      const byId = document.querySelector('#popupItem4');
+      if (isVisible(byId) && normalizeText(byId.textContent).includes('Вставить')) return byId;
+
+      return Array.from(document.querySelectorAll('.submenuBlock,.menuItem,.popupItem,div'))
+        .find((element) => {
+          if (!isVisible(element)) return false;
+          const text = normalizeText(element.textContent);
+          return text === 'Вставить Ctrl+V'
+            || text === 'Вставить'
+            || (text.includes('Вставить') && text.includes('Ctrl+V'));
+        }) || null;
+    }
+
+    async function openSearchInputContextMenu(input) {
+      input.scrollIntoView({ block: 'center', inline: 'center' });
+      await sleep(50);
+      input.focus();
+      if (typeof input.select === 'function') input.select();
+
+      dispatchMouseLike(input, 'mouseover', 0);
+      dispatchMouseLike(input, 'mousemove', 0);
+      dispatchMouseLike(input, 'mousedown', 1, { button: 2, buttons: 2 });
+      dispatchMouseLike(input, 'mouseup', 1, { button: 2, buttons: 0 });
+      dispatchMouseLike(input, 'contextmenu', 1, { button: 2, buttons: 0 });
+
+      return waitFor(findPasteMenuItem, 2500, 'пункт «Вставить» в контекстном меню поиска');
     }
 
     function findServiceDeskLauncher() {
@@ -388,83 +423,16 @@
     }
 
     async function pasteNumberLikeUser(input, value) {
+      if (!canUseClipboardPaste) {
+        throw new Error('Не удалось подготовить clipboard для вставки номера ITIL.');
+      }
+
       input.focus();
       if (typeof input.select === 'function') input.select();
 
-      input.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Control', code: 'ControlLeft', ctrlKey: true }));
-      input.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'v', code: 'KeyV', ctrlKey: true }));
-
-      let pasted = false;
-      if (canUseClipboardPaste && value) {
-        try {
-          pasted = !!document.execCommand('paste');
-          await sleep(300);
-        } catch (error) {
-          pasted = false;
-        }
-      }
-
-      try {
-        const dataTransfer = new DataTransfer();
-        dataTransfer.setData('text/plain', value);
-        if (!pasted || String(input.value || '') !== value) {
-          input.dispatchEvent(new ClipboardEvent('paste', {
-            bubbles: true,
-            cancelable: true,
-            clipboardData: dataTransfer
-          }));
-        }
-      } catch (error) {
-        if (!pasted) input.dispatchEvent(new Event('paste', { bubbles: true, cancelable: true }));
-      }
-
-      const currentValue = String(input.value || '');
-      if (currentValue !== value) {
-        try {
-          document.execCommand('insertText', false, value);
-        } catch (error) {
-          // Последний fallback ниже.
-        }
-      }
-
-      if (String(input.value || '') !== value) {
-        try {
-          if (typeof input.setSelectionRange === 'function') input.setSelectionRange(0, String(input.value || '').length);
-          if (typeof input.setRangeText === 'function') {
-            input.setRangeText(value, 0, String(input.value || '').length, 'end');
-          }
-        } catch (error) {
-          // Если браузер не даёт заменить выделение, ниже останется value-setter.
-        }
-      }
-
-      if (String(input.value || '') !== value) {
-        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
-        if (setter && typeof setter.set === 'function') {
-          setter.set.call(input, value);
-        } else {
-          input.value = value;
-        }
-      }
-
-      input.dispatchEvent(new InputEvent('beforeinput', {
-        bubbles: true,
-        cancelable: true,
-        inputType: 'insertFromPaste',
-        data: value
-      }));
-      input.dispatchEvent(new InputEvent('input', {
-        bubbles: true,
-        cancelable: true,
-        inputType: 'insertFromPaste',
-        data: value
-      }));
-      input.dispatchEvent(new Event('change', { bubbles: true }));
-      input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, cancelable: true, key: 'v', code: 'KeyV', ctrlKey: true }));
-      input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, cancelable: true, key: 'Control', code: 'ControlLeft' }));
-      input.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter' }));
-      input.dispatchEvent(new KeyboardEvent('keypress', { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter' }));
-      input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter' }));
+      const pasteMenuItem = await openSearchInputContextMenu(input);
+      await clickLikeUser(pasteMenuItem);
+      await waitFor(() => String(input.value || '') === value, 3000, `вставка номера ${value} через контекстное меню`);
       await sleep(300);
     }
 
