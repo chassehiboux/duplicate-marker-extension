@@ -273,7 +273,7 @@
 
   async function collectItilRequestData(itilNumber, clipboardPrepared) {
     const number = String(itilNumber || '').trim();
-    const canUseClipboardPaste = !!clipboardPrepared;
+    let canUseClipboardPaste = !!clipboardPrepared;
     if (!number) return { success: false, error: 'Пустой номер ITIL.' };
 
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -485,7 +485,49 @@
       await sleep(150);
     }
 
+    async function prepareClipboardInPage(value) {
+      const text = String(value || '');
+      if (!text) return false;
+
+      try {
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+          await navigator.clipboard.writeText(text);
+          return true;
+        }
+      } catch (error) {
+        // На http-странице Clipboard API может быть недоступен; ниже fallback через DOM.
+      }
+
+      try {
+        const activeElement = document.activeElement;
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.setAttribute('readonly', '');
+        textarea.style.position = 'fixed';
+        textarea.style.left = '-10000px';
+        textarea.style.top = '0';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        const copied = document.execCommand('copy');
+        textarea.remove();
+
+        if (activeElement && typeof activeElement.focus === 'function') {
+          activeElement.focus();
+        }
+
+        return !!copied;
+      } catch (error) {
+        return false;
+      }
+    }
+
     async function pasteNumberLikeUser(input, value) {
+      if (!canUseClipboardPaste) {
+        canUseClipboardPaste = await prepareClipboardInPage(value);
+      }
+
       if (!canUseClipboardPaste) {
         throw new Error('Не удалось подготовить clipboard для вставки номера ITIL.');
       }
