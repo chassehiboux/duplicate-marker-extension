@@ -303,11 +303,17 @@
       throw new Error(`Не дождался: ${label}.`);
     }
 
+    function getElementPoint(element) {
+      const rect = element.getBoundingClientRect();
+      return {
+        clientX: rect.left + Math.max(1, Math.min(rect.width - 1, rect.width / 2)),
+        clientY: rect.top + Math.max(1, Math.min(rect.height - 1, rect.height / 2))
+      };
+    }
+
     function dispatchMouseLike(element, type, detail, options) {
       const eventOptions = options || {};
-      const rect = element.getBoundingClientRect();
-      const clientX = rect.left + Math.max(1, Math.min(rect.width - 1, rect.width / 2));
-      const clientY = rect.top + Math.max(1, Math.min(rect.height - 1, rect.height / 2));
+      const point = getElementPoint(element);
       const button = Number.isInteger(eventOptions.button) ? eventOptions.button : 0;
       const buttons = Number.isInteger(eventOptions.buttons)
         ? eventOptions.buttons
@@ -318,8 +324,35 @@
         cancelable: true,
         view: window,
         detail: detail || 1,
-        clientX,
-        clientY,
+        clientX: point.clientX,
+        clientY: point.clientY,
+        screenX: window.screenX + point.clientX,
+        screenY: window.screenY + point.clientY,
+        button,
+        buttons
+      }));
+    }
+
+    function dispatchPointerLike(element, type, options) {
+      if (typeof PointerEvent !== 'function') return;
+
+      const eventOptions = options || {};
+      const point = getElementPoint(element);
+      const button = Number.isInteger(eventOptions.button) ? eventOptions.button : 0;
+      const buttons = Number.isInteger(eventOptions.buttons)
+        ? eventOptions.buttons
+        : (type === 'pointerup' ? 0 : 1);
+
+      element.dispatchEvent(new PointerEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        pointerId: 1,
+        pointerType: 'mouse',
+        isPrimary: true,
+        clientX: point.clientX,
+        clientY: point.clientY,
+        screenX: window.screenX + point.clientX,
+        screenY: window.screenY + point.clientY,
         button,
         buttons
       }));
@@ -358,6 +391,36 @@
             || text === 'Вставить'
             || (text.includes('Вставить') && text.includes('Ctrl+V'));
         }) || null;
+    }
+
+    async function clickPasteMenuItemLikeUser(menuItem) {
+      const point = getElementPoint(menuItem);
+      const hitTarget = document.elementFromPoint(point.clientX, point.clientY);
+      const clickTargets = [
+        hitTarget && menuItem.contains(hitTarget) ? hitTarget : null,
+        menuItem.querySelector('.submenuText'),
+        menuItem.querySelector('.submenuName'),
+        menuItem
+      ].filter((element, index, list) => element && isVisible(element) && list.indexOf(element) === index);
+
+      for (let index = 0; index < clickTargets.length; index++) {
+        const target = clickTargets[index];
+        dispatchPointerLike(target, 'pointerover', { buttons: 0 });
+        dispatchMouseLike(target, 'mouseover', 0, { buttons: 0 });
+        dispatchPointerLike(target, 'pointermove', { buttons: 0 });
+        dispatchMouseLike(target, 'mousemove', 0, { buttons: 0 });
+        dispatchPointerLike(target, 'pointerdown', { button: 0, buttons: 1 });
+        dispatchMouseLike(target, 'mousedown', 1, { button: 0, buttons: 1 });
+        dispatchPointerLike(target, 'pointerup', { button: 0, buttons: 0 });
+        dispatchMouseLike(target, 'mouseup', 1, { button: 0, buttons: 0 });
+        dispatchMouseLike(target, 'click', 1, { button: 0, buttons: 0 });
+
+        if (typeof target.click === 'function') {
+          target.click();
+        }
+
+        await sleep(120);
+      }
     }
 
     async function openSearchInputContextMenu(input) {
@@ -431,7 +494,7 @@
       if (typeof input.select === 'function') input.select();
 
       const pasteMenuItem = await openSearchInputContextMenu(input);
-      await clickLikeUser(pasteMenuItem);
+      await clickPasteMenuItemLikeUser(pasteMenuItem);
       await waitFor(() => String(input.value || '') === value, 3000, `вставка номера ${value} через контекстное меню`);
       await sleep(300);
     }
