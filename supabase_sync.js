@@ -501,7 +501,13 @@
     const joinRef = Object.prototype.hasOwnProperty.call(options, 'joinRef')
       ? options.joinRef
       : realtimeJoinRef;
-    socket.send(JSON.stringify([joinRef || null, ref, topic, event, payload || {}]));
+    socket.send(JSON.stringify({
+      topic,
+      event,
+      payload: payload || {},
+      ref,
+      join_ref: joinRef || null
+    }));
     return ref;
   }
 
@@ -521,7 +527,13 @@
         const [joinRef, ref, topic, event, payload] = parsed;
         return { joinRef, ref, topic, event, payload };
       }
-      return parsed && typeof parsed === 'object' ? parsed : null;
+      if (parsed && typeof parsed === 'object') {
+        return {
+          ...parsed,
+          joinRef: parsed.join_ref || parsed.joinRef || null
+        };
+      }
+      return null;
     } catch (error) {
       return null;
     }
