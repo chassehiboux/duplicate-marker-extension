@@ -109,6 +109,20 @@
       root.classList.toggle('is-error', !!isError);
     }
 
+    function getRealtimeStatusText(status) {
+      if (!status || status.authenticated !== true) return '';
+      if (status.realtimeConnected === true) return 'Realtime: подключен.';
+      const realtimeStatus = String(status.realtimeStatus || '').trim();
+      if (realtimeStatus === 'unsupported') return 'Realtime: недоступен, резервная проверка раз в минуту.';
+      if (realtimeStatus === 'error') return 'Realtime: ошибка, резервная проверка раз в минуту.';
+      if (realtimeStatus === 'disconnected') return 'Realtime: переподключение, резервная проверка раз в минуту.';
+      return 'Резервная проверка Supabase: раз в минуту.';
+    }
+
+    function withRealtimeStatus(text, status) {
+      return [text, getRealtimeStatusText(status)].filter(Boolean).join('\n');
+    }
+
     function renderStatus(status) {
       currentStatus = status || {};
       const authenticated = currentStatus.authenticated === true;
@@ -128,15 +142,15 @@
       if (signedIn) signedIn.hidden = !authenticated;
 
       if (isSyncing) {
-        setStatusText('Синхронизация...');
+        setStatusText(withRealtimeStatus('Синхронизация...', currentStatus));
       } else if (errorText) {
-        setStatusText(errorText, true);
+        setStatusText(withRealtimeStatus(errorText, currentStatus), true);
       } else if (messageText) {
-        setStatusText(messageText);
+        setStatusText(withRealtimeStatus(messageText, currentStatus));
       } else if (authenticated && lastSync) {
-        setStatusText(`Последняя синхронизация: ${lastSync}`);
+        setStatusText(withRealtimeStatus(`Последняя синхронизация: ${lastSync}`, currentStatus));
       } else if (authenticated) {
-        setStatusText('После входа данные берутся из Supabase и сохраняются туда.');
+        setStatusText(withRealtimeStatus('После входа данные берутся из Supabase и сохраняются туда.', currentStatus));
       } else {
         setStatusText('Без входа все данные остаются только в этом браузере.');
       }

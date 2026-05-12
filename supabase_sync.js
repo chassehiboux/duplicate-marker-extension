@@ -14,6 +14,14 @@
   const PRE_LOGIN_BACKUP_KEY = 'dup_supabase_pre_login_backup_v1';
   const SYNC_DEBOUNCE_MS = 1500;
   const SESSION_REFRESH_MARGIN_MS = 60 * 1000;
+  const REALTIME_WS_URL = `${SUPABASE_URL.replace(/^http/i, 'ws')}/realtime/v1/websocket?apikey=${encodeURIComponent(SUPABASE_PUBLISHABLE_KEY)}&log_level=warning&vsn=1.0.0`;
+  const REALTIME_TOPIC = 'realtime:extension-user-state-sync';
+  const REALTIME_JOIN_TIMEOUT_MS = 10000;
+  const REALTIME_HEARTBEAT_MS = 25000;
+  const REALTIME_PULL_DEBOUNCE_MS = 800;
+  const REALTIME_RECONNECT_DELAYS_MS = [1000, 2000, 5000, 10000, 30000];
+  const FALLBACK_PULL_ALARM_NAME = 'dup_supabase_pull_fallback_v1';
+  const FALLBACK_PULL_MINUTES = 1;
 
   const EXACT_SYNC_KEYS = new Set([
     'setting_copy_mode',
@@ -89,9 +97,27 @@
   let syncInProgress = false;
   let lastRuntimeMessage = '';
   let lastRuntimeError = '';
+  let realtimeWanted = false;
+  let realtimeStarting = false;
+  let realtimeSocket = null;
+  let realtimeUserId = '';
+  let realtimeAccessToken = '';
+  let realtimeJoinRef = '';
+  let realtimeJoined = false;
+  let realtimeRefCounter = 0;
+  let realtimePendingHeartbeatRef = '';
+  let realtimeJoinTimer = 0;
+  let realtimeHeartbeatTimer = 0;
+  let realtimeReconnectTimer = 0;
+  let realtimeReconnectAttempt = 0;
+  let realtimePullTimer = 0;
 
   function hasChromeStorage() {
     return !!(chrome && chrome.storage && chrome.storage.local);
+  }
+
+  function hasChromeAlarms() {
+    return !!(chrome && chrome.alarms);
   }
 
   function storageGet(keys) {
@@ -159,6 +185,27 @@
     } catch (error) {
       return left === right;
     }
+  }
+
+  function parseTimestamp(value) {
+    const timestamp = Date.parse(String(value || ''));
+    return Number.isFinite(timestamp) ? timestamp : 0;
+  }
+
+  function getRemoteComparableTimestamp(remote) {
+    if (!remote || typeof remote !== 'object') return 0;
+    return parseTimestamp(remote.clientUpdatedAt || remote.updatedAt);
+  }
+
+  function getKnownRemoteComparableTimestamp(meta) {
+    if (!meta || typeof meta !== 'object') return 0;
+    return parseTimestamp(meta.remoteClientUpdatedAt || meta.remoteUpdatedAt);
+  }
+
+  function isRemoteKnownOrOlder(remote, meta) {
+    const remoteTimestamp = getRemoteComparableTimestamp(remote);
+    const knownTimestamp = getKnownRemoteComparableTimestamp(meta);
+    return !!remoteTimestamp && !!knownTimestamp && remoteTimestamp <= knownTimestamp;
   }
 
   function isSyncableKey(key) {
@@ -437,6 +484,381 @@
     });
   }
 
+  function makeRealtimeRef() {
+    realtimeRefCounter += 1;
+    return String(realtimeRefCounter);
+  }
+
+  function clearTimer(timerId) {
+    if (timerId) clearTimeout(timerId);
+    return 0;
+  }
+
+  function sendRealtimeMessage(socket, event, payload = {}, options = {}) {
+    if (!socket || socket.readyState !== WebSocket.OPEN) return '';
+    const ref = options.ref || makeRealtimeRef();
+    const topic = options.topic || REALTIME_TOPIC;
+    const joinRef = Object.prototype.hasOwnProperty.call(options, 'joinRef')
+      ? options.joinRef
+      : realtimeJoinRef;
+    socket.send(JSON.stringify([joinRef || null, ref, topic, event, payload || {}]));
+    return ref;
+  }
+
+  async function decodeRealtimeMessage(rawData) {
+    try {
+      let text = '';
+      if (typeof rawData === 'string') {
+        text = rawData;
+      } else if (rawData instanceof ArrayBuffer) {
+        text = new TextDecoder().decode(rawData);
+      } else if (typeof Blob !== 'undefined' && rawData instanceof Blob) {
+        text = new TextDecoder().decode(await rawData.arrayBuffer());
+      }
+      if (!text) return null;
+      const parsed = JSON.parse(text);
+      if (Array.isArray(parsed)) {
+        const [joinRef, ref, topic, event, payload] = parsed;
+        return { joinRef, ref, topic, event, payload };
+      }
+      return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function getRealtimeChangeData(payload) {
+    if (!payload || typeof payload !== 'object') return null;
+    if (payload.data && typeof payload.data === 'object') return payload.data;
+    return payload;
+  }
+
+  function getRealtimeChangeRecord(payload) {
+    const data = getRealtimeChangeData(payload);
+    if (!data || typeof data !== 'object') return {};
+    if (data.record && typeof data.record === 'object') return data.record;
+    if (data.new && typeof data.new === 'object') return data.new;
+    return {};
+  }
+
+  function getRealtimeChangeTimestamp(payload) {
+    const data = getRealtimeChangeData(payload);
+    const record = getRealtimeChangeRecord(payload);
+    return String(
+      record.client_updated_at ||
+      data.client_updated_at ||
+      data.commit_timestamp ||
+      ''
+    );
+  }
+
+  function scheduleRealtimePull(reason = 'realtime') {
+    realtimePullTimer = clearTimer(realtimePullTimer);
+    realtimePullTimer = setTimeout(() => {
+      realtimePullTimer = 0;
+      void pullRemoteState(reason, {
+        quiet: true,
+        skipIfRemoteNotNewer: true,
+        skipIfSyncScheduled: true
+      });
+    }, REALTIME_PULL_DEBOUNCE_MS);
+  }
+
+  async function handleRealtimePostgresChange(payload) {
+    const data = getRealtimeChangeData(payload);
+    if (!data || typeof data !== 'object') return;
+
+    const eventType = String(data.type || data.eventType || '').toUpperCase();
+    if (eventType && eventType !== 'INSERT' && eventType !== 'UPDATE') return;
+
+    const record = getRealtimeChangeRecord(payload);
+    const userId = String(record.user_id || '').trim();
+    if (currentUser && currentUser.id && userId && userId !== String(currentUser.id)) return;
+
+    const meta = await getSyncMeta();
+    const remoteClientUpdatedAt = String(record.client_updated_at || '').trim();
+    if (remoteClientUpdatedAt && remoteClientUpdatedAt === String(meta.lastPushClientUpdatedAt || '')) {
+      await setSyncMeta({
+        remoteClientUpdatedAt,
+        realtimeLastEventAt: new Date().toISOString()
+      });
+      return;
+    }
+
+    const incomingTimestamp = parseTimestamp(getRealtimeChangeTimestamp(payload));
+    const knownTimestamp = getKnownRemoteComparableTimestamp(meta);
+    if (incomingTimestamp && knownTimestamp && incomingTimestamp <= knownTimestamp) return;
+
+    await setSyncMeta({
+      realtimeLastEventAt: new Date().toISOString(),
+      realtimeLastEventClientUpdatedAt: remoteClientUpdatedAt
+    });
+    scheduleRealtimePull('realtime');
+  }
+
+  function clearRealtimeTimers() {
+    realtimeJoinTimer = clearTimer(realtimeJoinTimer);
+    realtimeHeartbeatTimer = clearTimer(realtimeHeartbeatTimer);
+    realtimeReconnectTimer = clearTimer(realtimeReconnectTimer);
+    realtimePullTimer = clearTimer(realtimePullTimer);
+    realtimePendingHeartbeatRef = '';
+  }
+
+  function scheduleRealtimeHeartbeat(socket) {
+    realtimeHeartbeatTimer = clearTimer(realtimeHeartbeatTimer);
+    realtimeHeartbeatTimer = setTimeout(() => {
+      if (socket !== realtimeSocket || !socket || socket.readyState !== WebSocket.OPEN) return;
+      if (realtimePendingHeartbeatRef) {
+        try {
+          socket.close();
+        } catch (error) {
+          // ignore
+        }
+        return;
+      }
+      realtimePendingHeartbeatRef = sendRealtimeMessage(socket, 'heartbeat', {}, {
+        topic: 'phoenix',
+        joinRef: null
+      });
+      scheduleRealtimeHeartbeat(socket);
+    }, REALTIME_HEARTBEAT_MS);
+  }
+
+  function scheduleRealtimeReconnect(reason = 'closed') {
+    if (!realtimeWanted || !currentSession) return;
+    realtimeReconnectTimer = clearTimer(realtimeReconnectTimer);
+    const delay = REALTIME_RECONNECT_DELAYS_MS[
+      Math.min(realtimeReconnectAttempt, REALTIME_RECONNECT_DELAYS_MS.length - 1)
+    ];
+    realtimeReconnectAttempt += 1;
+    realtimeReconnectTimer = setTimeout(() => {
+      realtimeReconnectTimer = 0;
+      void startRealtimeSubscription(`reconnect-${reason}`);
+    }, delay);
+  }
+
+  function stopRealtimeSubscription(options = {}) {
+    const keepWanted = options.keepWanted === true;
+    if (!keepWanted) realtimeWanted = false;
+    clearRealtimeTimers();
+    realtimeJoined = false;
+    const joinRef = realtimeJoinRef;
+    realtimeJoinRef = '';
+    realtimeUserId = '';
+    realtimeAccessToken = '';
+
+    const socket = realtimeSocket;
+    realtimeSocket = null;
+    if (socket) {
+      try {
+        if (typeof WebSocket !== 'undefined' && socket.readyState === WebSocket.OPEN) {
+          sendRealtimeMessage(socket, 'phx_leave', {}, { joinRef });
+        }
+        socket.close();
+      } catch (error) {
+        // ignore
+      }
+    }
+  }
+
+  async function handleRealtimeMessage(socket, rawData) {
+    const message = await decodeRealtimeMessage(rawData);
+    if (socket !== realtimeSocket || !message) return;
+
+    const { topic, event, payload, ref } = message;
+    if (ref && ref === realtimePendingHeartbeatRef) {
+      realtimePendingHeartbeatRef = '';
+    }
+
+    if (topic !== REALTIME_TOPIC) return;
+
+    if (event === 'phx_reply' && ref === realtimeJoinRef) {
+      const status = payload && payload.status ? String(payload.status) : '';
+      if (status === 'ok') {
+        realtimeJoined = true;
+        realtimeReconnectAttempt = 0;
+        await setSyncMeta({
+          realtimeStatus: 'connected',
+          realtimeConnectedAt: new Date().toISOString(),
+          realtimeLastError: ''
+        });
+        await broadcastStatus();
+        return;
+      }
+
+      realtimeJoined = false;
+      await setSyncMeta({
+        realtimeStatus: 'error',
+        realtimeLastError: extractSupabaseErrorMessage(payload) || 'Realtime subscription failed.'
+      });
+      try {
+        socket.close();
+      } catch (error) {
+        // ignore
+      }
+      return;
+    }
+
+    if (event === 'postgres_changes') {
+      void handleRealtimePostgresChange(payload);
+    } else if (event === 'system' && payload && payload.status === 'error') {
+      await setSyncMeta({
+        realtimeStatus: 'error',
+        realtimeLastError: extractSupabaseErrorMessage(payload) || 'Realtime system error.'
+      });
+      await broadcastStatus();
+    }
+  }
+
+  async function startRealtimeSubscription(reason = 'auth') {
+    realtimeWanted = true;
+    if (realtimeStarting) return;
+    if (typeof WebSocket !== 'function') {
+      await setSyncMeta({ realtimeStatus: 'unsupported' });
+      return;
+    }
+
+    realtimeStarting = true;
+    try {
+      await ensureSession();
+      if (!currentUser) currentUser = await fetchCurrentUser();
+      const userId = currentUser && currentUser.id ? String(currentUser.id) : '';
+      const accessToken = currentSession && currentSession.access_token ? String(currentSession.access_token) : '';
+      if (!userId || !accessToken) return;
+
+      if (
+        realtimeSocket &&
+        (realtimeSocket.readyState === WebSocket.OPEN || realtimeSocket.readyState === WebSocket.CONNECTING) &&
+        realtimeUserId === userId &&
+        realtimeAccessToken === accessToken
+      ) {
+        return;
+      }
+
+      stopRealtimeSubscription({ keepWanted: true });
+      realtimeUserId = userId;
+      realtimeAccessToken = accessToken;
+      realtimeJoined = false;
+
+      const socket = new WebSocket(REALTIME_WS_URL);
+      realtimeSocket = socket;
+      socket.binaryType = 'arraybuffer';
+
+      socket.onopen = () => {
+        if (socket !== realtimeSocket) return;
+        realtimeJoinRef = makeRealtimeRef();
+        sendRealtimeMessage(socket, 'phx_join', {
+          config: {
+            broadcast: { ack: false, self: false },
+            presence: { key: '', enabled: false },
+            postgres_changes: [{
+              event: '*',
+              schema: 'public',
+              table: STATE_TABLE,
+              filter: `user_id=eq.${userId}`
+            }],
+            private: false
+          },
+          access_token: accessToken
+        }, {
+          ref: realtimeJoinRef,
+          joinRef: realtimeJoinRef
+        });
+
+        realtimeJoinTimer = clearTimer(realtimeJoinTimer);
+        realtimeJoinTimer = setTimeout(() => {
+          if (socket === realtimeSocket && !realtimeJoined) {
+            try {
+              socket.close();
+            } catch (error) {
+              // ignore
+            }
+          }
+        }, REALTIME_JOIN_TIMEOUT_MS);
+        scheduleRealtimeHeartbeat(socket);
+      };
+
+      socket.onmessage = (event) => {
+        void handleRealtimeMessage(socket, event.data);
+      };
+
+      socket.onerror = () => {
+        void setSyncMeta({
+          realtimeStatus: 'error',
+          realtimeLastError: 'Ошибка WebSocket Realtime.'
+        });
+      };
+
+      socket.onclose = () => {
+        if (socket !== realtimeSocket) return;
+        clearRealtimeTimers();
+        realtimeSocket = null;
+        realtimeJoined = false;
+        void setSyncMeta({
+          realtimeStatus: 'disconnected',
+          realtimeDisconnectedAt: new Date().toISOString()
+        });
+        scheduleRealtimeReconnect(reason);
+      };
+    } catch (error) {
+      await setSyncMeta({
+        realtimeStatus: 'error',
+        realtimeLastError: localizeSupabaseError(error)
+      });
+      scheduleRealtimeReconnect(reason);
+    } finally {
+      realtimeStarting = false;
+    }
+  }
+
+  function ensureFallbackPullAlarm() {
+    if (!hasChromeAlarms()) return;
+    try {
+      chrome.alarms.create(FALLBACK_PULL_ALARM_NAME, {
+        delayInMinutes: FALLBACK_PULL_MINUTES,
+        periodInMinutes: FALLBACK_PULL_MINUTES
+      });
+    } catch (error) {
+      // ignore
+    }
+  }
+
+  function clearFallbackPullAlarm() {
+    if (!hasChromeAlarms()) return;
+    try {
+      chrome.alarms.clear(FALLBACK_PULL_ALARM_NAME);
+    } catch (error) {
+      // ignore
+    }
+  }
+
+  async function ensureBackgroundSyncActive(reason = 'auth') {
+    if (!currentSession) await loadStoredSession();
+    if (!currentSession) {
+      stopRealtimeSubscription();
+      clearFallbackPullAlarm();
+      return;
+    }
+    ensureFallbackPullAlarm();
+    void startRealtimeSubscription(reason);
+  }
+
+  async function handleFallbackPullAlarm() {
+    if (!currentSession) await loadStoredSession();
+    if (!currentSession) {
+      stopRealtimeSubscription();
+      clearFallbackPullAlarm();
+      return;
+    }
+
+    await ensureBackgroundSyncActive('fallback-alarm');
+    await pullRemoteState('fallback-alarm', {
+      quiet: true,
+      skipIfRemoteNotNewer: true,
+      skipIfSyncScheduled: true
+    });
+  }
+
   async function readRemoteState() {
     const user = currentUser || await fetchCurrentUser();
     if (!user || !user.id) throw new Error('Не удалось определить пользователя Supabase.');
@@ -456,11 +878,12 @@
   async function upsertRemoteState(snapshot) {
     const user = currentUser || await fetchCurrentUser();
     if (!user || !user.id) throw new Error('Не удалось определить пользователя Supabase.');
+    const clientUpdatedAt = new Date().toISOString();
     const payload = [{
       user_id: user.id,
       state: snapshot || {},
       state_version: STATE_VERSION,
-      client_updated_at: new Date().toISOString()
+      client_updated_at: clientUpdatedAt
     }];
     await supabaseFetch(`/rest/v1/${STATE_TABLE}?on_conflict=user_id`, {
       method: 'POST',
@@ -469,6 +892,7 @@
       },
       body: JSON.stringify(payload)
     }, true);
+    return { clientUpdatedAt };
   }
 
   async function applyRemoteState(remoteState) {
@@ -484,7 +908,7 @@
       }
     });
 
-    if (!Object.keys(valuesToSet).length) return;
+    if (!Object.keys(valuesToSet).length) return false;
 
     applyingRemoteState = true;
     try {
@@ -492,33 +916,61 @@
     } finally {
       applyingRemoteState = false;
     }
+    return true;
   }
 
-  async function pullRemoteState(reason = 'manual') {
+  async function pullRemoteState(reason = 'manual', options = {}) {
     if (!currentSession) await loadStoredSession();
     if (!currentSession) return { success: false, error: 'NO_SESSION' };
+    if (syncInProgress) return { success: true, skipped: 'sync-in-progress' };
+    if (options.skipIfSyncScheduled === true && syncTimer) {
+      return { success: true, skipped: 'local-sync-scheduled' };
+    }
 
     syncInProgress = true;
-    await broadcastStatus('Синхронизация...');
+    if (options.quiet !== true) await broadcastStatus('Синхронизация...');
     try {
       await ensureSession();
       if (!currentUser) {
         currentUser = await fetchCurrentUser();
       }
       const remote = await readRemoteState();
+      const meta = await getSyncMeta();
+
+      if (
+        options.skipIfRemoteNotNewer === true &&
+        remote.exists &&
+        !isEmptyObject(remote.state) &&
+        isRemoteKnownOrOlder(remote, meta)
+      ) {
+        await setSyncMeta({
+          lastSyncAt: new Date().toISOString(),
+          lastPullCheckAt: new Date().toISOString(),
+          lastError: '',
+          lastReason: reason,
+          remoteUpdatedAt: remote.updatedAt || meta.remoteUpdatedAt || '',
+          remoteClientUpdatedAt: remote.clientUpdatedAt || meta.remoteClientUpdatedAt || ''
+        });
+        lastRuntimeError = '';
+        return { success: true, skipped: 'remote-not-newer' };
+      }
+
       const localSnapshot = await collectLocalSyncSnapshot();
 
       if (!remote.exists || isEmptyObject(remote.state)) {
-        await upsertRemoteState(localSnapshot);
+        const pushResult = await upsertRemoteState(localSnapshot);
         await setSyncMeta({
           lastSyncAt: new Date().toISOString(),
           lastPullAt: new Date().toISOString(),
           lastPushAt: new Date().toISOString(),
+          lastPushClientUpdatedAt: pushResult.clientUpdatedAt,
           lastError: '',
           lastReason: reason,
-          remoteWasEmpty: true
+          remoteWasEmpty: true,
+          remoteClientUpdatedAt: pushResult.clientUpdatedAt
         });
         lastRuntimeMessage = 'Локальные данные отправлены в Supabase.';
+        lastRuntimeError = '';
         return { success: true, uploadedLocalState: true };
       }
 
@@ -529,16 +981,20 @@
           state: localSnapshot
         }
       });
-      await applyRemoteState(remote.state);
+      const applied = await applyRemoteState(remote.state);
       await setSyncMeta({
         lastSyncAt: new Date().toISOString(),
         lastPullAt: new Date().toISOString(),
         lastError: '',
         lastReason: reason,
-        remoteUpdatedAt: remote.updatedAt || ''
+        remoteUpdatedAt: remote.updatedAt || '',
+        remoteClientUpdatedAt: remote.clientUpdatedAt || ''
       });
-      lastRuntimeMessage = 'Данные Supabase применены локально.';
-      return { success: true, appliedRemoteState: true };
+      lastRuntimeMessage = applied
+        ? 'Данные Supabase применены локально.'
+        : 'Локальные данные уже совпадают с Supabase.';
+      lastRuntimeError = '';
+      return { success: true, appliedRemoteState: applied };
     } catch (error) {
       lastRuntimeError = localizeSupabaseError(error);
       await setSyncMeta({ lastError: lastRuntimeError });
@@ -559,10 +1015,12 @@
     try {
       await ensureSession();
       const snapshot = await collectLocalSyncSnapshot();
-      await upsertRemoteState(snapshot);
+      const pushResult = await upsertRemoteState(snapshot);
       await setSyncMeta({
         lastSyncAt: new Date().toISOString(),
         lastPushAt: new Date().toISOString(),
+        lastPushClientUpdatedAt: pushResult.clientUpdatedAt,
+        remoteClientUpdatedAt: pushResult.clientUpdatedAt,
         lastError: '',
         lastReason: reason
       });
@@ -593,6 +1051,7 @@
       await ensureSession();
       if (!currentUser) await fetchCurrentUser();
       await pullRemoteState(reason || 'auth');
+      await ensureBackgroundSyncActive(reason || 'auth');
     } catch (error) {
       lastRuntimeError = localizeSupabaseError(error);
       await setSyncMeta({ lastError: lastRuntimeError });
@@ -654,6 +1113,8 @@
     } catch (error) {
       // Даже если серверный logout не ответил, локальную сессию нужно убрать.
     }
+    stopRealtimeSubscription();
+    clearFallbackPullAlarm();
     await clearStoredSession();
     lastRuntimeMessage = 'Выход выполнен. Данные снова хранятся локально.';
     await broadcastStatus();
@@ -710,7 +1171,9 @@
       lastSyncAt: meta.lastSyncAt || '',
       lastError: lastRuntimeError || meta.lastError || '',
       message: messageOverride || lastRuntimeMessage || '',
-      remotePriority: true
+      remotePriority: true,
+      realtimeConnected: realtimeJoined,
+      realtimeStatus: meta.realtimeStatus || ''
     };
   }
 
@@ -739,6 +1202,12 @@
 
     try {
       if (action === 'DUP_SUPABASE_GET_STATUS') {
+        void ensureBackgroundSyncActive('status');
+        void pullRemoteState('panel-open', {
+          quiet: true,
+          skipIfRemoteNotNewer: true,
+          skipIfSyncScheduled: true
+        });
         return { success: true, status: await getPublicStatus() };
       }
       if (action === 'DUP_SUPABASE_SIGN_IN') {
@@ -793,6 +1262,13 @@
     });
   }
 
+  if (hasChromeAlarms()) {
+    chrome.alarms.onAlarm.addListener((alarm) => {
+      if (!alarm || alarm.name !== FALLBACK_PULL_ALARM_NAME) return;
+      void handleFallbackPullAlarm();
+    });
+  }
+
   async function boot() {
     if (bootStarted) return;
     bootStarted = true;
@@ -800,6 +1276,8 @@
     if (currentSession) {
       await initializeAuthenticatedSession('startup');
     } else {
+      stopRealtimeSubscription();
+      clearFallbackPullAlarm();
       await broadcastStatus();
     }
   }
@@ -808,7 +1286,9 @@
     isSyncableKey,
     collectLocalSyncSnapshot,
     pullRemoteState,
-    flushSync
+    flushSync,
+    startRealtimeSubscription,
+    stopRealtimeSubscription
   };
 
   setTimeout(() => {
