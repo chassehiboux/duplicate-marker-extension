@@ -87,24 +87,7 @@
     return !!line && FILE_NAME_ONLY_LINE_RE.test(String(line).trim());
   }
 
-  function extractFirstItilMessageBody(text) {
-    if (!text) return '';
-
-    const normalized = String(text).replace(/\r\n?/g, '\n');
-    const lines = normalized.split('\n');
-    const authorLineRe = /^\s*[^\r\n()]+?\s+\(\d{2}\.\d{2}\.\d{4}\s+\d{2}:\d{2}:\d{2}\):\s*$/;
-
-    const markers = [];
-    for (let index = 0; index < lines.length; index++) {
-      if (authorLineRe.test(lines[index])) {
-        markers.push(index);
-        if (markers.length >= 2) break;
-      }
-    }
-
-    if (markers.length < 2) return normalized;
-
-    const bodyLines = lines.slice(markers[0] + 1, markers[1]);
+  function cleanItilMessageBodyLines(bodyLines) {
     const cleaned = [];
     let prevEmpty = false;
 
@@ -128,6 +111,27 @@
 
     while (cleaned.length && cleaned[cleaned.length - 1] === '') cleaned.pop();
     return cleaned.join('\n');
+  }
+
+  function extractFirstItilMessageBody(text) {
+    if (!text) return '';
+
+    const normalized = String(text).replace(/\r\n?/g, '\n');
+    const lines = normalized.split('\n');
+    const authorLineRe = /^\s*[^\r\n()]+?\s+\(\d{2}\.\d{2}\.\d{4}\s+\d{2}:\d{2}:\d{2}\):\s*$/;
+
+    const markers = [];
+    for (let index = 0; index < lines.length; index++) {
+      if (authorLineRe.test(lines[index])) {
+        markers.push(index);
+        if (markers.length >= 2) break;
+      }
+    }
+
+    if (!markers.length) return normalized;
+
+    const endIndex = markers.length >= 2 ? markers[1] : lines.length;
+    return cleanItilMessageBodyLines(lines.slice(markers[0] + 1, endIndex));
   }
 
   function processRequestText(text) {
