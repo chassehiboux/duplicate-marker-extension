@@ -376,6 +376,55 @@
     }
   }
 
+  const bridgePostQueue = [];
+  let bridgePostQueueIsRunning = false;
+  let bridgePostQueueNextId = 1;
+
+  function enqueueBridgePost(url, payload) {
+    const normalizedUrl = normalizeBridgeUrl(url);
+
+    return new Promise((resolve, reject) => {
+      bridgePostQueue.push({
+        id: bridgePostQueueNextId++,
+        url: normalizedUrl,
+        payload: payload || {},
+        resolve,
+        reject
+      });
+
+      void drainBridgePostQueue();
+    });
+  }
+
+  async function drainBridgePostQueue() {
+    if (bridgePostQueueIsRunning) return;
+
+    bridgePostQueueIsRunning = true;
+    try {
+      while (bridgePostQueue.length) {
+        const item = bridgePostQueue.shift();
+        if (!item) continue;
+
+        try {
+          const result = await postBridge(item.url, item.payload);
+          if (result && result.success === false) {
+            throw new Error(result.error || 'Bridge не сохранил значение.');
+          }
+
+          item.resolve({
+            queueId: item.id,
+            result
+          });
+        } catch (error) {
+          item.reject(error);
+        }
+      }
+    } finally {
+      bridgePostQueueIsRunning = false;
+      if (bridgePostQueue.length) void drainBridgePostQueue();
+    }
+  }
+
   function tabsQuery(queryInfo) {
     return new Promise((resolve, reject) => {
       chrome.tabs.query(queryInfo || {}, (tabs) => {
@@ -594,6 +643,7 @@
     if (!sheetName) throw new Error('Не передан лист для ITIL-заполнения.');
     if (!Number.isInteger(row) || row < 2) throw new Error('Некорректный номер строки для ITIL-заполнения.');
     if (!itilNumber) throw new Error('Не передан номер ITIL.');
+    normalizeBridgeUrl(data.bridgeUrl);
 
     const tab = await getOrCreateItilTab();
     const clipboardPrepared = await writeClipboardText(itilNumber);
@@ -606,7 +656,7 @@
     const solutionText = String(result.solutionText || '').trim();
     if (!requestText) throw new Error(`ITIL ${itilNumber}: текст заявки пустой.`);
 
-    const bridgeResult = await postBridge(data.bridgeUrl, {
+    const bridgePayload = {
       action: 'saveItilData',
       spreadsheetId,
       sheetName,
@@ -614,18 +664,14 @@
       itilNumber,
       requestText,
       solutionText
-    });
-
-    if (bridgeResult && bridgeResult.success === false) {
-      throw new Error(bridgeResult.error || 'Bridge не сохранил данные ITIL.');
-    }
+    };
 
     return {
       row,
       itilNumber,
       requestTextLength: requestText.length,
       solutionTextLength: solutionText.length,
-      bridge: bridgeResult
+      bridgePayload
     };
   }
 
@@ -640,6 +686,7 @@
     if (!sheetName) throw new Error('Не передан лист для СУПП-заполнения.');
     if (!Number.isInteger(row) || row < 2) throw new Error('Некорректный номер строки для СУПП-заполнения.');
     if (!/^ЗНР-[A-Za-zА-Яа-яЁё0-9-]+$/.test(suppNumber)) throw new Error('Не передан корректный номер СУПП.');
+    normalizeBridgeUrl(data.bridgeUrl);
 
     const tab = await getOrCreateSuppTab();
     const result = await executeInTab(tab.id, collectSuppRequestData, [suppNumber]);
@@ -651,7 +698,7 @@
     const infoText = processSuppInfoText(suppNumber, result.commentsText || '', result.discussionText || '');
     if (!requestText) throw new Error(`СУПП ${suppNumber}: текст заявки пустой.`);
 
-    const bridgeResult = await postBridge(data.bridgeUrl, {
+    const bridgePayload = {
       action: 'saveSuppData',
       spreadsheetId,
       sheetName,
@@ -659,18 +706,14 @@
       suppNumber,
       requestText,
       infoText
-    });
-
-    if (bridgeResult && bridgeResult.success === false) {
-      throw new Error(bridgeResult.error || 'Bridge не сохранил данные СУПП.');
-    }
+    };
 
     return {
       row,
       suppNumber,
       requestTextLength: requestText.length,
       infoTextLength: infoText.length,
-      bridge: bridgeResult
+      bridgePayload
     };
   }
 
@@ -1716,12 +1759,8 @@
     (async () => {
       try {
         if (request.action === SAVE_ACTION) {
-          const result = await postBridge(data.bridgeUrl, data.payload || {});
-          if (result && result.success === false) {
-            sendResponse({ success: false, error: result.error || 'Bridge не сохранил значение.' });
-            return;
-          }
-          sendResponse({ success: true, result });
+          const queued = await enqueueBridgePost(data.bridgeUrl, data.payload || {});
+          sendResponse({ success: true, result: queued.result, bridgeQueueId: queued.queueId });
           return;
         }
 

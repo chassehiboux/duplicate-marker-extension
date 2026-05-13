@@ -31,6 +31,8 @@ function doPost(e) {
       result = _problemPickerBridgeSaveItilData_(payload);
     } else if (payload.action === 'saveSuppData') {
       result = _problemPickerBridgeSaveSuppData_(payload);
+    } else if (payload.action === 'resetInfoEditColors') {
+      result = _problemPickerBridgeResetInfoEditColors_(payload);
     } else {
       throw new Error('Неизвестное действие bridge: ' + payload.action);
     }
@@ -194,7 +196,7 @@ function _problemPickerBridgeSaveItilData_(payload) {
 
   const infoRichText = _problemPickerBridgeBuildItilInfoRichText_(solutionText);
   sh.getRange(row, colInfo).setRichTextValue(infoRichText);
-  _applyInfoEditSideEffects_(sh, row, 1, { showFormattingToast: false });
+  _applyInfoEditSideEffects_(sh, row, 1, { showFormattingToast: false, resetColors: false });
 
   return {
     sheetName: sheetName,
@@ -302,7 +304,7 @@ function _problemPickerBridgeSaveSuppData_(payload) {
 
   const infoRichText = _problemPickerBridgeBuildSuppInfoRichText_(suppNumber, infoText);
   sh.getRange(row, colInfo).setRichTextValue(infoRichText);
-  _applyInfoEditSideEffects_(sh, row, 1, { showFormattingToast: false });
+  _applyInfoEditSideEffects_(sh, row, 1, { showFormattingToast: false, resetColors: false });
 
   return {
     sheetName: sheetName,
@@ -371,6 +373,134 @@ function _problemPickerBridgeApplySuppInfoStyles_(builder, text, suppNumber, hea
 
     pos = end + 1;
   }
+}
+
+function _problemPickerBridgeResetInfoEditColors_(payload) {
+  const spreadsheetId = String(payload.spreadsheetId || '').trim();
+
+  if (spreadsheetId !== PROBLEM_PICKER_BRIDGE_SPREADSHEET_ID) {
+    throw new Error('Некорректная таблица: ' + spreadsheetId);
+  }
+
+  const sheetName = String(payload.sheetName || '').trim();
+
+  if (PROBLEM_PICKER_BRIDGE_ALLOWED_SHEETS.indexOf(sheetName) === -1) {
+    throw new Error('Лист не разрешён для сброса цвета: ' + sheetName);
+  }
+
+  const rows = _problemPickerBridgeNormalizeRows_(payload.rows || []);
+
+  if (!rows.length) {
+    return {
+      sheetName: sheetName,
+      rowsCount: 0
+    };
+  }
+
+  const ss = SpreadsheetApp.openById(PROBLEM_PICKER_BRIDGE_SPREADSHEET_ID);
+  const sh = ss.getSheetByName(sheetName);
+
+  if (!sh) {
+    throw new Error('Лист не найден: ' + sheetName);
+  }
+
+  const colResp = getColByHeader(sh, 'Пришел новый ответ');
+  const colSupp = getColByHeader(sh, 'Номер СУПП (последний)');
+
+  if (!colResp || !colSupp) {
+    throw new Error('Не найдены колонки «Пришел новый ответ» или «Номер СУПП (последний)».');
+  }
+
+  const lastRow = sh.getLastRow();
+  const validRows = rows.filter(function(row) {
+    return row >= 2 && row <= lastRow;
+  });
+
+  if (!validRows.length) {
+    return {
+      sheetName: sheetName,
+      rowsCount: 0
+    };
+  }
+
+  const ranges = [];
+  const colRespA1 = _problemPickerBridgeColumnToA1_(colResp);
+  const colSuppA1 = _problemPickerBridgeColumnToA1_(colSupp);
+  const segments = _problemPickerBridgeBuildRowSegments_(validRows);
+
+  segments.forEach(function(segment) {
+    const endRow = segment.start + segment.count - 1;
+    ranges.push(colRespA1 + segment.start + ':' + colRespA1 + endRow);
+    ranges.push(colSuppA1 + segment.start + ':' + colSuppA1 + endRow);
+  });
+
+  sh.getRangeList(ranges).setBackground('#f5f5f5');
+
+  return {
+    sheetName: sheetName,
+    rowsCount: validRows.length,
+    rangesCount: ranges.length
+  };
+}
+
+function _problemPickerBridgeNormalizeRows_(rows) {
+  const source = Array.isArray(rows) ? rows : [rows];
+  const unique = {};
+
+  source.forEach(function(value) {
+    const row = Number(value);
+    if (Number.isInteger(row) && row >= 2) {
+      unique[row] = true;
+    }
+  });
+
+  return Object.keys(unique).map(function(value) {
+    return Number(value);
+  }).sort(function(a, b) {
+    return a - b;
+  });
+}
+
+function _problemPickerBridgeBuildRowSegments_(rows) {
+  const segments = [];
+  let start = 0;
+  let prev = 0;
+
+  rows.forEach(function(row) {
+    if (!start) {
+      start = row;
+      prev = row;
+      return;
+    }
+
+    if (row === prev + 1) {
+      prev = row;
+      return;
+    }
+
+    segments.push({ start: start, count: prev - start + 1 });
+    start = row;
+    prev = row;
+  });
+
+  if (start) {
+    segments.push({ start: start, count: prev - start + 1 });
+  }
+
+  return segments;
+}
+
+function _problemPickerBridgeColumnToA1_(column) {
+  let value = Number(column);
+  let result = '';
+
+  while (value > 0) {
+    const mod = (value - 1) % 26;
+    result = String.fromCharCode(65 + mod) + result;
+    value = Math.floor((value - mod) / 26);
+  }
+
+  return result;
 }
 
 function _problemPickerBridgeJson_(payload) {

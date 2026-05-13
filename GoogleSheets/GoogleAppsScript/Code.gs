@@ -111,8 +111,10 @@ function _applyInfoEditSideEffects_(sh, startRow, numRows, options) {
   const cResp = getColByHeader(sh, 'Пришел новый ответ');
   const cNumS = getColByHeader(sh, 'Номер СУПП (последний)');
 
+  const shouldResetColors = !options || options.resetColors !== false;
+
   // 1. Сброс цветов: тот же механизм, который раньше был внутри onEdit.
-  if (cResp && cNumS) {
+  if (shouldResetColors && cResp && cNumS) {
     if (options && options.showFormattingToast) {
       showToast('♻️ Форматирование...', 1);
     }

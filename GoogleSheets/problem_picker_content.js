@@ -78,6 +78,8 @@
     gid: '',
     rowsCount: 0,
     isRunning: false,
+    stopRequested: false,
+    pendingBridgeSaves: [],
     statusText: 'Ожидание запуска.',
     lastError: ''
   };
@@ -92,6 +94,8 @@
     gid: '',
     rowsCount: 0,
     isRunning: false,
+    stopRequested: false,
+    pendingBridgeSaves: [],
     statusText: 'Ожидание запуска.',
     lastError: ''
   };
@@ -533,12 +537,14 @@
   }
 
   function getItilCurrentText() {
-    const item = itilState.currentItem || itilState.queue[itilState.currentIndex] || null;
+    const queuedItem = itilState.isRunning && !itilState.stopRequested ? itilState.queue[itilState.currentIndex] : null;
+    const item = itilState.currentItem || queuedItem || null;
     return item ? `строка ${item.row}, ITIL ${item.itilNumber}` : 'нет';
   }
 
   function getSuppCurrentText() {
-    const item = suppState.currentItem || suppState.queue[suppState.currentIndex] || null;
+    const queuedItem = suppState.isRunning && !suppState.stopRequested ? suppState.queue[suppState.currentIndex] : null;
+    const item = suppState.currentItem || queuedItem || null;
     return item ? `строка ${item.row}, СУПП ${item.suppNumber}` : 'нет';
   }
 
@@ -564,7 +570,7 @@
       status.classList.toggle('is-error', !!itilState.lastError);
     }
     if (startButton instanceof HTMLButtonElement) startButton.disabled = itilState.isRunning || suppState.isRunning;
-    if (stopButton instanceof HTMLButtonElement) stopButton.disabled = !itilState.isRunning;
+    if (stopButton instanceof HTMLButtonElement) stopButton.disabled = !itilState.isRunning || !!itilState.stopRequested;
   }
 
   function renderSuppStatus() {
@@ -591,7 +597,7 @@
     }
     if (startButton instanceof HTMLButtonElement) startButton.disabled = suppState.isRunning || itilState.isRunning;
     if (testButton instanceof HTMLButtonElement) testButton.disabled = suppState.isRunning || itilState.isRunning;
-    if (stopButton instanceof HTMLButtonElement) stopButton.disabled = !suppState.isRunning;
+    if (stopButton instanceof HTMLButtonElement) stopButton.disabled = !suppState.isRunning || !!suppState.stopRequested;
   }
 
   function closeMenu() {
@@ -984,7 +990,146 @@
     if (nextSelect instanceof HTMLSelectElement && !nextSelect.disabled) nextSelect.focus();
   }
 
+  function uniqueRows(rows) {
+    return Array.from(new Set((rows || [])
+      .map((row) => Number(row))
+      .filter((row) => Number.isInteger(row) && row >= 2)))
+      .sort((a, b) => a - b);
+  }
+
+  function getRuntimeResponseError(response, fallback) {
+    return response && response.error ? response.error : fallback;
+  }
+
+  function createBridgeSaveTracker(payload, row, label) {
+    const targetRow = Number(row);
+    const targetLabel = String(label || `строка ${targetRow}`);
+
+    if (!payload || typeof payload !== 'object') {
+      return Promise.resolve({
+        success: false,
+        row: targetRow,
+        errorText: `${targetLabel}: не получен payload для bridge.`
+      });
+    }
+
+    return sendRuntimeMessage({
+      action: SAVE_ACTION,
+      data: {
+        bridgeUrl: state.bridgeUrl,
+        payload
+      }
+    }).then((response) => {
+      if (!response || response.success !== true) {
+        return {
+          success: false,
+          row: targetRow,
+          errorText: `${targetLabel}: ${getRuntimeResponseError(response, 'bridge не сохранил данные')}`
+        };
+      }
+
+      return {
+        success: true,
+        row: targetRow
+      };
+    }).catch((error) => ({
+      success: false,
+      row: targetRow,
+      errorText: `${targetLabel}: ${error && error.message ? error.message : String(error)}`
+    }));
+  }
+
+  function queueItilBridgeSave(result, item) {
+    const row = Number(item && item.row);
+    const label = `строка ${row}, ITIL ${item && item.itilNumber ? item.itilNumber : ''}`;
+    const tracked = createBridgeSaveTracker(result && result.bridgePayload, row, label);
+    itilState = {
+      ...itilState,
+      pendingBridgeSaves: [...(itilState.pendingBridgeSaves || []), tracked]
+    };
+  }
+
+  function queueSuppBridgeSave(result, item) {
+    const row = Number(item && item.row);
+    const label = `строка ${row}, СУПП ${item && item.suppNumber ? item.suppNumber : ''}`;
+    const tracked = createBridgeSaveTracker(result && result.bridgePayload, row, label);
+    suppState = {
+      ...suppState,
+      pendingBridgeSaves: [...(suppState.pendingBridgeSaves || []), tracked]
+    };
+  }
+
+  function summarizeBridgeFinalizeErrors(results, resetError) {
+    const errors = (results || [])
+      .filter((item) => item && item.success !== true)
+      .map((item) => item.errorText || 'неизвестная ошибка bridge');
+
+    const parts = [];
+    if (errors.length) {
+      const visible = errors.slice(0, 3).join('; ');
+      const hiddenCount = errors.length - 3;
+      parts.push(`Ошибки отправки в bridge: ${visible}${hiddenCount > 0 ? `; ещё ${hiddenCount}` : ''}.`);
+    }
+    if (resetError) parts.push(`Сброс цвета: ${resetError}.`);
+    return parts.join(' ');
+  }
+
+  async function waitBridgeSavesAndResetColors(pendingSaves, sheetName) {
+    const results = await Promise.all(pendingSaves || []);
+    const savedRows = uniqueRows(results
+      .filter((item) => item && item.success === true)
+      .map((item) => item.row));
+
+    let resetRowsCount = 0;
+    let resetError = '';
+
+    if (savedRows.length) {
+      try {
+        const response = await sendRuntimeMessage({
+          action: SAVE_ACTION,
+          data: {
+            bridgeUrl: state.bridgeUrl,
+            payload: {
+              action: 'resetInfoEditColors',
+              spreadsheetId: CONFIG.spreadsheetId,
+              sheetName,
+              rows: savedRows
+            }
+          }
+        });
+
+        if (!response || response.success !== true) {
+          resetError = getRuntimeResponseError(response, 'bridge не выполнил пакетный сброс цвета');
+        } else {
+          const bridgeResult = response.result && response.result.result ? response.result.result : {};
+          resetRowsCount = Number(bridgeResult.rowsCount || 0);
+        }
+      } catch (error) {
+        resetError = error && error.message ? error.message : String(error);
+      }
+    }
+
+    return {
+      results,
+      savedRows,
+      resetRowsCount,
+      errorText: summarizeBridgeFinalizeErrors(results, resetError)
+    };
+  }
+
   function stopItilFill() {
+    if (itilState.isRunning) {
+      itilState = {
+        ...itilState,
+        stopRequested: true,
+        statusText: 'Останавливаю после текущей строки...',
+        lastError: ''
+      };
+      renderItilStatus();
+      renderSuppStatus();
+      return;
+    }
+
     itilRunId += 1;
     itilState = {
       queue: [],
@@ -996,6 +1141,8 @@
       gid: '',
       rowsCount: 0,
       isRunning: false,
+      stopRequested: false,
+      pendingBridgeSaves: [],
       statusText: 'Остановлено.',
       lastError: ''
     };
@@ -1017,6 +1164,8 @@
       failedCount: 0,
       currentItem: null,
       isRunning: true,
+      stopRequested: false,
+      pendingBridgeSaves: [],
       statusText: 'Собираю строки для заполнения из ITIL...',
       lastError: ''
     };
@@ -1034,6 +1183,8 @@
         itilState = {
           ...itilState,
           isRunning: false,
+          stopRequested: false,
+          pendingBridgeSaves: [],
           currentItem: null,
           statusText: 'Строк для заполнения из ITIL не найдено.',
           lastError: ''
@@ -1053,6 +1204,7 @@
 
       for (let index = 0; index < itilState.queue.length; index++) {
         if (runId !== itilRunId) return;
+        if (itilState.stopRequested) break;
 
         const item = itilState.queue[index];
         itilState = {
@@ -1083,10 +1235,23 @@
           const errorText = response && response.error ? response.error : 'неизвестная ошибка';
           itilState = {
             ...itilState,
+            currentItem: null,
+            statusText: 'Дожидаюсь уже поставленных отправок в bridge и сбрасываю цвет...',
+            lastError: ''
+          };
+          renderItilStatus();
+          const bridgeFinalize = await waitBridgeSavesAndResetColors(itilState.pendingBridgeSaves, itilState.sheetName);
+          if (runId !== itilRunId) return;
+          const finalError = [bridgeFinalize.errorText, `Строка ${item.row}, ITIL ${item.itilNumber}: ${errorText}`]
+            .filter(Boolean)
+            .join(' ');
+          itilState = {
+            ...itilState,
             failedCount: itilState.failedCount + 1,
             isRunning: false,
+            stopRequested: false,
             statusText: '',
-            lastError: `Строка ${item.row}, ITIL ${item.itilNumber}: ${errorText}`
+            lastError: finalError
           };
           renderItilStatus();
           renderSuppStatus();
@@ -1094,6 +1259,7 @@
         }
 
         const result = response.result || {};
+        queueItilBridgeSave(result, item);
         const textLength = Number(result.requestTextLength || 0);
         const solutionLength = Number(result.solutionTextLength || 0);
         itilState = {
@@ -1101,32 +1267,60 @@
           currentIndex: index + 1,
           successCount: itilState.successCount + 1,
           currentItem: null,
-          statusText: `Строка ${item.row} заполнена. Текст: ${textLength} симв., решение: ${solutionLength} симв.`,
+          statusText: `Строка ${item.row} подготовлена. Сохранение в bridge поставлено в очередь. Текст: ${textLength} симв., решение: ${solutionLength} симв.`,
           lastError: ''
         };
         renderItilStatus();
       }
 
       if (runId !== itilRunId) return;
+      const wasStopped = !!itilState.stopRequested;
+
+      itilState = {
+        ...itilState,
+        currentItem: null,
+        statusText: 'Дожидаюсь отправки в bridge и выполняю пакетный сброс цвета...',
+        lastError: ''
+      };
+      renderItilStatus();
+
+      const bridgeFinalize = await waitBridgeSavesAndResetColors(itilState.pendingBridgeSaves, itilState.sheetName);
+      if (runId !== itilRunId) return;
 
       itilState = {
         ...itilState,
         isRunning: false,
+        stopRequested: false,
         currentItem: null,
-        statusText: `Готово. Заполнено строк: ${itilState.successCount}/${itilState.queue.length}.`,
-        lastError: ''
+        statusText: wasStopped
+          ? `Остановлено. Обработано строк: ${itilState.successCount}/${itilState.queue.length}. Цвет сброшен: ${bridgeFinalize.resetRowsCount}.`
+          : `Готово. Обработано строк: ${itilState.successCount}/${itilState.queue.length}. Цвет сброшен: ${bridgeFinalize.resetRowsCount}.`,
+        lastError: bridgeFinalize.errorText
       };
       renderItilStatus();
       renderSuppStatus();
     } catch (error) {
       if (runId !== itilRunId) return;
       const message = error && error.message ? error.message : 'Не удалось запустить заполнение из ITIL.';
+      let bridgeFinalize = { errorText: '' };
+      if (itilState.pendingBridgeSaves && itilState.pendingBridgeSaves.length) {
+        itilState = {
+          ...itilState,
+          currentItem: null,
+          statusText: 'Дожидаюсь уже поставленных отправок в bridge и сбрасываю цвет...',
+          lastError: ''
+        };
+        renderItilStatus();
+        bridgeFinalize = await waitBridgeSavesAndResetColors(itilState.pendingBridgeSaves, itilState.sheetName);
+        if (runId !== itilRunId) return;
+      }
       itilState = {
         ...itilState,
         isRunning: false,
+        stopRequested: false,
         currentItem: null,
         statusText: '',
-        lastError: message
+        lastError: [message, bridgeFinalize.errorText].filter(Boolean).join(' ')
       };
       renderItilStatus();
       renderSuppStatus();
@@ -1134,6 +1328,18 @@
   }
 
   function stopSuppFill() {
+    if (suppState.isRunning) {
+      suppState = {
+        ...suppState,
+        stopRequested: true,
+        statusText: 'Останавливаю после текущей строки...',
+        lastError: ''
+      };
+      renderSuppStatus();
+      renderItilStatus();
+      return;
+    }
+
     suppRunId += 1;
     suppState = {
       queue: [],
@@ -1145,6 +1351,8 @@
       gid: '',
       rowsCount: 0,
       isRunning: false,
+      stopRequested: false,
+      pendingBridgeSaves: [],
       statusText: 'Остановлено.',
       lastError: ''
     };
@@ -1168,6 +1376,8 @@
       failedCount: 0,
       currentItem: null,
       isRunning: true,
+      stopRequested: false,
+      pendingBridgeSaves: [],
       statusText: isTestRun ? 'Собираю строки для тестового заполнения из СУПП...' : 'Собираю строки для заполнения из СУПП...',
       lastError: ''
     };
@@ -1185,6 +1395,8 @@
         suppState = {
           ...suppState,
           isRunning: false,
+          stopRequested: false,
+          pendingBridgeSaves: [],
           currentItem: null,
           statusText: 'Строк для заполнения из СУПП не найдено.',
           lastError: ''
@@ -1205,6 +1417,7 @@
 
       for (let index = 0; index < rowsToProcess; index++) {
         if (runId !== suppRunId) return;
+        if (suppState.stopRequested) break;
 
         const item = suppState.queue[index];
         suppState = {
@@ -1235,10 +1448,23 @@
           const errorText = response && response.error ? response.error : 'неизвестная ошибка';
           suppState = {
             ...suppState,
+            currentItem: null,
+            statusText: 'Дожидаюсь уже поставленных отправок в bridge и сбрасываю цвет...',
+            lastError: ''
+          };
+          renderSuppStatus();
+          const bridgeFinalize = await waitBridgeSavesAndResetColors(suppState.pendingBridgeSaves, suppState.sheetName);
+          if (runId !== suppRunId) return;
+          const finalError = [bridgeFinalize.errorText, `Строка ${item.row}, СУПП ${item.suppNumber}: ${errorText}`]
+            .filter(Boolean)
+            .join(' ');
+          suppState = {
+            ...suppState,
             failedCount: suppState.failedCount + 1,
             isRunning: false,
+            stopRequested: false,
             statusText: '',
-            lastError: `Строка ${item.row}, СУПП ${item.suppNumber}: ${errorText}`
+            lastError: finalError
           };
           renderSuppStatus();
           renderItilStatus();
@@ -1246,6 +1472,7 @@
         }
 
         const result = response.result || {};
+        queueSuppBridgeSave(result, item);
         const textLength = Number(result.requestTextLength || 0);
         const infoLength = Number(result.infoTextLength || 0);
         suppState = {
@@ -1253,34 +1480,62 @@
           currentIndex: index + 1,
           successCount: suppState.successCount + 1,
           currentItem: null,
-          statusText: `Строка ${item.row} заполнена. Текст: ${textLength} симв., информация: ${infoLength} симв.`,
+          statusText: `Строка ${item.row} подготовлена. Сохранение в bridge поставлено в очередь. Текст: ${textLength} симв., информация: ${infoLength} симв.`,
           lastError: ''
         };
         renderSuppStatus();
       }
 
       if (runId !== suppRunId) return;
+      const wasStopped = !!suppState.stopRequested;
+
+      suppState = {
+        ...suppState,
+        currentItem: null,
+        statusText: 'Дожидаюсь отправки в bridge и выполняю пакетный сброс цвета...',
+        lastError: ''
+      };
+      renderSuppStatus();
+
+      const bridgeFinalize = await waitBridgeSavesAndResetColors(suppState.pendingBridgeSaves, suppState.sheetName);
+      if (runId !== suppRunId) return;
 
       suppState = {
         ...suppState,
         isRunning: false,
+        stopRequested: false,
         currentItem: null,
-        statusText: isTestRun
-          ? `Тестовый запуск завершён. Заполнено строк: ${suppState.successCount}/${rowsToProcess}.`
-          : `Готово. Заполнено строк: ${suppState.successCount}/${suppState.queue.length}.`,
-        lastError: ''
+        statusText: wasStopped
+          ? `Остановлено. Обработано строк: ${suppState.successCount}/${rowsToProcess}. Цвет сброшен: ${bridgeFinalize.resetRowsCount}.`
+          : isTestRun
+            ? `Тестовый запуск завершён. Обработано строк: ${suppState.successCount}/${rowsToProcess}. Цвет сброшен: ${bridgeFinalize.resetRowsCount}.`
+            : `Готово. Обработано строк: ${suppState.successCount}/${suppState.queue.length}. Цвет сброшен: ${bridgeFinalize.resetRowsCount}.`,
+        lastError: bridgeFinalize.errorText
       };
       renderSuppStatus();
       renderItilStatus();
     } catch (error) {
       if (runId !== suppRunId) return;
       const message = error && error.message ? error.message : 'Не удалось запустить заполнение из СУПП.';
+      let bridgeFinalize = { errorText: '' };
+      if (suppState.pendingBridgeSaves && suppState.pendingBridgeSaves.length) {
+        suppState = {
+          ...suppState,
+          currentItem: null,
+          statusText: 'Дожидаюсь уже поставленных отправок в bridge и сбрасываю цвет...',
+          lastError: ''
+        };
+        renderSuppStatus();
+        bridgeFinalize = await waitBridgeSavesAndResetColors(suppState.pendingBridgeSaves, suppState.sheetName);
+        if (runId !== suppRunId) return;
+      }
       suppState = {
         ...suppState,
         isRunning: false,
+        stopRequested: false,
         currentItem: null,
         statusText: '',
-        lastError: message
+        lastError: [message, bridgeFinalize.errorText].filter(Boolean).join(' ')
       };
       renderSuppStatus();
       renderItilStatus();
