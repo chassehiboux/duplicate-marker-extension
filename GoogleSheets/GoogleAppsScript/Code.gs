@@ -77,37 +77,56 @@ function onEdit(e) {
 
   // --- ПУНКТ 4 & NEW: СБРОС ЦВЕТОВ и ФОРМАТИРОВАНИЕ INFO ---
   if (name === 'Заявки' || name === 'Заявки (наши)') {
-    const cInfo = getColByHeader(sh, INFO_HEADER);
+    _applyInfoEditSideEffectsForEditedRange_(sh, e.range, {
+      showFormattingToast: !e.triggerUid
+    });
+  }
+}
 
-    // Если редактирование произошло в колонке INFO
-    if (cInfo && e.range.getColumn() === cInfo) {
-      const cResp = getColByHeader(sh, 'Пришел новый ответ');
-      const cNumS = getColByHeader(sh, 'Номер СУПП (последний)');
+/**
+ * Общий механизм последствий редактирования колонки «Информация из СУПП/ITIL».
+ * Его нужно вызывать и из onEdit, и из bridge, потому что setValue/setRichTextValue
+ * из Apps Script не запускает пользовательский onEdit автоматически.
+ */
+function _applyInfoEditSideEffectsForEditedRange_(sh, editedRange, options) {
+  if (!sh || !editedRange) return;
 
-      // Определяем координаты редактируемого блока
-      const startRow = e.range.getRow();
-      const numRows  = e.range.getNumRows();
+  const cInfo = getColByHeader(sh, INFO_HEADER);
+  if (!cInfo) return;
 
-      // 1. Сброс цветов (ОПТИМИЗАЦИЯ: делаем это одной командой для всего блока)
-      // Раньше тут был цикл for, который тормозил процесс
-      if (cResp && cNumS) {
-        const SILENT = !!e.triggerUid;
-        if (!SILENT) showToast('♻️ Форматирование...', 1);
+  const firstCol = editedRange.getColumn();
+  const lastCol = firstCol + editedRange.getNumColumns() - 1;
 
-        // Красим сразу весь диапазон
-        sh.getRange(startRow, cResp, numRows, 1).setBackground('#f5f5f5');
-        sh.getRange(startRow, cNumS, numRows, 1).setBackground('#f5f5f5');
-      }
+  if (cInfo < firstCol || cInfo > lastCol) return;
 
-      // 2. Форматирование (Логи + Номера СУПП)
-      if (cNumS) {
-        // Получаем значения номеров СУПП для обрабатываемых строк пачкой
-        const suppVals = sh.getRange(startRow, cNumS, numRows, 1).getValues();
+  _applyInfoEditSideEffects_(sh, editedRange.getRow(), editedRange.getNumRows(), options);
+}
 
-        // Применяем форматирование
-        _formatInfoRangeSimple_(e.range, suppVals);
-      }
+function _applyInfoEditSideEffects_(sh, startRow, numRows, options) {
+  if (!sh || !startRow || !numRows || numRows <= 0) return;
+
+  const cInfo = getColByHeader(sh, INFO_HEADER);
+  if (!cInfo) return;
+
+  const cResp = getColByHeader(sh, 'Пришел новый ответ');
+  const cNumS = getColByHeader(sh, 'Номер СУПП (последний)');
+
+  // 1. Сброс цветов: тот же механизм, который раньше был внутри onEdit.
+  if (cResp && cNumS) {
+    if (options && options.showFormattingToast) {
+      showToast('♻️ Форматирование...', 1);
     }
+
+    sh.getRange(startRow, cResp, numRows, 1).setBackground('#f5f5f5');
+    sh.getRange(startRow, cNumS, numRows, 1).setBackground('#f5f5f5');
+  }
+
+  // 2. Форматирование INFO: оставляем в том же общем механизме,
+  // чтобы bridge получал такой же результат, как ручное редактирование ячейки.
+  if (cNumS) {
+    const infoRange = sh.getRange(startRow, cInfo, numRows, 1);
+    const suppVals = sh.getRange(startRow, cNumS, numRows, 1).getValues();
+    _formatInfoRangeSimple_(infoRange, suppVals);
   }
 }
 
@@ -178,7 +197,7 @@ const LOG_LINE_CHECK = /^\d{2}\.\d{2}\.\d{4}\s+\d{1,2}:\d{2}:\d{2}\s+\/.*$/;
  * ========================================================== */
 function _formatInfoRangeSimple_(range, suppVals) {
   const rtvs = range.getRichTextValues();
-  const tz   = SpreadsheetApp.getActive().getSpreadsheetTimeZone();
+  const tz   = range.getSheet().getParent().getSpreadsheetTimeZone();
 
   const normal    = SpreadsheetApp.newTextStyle().setBold(false).setFontSize(10).build();
   const suppStyle = SpreadsheetApp.newTextStyle().setBold(true).setFontSize(11).build();

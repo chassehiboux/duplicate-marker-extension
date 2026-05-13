@@ -194,6 +194,7 @@ function _problemPickerBridgeSaveItilData_(payload) {
 
   const infoRichText = _problemPickerBridgeBuildItilInfoRichText_(solutionText);
   sh.getRange(row, colInfo).setRichTextValue(infoRichText);
+  _applyInfoEditSideEffects_(sh, row, 1, { showFormattingToast: false });
 
   return {
     sheetName: sheetName,
@@ -301,6 +302,7 @@ function _problemPickerBridgeSaveSuppData_(payload) {
 
   const infoRichText = _problemPickerBridgeBuildSuppInfoRichText_(suppNumber, infoText);
   sh.getRange(row, colInfo).setRichTextValue(infoRichText);
+  _applyInfoEditSideEffects_(sh, row, 1, { showFormattingToast: false });
 
   return {
     sheetName: sheetName,
