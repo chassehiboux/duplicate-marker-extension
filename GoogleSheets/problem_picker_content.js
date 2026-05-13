@@ -469,7 +469,7 @@
       #${ROOT_ID}{position:fixed;right:18px;bottom:58px;z-index:2147483640;display:flex;flex-direction:column;align-items:flex-end;gap:6px;font-family:"Segoe UI",Tahoma,sans-serif}
       #${ROOT_ID} .gs-problem-picker-actions{display:flex;gap:6px}
       #${ROOT_ID} button,#${MODAL_ID} button{border:1px solid #b7c2d3;border-radius:7px;background:#fff;color:#162033;cursor:pointer;font:600 13px/1.2 "Segoe UI",Tahoma,sans-serif;padding:8px 12px}
-      #${ROOT_ID} .gs-problem-picker-open,#${MODAL_ID} .gs-problem-picker-save{border-color:#1155cc;background:#1155cc;color:#fff;box-shadow:0 8px 22px rgba(17,85,204,.24)}
+      #${ROOT_ID} .gs-problem-picker-open{border-color:#1155cc;background:#1155cc;color:#fff;box-shadow:0 8px 22px rgba(17,85,204,.24)}
       #${ROOT_ID} .gs-problem-picker-url{min-width:44px}
       #${ROOT_ID} .gs-problem-picker-status{max-width:360px;min-height:18px;padding:5px 8px;border-radius:6px;background:rgba(255,255,255,.94);color:#24513a;font-size:12px;box-shadow:0 6px 18px rgba(15,23,42,.12)}
       #${ROOT_ID} .gs-problem-picker-status.is-error,#${MODAL_ID} .gs-problem-picker-message.is-error{color:#b3261e}
@@ -492,11 +492,12 @@
       #${MENU_ID} .gs-problem-picker-itil-status,#${MENU_ID} .gs-problem-picker-supp-status{min-height:18px;color:#24513a;font-size:13px;overflow-wrap:anywhere}
       #${ROOT_ID} button,#${MODAL_ID} button,#${MENU_ID} button{border:1px solid #b7c2d3;border-radius:7px;background:#fff;color:#162033;cursor:pointer;font:600 13px/1.2 "Segoe UI",Tahoma,sans-serif;padding:8px 12px}
       #${MENU_ID} button:disabled{opacity:.58;cursor:default}
-      #${MENU_ID} .gs-problem-picker-open,#${MENU_ID} .gs-problem-picker-itil-start,#${MENU_ID} .gs-problem-picker-supp-start,#${MENU_ID} .gs-problem-picker-supp-test,#${MODAL_ID} .gs-problem-picker-save{border-color:#1155cc;background:#1155cc;color:#fff;box-shadow:0 8px 22px rgba(17,85,204,.2)}
+      #${MENU_ID} .gs-problem-picker-open,#${MENU_ID} .gs-problem-picker-itil-start,#${MENU_ID} .gs-problem-picker-supp-start,#${MENU_ID} .gs-problem-picker-supp-test{border-color:#1155cc;background:#1155cc;color:#fff;box-shadow:0 8px 22px rgba(17,85,204,.2)}
       #${MENU_ID} .gs-problem-picker-itil-stop,#${MENU_ID} .gs-problem-picker-supp-stop{border-color:#b3261e;color:#b3261e}
       #${MODAL_ID}{position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;background:rgba(17,24,39,.42);font-family:"Segoe UI",Tahoma,sans-serif}
       #${MODAL_ID}[hidden],html.dup-ext-screenshot-mode #${ROOT_ID},html.dup-ext-screenshot-mode #${MODAL_ID},html.dup-ext-screenshot-mode #${MENU_ID},html.dup-ext-screenshot-mode #${MENU_OVERLAY_ID}{display:none!important}
-      #${MODAL_ID} .gs-problem-picker-panel{width:min(980px,calc(100vw - 32px));height:min(680px,calc(100vh - 32px));display:grid;grid-template-rows:auto auto minmax(0,1fr) auto auto;gap:14px;box-sizing:border-box;padding:22px;border:1px solid #d6dce8;border-radius:8px;background:#fbfcfe;color:#172033;box-shadow:0 24px 70px rgba(15,23,42,.26)}
+      #${MODAL_ID} .gs-problem-picker-layout{width:min(1292px,calc(100vw - 32px));height:min(680px,calc(100vh - 32px));display:grid;grid-template-columns:minmax(0,980px) 298px;gap:14px;align-items:stretch}
+      #${MODAL_ID} .gs-problem-picker-panel{width:100%;height:100%;min-width:0;display:grid;grid-template-rows:auto auto minmax(0,1fr) auto;gap:14px;box-sizing:border-box;padding:22px;border:1px solid #d6dce8;border-radius:8px;background:#fbfcfe;color:#172033;box-shadow:0 24px 70px rgba(15,23,42,.26)}
       #${MODAL_ID} .gs-problem-picker-header,#${MODAL_ID} .gs-problem-picker-footer{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}
       #${MODAL_ID} .gs-problem-picker-title{font-size:22px;line-height:1.2;font-weight:700}
       #${MODAL_ID} .gs-problem-picker-meta,#${MODAL_ID} .gs-problem-picker-message{color:#566176;font-size:13px}
@@ -505,10 +506,20 @@
       #${MODAL_ID} .gs-problem-picker-text-wrap{min-height:0;display:grid;grid-template-rows:auto minmax(0,1fr);gap:8px}
       #${MODAL_ID} .gs-problem-picker-label{color:#4b5563;font-size:13px;font-weight:700}
       #${MODAL_ID} .gs-problem-picker-text{min-height:0;overflow:auto;white-space:pre-wrap;border:1px solid #d7dce6;border-left:6px solid #2d6cdf;border-radius:8px;background:#fff;padding:14px;color:#1f2937;font-size:15px;line-height:1.55}
-      #${MODAL_ID} .gs-problem-picker-field{display:grid;gap:8px}
-      #${MODAL_ID} .gs-problem-picker-select{width:100%;min-height:44px;border:1px solid #9ca8ba;border-radius:6px;background:#fff;color:#111827;padding:0 10px;font-size:15px}
       #${MODAL_ID} .gs-problem-picker-footer{align-items:center;border-top:1px solid #e3e8f0;padding-top:14px}
       #${MODAL_ID} .gs-problem-picker-buttons{display:flex;flex-shrink:0;gap:10px}
+      #${MODAL_ID} .gs-problem-picker-category-rail{height:100%;min-width:0;display:grid;grid-template-rows:auto minmax(0,1fr);gap:12px;box-sizing:border-box;padding:18px;border:1px solid #d6dce8;border-radius:8px;background:#f8fafc;color:#172033;box-shadow:0 24px 70px rgba(15,23,42,.18)}
+      #${MODAL_ID} .gs-problem-picker-category-title{font-size:15px;line-height:1.25;font-weight:700;color:#253044}
+      #${MODAL_ID} .gs-problem-picker-category-list{min-height:0;overflow:auto;display:grid;align-content:start;gap:8px;padding-right:2px}
+      #${MODAL_ID} .gs-problem-picker-category-button{width:100%;min-height:40px;text-align:left;white-space:normal;overflow-wrap:anywhere;line-height:1.25;padding:9px 10px;border-color:#cbd5e1;background:#fff;color:#172033;box-shadow:0 3px 10px rgba(15,23,42,.05)}
+      #${MODAL_ID} .gs-problem-picker-category-button:hover:not(:disabled),#${MODAL_ID} .gs-problem-picker-category-button:focus-visible{border-color:#1155cc;background:#eef5ff;color:#0f3f99;outline:none}
+      #${MODAL_ID} .gs-problem-picker-category-button.is-default{border-color:#1155cc;background:#1155cc;color:#fff;box-shadow:0 8px 22px rgba(17,85,204,.2)}
+      #${MODAL_ID} .gs-problem-picker-category-button:disabled{opacity:.58;cursor:default;box-shadow:none}
+      @media (max-width:1323px){
+        #${MODAL_ID}{align-items:flex-start;overflow:auto;padding:16px;box-sizing:border-box}
+        #${MODAL_ID} .gs-problem-picker-layout{width:min(980px,100%);height:auto;min-height:min(680px,calc(100vh - 32px));grid-template-columns:1fr;grid-template-rows:minmax(520px,680px) auto}
+        #${MODAL_ID} .gs-problem-picker-category-rail{height:auto;max-height:260px}
+      }
     `;
     (document.head || document.documentElement).appendChild(style);
   }
@@ -784,40 +795,47 @@
     modal.id = MODAL_ID;
     modal.hidden = true;
     modal.innerHTML = `
-      <section class="gs-problem-picker-panel" role="dialog" aria-modal="true" aria-label="Классификация проблемы">
-        <header class="gs-problem-picker-header">
-          <div>
-            <div class="gs-problem-picker-title">Классификация проблемы</div>
-            <div class="gs-problem-picker-meta"></div>
+      <div class="gs-problem-picker-layout" role="dialog" aria-modal="true" aria-label="Классификация проблемы">
+        <section class="gs-problem-picker-panel">
+          <header class="gs-problem-picker-header">
+            <div>
+              <div class="gs-problem-picker-title">Классификация проблемы</div>
+              <div class="gs-problem-picker-meta"></div>
+            </div>
+            <button type="button" class="gs-problem-picker-close-x" aria-label="Закрыть">×</button>
+          </header>
+          <div class="gs-problem-picker-progress"></div>
+          <div class="gs-problem-picker-text-wrap">
+            <div class="gs-problem-picker-label gs-problem-picker-text-label"></div>
+            <div class="gs-problem-picker-text"></div>
           </div>
-          <button type="button" class="gs-problem-picker-close-x" aria-label="Закрыть">×</button>
-        </header>
-        <div class="gs-problem-picker-progress"></div>
-        <div class="gs-problem-picker-text-wrap">
-          <div class="gs-problem-picker-label gs-problem-picker-text-label"></div>
-          <div class="gs-problem-picker-text"></div>
-        </div>
-        <label class="gs-problem-picker-field">
-          <span class="gs-problem-picker-label">Выберите новую категорию:</span>
-          <select class="gs-problem-picker-select"></select>
-        </label>
-        <footer class="gs-problem-picker-footer">
-          <div class="gs-problem-picker-message" aria-live="polite"></div>
-          <div class="gs-problem-picker-buttons">
-            <button type="button" class="gs-problem-picker-save">Сохранить и далее</button>
-            <button type="button" class="gs-problem-picker-close">Закрыть</button>
-          </div>
-        </footer>
-      </section>
+          <footer class="gs-problem-picker-footer">
+            <div class="gs-problem-picker-message" aria-live="polite"></div>
+            <div class="gs-problem-picker-buttons">
+              <button type="button" class="gs-problem-picker-close">Закрыть</button>
+            </div>
+          </footer>
+        </section>
+        <aside class="gs-problem-picker-category-rail" aria-label="Категории проблем">
+          <div class="gs-problem-picker-category-title">Категория</div>
+          <div class="gs-problem-picker-category-list" role="group" aria-label="Выбор категории проблемы"></div>
+        </aside>
+      </div>
     `;
 
-    const select = $('.gs-problem-picker-select', modal);
-    if (select instanceof HTMLSelectElement) {
+    const categoryList = $('.gs-problem-picker-category-list', modal);
+    if (categoryList instanceof HTMLElement) {
       OPTIONS.forEach((option) => {
-        const item = document.createElement('option');
-        item.value = option;
-        item.textContent = option;
-        select.appendChild(item);
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'gs-problem-picker-category-button';
+        button.dataset.value = option;
+        button.textContent = option;
+        if (option === DEFAULT_VALUE) button.classList.add('is-default');
+        button.addEventListener('click', () => {
+          void saveCurrentItem(option);
+        }, { capture: true });
+        categoryList.appendChild(button);
       });
     }
 
@@ -831,12 +849,21 @@
 
     $('.gs-problem-picker-close-x', modal)?.addEventListener('click', close, { capture: true });
     $('.gs-problem-picker-close', modal)?.addEventListener('click', close, { capture: true });
-    $('.gs-problem-picker-save', modal)?.addEventListener('click', () => {
-      void saveCurrentItem();
-    }, { capture: true });
 
     (document.body || document.documentElement).appendChild(modal);
     return modal;
+  }
+
+  function getCategoryButtons(modal) {
+    return Array.from(modal.querySelectorAll('.gs-problem-picker-category-button'))
+      .filter((button) => button instanceof HTMLButtonElement);
+  }
+
+  function focusDefaultCategoryButton(modal) {
+    const buttons = getCategoryButtons(modal);
+    const button = buttons.find((item) => item.dataset.value === DEFAULT_VALUE && !item.disabled)
+      || buttons.find((item) => !item.disabled);
+    if (button instanceof HTMLButtonElement) button.focus();
   }
 
   function renderModal() {
@@ -846,8 +873,7 @@
     const progress = $('.gs-problem-picker-progress', modal);
     const textLabel = $('.gs-problem-picker-text-label', modal);
     const text = $('.gs-problem-picker-text', modal);
-    const select = $('.gs-problem-picker-select', modal);
-    const saveButton = $('.gs-problem-picker-save', modal);
+    const categoryButtons = getCategoryButtons(modal);
 
     const pending = state.pendingSaveCount ? ` · в фоне: ${state.pendingSaveCount}` : '';
     const failed = state.failedSaveCount ? ` · ошибок: ${state.failedSaveCount}` : '';
@@ -860,23 +886,20 @@
       if (progress instanceof HTMLElement) progress.textContent = `Отправлено: ${state.sentCount}/${state.queue.length}${pending}${failed}`;
       if (textLabel instanceof HTMLElement) textLabel.textContent = 'Неклассифицированных заявок нет';
       if (text instanceof HTMLElement) text.textContent = 'Очередь завершена.';
-      if (select instanceof HTMLSelectElement) select.disabled = true;
-      if (saveButton instanceof HTMLButtonElement) saveButton.disabled = true;
+      categoryButtons.forEach((button) => {
+        button.disabled = true;
+        button.title = '';
+      });
     } else {
       if (progress instanceof HTMLElement) {
         progress.textContent = `Очередь: ${state.currentIndex + 1}/${state.queue.length} · отправлено: ${state.sentCount}${pending}${failed}`;
       }
       if (textLabel instanceof HTMLElement) textLabel.textContent = `Текст заявки (строка ${item.row}):`;
       if (text instanceof HTMLElement) text.textContent = item.text || '';
-      if (select instanceof HTMLSelectElement) {
-        select.disabled = false;
-        select.value = DEFAULT_VALUE;
-      }
-      if (saveButton instanceof HTMLButtonElement) {
-        saveButton.disabled = !state.bridgeUrl;
-        saveButton.textContent = 'Сохранить и далее';
-        saveButton.title = state.bridgeUrl ? '' : 'Нажми F2, затем «URL bridge» и задай Apps Script bridge.';
-      }
+      categoryButtons.forEach((button) => {
+        button.disabled = !state.bridgeUrl;
+        button.title = state.bridgeUrl ? '' : 'Нажми F2, затем «URL bridge» и задай Apps Script bridge.';
+      });
     }
 
     if (!state.bridgeUrl) {
@@ -905,8 +928,7 @@
       renderModal();
       modal.hidden = false;
 
-      const saveButton = $('.gs-problem-picker-save', modal);
-      if (saveButton instanceof HTMLButtonElement && !saveButton.disabled) saveButton.focus();
+      focusDefaultCategoryButton(modal);
 
       updateLauncherStatus(`В очереди строк: ${state.queue.length}.`, false);
     } catch (error) {
@@ -962,15 +984,14 @@
     });
   }
 
-  async function saveCurrentItem() {
+  async function saveCurrentItem(value) {
     const item = getCurrentItem();
     if (!item) return;
 
     const modal = ensureModal();
-    const select = $('.gs-problem-picker-select', modal);
-    const value = select instanceof HTMLSelectElement ? String(select.value || '').trim() : '';
+    const selectedValue = String(value || '').trim();
 
-    if (!value) {
+    if (!selectedValue) {
       setModalMessage('Выберите проблему.', true);
       return;
     }
@@ -983,11 +1004,10 @@
     state.sentCount += 1;
     state.currentIndex += 1;
 
-    enqueueBackgroundSave({ ...item }, value, state.bridgeUrl, state.sheetName);
+    enqueueBackgroundSave({ ...item }, selectedValue, state.bridgeUrl, state.sheetName);
     renderModal();
 
-    const nextSelect = $('.gs-problem-picker-select', modal);
-    if (nextSelect instanceof HTMLSelectElement && !nextSelect.disabled) nextSelect.focus();
+    focusDefaultCategoryButton(modal);
   }
 
   function uniqueRows(rows) {
@@ -1581,8 +1601,7 @@
       renderModal();
       modal.hidden = false;
 
-      const saveButton = $('.gs-problem-picker-save', modal);
-      if (saveButton instanceof HTMLButtonElement && !saveButton.disabled) saveButton.focus();
+      focusDefaultCategoryButton(modal);
 
       updateLauncherStatus(`Автооткрытие после редактирования: в очереди строк ${state.queue.length}.`, false);
     } catch (error) {
