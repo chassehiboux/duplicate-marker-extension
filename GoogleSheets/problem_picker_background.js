@@ -415,6 +415,61 @@
     });
   }
 
+  function windowsUpdate(windowId, updateInfo) {
+    return new Promise((resolve, reject) => {
+      if (!Number.isInteger(windowId) || !chrome.windows || typeof chrome.windows.update !== 'function') {
+        resolve(null);
+        return;
+      }
+
+      chrome.windows.update(windowId, updateInfo || {}, (win) => {
+        const runtimeError = chrome.runtime && chrome.runtime.lastError ? chrome.runtime.lastError.message : '';
+        if (runtimeError) {
+          reject(new Error(runtimeError));
+          return;
+        }
+        resolve(win || null);
+      });
+    });
+  }
+
+  function backgroundSleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  async function activateTabForInteractiveAutomation(tab, urlPrefix, label) {
+    const tabId = tab && Number.isInteger(tab.id) ? tab.id : null;
+    if (!Number.isInteger(tabId)) {
+      throw new Error(`Не удалось активировать вкладку ${label || ''}: нет tabId.`);
+    }
+
+    let currentTab = await tabsGet(tabId).catch(() => tab);
+
+    if (currentTab && currentTab.status !== 'complete') {
+      currentTab = await waitForTabReady(tabId, urlPrefix);
+    }
+
+    if (currentTab && Number.isInteger(currentTab.windowId)) {
+      await windowsUpdate(currentTab.windowId, { focused: true }).catch(() => null);
+    }
+
+    const activatedTab = await tabsUpdate(tabId, { active: true });
+
+    if (activatedTab && Number.isInteger(activatedTab.windowId)) {
+      await windowsUpdate(activatedTab.windowId, { focused: true }).catch(() => null);
+    }
+
+    await backgroundSleep(700);
+
+    const refreshedTab = await tabsGet(tabId).catch(() => activatedTab || currentTab || tab);
+
+    if (refreshedTab && refreshedTab.status !== 'complete') {
+      return waitForTabReady(tabId, urlPrefix);
+    }
+
+    return refreshedTab || activatedTab || currentTab || tab;
+  }
+
   function tabsGet(tabId) {
     return new Promise((resolve, reject) => {
       chrome.tabs.get(tabId, (tab) => {
@@ -498,15 +553,16 @@
 
     if (existing && Number.isInteger(existing.id)) {
       if (existing.status !== 'complete') await waitForTabReady(existing.id, ITIL_URL);
-      return existing;
+      return activateTabForInteractiveAutomation(existing, ITIL_URL, 'ITIL');
     }
 
-    const created = await tabsCreate({ url: ITIL_URL, active: false });
+    const created = await tabsCreate({ url: ITIL_URL, active: true });
     if (!created || !Number.isInteger(created.id)) {
       throw new Error('Не удалось открыть вкладку ITIL.');
     }
+
     await waitForTabReady(created.id, ITIL_URL);
-    return created;
+    return activateTabForInteractiveAutomation(created, ITIL_URL, 'ITIL');
   }
 
   async function getOrCreateSuppTab() {
@@ -515,15 +571,16 @@
 
     if (existing && Number.isInteger(existing.id)) {
       if (existing.status !== 'complete') await waitForTabReady(existing.id, SUPP_URL);
-      return existing;
+      return activateTabForInteractiveAutomation(existing, SUPP_URL, 'СУПП');
     }
 
-    const created = await tabsCreate({ url: SUPP_URL, active: false });
+    const created = await tabsCreate({ url: SUPP_URL, active: true });
     if (!created || !Number.isInteger(created.id)) {
       throw new Error('Не удалось открыть вкладку СУПП.');
     }
+
     await waitForTabReady(created.id, SUPP_URL);
-    return created;
+    return activateTabForInteractiveAutomation(created, SUPP_URL, 'СУПП');
   }
 
   async function runItilFillRow(data) {
@@ -1074,6 +1131,85 @@
         .filter((item) => item.text);
     }
 
+    function escapeRegExp(value) {
+      return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+
+    function hasExactRequestNumber(text) {
+      const normalized = normalizeText(text);
+      if (!normalized || !number) return false;
+      const escaped = escapeRegExp(number);
+      return new RegExp(`(^|[^A-Za-zА-Яа-яЁё0-9])${escaped}($|[^A-Za-zА-Яа-яЁё0-9])`, 'i').test(normalized);
+    }
+
+    function getSearchDropdown() {
+      return document.getElementById('editDropDown');
+    }
+
+    function getSuppDropdownRows() {
+      const dropdown = getSearchDropdown();
+      if (!dropdown) return [];
+
+      return Array.from(dropdown.querySelectorAll('.eddList > li, li[listindex]'))
+        .map((row) => ({
+          row,
+          text: normalizeText(row.textContent || ''),
+          listIndex: Number(row.getAttribute('listindex')),
+          selected: row.classList && row.classList.contains('select')
+        }))
+        .filter((item, index, list) => (
+          item.row
+          && item.text
+          && list.findIndex((other) => other.row === item.row) === index
+        ));
+    }
+
+    function getSuppSearchNotFoundText() {
+      const dropdown = getSearchDropdown();
+      const topText = dropdown
+        ? normalizeText((dropdown.querySelector('.eddTop') || {}).textContent || '')
+        : '';
+
+      if (topText && /ничего\s+не\s+найдено|не\s+найден|нет\s+результатов/i.test(topText)) {
+        return topText;
+      }
+
+      const visible = getVisibleTextNodes()
+        .map((item) => item.text)
+        .find((text) => text.length < 500 && /ничего\s+не\s+найдено|не\s+найден|нет\s+результатов/i.test(text));
+
+      return visible || '';
+    }
+
+    function hasSearchNotFoundMessage() {
+      const text = getSuppSearchNotFoundText();
+      if (!text) return false;
+      // Если в тексте указан конкретный запрос, он должен совпадать с текущим номером.
+      return !/по\s+запросу/i.test(text) || hasExactRequestNumber(text);
+    }
+
+    function getSuppDropdownCandidate() {
+      const rows = getSuppDropdownRows()
+        .filter((item) => hasExactRequestNumber(item.text))
+        .filter((item) => !item.row.classList || !item.row.classList.contains('eddListDisabled'));
+
+      if (!rows.length) return null;
+
+      const byListIndexZero = rows.find((item) => item.listIndex === 0);
+      if (byListIndexZero) return byListIndexZero.row;
+
+      const directRequest = rows.find((item) => /^Заявка\s+ЗНР-/i.test(item.text));
+      if (directRequest) return directRequest.row;
+
+      const requestRow = rows.find((item) => /^Заявка[:\s]/i.test(item.text));
+      if (requestRow) return requestRow.row;
+
+      const selected = rows.find((item) => item.selected);
+      if (selected) return selected.row;
+
+      return rows[0].row;
+    }
+
     function findSuppSearchResult() {
       const wanted = `Заявка ${number}`;
       const candidates = getVisibleTextNodes()
@@ -1093,35 +1229,136 @@
       return candidates.length ? candidates[0].element : null;
     }
 
-    function hasSearchNotFoundMessage() {
-      return getVisibleTextNodes().some((item) => {
-        if (item.text.length > 1000) return false;
-        return /не\s+найден|ничего\s+не\s+найден|нет\s+результатов/i.test(item.text);
-      });
+    async function clickSuppSearchResult(row, input) {
+      if (!row) return false;
+
+      const target = row.querySelector('.eddText, b, span') || row;
+
+      try {
+        await clickLikeUser(target);
+        if (await waitForSuppCardOpened(8000)) return true;
+      } catch (error) {
+        // Пробуем следующие способы ниже.
+      }
+
+      try {
+        await clickLikeUser(row);
+        if (await waitForSuppCardOpened(8000)) return true;
+      } catch (error) {
+        // Пробуем следующие способы ниже.
+      }
+
+      try {
+        dispatchMouseLike(row, 'mousedown', 1);
+        dispatchMouseLike(row, 'mouseup', 1);
+        dispatchMouseLike(row, 'dblclick', 2);
+        if (await waitForSuppCardOpened(8000)) return true;
+      } catch (error) {
+        // Пробуем Enter ниже.
+      }
+
+      const enterTarget = isVisible(input) ? input : (document.activeElement || row);
+      try {
+        if (typeof row.focus === 'function') row.focus();
+        enterTarget.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter' }));
+        enterTarget.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter' }));
+        if (await waitForSuppCardOpened(8000)) return true;
+      } catch (error) {
+        // Ничего не делаем, ниже вернём false.
+      }
+
+      return false;
+    }
+
+    async function waitForSuppCardOpened(timeoutMs) {
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < timeoutMs) {
+        if (findOpenedRequestCard()) return true;
+        await sleep(250);
+      }
+      return false;
     }
 
     async function waitForSearchResultOrNotFound(timeoutMs) {
       const startedAt = Date.now();
+      let lastResultText = '';
+      let stableCount = 0;
+
       while (Date.now() - startedAt < timeoutMs) {
         const result = findSuppSearchResult();
-        if (result) return { result };
+
+        if (result) {
+          const resultText = normalizeText(result.textContent || '');
+
+          if (resultText && resultText === lastResultText) {
+            stableCount++;
+          } else {
+            lastResultText = resultText;
+            stableCount = 1;
+          }
+
+          // Не кликаем в первый же момент появления DOM-элемента:
+          // dropdown СУПП визуально уже может быть на экране, но обработчики ещё не готовы.
+          if (stableCount >= 2) {
+            await sleep(350);
+            const refreshedResult = findSuppSearchResult();
+            if (refreshedResult) return { result: refreshedResult };
+            return { result };
+          }
+        }
+
         if (hasSearchNotFoundMessage()) return { notFound: true };
+
         await sleep(250);
       }
+
       return { timeout: true };
     }
 
-    function findOpenedRequestCard() {
-      const title = document.querySelector('#VW_page1headerTopLine_title');
-      const titleText = normalizeText((title && (title.getAttribute('title') || title.textContent)) || '');
-      if (titleText.includes(number)) return title;
+  function getSuppPageNumberFromId(id) {
+    const match = String(id || '').match(/^VW_page(\d+)/);
+    return match ? Number(match[1]) : 0;
+  }
 
-      const numberInput = Array.from(document.querySelectorAll('input[type="text"],input:not([type])'))
-        .find((input) => isVisible(input) && normalizeText(input.value || '') === number);
-      if (numberInput) return numberInput;
+  function getSuppPagePrefixFromElement(element, suffix) {
+    if (!element || !element.id) return '';
+    return String(element.id).replace(new RegExp(`${suffix}$`), '');
+  }
 
-      return null;
+  function getVisibleSuppTitleNodes() {
+    return Array.from(document.querySelectorAll('[id^="VW_page"][id$="headerTopLine_title"]'))
+      .filter((element) => isVisible(element));
+  }
+
+  function getActiveSuppPagePrefix() {
+    const titles = getVisibleSuppTitleNodes()
+      .map((title) => ({
+        title,
+        text: normalizeText(title.getAttribute('title') || title.textContent || ''),
+        page: getSuppPageNumberFromId(title.id)
+      }))
+      .filter((item) => !number || item.text.includes(number))
+      .sort((a, b) => b.page - a.page);
+
+    if (titles.length) {
+      return getSuppPagePrefixFromElement(titles[0].title, 'headerTopLine_title');
     }
+
+    const buttons = getVisibleSuppCloseButtons();
+    if (buttons.length) {
+      return getSuppPagePrefixFromElement(buttons[0], 'headerTopLine_cmd_CloseButton');
+    }
+
+    return '';
+  }
+
+  function findOpenedRequestCard() {
+    const title = getVisibleSuppTitleNodes()
+      .find((element) => hasExactRequestNumber(element.getAttribute('title') || element.textContent || ''));
+    if (title) return title;
+
+    return null;
+  }
 
     async function openSuppRequestFromSearch() {
       const input = await waitFor(findGlobalSearchInput, 90000, 'глобальное поле поиска СУПП');
@@ -1131,11 +1368,49 @@
         await closeGlobalSearchPopup();
         await enterSearchTextLikeUser(input, number);
 
+        // Даём СУПП время не просто показать dropdown, а навесить обработчики.
+        await sleep(700);
+
         const searchState = await waitForSearchResultOrNotFound(35000);
+
         if (searchState.result) {
-          await clickLikeUser(searchState.result);
-          await waitFor(findOpenedRequestCard, 60000, `карточка заявки ${number}`);
-          return;
+          let clicked = false;
+
+          for (let clickAttempt = 1; clickAttempt <= 3; clickAttempt++) {
+            const currentResult = findSuppSearchResult() || searchState.result;
+
+            if (currentResult && isVisible(currentResult)) {
+              await clickLikeUser(currentResult);
+              clicked = true;
+            }
+
+            const openedQuickly = await waitForSuppCardOpened(7000);
+            if (openedQuickly) return;
+
+            // Иногда dropdown выделил нужную строку, но mouse click не прошёл.
+            // Тогда Enter по полю поиска открывает выбранный элемент.
+            input.dispatchEvent(new KeyboardEvent('keydown', {
+              bubbles: true,
+              cancelable: true,
+              key: 'Enter',
+              code: 'Enter'
+            }));
+            input.dispatchEvent(new KeyboardEvent('keyup', {
+              bubbles: true,
+              cancelable: true,
+              key: 'Enter',
+              code: 'Enter'
+            }));
+
+            const openedByEnter = await waitForSuppCardOpened(7000);
+            if (openedByEnter) return;
+
+            await sleep(500);
+          }
+
+          if (clicked) {
+            throw new Error(`Результат поиска СУПП ${number} найден, но карточка не открылась после клика.`);
+          }
         }
 
         await clearGlobalSearchInput(input);
@@ -1183,26 +1458,50 @@
       return normalizeMultiline(result);
     }
 
-    async function openDiscussionPanel() {
-      const button = document.querySelector('#VW_page1headerTopLine_cmdf_ECSFormButton')
-        || Array.from(document.querySelectorAll('a,button,span,div'))
-          .find((element) => isVisible(element) && normalizeText(element.textContent) === 'Обсуждение');
+  async function openDiscussionPanel() {
+    const prefix = getActiveSuppPagePrefix();
+    const button = (prefix ? document.getElementById(`${prefix}headerTopLine_cmdf_ECSFormButton`) : null)
+      || Array.from(document.querySelectorAll('[id^="VW_page"][id$="headerTopLine_cmdf_ECSFormButton"]'))
+        .filter((element) => isVisible(element))
+        .sort((a, b) => getSuppPageNumberFromId(b.id) - getSuppPageNumberFromId(a.id))[0]
+      || Array.from(document.querySelectorAll('a,button,span,div'))
+        .find((element) => isVisible(element) && normalizeText(element.textContent) === 'Обсуждение');
 
-      if (isVisible(button)) {
-        await clickLikeUser(button);
-      }
-
-      const startedAt = Date.now();
-      while (Date.now() - startedAt < 12000) {
-        const root = document.querySelector('#VW_page1ecsCell');
-        if (root && (isVisible(root) || root.querySelector('.ecsChatItem'))) return root;
-        await sleep(250);
-      }
-      return document.querySelector('#VW_page1ecsCell');
+    if (isVisible(button)) {
+      await clickLikeUser(button);
     }
 
-    function getDiscussionText() {
-      const root = document.querySelector('#VW_page1ecsCell') || document;
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < 2000) {
+      const root = (prefix ? document.getElementById(`${prefix}ecsCell`) : null)
+        || Array.from(document.querySelectorAll('[id^="VW_page"][id$="ecsCell"]'))
+          .filter((element) => isVisible(element) || element.querySelector('.ecsChatItem'))
+          .sort((a, b) => getSuppPageNumberFromId(b.id) - getSuppPageNumberFromId(a.id))[0]
+        || null;
+      if (root && (isVisible(root) || root.querySelector('.ecsChatItem'))) return root;
+      await sleep(250);
+    }
+
+    return (prefix ? document.getElementById(`${prefix}ecsCell`) : null)
+      || Array.from(document.querySelectorAll('[id^="VW_page"][id$="ecsCell"]'))
+        .filter((element) => isVisible(element) || element.querySelector('.ecsChatItem'))
+        .sort((a, b) => getSuppPageNumberFromId(b.id) - getSuppPageNumberFromId(a.id))[0]
+      || null;
+  }
+
+  function getDiscussionRoot() {
+    const prefix = getActiveSuppPagePrefix();
+    return (prefix ? document.getElementById(`${prefix}ecsCell`) : null)
+      || Array.from(document.querySelectorAll('[id^="VW_page"][id$="ecsCell"]'))
+        .filter((element) => isVisible(element) || element.querySelector('.ecsChatItem'))
+        .sort((a, b) => getSuppPageNumberFromId(b.id) - getSuppPageNumberFromId(a.id))[0]
+      || null;
+  }
+
+  function getDiscussionText() {
+    const root = getDiscussionRoot();
+    if (!root) return '';
+
       const items = Array.from(root.querySelectorAll('.ecsChatItem')).map((item) => {
         let date = '';
         let cursor = item.previousElementSibling;
@@ -1245,19 +1544,134 @@
       return normalizeMultiline(lines.join('\n'));
     }
 
-    async function closeOpenedRequestCard() {
-      const closeButton = document.querySelector('#VW_page1headerTopLine_cmd_CloseButton');
-      if (isVisible(closeButton)) {
-        await clickLikeUser(closeButton);
-        await waitFor(() => !document.querySelector('#VW_page1headerTopLine_cmd_CloseButton'), 15000, `закрытие заявки ${number}`);
+  async function waitForDiscussionTextStabilized(timeoutMs) {
+    const startedAt = Date.now();
+    let lastText = '';
+    let stableSince = 0;
+
+    while (Date.now() - startedAt < timeoutMs) {
+      const root = getDiscussionRoot();
+      const text = root ? getDiscussionText() : '';
+
+      if (text && text === lastText) {
+        if (!stableSince) stableSince = Date.now();
+        if (Date.now() - stableSince >= 900) return text;
+      } else {
+        lastText = text;
+        stableSince = text ? Date.now() : 0;
       }
 
-      const input = findGlobalSearchInput();
-      if (input) {
-        await clearGlobalSearchInput(input);
-        await closeGlobalSearchPopup();
+      await sleep(300);
+    }
+
+    return lastText || '';
+  }
+
+  function getVisibleSuppCloseButtons() {
+    return Array.from(document.querySelectorAll('[id^="VW_page"][id$="headerTopLine_cmd_CloseButton"]'))
+      .filter((element) => isVisible(element))
+      .sort((a, b) => getSuppPageNumberFromId(b.id) - getSuppPageNumberFromId(a.id));
+  }
+
+  function findSuppCloseButton() {
+    const prefix = getActiveSuppPagePrefix();
+    const buttonByPrefix = prefix ? document.getElementById(`${prefix}headerTopLine_cmd_CloseButton`) : null;
+    if (isVisible(buttonByPrefix)) return buttonByPrefix;
+
+    const buttons = getVisibleSuppCloseButtons();
+    return buttons.length ? buttons[0] : null;
+  }
+
+  async function waitForSuppCardClosed(timeoutMs, prefix) {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      const sameCardCloseButton = prefix
+        ? document.getElementById(`${prefix}headerTopLine_cmd_CloseButton`)
+        : findSuppCloseButton();
+
+      const requestCard = findOpenedRequestCard();
+      const closeButtonVisible = isVisible(sameCardCloseButton);
+
+      // В СУПП кнопка закрытия может оставаться в DOM во время анимации.
+      // Главный признак закрытия — карточка именно этой заявки больше не определяется.
+      if (!requestCard) {
+        await sleep(300);
+        return true;
+      }
+
+      if (!closeButtonVisible) {
+        await sleep(300);
+        return true;
+      }
+
+      await sleep(250);
+    }
+    return false;
+  }
+
+  async function clickSuppCloseButton(closeButton) {
+    if (!isVisible(closeButton)) return false;
+
+    const prefix = getSuppPagePrefixFromElement(closeButton, 'headerTopLine_cmd_CloseButton');
+
+    await clickLikeUser(closeButton);
+    if (await waitForSuppCardClosed(2500, prefix)) return true;
+
+    try {
+      closeButton.click();
+    } catch (error) {
+      // Игнорируем и пробуем следующие fallback ниже.
+    }
+    if (await waitForSuppCardClosed(2500, prefix)) return true;
+
+    const svg = closeButton.querySelector('svg,use');
+    if (svg) {
+      try {
+        svg.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+      } catch (error) {
+        // SVG fallback не критичен.
       }
     }
+    if (await waitForSuppCardClosed(2500, prefix)) return true;
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Escape', code: 'Escape' }));
+    document.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, cancelable: true, key: 'Escape', code: 'Escape' }));
+    return waitForSuppCardClosed(2500, prefix);
+  }
+
+  async function closeOpenedRequestCard() {
+    let closeError = null;
+    let targetPrefix = getActiveSuppPagePrefix();
+
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const closeButton = targetPrefix
+        ? document.getElementById(`${targetPrefix}headerTopLine_cmd_CloseButton`)
+        : findSuppCloseButton();
+
+      if (!isVisible(closeButton)) break;
+      if (!targetPrefix) targetPrefix = getSuppPagePrefixFromElement(closeButton, 'headerTopLine_cmd_CloseButton');
+
+      const closed = await clickSuppCloseButton(closeButton);
+      if (closed) break;
+
+      closeError = new Error(`Не удалось закрыть заявку ${number}: кнопка ${closeButton.id || closeButton.getAttribute('title') || 'Закрыть'} осталась видимой после попытки ${attempt}.`);
+
+      if (await waitForSuppCardClosed(3000, targetPrefix)) break;
+      await sleep(400);
+    }
+
+    await waitForSuppCardClosed(5000, targetPrefix);
+
+    if (findOpenedRequestCard()) {
+      throw closeError || new Error(`Не удалось закрыть заявку ${number}: карточка осталась открытой.`);
+    }
+
+    const input = findGlobalSearchInput();
+    if (input) {
+      await clearGlobalSearchInput(input);
+      await closeGlobalSearchPopup();
+    }
+  }
 
     try {
       await waitFor(findGlobalSearchInput, 90000, 'страница СУПП');
@@ -1267,7 +1681,7 @@
       const commentsText = extractCommentsText(requestText);
 
       await openDiscussionPanel();
-      const discussionText = getDiscussionText();
+      const discussionText = await waitForDiscussionTextStabilized(2000);
 
       await closeOpenedRequestCard();
 
