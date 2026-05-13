@@ -59,6 +59,62 @@ function _problemPickerBridgeParsePayload_(e) {
   }
 }
 
+function _problemPickerBridgePayloadColumn_(payload, key) {
+  const columns = payload && payload.columns && typeof payload.columns === 'object'
+    ? payload.columns
+    : null;
+  if (!columns) return null;
+
+  const column = Number(columns[key]);
+  return Number.isInteger(column) && column > 0 ? column : null;
+}
+
+function _problemPickerBridgeHasPayloadColumnKey_(payload, key) {
+  const columns = payload && payload.columns && typeof payload.columns === 'object'
+    ? payload.columns
+    : null;
+  return !!columns && Object.prototype.hasOwnProperty.call(columns, key);
+}
+
+function _problemPickerBridgeColumn_(payload, key, sh, header) {
+  return _problemPickerBridgePayloadColumn_(payload, key) || getColByHeader(sh, header);
+}
+
+function _problemPickerBridgeOptionalColumn_(payload, key, sh, header) {
+  if (_problemPickerBridgeHasPayloadColumnKey_(payload, key)) {
+    return _problemPickerBridgePayloadColumn_(payload, key);
+  }
+  return getColByHeader(sh, header);
+}
+
+function _problemPickerBridgeReadRowDisplayValues_(sh, row, columns) {
+  const sortedColumns = Array.from(new Set((columns || [])
+    .map(function(column) { return Number(column); })
+    .filter(function(column) { return Number.isInteger(column) && column > 0; })))
+    .sort(function(a, b) { return a - b; });
+
+  if (!sortedColumns.length) return {};
+
+  const minColumn = sortedColumns[0];
+  const maxColumn = sortedColumns[sortedColumns.length - 1];
+  const values = sh.getRange(row, minColumn, 1, maxColumn - minColumn + 1).getDisplayValues()[0];
+  const result = {};
+
+  sortedColumns.forEach(function(column) {
+    result[column] = values[column - minColumn];
+  });
+
+  return result;
+}
+
+function _problemPickerBridgeResetRowColors_(sh, row, colResp, colSupp) {
+  const ranges = [];
+
+  if (colResp) ranges.push(_problemPickerBridgeColumnToA1_(colResp) + row);
+  if (colSupp) ranges.push(_problemPickerBridgeColumnToA1_(colSupp) + row);
+  if (ranges.length) sh.getRangeList(ranges).setBackground('#f5f5f5');
+}
+
 function _problemPickerBridgeSaveProblem_(payload) {
   const spreadsheetId = String(payload.spreadsheetId || '').trim();
 
@@ -100,7 +156,7 @@ function _problemPickerBridgeSaveProblem_(payload) {
     throw new Error('Лист не найден: ' + sheetName);
   }
 
-  const colProb = getColByHeader(sh, PROBLEM_HEADER);
+  const colProb = _problemPickerBridgeColumn_(payload, 'problem', sh, PROBLEM_HEADER);
 
   if (!colProb) {
     throw new Error('Не найдена колонка «' + PROBLEM_HEADER + '».');
@@ -109,7 +165,7 @@ function _problemPickerBridgeSaveProblem_(payload) {
   sh.getRange(row, colProb).setValue(value);
 
   if (Object.prototype.hasOwnProperty.call(payload, 'cleanText')) {
-    const colText = getColByHeader(sh, TEXT_HEADER);
+    const colText = _problemPickerBridgeColumn_(payload, 'text', sh, TEXT_HEADER);
     if (!colText) throw new Error('Не найдена колонка «' + TEXT_HEADER + '».');
     sh.getRange(row, colText).setValue(String(payload.cleanText || ''));
   }
@@ -165,28 +221,29 @@ function _problemPickerBridgeSaveItilData_(payload) {
     throw new Error('Лист не найден: ' + sheetName);
   }
 
-  const colItil = getColByHeader(sh, 'Номер ITIL');
-  const colSupp = getColByHeader(sh, 'Номер СУПП (последний)');
-  const colText = getColByHeader(sh, TEXT_HEADER);
-  const colInfo = getColByHeader(sh, INFO_HEADER);
+  const colItil = _problemPickerBridgeColumn_(payload, 'itil', sh, 'Номер ITIL');
+  const colSupp = _problemPickerBridgeColumn_(payload, 'supp', sh, 'Номер СУПП (последний)');
+  const colText = _problemPickerBridgeColumn_(payload, 'text', sh, TEXT_HEADER);
+  const colInfo = _problemPickerBridgeColumn_(payload, 'info', sh, INFO_HEADER);
 
   if (!colItil || !colSupp || !colText || !colInfo) {
     throw new Error('Не найдены колонки «Номер ITIL», «Номер СУПП (последний)», «Текст заявки» или «Информация из СУПП/ITIL».');
   }
 
-  const rowItil = String(sh.getRange(row, colItil).getDisplayValue() || '').trim();
+  const rowValues = _problemPickerBridgeReadRowDisplayValues_(sh, row, [colItil, colSupp, colText]);
+  const rowItil = String(rowValues[colItil] || '').trim();
 
   if (rowItil !== itilNumber) {
     throw new Error('Строка ' + row + ' больше не соответствует ITIL ' + itilNumber + ' (сейчас: ' + rowItil + ').');
   }
 
-  const rowSupp = String(sh.getRange(row, colSupp).getDisplayValue() || '').trim();
+  const rowSupp = String(rowValues[colSupp] || '').trim();
 
   if (rowSupp !== '–') {
     throw new Error('Строка ' + row + ' больше не подходит для ITIL-заполнения: «Номер СУПП (последний)» = ' + rowSupp + '.');
   }
 
-  const currentText = String(sh.getRange(row, colText).getDisplayValue() || '').trim();
+  const currentText = String(rowValues[colText] || '').trim();
 
   if (currentText) {
     throw new Error('Строка ' + row + ' уже содержит «Текст заявки», запись отменена.');
@@ -196,7 +253,12 @@ function _problemPickerBridgeSaveItilData_(payload) {
 
   const infoRichText = _problemPickerBridgeBuildItilInfoRichText_(solutionText);
   sh.getRange(row, colInfo).setRichTextValue(infoRichText);
-  _applyInfoEditSideEffects_(sh, row, 1, { showFormattingToast: false, resetColors: true });
+  _problemPickerBridgeResetRowColors_(
+    sh,
+    row,
+    _problemPickerBridgeOptionalColumn_(payload, 'response', sh, 'Пришел новый ответ'),
+    colSupp
+  );
 
   return {
     sheetName: sheetName,
@@ -280,21 +342,22 @@ function _problemPickerBridgeSaveSuppData_(payload) {
     throw new Error('Лист не найден: ' + sheetName);
   }
 
-  const colSupp = getColByHeader(sh, 'Номер СУПП (последний)');
-  const colText = getColByHeader(sh, TEXT_HEADER);
-  const colInfo = getColByHeader(sh, INFO_HEADER);
+  const colSupp = _problemPickerBridgeColumn_(payload, 'supp', sh, 'Номер СУПП (последний)');
+  const colText = _problemPickerBridgeColumn_(payload, 'text', sh, TEXT_HEADER);
+  const colInfo = _problemPickerBridgeColumn_(payload, 'info', sh, INFO_HEADER);
 
   if (!colSupp || !colText || !colInfo) {
     throw new Error('Не найдены колонки «Номер СУПП (последний)», «Текст заявки» или «Информация из СУПП/ITIL».');
   }
 
-  const rowSupp = String(sh.getRange(row, colSupp).getDisplayValue() || '').trim();
+  const rowValues = _problemPickerBridgeReadRowDisplayValues_(sh, row, [colSupp, colText]);
+  const rowSupp = String(rowValues[colSupp] || '').trim();
 
   if (rowSupp.indexOf(suppNumber) === -1) {
     throw new Error('Строка ' + row + ' больше не содержит СУПП ' + suppNumber + ' (сейчас: ' + rowSupp + ').');
   }
 
-  const currentText = String(sh.getRange(row, colText).getDisplayValue() || '').trim();
+  const currentText = String(rowValues[colText] || '').trim();
 
   if (currentText) {
     throw new Error('Строка ' + row + ' уже содержит «Текст заявки», запись отменена.');
@@ -304,7 +367,12 @@ function _problemPickerBridgeSaveSuppData_(payload) {
 
   const infoRichText = _problemPickerBridgeBuildSuppInfoRichText_(suppNumber, infoText);
   sh.getRange(row, colInfo).setRichTextValue(infoRichText);
-  _applyInfoEditSideEffects_(sh, row, 1, { showFormattingToast: false, resetColors: true });
+  _problemPickerBridgeResetRowColors_(
+    sh,
+    row,
+    _problemPickerBridgeOptionalColumn_(payload, 'response', sh, 'Пришел новый ответ'),
+    colSupp
+  );
 
   return {
     sheetName: sheetName,

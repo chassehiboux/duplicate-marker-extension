@@ -638,6 +638,7 @@
     const itilNumber = String(payload.itilNumber || '').trim();
     const sheetName = String(payload.sheetName || '').trim();
     const spreadsheetId = String(payload.spreadsheetId || '').trim();
+    const columns = payload.columns && typeof payload.columns === 'object' ? payload.columns : null;
 
     if (spreadsheetId !== SPREADSHEET_ID) throw new Error('Некорректная таблица для ITIL-заполнения.');
     if (!sheetName) throw new Error('Не передан лист для ITIL-заполнения.');
@@ -662,6 +663,7 @@
       sheetName,
       row,
       itilNumber,
+      columns,
       requestText,
       solutionText
     };
@@ -681,6 +683,7 @@
     const suppNumber = String(payload.suppNumber || '').trim();
     const sheetName = String(payload.sheetName || '').trim();
     const spreadsheetId = String(payload.spreadsheetId || '').trim();
+    const columns = payload.columns && typeof payload.columns === 'object' ? payload.columns : null;
 
     if (spreadsheetId !== SPREADSHEET_ID) throw new Error('Некорректная таблица для СУПП-заполнения.');
     if (!sheetName) throw new Error('Не передан лист для СУПП-заполнения.');
@@ -704,6 +707,7 @@
       sheetName,
       row,
       suppNumber,
+      columns,
       requestText,
       infoText
     };

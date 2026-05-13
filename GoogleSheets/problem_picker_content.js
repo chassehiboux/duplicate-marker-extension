@@ -20,6 +20,7 @@
   const ITIL_NUMBER_HEADER = 'Номер ITIL';
   const SUPP_NUMBER_HEADER = 'Номер СУПП (последний)';
   const ITIL_INFO_HEADER = 'Информация из СУПП/ITIL';
+  const NEW_RESPONSE_HEADER = 'Пришел новый ответ';
   const ROOT_ID = 'dup-google-sheets-problem-picker-root';
   const MODAL_ID = 'dup-google-sheets-problem-picker-modal';
   const MENU_ID = 'dup-google-sheets-problem-picker-menu';
@@ -57,6 +58,7 @@
     sheetName: '',
     gid: '',
     rowsCount: 0,
+    columns: null,
     isLoading: false
   };
 
@@ -77,6 +79,7 @@
     sheetName: '',
     gid: '',
     rowsCount: 0,
+    columns: null,
     isRunning: false,
     stopRequested: false,
     pendingBridgeSaves: [],
@@ -93,6 +96,7 @@
     sheetName: '',
     gid: '',
     rowsCount: 0,
+    columns: null,
     isRunning: false,
     stopRequested: false,
     pendingBridgeSaves: [],
@@ -340,6 +344,10 @@
       sheetName,
       gid,
       rowsCount: rows.length,
+      columns: {
+        text: textColumnIndex + 1,
+        problem: problemColumnIndex + 1
+      },
       isLoading: false
     };
   }
@@ -363,6 +371,7 @@
     const suppColumnIndex = headers.indexOf(SUPP_NUMBER_HEADER);
     const textColumnIndex = headers.indexOf(TEXT_HEADER);
     const infoColumnIndex = headers.indexOf(ITIL_INFO_HEADER);
+    const responseColumnIndex = headers.indexOf(NEW_RESPONSE_HEADER);
 
     if (itilColumnIndex < 0 || suppColumnIndex < 0 || textColumnIndex < 0 || infoColumnIndex < 0) {
       throw new Error('Не найдены колонки «Номер ITIL», «Номер СУПП (последний)», «Текст заявки» или «Информация из СУПП/ITIL».');
@@ -393,6 +402,13 @@
       sheetName,
       gid,
       rowsCount: rows.length,
+      columns: {
+        itil: itilColumnIndex + 1,
+        supp: suppColumnIndex + 1,
+        text: textColumnIndex + 1,
+        info: infoColumnIndex + 1,
+        response: responseColumnIndex >= 0 ? responseColumnIndex + 1 : 0
+      },
       lastError: '',
       statusText: queue.length ? 'Очередь ITIL собрана.' : 'Строк для заполнения из ITIL не найдено.'
     };
@@ -422,6 +438,7 @@
     const suppColumnIndex = headers.indexOf(SUPP_NUMBER_HEADER);
     const textColumnIndex = headers.indexOf(TEXT_HEADER);
     const infoColumnIndex = headers.indexOf(ITIL_INFO_HEADER);
+    const responseColumnIndex = headers.indexOf(NEW_RESPONSE_HEADER);
 
     if (suppColumnIndex < 0 || textColumnIndex < 0 || infoColumnIndex < 0) {
       throw new Error('Не найдены колонки «Номер СУПП (последний)», «Текст заявки» или «Информация из СУПП/ITIL».');
@@ -451,6 +468,12 @@
       sheetName,
       gid,
       rowsCount: rows.length,
+      columns: {
+        supp: suppColumnIndex + 1,
+        text: textColumnIndex + 1,
+        info: infoColumnIndex + 1,
+        response: responseColumnIndex >= 0 ? responseColumnIndex + 1 : 0
+      },
       lastError: '',
       statusText: queue.length ? 'Очередь СУПП собрана.' : 'Строк для заполнения из СУПП не найдено.'
     };
@@ -960,6 +983,7 @@
           sheetName,
           row,
           value,
+          columns: state.columns,
           cleanText: processRequestText(item && item.text ? item.text : '')
         }
       }
@@ -1130,6 +1154,7 @@
       sheetName: '',
       gid: '',
       rowsCount: 0,
+      columns: null,
       isRunning: false,
       stopRequested: false,
       pendingBridgeSaves: [],
@@ -1214,7 +1239,8 @@
               spreadsheetId: CONFIG.spreadsheetId,
               sheetName: itilState.sheetName,
               row: item.row,
-              itilNumber: item.itilNumber
+              itilNumber: item.itilNumber,
+              columns: itilState.columns
             }
           }
         });
@@ -1340,6 +1366,7 @@
       sheetName: '',
       gid: '',
       rowsCount: 0,
+      columns: null,
       isRunning: false,
       stopRequested: false,
       pendingBridgeSaves: [],
@@ -1427,7 +1454,8 @@
               spreadsheetId: CONFIG.spreadsheetId,
               sheetName: suppState.sheetName,
               row: item.row,
-              suppNumber: item.suppNumber
+              suppNumber: item.suppNumber,
+              columns: suppState.columns
             }
           }
         });
