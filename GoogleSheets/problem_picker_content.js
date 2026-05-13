@@ -440,20 +440,33 @@
     const infoColumnIndex = headers.indexOf(ITIL_INFO_HEADER);
     const responseColumnIndex = headers.indexOf(NEW_RESPONSE_HEADER);
 
-    if (suppColumnIndex < 0 || textColumnIndex < 0 || infoColumnIndex < 0) {
-      throw new Error('Не найдены колонки «Номер СУПП (последний)», «Текст заявки» или «Информация из СУПП/ITIL».');
+    const itilColumnIndex = headers.indexOf(ITIL_NUMBER_HEADER);
+
+    if (suppColumnIndex < 0 || textColumnIndex < 0 || infoColumnIndex < 0 || itilColumnIndex < 0) {
+      throw new Error('Не найдены колонки «Номер ITIL», «Номер СУПП (последний)», «Текст заявки» или «Информация из СУПП/ITIL».');
+    }
+
+    const suppCounts = {};
+    for (let index = 1; index < rows.length; index++) {
+      const row = rows[index] || [];
+      const suppNumber = extractSuppNumber(row[suppColumnIndex]);
+      if (suppNumber) suppCounts[suppNumber] = (suppCounts[suppNumber] || 0) + 1;
     }
 
     const queue = [];
     for (let index = 1; index < rows.length; index++) {
       const row = rows[index] || [];
       const suppNumber = extractSuppNumber(row[suppColumnIndex]);
+      const itilNumber = String(row[itilColumnIndex] || '').trim();
       const text = String(row[textColumnIndex] || '').trim();
+      const isDuplicateSupp = suppNumber && suppCounts[suppNumber] > 1;
 
       if (suppNumber && !text) {
         queue.push({
           row: index + 1,
-          suppNumber
+          suppNumber,
+          itilNumber,
+          useItilRequestText: isDuplicateSupp
         });
       }
     }
@@ -469,6 +482,7 @@
       gid,
       rowsCount: rows.length,
       columns: {
+        itil: itilColumnIndex + 1,
         supp: suppColumnIndex + 1,
         text: textColumnIndex + 1,
         info: infoColumnIndex + 1,
@@ -579,7 +593,10 @@
   function getSuppCurrentText() {
     const queuedItem = suppState.isRunning && !suppState.stopRequested ? suppState.queue[suppState.currentIndex] : null;
     const item = suppState.currentItem || queuedItem || null;
-    return item ? `строка ${item.row}, СУПП ${item.suppNumber}` : 'нет';
+    if (!item) return 'нет';
+    return item.useItilRequestText
+      ? `строка ${item.row}, СУПП ${item.suppNumber}, текст через ITIL ${item.itilNumber || 'не задан'}`
+      : `строка ${item.row}, СУПП ${item.suppNumber}`;
   }
 
   function renderItilStatus() {
@@ -1441,7 +1458,9 @@
           ...suppState,
           currentIndex: index,
           currentItem: item,
-          statusText: `Ищу СУПП ${item.suppNumber} для строки ${item.row}...`,
+          statusText: item.useItilRequestText
+            ? `Ищу СУПП ${item.suppNumber} для INFO и ITIL ${item.itilNumber || 'не задан'} для текста строки ${item.row}...`
+            : `Ищу СУПП ${item.suppNumber} для строки ${item.row}...`,
           lastError: ''
         };
         renderSuppStatus();
@@ -1455,6 +1474,8 @@
               sheetName: suppState.sheetName,
               row: item.row,
               suppNumber: item.suppNumber,
+              itilNumber: item.itilNumber,
+              useItilRequestText: !!item.useItilRequestText,
               columns: suppState.columns
             }
           }
@@ -1493,12 +1514,15 @@
         queueSuppBridgeSave(result, item);
         const textLength = Number(result.requestTextLength || 0);
         const infoLength = Number(result.infoTextLength || 0);
+        const requestSourceText = result.requestTextSource === 'ITIL'
+          ? `, текст через ITIL ${result.itilNumber || item.itilNumber || ''}`
+          : '';
         suppState = {
           ...suppState,
           currentIndex: index + 1,
           successCount: suppState.successCount + 1,
           currentItem: null,
-          statusText: `Строка ${item.row} подготовлена. Сохранение в bridge поставлено в очередь. Текст: ${textLength} симв., информация: ${infoLength} симв.`,
+          statusText: `Строка ${item.row} подготовлена${requestSourceText}. Сохранение в bridge поставлено в очередь. Текст: ${textLength} симв., информация: ${infoLength} симв.`,
           lastError: ''
         };
         renderSuppStatus();

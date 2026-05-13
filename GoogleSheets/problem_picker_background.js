@@ -646,15 +646,9 @@
     if (!itilNumber) throw new Error('Не передан номер ITIL.');
     normalizeBridgeUrl(data.bridgeUrl);
 
-    const tab = await getOrCreateItilTab();
-    const clipboardPrepared = await writeClipboardText(itilNumber);
-    const result = await executeInTab(tab.id, collectItilRequestData, [itilNumber, clipboardPrepared]);
-    if (!result || result.success !== true) {
-      throw new Error(result && result.error ? result.error : 'Не удалось получить данные из ITIL.');
-    }
-
-    const requestText = processRequestText(result.requestText || '');
-    const solutionText = String(result.solutionText || '').trim();
+    const itilData = await collectItilFillData(itilNumber);
+    const requestText = itilData.requestText;
+    const solutionText = itilData.solutionText;
     if (!requestText) throw new Error(`ITIL ${itilNumber}: текст заявки пустой.`);
 
     const bridgePayload = {
@@ -677,10 +671,29 @@
     };
   }
 
+  async function collectItilFillData(itilNumber) {
+    const number = String(itilNumber || '').trim();
+    if (!number) throw new Error('Не передан номер ITIL.');
+
+    const tab = await getOrCreateItilTab();
+    const clipboardPrepared = await writeClipboardText(number);
+    const result = await executeInTab(tab.id, collectItilRequestData, [number, clipboardPrepared]);
+    if (!result || result.success !== true) {
+      throw new Error(result && result.error ? result.error : 'Не удалось получить данные из ITIL.');
+    }
+
+    return {
+      requestText: processRequestText(result.requestText || ''),
+      solutionText: String(result.solutionText || '').trim()
+    };
+  }
+
   async function runSuppFillRow(data) {
     const payload = data && data.payload ? data.payload : {};
     const row = Number(payload.row);
     const suppNumber = String(payload.suppNumber || '').trim();
+    const itilNumber = String(payload.itilNumber || '').trim();
+    const useItilRequestText = !!payload.useItilRequestText;
     const sheetName = String(payload.sheetName || '').trim();
     const spreadsheetId = String(payload.spreadsheetId || '').trim();
     const columns = payload.columns && typeof payload.columns === 'object' ? payload.columns : null;
@@ -689,6 +702,7 @@
     if (!sheetName) throw new Error('Не передан лист для СУПП-заполнения.');
     if (!Number.isInteger(row) || row < 2) throw new Error('Некорректный номер строки для СУПП-заполнения.');
     if (!/^ЗНР-[A-Za-zА-Яа-яЁё0-9-]+$/.test(suppNumber)) throw new Error('Не передан корректный номер СУПП.');
+    if (useItilRequestText && !itilNumber) throw new Error(`Строка ${row}, СУПП ${suppNumber}: для повторяющегося СУПП не передан номер ITIL.`);
     normalizeBridgeUrl(data.bridgeUrl);
 
     const tab = await getOrCreateSuppTab();
@@ -697,9 +711,17 @@
       throw new Error(result && result.error ? result.error : 'Не удалось получить данные из СУПП.');
     }
 
-    const requestText = processSuppRequestText(result.requestText || '');
+    const itilData = useItilRequestText ? await collectItilFillData(itilNumber) : null;
+    const requestText = useItilRequestText
+      ? (itilData ? itilData.requestText : '')
+      : processSuppRequestText(result.requestText || '');
     const infoText = processSuppInfoText(suppNumber, result.commentsText || '', result.discussionText || '');
-    if (!requestText) throw new Error(`СУПП ${suppNumber}: текст заявки пустой.`);
+    const requestTextSource = useItilRequestText ? 'ITIL' : 'SUPP';
+    if (!requestText) {
+      throw new Error(useItilRequestText
+        ? `ITIL ${itilNumber}: текст заявки пустой.`
+        : `СУПП ${suppNumber}: текст заявки пустой.`);
+    }
 
     const bridgePayload = {
       action: 'saveSuppData',
@@ -707,6 +729,7 @@
       sheetName,
       row,
       suppNumber,
+      requestTextSource,
       columns,
       requestText,
       infoText
@@ -715,6 +738,8 @@
     return {
       row,
       suppNumber,
+      itilNumber,
+      requestTextSource,
       requestTextLength: requestText.length,
       infoTextLength: infoText.length,
       bridgePayload
