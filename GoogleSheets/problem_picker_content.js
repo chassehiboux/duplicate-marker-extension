@@ -1079,7 +1079,7 @@
     };
   }
 
-  function summarizeBridgeFinalizeErrors(results, resetError) {
+  function summarizeBridgeFinalizeErrors(results) {
     const errors = (results || [])
       .filter((item) => item && item.success !== true)
       .map((item) => item.errorText || 'неизвестная ошибка bridge');
@@ -1090,50 +1090,20 @@
       const hiddenCount = errors.length - 3;
       parts.push(`Ошибки отправки в bridge: ${visible}${hiddenCount > 0 ? `; ещё ${hiddenCount}` : ''}.`);
     }
-    if (resetError) parts.push(`Сброс цвета: ${resetError}.`);
     return parts.join(' ');
   }
 
-  async function waitBridgeSavesAndResetColors(pendingSaves, sheetName) {
+  async function waitBridgeSaves(pendingSaves) {
     const results = await Promise.all(pendingSaves || []);
     const savedRows = uniqueRows(results
       .filter((item) => item && item.success === true)
       .map((item) => item.row));
 
-    let resetRowsCount = 0;
-    let resetError = '';
-
-    if (savedRows.length) {
-      try {
-        const response = await sendRuntimeMessage({
-          action: SAVE_ACTION,
-          data: {
-            bridgeUrl: state.bridgeUrl,
-            payload: {
-              action: 'resetInfoEditColors',
-              spreadsheetId: CONFIG.spreadsheetId,
-              sheetName,
-              rows: savedRows
-            }
-          }
-        });
-
-        if (!response || response.success !== true) {
-          resetError = getRuntimeResponseError(response, 'bridge не выполнил пакетный сброс цвета');
-        } else {
-          const bridgeResult = response.result && response.result.result ? response.result.result : {};
-          resetRowsCount = Number(bridgeResult.rowsCount || 0);
-        }
-      } catch (error) {
-        resetError = error && error.message ? error.message : String(error);
-      }
-    }
-
     return {
       results,
       savedRows,
-      resetRowsCount,
-      errorText: summarizeBridgeFinalizeErrors(results, resetError)
+      resetRowsCount: savedRows.length,
+      errorText: summarizeBridgeFinalizeErrors(results)
     };
   }
 
@@ -1256,11 +1226,11 @@
           itilState = {
             ...itilState,
             currentItem: null,
-            statusText: 'Дожидаюсь уже поставленных отправок в bridge и сбрасываю цвет...',
+            statusText: 'Дожидаюсь уже поставленных отправок в bridge...',
             lastError: ''
           };
           renderItilStatus();
-          const bridgeFinalize = await waitBridgeSavesAndResetColors(itilState.pendingBridgeSaves, itilState.sheetName);
+          const bridgeFinalize = await waitBridgeSaves(itilState.pendingBridgeSaves);
           if (runId !== itilRunId) return;
           const finalError = [bridgeFinalize.errorText, `Строка ${item.row}, ITIL ${item.itilNumber}: ${errorText}`]
             .filter(Boolean)
@@ -1299,12 +1269,12 @@
       itilState = {
         ...itilState,
         currentItem: null,
-        statusText: 'Дожидаюсь отправки в bridge и выполняю пакетный сброс цвета...',
+        statusText: 'Дожидаюсь отправки в bridge...',
         lastError: ''
       };
       renderItilStatus();
 
-      const bridgeFinalize = await waitBridgeSavesAndResetColors(itilState.pendingBridgeSaves, itilState.sheetName);
+      const bridgeFinalize = await waitBridgeSaves(itilState.pendingBridgeSaves);
       if (runId !== itilRunId) return;
 
       itilState = {
@@ -1327,11 +1297,11 @@
         itilState = {
           ...itilState,
           currentItem: null,
-          statusText: 'Дожидаюсь уже поставленных отправок в bridge и сбрасываю цвет...',
+          statusText: 'Дожидаюсь уже поставленных отправок в bridge...',
           lastError: ''
         };
         renderItilStatus();
-        bridgeFinalize = await waitBridgeSavesAndResetColors(itilState.pendingBridgeSaves, itilState.sheetName);
+        bridgeFinalize = await waitBridgeSaves(itilState.pendingBridgeSaves);
         if (runId !== itilRunId) return;
       }
       itilState = {
@@ -1469,11 +1439,11 @@
           suppState = {
             ...suppState,
             currentItem: null,
-            statusText: 'Дожидаюсь уже поставленных отправок в bridge и сбрасываю цвет...',
+            statusText: 'Дожидаюсь уже поставленных отправок в bridge...',
             lastError: ''
           };
           renderSuppStatus();
-          const bridgeFinalize = await waitBridgeSavesAndResetColors(suppState.pendingBridgeSaves, suppState.sheetName);
+          const bridgeFinalize = await waitBridgeSaves(suppState.pendingBridgeSaves);
           if (runId !== suppRunId) return;
           const finalError = [bridgeFinalize.errorText, `Строка ${item.row}, СУПП ${item.suppNumber}: ${errorText}`]
             .filter(Boolean)
@@ -1512,12 +1482,12 @@
       suppState = {
         ...suppState,
         currentItem: null,
-        statusText: 'Дожидаюсь отправки в bridge и выполняю пакетный сброс цвета...',
+        statusText: 'Дожидаюсь отправки в bridge...',
         lastError: ''
       };
       renderSuppStatus();
 
-      const bridgeFinalize = await waitBridgeSavesAndResetColors(suppState.pendingBridgeSaves, suppState.sheetName);
+      const bridgeFinalize = await waitBridgeSaves(suppState.pendingBridgeSaves);
       if (runId !== suppRunId) return;
 
       suppState = {
@@ -1542,11 +1512,11 @@
         suppState = {
           ...suppState,
           currentItem: null,
-          statusText: 'Дожидаюсь уже поставленных отправок в bridge и сбрасываю цвет...',
+          statusText: 'Дожидаюсь уже поставленных отправок в bridge...',
           lastError: ''
         };
         renderSuppStatus();
-        bridgeFinalize = await waitBridgeSavesAndResetColors(suppState.pendingBridgeSaves, suppState.sheetName);
+        bridgeFinalize = await waitBridgeSaves(suppState.pendingBridgeSaves);
         if (runId !== suppRunId) return;
       }
       suppState = {

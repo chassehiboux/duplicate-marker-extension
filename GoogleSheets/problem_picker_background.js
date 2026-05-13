@@ -378,19 +378,7 @@
 
   const bridgePostQueue = [];
   let bridgePostQueueIsRunning = false;
-  let bridgePostQueueDrainTimer = null;
   let bridgePostQueueNextId = 1;
-  const BRIDGE_POST_BATCH_MAX_ITEMS = 10;
-  const BRIDGE_POST_BATCH_DELAY_MS = 150;
-  const BRIDGE_POST_BATCH_GROUPS = new Map([
-    ['saveItilData', 'fill'],
-    ['saveSuppData', 'fill'],
-    ['saveProblem', 'problem']
-  ]);
-  const BRIDGE_POST_BATCH_ACTION_BY_GROUP = new Map([
-    ['fill', 'saveFillDataBatch'],
-    ['problem', 'saveProblemBatch']
-  ]);
 
   function enqueueBridgePost(url, payload) {
     const normalizedUrl = normalizeBridgeUrl(url);
@@ -404,191 +392,36 @@
         reject
       });
 
-      scheduleBridgePostQueueDrain();
-    });
-  }
-
-  function scheduleBridgePostQueueDrain() {
-    if (bridgePostQueueIsRunning || bridgePostQueueDrainTimer) return;
-
-    bridgePostQueueDrainTimer = setTimeout(() => {
-      bridgePostQueueDrainTimer = null;
       void drainBridgePostQueue();
-    }, BRIDGE_POST_BATCH_DELAY_MS);
+    });
   }
 
   async function drainBridgePostQueue() {
     if (bridgePostQueueIsRunning) return;
-
-    if (bridgePostQueueDrainTimer) {
-      clearTimeout(bridgePostQueueDrainTimer);
-      bridgePostQueueDrainTimer = null;
-    }
 
     bridgePostQueueIsRunning = true;
     try {
       while (bridgePostQueue.length) {
         const item = bridgePostQueue.shift();
         if (!item) continue;
-        const batch = takeBridgePostBatch(item);
 
         try {
-          await postBridgeQueueBatch(batch);
-        } catch (error) {
-          batch.forEach((batchItem) => {
-            batchItem.reject(error);
+          const result = await postBridge(item.url, item.payload);
+          if (result && result.success === false) {
+            throw new Error(result.error || 'Bridge не сохранил значение.');
+          }
+
+          item.resolve({
+            queueId: item.id,
+            result
           });
+        } catch (error) {
+          item.reject(error);
         }
       }
     } finally {
       bridgePostQueueIsRunning = false;
-      if (bridgePostQueue.length) scheduleBridgePostQueueDrain();
-    }
-  }
-
-  function getBridgePostBatchKey(item) {
-    const payload = item && item.payload ? item.payload : {};
-    const group = getBridgePostBatchGroup(item);
-
-    if (!group) return '';
-
-    const spreadsheetId = String(payload.spreadsheetId || '').trim();
-    const sheetName = String(payload.sheetName || '').trim();
-
-    if (!spreadsheetId || !sheetName) return '';
-
-    return [
-      item.url,
-      group,
-      spreadsheetId,
-      sheetName
-    ].join('\u0001');
-  }
-
-  function getBridgePostBatchGroup(item) {
-    const payload = item && item.payload ? item.payload : {};
-    const action = String(payload.action || '');
-    return BRIDGE_POST_BATCH_GROUPS.get(action) || '';
-  }
-
-  function getBridgePostBatchAction(item) {
-    const group = getBridgePostBatchGroup(item);
-    return BRIDGE_POST_BATCH_ACTION_BY_GROUP.get(group) || '';
-  }
-
-  function takeBridgePostBatch(firstItem) {
-    const batch = [firstItem];
-    const key = getBridgePostBatchKey(firstItem);
-
-    if (!key) return batch;
-
-    for (let index = 0; index < bridgePostQueue.length && batch.length < BRIDGE_POST_BATCH_MAX_ITEMS;) {
-      const item = bridgePostQueue[index];
-      if (getBridgePostBatchKey(item) === key) {
-        batch.push(item);
-        bridgePostQueue.splice(index, 1);
-      } else {
-        index += 1;
-      }
-    }
-
-    return batch;
-  }
-
-  function resolveBridgeQueueItem(item, result) {
-    item.resolve({
-      queueId: item.id,
-      result
-    });
-  }
-
-  function rejectBridgeQueueItem(item, error) {
-    item.reject(error);
-  }
-
-  async function postBridgeQueueBatch(batch) {
-    if (!Array.isArray(batch) || !batch.length) return;
-
-    if (batch.length === 1 || !getBridgePostBatchKey(batch[0])) {
-      await postBridgeSingleQueueItem(batch[0]);
-      return;
-    }
-
-    const firstPayload = batch[0].payload || {};
-    const batchAction = getBridgePostBatchAction(batch[0]);
-    if (!batchAction) {
-      await postBridgeQueueItemsIndividually(batch);
-      return;
-    }
-
-    const batchPayload = {
-      action: batchAction,
-      spreadsheetId: firstPayload.spreadsheetId,
-      sheetName: firstPayload.sheetName,
-      sourceAction: firstPayload.action,
-      items: batch.map((item) => ({
-        ...item.payload,
-        clientQueueId: item.id
-      }))
-    };
-
-    const response = await postBridge(batch[0].url, batchPayload);
-    if (response && response.success === false) {
-      const errorText = response.error || 'Bridge не сохранил batch.';
-      if (/Неизвестное действие bridge/i.test(errorText)) {
-        await postBridgeQueueItemsIndividually(batch);
-        return;
-      }
-      throw new Error(errorText);
-    }
-
-    const batchResult = response && response.result ? response.result : {};
-    const itemResults = Array.isArray(batchResult.items) ? batchResult.items : [];
-    const resultByQueueId = new Map();
-    itemResults.forEach((itemResult) => {
-      resultByQueueId.set(Number(itemResult && itemResult.clientQueueId), itemResult);
-    });
-
-    batch.forEach((item) => {
-      const itemResult = resultByQueueId.get(item.id);
-      if (!itemResult) {
-        rejectBridgeQueueItem(item, new Error('Bridge не вернул результат batch-строки.'));
-        return;
-      }
-
-      if (itemResult.success === false) {
-        rejectBridgeQueueItem(item, new Error(itemResult.error || 'Bridge не сохранил batch-строку.'));
-        return;
-      }
-
-      resolveBridgeQueueItem(item, {
-        success: true,
-        result: itemResult.result || {},
-        batch: {
-          total: Number(batchResult.total || batch.length),
-          successCount: Number(batchResult.successCount || 0),
-          failedCount: Number(batchResult.failedCount || 0)
-        }
-      });
-    });
-  }
-
-  async function postBridgeSingleQueueItem(item) {
-    const result = await postBridge(item.url, item.payload);
-    if (result && result.success === false) {
-      throw new Error(result.error || 'Bridge не сохранил значение.');
-    }
-
-    resolveBridgeQueueItem(item, result);
-  }
-
-  async function postBridgeQueueItemsIndividually(batch) {
-    for (const item of batch) {
-      try {
-        await postBridgeSingleQueueItem(item);
-      } catch (error) {
-        rejectBridgeQueueItem(item, error);
-      }
+      if (bridgePostQueue.length) void drainBridgePostQueue();
     }
   }
 
