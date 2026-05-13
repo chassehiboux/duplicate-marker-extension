@@ -16,6 +16,7 @@
   const DEFAULT_VALUE = 'Публикация/Некорректная публикация/Ошибки публикации';
   const SAVE_ACTION = 'GOOGLE_SHEETS_PROBLEM_PICKER_SAVE';
   const ITIL_FILL_ACTION = 'GOOGLE_SHEETS_ITIL_FILL_ROW';
+  const SUPP_FILL_ACTION = 'GOOGLE_SHEETS_SUPP_FILL_ROW';
   const ITIL_NUMBER_HEADER = 'Номер ITIL';
   const SUPP_NUMBER_HEADER = 'Номер СУПП (последний)';
   const ITIL_INFO_HEADER = 'Информация из СУПП/ITIL';
@@ -65,8 +66,23 @@
   let menuStatusText = '';
   let menuStatusIsError = false;
   let itilRunId = 0;
+  let suppRunId = 0;
 
   let itilState = {
+    queue: [],
+    currentIndex: 0,
+    successCount: 0,
+    failedCount: 0,
+    currentItem: null,
+    sheetName: '',
+    gid: '',
+    rowsCount: 0,
+    isRunning: false,
+    statusText: 'Ожидание запуска.',
+    lastError: ''
+  };
+
+  let suppState = {
     queue: [],
     currentIndex: 0,
     successCount: 0,
@@ -378,6 +394,64 @@
     };
   }
 
+  function extractSuppNumber(value) {
+    const text = String(value || '').replace(/\r\n?/g, '\n');
+    const matches = text.match(/ЗНР-[A-Za-zА-Яа-яЁё0-9-]+/g);
+    return matches && matches.length ? matches[matches.length - 1].trim() : '';
+  }
+
+  async function loadSuppQueue() {
+    const sheetName = getActiveSheetName();
+    const allowedSheets = Array.isArray(CONFIG.allowedSheetNames) ? CONFIG.allowedSheetNames : [];
+    if (!allowedSheets.includes(sheetName)) {
+      throw new Error('Открой лист «Заявки» или «Заявки (наши)».');
+    }
+
+    const gid = getActiveGid();
+    if (!gid) throw new Error('Не удалось определить gid активного листа.');
+
+    const response = await fetch(getCsvUrl(gid), { credentials: 'omit' });
+    if (!response.ok) throw new Error(`CSV-экспорт вернул HTTP ${response.status}.`);
+
+    const rows = parseCsv(await response.text());
+    const headers = rows[0] || [];
+    const suppColumnIndex = headers.indexOf(SUPP_NUMBER_HEADER);
+    const textColumnIndex = headers.indexOf(TEXT_HEADER);
+    const infoColumnIndex = headers.indexOf(ITIL_INFO_HEADER);
+
+    if (suppColumnIndex < 0 || textColumnIndex < 0 || infoColumnIndex < 0) {
+      throw new Error('Не найдены колонки «Номер СУПП (последний)», «Текст заявки» или «Информация из СУПП/ITIL».');
+    }
+
+    const queue = [];
+    for (let index = 1; index < rows.length; index++) {
+      const row = rows[index] || [];
+      const suppNumber = extractSuppNumber(row[suppColumnIndex]);
+      const text = String(row[textColumnIndex] || '').trim();
+
+      if (suppNumber && !text) {
+        queue.push({
+          row: index + 1,
+          suppNumber
+        });
+      }
+    }
+
+    suppState = {
+      ...suppState,
+      queue,
+      currentIndex: 0,
+      successCount: 0,
+      failedCount: 0,
+      currentItem: null,
+      sheetName,
+      gid,
+      rowsCount: rows.length,
+      lastError: '',
+      statusText: queue.length ? 'Очередь СУПП собрана.' : 'Строк для заполнения из СУПП не найдено.'
+    };
+  }
+
   function getCurrentItem() {
     return state.queue[state.currentIndex] || null;
   }
@@ -406,16 +480,16 @@
       #${MENU_ID} .gs-problem-picker-menu-section:first-of-type{border-top:0;padding-top:0;margin-top:0}
       #${MENU_ID} .gs-problem-picker-menu-section-title{font-size:14px;font-weight:700;color:#253044}
       #${MENU_ID} .gs-problem-picker-menu-actions{display:flex;flex-wrap:wrap;gap:8px}
-      #${MENU_ID} .gs-problem-picker-itil-grid{display:grid;grid-template-columns:150px 1fr;gap:6px 12px;font-size:13px;color:#39465c}
-      #${MENU_ID} .gs-problem-picker-itil-grid dt{font-weight:700;color:#5d6678}
-      #${MENU_ID} .gs-problem-picker-itil-grid dd{margin:0;min-width:0;overflow-wrap:anywhere}
+      #${MENU_ID} .gs-problem-picker-itil-grid,#${MENU_ID} .gs-problem-picker-supp-grid{display:grid;grid-template-columns:150px 1fr;gap:6px 12px;font-size:13px;color:#39465c}
+      #${MENU_ID} .gs-problem-picker-itil-grid dt,#${MENU_ID} .gs-problem-picker-supp-grid dt{font-weight:700;color:#5d6678}
+      #${MENU_ID} .gs-problem-picker-itil-grid dd,#${MENU_ID} .gs-problem-picker-supp-grid dd{margin:0;min-width:0;overflow-wrap:anywhere}
       #${MENU_ID} .gs-problem-picker-status{min-height:18px;color:#24513a;font-size:13px}
-      #${MENU_ID} .gs-problem-picker-status.is-error,#${MENU_ID} .gs-problem-picker-itil-status.is-error{color:#b3261e}
-      #${MENU_ID} .gs-problem-picker-itil-status{min-height:18px;color:#24513a;font-size:13px;overflow-wrap:anywhere}
+      #${MENU_ID} .gs-problem-picker-status.is-error,#${MENU_ID} .gs-problem-picker-itil-status.is-error,#${MENU_ID} .gs-problem-picker-supp-status.is-error{color:#b3261e}
+      #${MENU_ID} .gs-problem-picker-itil-status,#${MENU_ID} .gs-problem-picker-supp-status{min-height:18px;color:#24513a;font-size:13px;overflow-wrap:anywhere}
       #${ROOT_ID} button,#${MODAL_ID} button,#${MENU_ID} button{border:1px solid #b7c2d3;border-radius:7px;background:#fff;color:#162033;cursor:pointer;font:600 13px/1.2 "Segoe UI",Tahoma,sans-serif;padding:8px 12px}
       #${MENU_ID} button:disabled{opacity:.58;cursor:default}
-      #${MENU_ID} .gs-problem-picker-open,#${MENU_ID} .gs-problem-picker-itil-start,#${MODAL_ID} .gs-problem-picker-save{border-color:#1155cc;background:#1155cc;color:#fff;box-shadow:0 8px 22px rgba(17,85,204,.2)}
-      #${MENU_ID} .gs-problem-picker-itil-stop{border-color:#b3261e;color:#b3261e}
+      #${MENU_ID} .gs-problem-picker-open,#${MENU_ID} .gs-problem-picker-itil-start,#${MENU_ID} .gs-problem-picker-supp-start,#${MENU_ID} .gs-problem-picker-supp-test,#${MODAL_ID} .gs-problem-picker-save{border-color:#1155cc;background:#1155cc;color:#fff;box-shadow:0 8px 22px rgba(17,85,204,.2)}
+      #${MENU_ID} .gs-problem-picker-itil-stop,#${MENU_ID} .gs-problem-picker-supp-stop{border-color:#b3261e;color:#b3261e}
       #${MODAL_ID}{position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;background:rgba(17,24,39,.42);font-family:"Segoe UI",Tahoma,sans-serif}
       #${MODAL_ID}[hidden],html.dup-ext-screenshot-mode #${ROOT_ID},html.dup-ext-screenshot-mode #${MODAL_ID},html.dup-ext-screenshot-mode #${MENU_ID},html.dup-ext-screenshot-mode #${MENU_OVERLAY_ID}{display:none!important}
       #${MODAL_ID} .gs-problem-picker-panel{width:min(980px,calc(100vw - 32px));height:min(680px,calc(100vh - 32px));display:grid;grid-template-rows:auto auto minmax(0,1fr) auto auto;gap:14px;box-sizing:border-box;padding:22px;border:1px solid #d6dce8;border-radius:8px;background:#fbfcfe;color:#172033;box-shadow:0 24px 70px rgba(15,23,42,.26)}
@@ -463,6 +537,11 @@
     return item ? `строка ${item.row}, ITIL ${item.itilNumber}` : 'нет';
   }
 
+  function getSuppCurrentText() {
+    const item = suppState.currentItem || suppState.queue[suppState.currentIndex] || null;
+    return item ? `строка ${item.row}, СУПП ${item.suppNumber}` : 'нет';
+  }
+
   function renderItilStatus() {
     const menu = document.getElementById(MENU_ID);
     if (!(menu instanceof HTMLElement)) return;
@@ -484,8 +563,35 @@
       status.textContent = itilState.lastError || itilState.statusText || '';
       status.classList.toggle('is-error', !!itilState.lastError);
     }
-    if (startButton instanceof HTMLButtonElement) startButton.disabled = itilState.isRunning;
+    if (startButton instanceof HTMLButtonElement) startButton.disabled = itilState.isRunning || suppState.isRunning;
     if (stopButton instanceof HTMLButtonElement) stopButton.disabled = !itilState.isRunning;
+  }
+
+  function renderSuppStatus() {
+    const menu = document.getElementById(MENU_ID);
+    if (!(menu instanceof HTMLElement)) return;
+
+    const total = suppState.queue.length;
+    const processed = Math.min(total, suppState.successCount + suppState.failedCount);
+
+    const collected = $('.gs-problem-picker-supp-collected', menu);
+    const progress = $('.gs-problem-picker-supp-progress', menu);
+    const current = $('.gs-problem-picker-supp-current', menu);
+    const status = $('.gs-problem-picker-supp-status', menu);
+    const startButton = $('.gs-problem-picker-supp-start', menu);
+    const testButton = $('.gs-problem-picker-supp-test', menu);
+    const stopButton = $('.gs-problem-picker-supp-stop', menu);
+
+    if (collected instanceof HTMLElement) collected.textContent = String(total);
+    if (progress instanceof HTMLElement) progress.textContent = `${processed}/${total}`;
+    if (current instanceof HTMLElement) current.textContent = getSuppCurrentText();
+    if (status instanceof HTMLElement) {
+      status.textContent = suppState.lastError || suppState.statusText || '';
+      status.classList.toggle('is-error', !!suppState.lastError);
+    }
+    if (startButton instanceof HTMLButtonElement) startButton.disabled = suppState.isRunning || itilState.isRunning;
+    if (testButton instanceof HTMLButtonElement) testButton.disabled = suppState.isRunning || itilState.isRunning;
+    if (stopButton instanceof HTMLButtonElement) stopButton.disabled = !suppState.isRunning;
   }
 
   function closeMenu() {
@@ -505,6 +611,7 @@
 
     if (overlay instanceof HTMLElement && menu instanceof HTMLElement) {
       renderItilStatus();
+      renderSuppStatus();
       updateLauncherStatus(menuStatusText, menuStatusIsError);
       return menu;
     }
@@ -555,6 +662,25 @@
           <dd class="gs-problem-picker-itil-status" aria-live="polite">Ожидание запуска.</dd>
         </dl>
       </section>
+
+      <section class="gs-problem-picker-menu-section">
+        <div class="gs-problem-picker-menu-section-title">СУПП: заполнить текст заявок</div>
+        <div class="gs-problem-picker-menu-actions">
+          <button type="button" class="gs-problem-picker-supp-start">Старт</button>
+          <button type="button" class="gs-problem-picker-supp-test">Тест 1 заявка</button>
+          <button type="button" class="gs-problem-picker-supp-stop" disabled>Стоп</button>
+        </div>
+        <dl class="gs-problem-picker-supp-grid">
+          <dt>Собрано строк</dt>
+          <dd class="gs-problem-picker-supp-collected">0</dd>
+          <dt>Обработано</dt>
+          <dd class="gs-problem-picker-supp-progress">0/0</dd>
+          <dt>Сейчас</dt>
+          <dd class="gs-problem-picker-supp-current">нет</dd>
+          <dt>Статус</dt>
+          <dd class="gs-problem-picker-supp-status" aria-live="polite">Ожидание запуска.</dd>
+        </dl>
+      </section>
     `;
 
     $('.gs-problem-picker-menu-close', menu)?.addEventListener('click', closeMenu, { capture: true });
@@ -570,10 +696,20 @@
     $('.gs-problem-picker-itil-stop', menu)?.addEventListener('click', () => {
       stopItilFill();
     }, { capture: true });
+    $('.gs-problem-picker-supp-start', menu)?.addEventListener('click', () => {
+      void startSuppFill(0);
+    }, { capture: true });
+    $('.gs-problem-picker-supp-test', menu)?.addEventListener('click', () => {
+      void startSuppFill(1);
+    }, { capture: true });
+    $('.gs-problem-picker-supp-stop', menu)?.addEventListener('click', () => {
+      stopSuppFill();
+    }, { capture: true });
 
     host.append(overlay, menu);
     updateLauncherStatus(menuStatusText, menuStatusIsError);
     renderItilStatus();
+    renderSuppStatus();
     return menu;
   }
 
@@ -584,6 +720,7 @@
     if (overlay instanceof HTMLElement) overlay.hidden = false;
     menu.hidden = false;
     renderItilStatus();
+    renderSuppStatus();
     updateLauncherStatus(menuStatusText, menuStatusIsError);
     return true;
   }
@@ -863,10 +1000,11 @@
       lastError: ''
     };
     renderItilStatus();
+    renderSuppStatus();
   }
 
   async function startItilFill() {
-    if (itilState.isRunning) return;
+    if (itilState.isRunning || suppState.isRunning) return;
 
     const runId = itilRunId + 1;
     itilRunId = runId;
@@ -883,6 +1021,7 @@
       lastError: ''
     };
     renderItilStatus();
+    renderSuppStatus();
 
     try {
       await loadBridgeUrl();
@@ -900,6 +1039,7 @@
           lastError: ''
         };
         renderItilStatus();
+        renderSuppStatus();
         return;
       }
 
@@ -949,6 +1089,7 @@
             lastError: `Строка ${item.row}, ITIL ${item.itilNumber}: ${errorText}`
           };
           renderItilStatus();
+          renderSuppStatus();
           return;
         }
 
@@ -976,6 +1117,7 @@
         lastError: ''
       };
       renderItilStatus();
+      renderSuppStatus();
     } catch (error) {
       if (runId !== itilRunId) return;
       const message = error && error.message ? error.message : 'Не удалось запустить заполнение из ITIL.';
@@ -986,6 +1128,161 @@
         statusText: '',
         lastError: message
       };
+      renderItilStatus();
+      renderSuppStatus();
+    }
+  }
+
+  function stopSuppFill() {
+    suppRunId += 1;
+    suppState = {
+      queue: [],
+      currentIndex: 0,
+      successCount: 0,
+      failedCount: 0,
+      currentItem: null,
+      sheetName: '',
+      gid: '',
+      rowsCount: 0,
+      isRunning: false,
+      statusText: 'Остановлено.',
+      lastError: ''
+    };
+    renderSuppStatus();
+    renderItilStatus();
+  }
+
+  async function startSuppFill(limit) {
+    if (suppState.isRunning || itilState.isRunning) return;
+
+    const maxRows = Math.max(0, Number(limit || 0));
+    const isTestRun = maxRows === 1;
+    const runId = suppRunId + 1;
+    suppRunId = runId;
+
+    suppState = {
+      ...suppState,
+      queue: [],
+      currentIndex: 0,
+      successCount: 0,
+      failedCount: 0,
+      currentItem: null,
+      isRunning: true,
+      statusText: isTestRun ? 'Собираю строки для тестового заполнения из СУПП...' : 'Собираю строки для заполнения из СУПП...',
+      lastError: ''
+    };
+    renderSuppStatus();
+    renderItilStatus();
+
+    try {
+      await loadBridgeUrl();
+      if (!state.bridgeUrl) throw new Error('URL bridge не задан. Нажми «URL bridge» и задай Apps Script bridge.');
+
+      await loadSuppQueue();
+      if (runId !== suppRunId) return;
+
+      if (!suppState.queue.length) {
+        suppState = {
+          ...suppState,
+          isRunning: false,
+          currentItem: null,
+          statusText: 'Строк для заполнения из СУПП не найдено.',
+          lastError: ''
+        };
+        renderSuppStatus();
+        renderItilStatus();
+        return;
+      }
+
+      const rowsToProcess = maxRows > 0 ? Math.min(maxRows, suppState.queue.length) : suppState.queue.length;
+      suppState = {
+        ...suppState,
+        isRunning: true,
+        statusText: isTestRun ? `Тестовый запуск: будет обработана 1 строка из ${suppState.queue.length}.` : `В очереди СУПП строк: ${suppState.queue.length}.`,
+        lastError: ''
+      };
+      renderSuppStatus();
+
+      for (let index = 0; index < rowsToProcess; index++) {
+        if (runId !== suppRunId) return;
+
+        const item = suppState.queue[index];
+        suppState = {
+          ...suppState,
+          currentIndex: index,
+          currentItem: item,
+          statusText: `Ищу СУПП ${item.suppNumber} для строки ${item.row}...`,
+          lastError: ''
+        };
+        renderSuppStatus();
+
+        const response = await sendRuntimeMessage({
+          action: SUPP_FILL_ACTION,
+          data: {
+            bridgeUrl: state.bridgeUrl,
+            payload: {
+              spreadsheetId: CONFIG.spreadsheetId,
+              sheetName: suppState.sheetName,
+              row: item.row,
+              suppNumber: item.suppNumber
+            }
+          }
+        });
+
+        if (runId !== suppRunId) return;
+
+        if (!response || response.success !== true) {
+          const errorText = response && response.error ? response.error : 'неизвестная ошибка';
+          suppState = {
+            ...suppState,
+            failedCount: suppState.failedCount + 1,
+            isRunning: false,
+            statusText: '',
+            lastError: `Строка ${item.row}, СУПП ${item.suppNumber}: ${errorText}`
+          };
+          renderSuppStatus();
+          renderItilStatus();
+          return;
+        }
+
+        const result = response.result || {};
+        const textLength = Number(result.requestTextLength || 0);
+        const infoLength = Number(result.infoTextLength || 0);
+        suppState = {
+          ...suppState,
+          currentIndex: index + 1,
+          successCount: suppState.successCount + 1,
+          currentItem: null,
+          statusText: `Строка ${item.row} заполнена. Текст: ${textLength} симв., информация: ${infoLength} симв.`,
+          lastError: ''
+        };
+        renderSuppStatus();
+      }
+
+      if (runId !== suppRunId) return;
+
+      suppState = {
+        ...suppState,
+        isRunning: false,
+        currentItem: null,
+        statusText: isTestRun
+          ? `Тестовый запуск завершён. Заполнено строк: ${suppState.successCount}/${rowsToProcess}.`
+          : `Готово. Заполнено строк: ${suppState.successCount}/${suppState.queue.length}.`,
+        lastError: ''
+      };
+      renderSuppStatus();
+      renderItilStatus();
+    } catch (error) {
+      if (runId !== suppRunId) return;
+      const message = error && error.message ? error.message : 'Не удалось запустить заполнение из СУПП.';
+      suppState = {
+        ...suppState,
+        isRunning: false,
+        currentItem: null,
+        statusText: '',
+        lastError: message
+      };
+      renderSuppStatus();
       renderItilStatus();
     }
   }

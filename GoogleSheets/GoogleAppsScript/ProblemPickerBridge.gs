@@ -29,6 +29,8 @@ function doPost(e) {
       result = _problemPickerBridgeSaveProblem_(payload);
     } else if (payload.action === 'saveItilData') {
       result = _problemPickerBridgeSaveItilData_(payload);
+    } else if (payload.action === 'saveSuppData') {
+      result = _problemPickerBridgeSaveSuppData_(payload);
     } else {
       throw new Error('Неизвестное действие bridge: ' + payload.action);
     }
@@ -229,6 +231,144 @@ function _problemPickerBridgeBuildItilInfoRichText_(solutionText) {
   }
 
   return builder.build();
+}
+
+function _problemPickerBridgeSaveSuppData_(payload) {
+  const spreadsheetId = String(payload.spreadsheetId || '').trim();
+
+  if (spreadsheetId !== PROBLEM_PICKER_BRIDGE_SPREADSHEET_ID) {
+    throw new Error('Некорректная таблица: ' + spreadsheetId);
+  }
+
+  const sheetName = String(payload.sheetName || '').trim();
+
+  if (PROBLEM_PICKER_BRIDGE_ALLOWED_SHEETS.indexOf(sheetName) === -1) {
+    throw new Error('Лист не разрешён для СУПП-заполнения: ' + sheetName);
+  }
+
+  const row = Number(payload.row);
+
+  if (!Number.isInteger(row) || row < 2) {
+    throw new Error('Некорректный номер строки: ' + payload.row);
+  }
+
+  const suppNumber = String(payload.suppNumber || '').trim();
+
+  if (!/^ЗНР-[A-Za-zА-Яа-яЁё0-9-]+$/.test(suppNumber)) {
+    throw new Error('Некорректный номер СУПП: ' + payload.suppNumber);
+  }
+
+  const requestText = String(payload.requestText || '')
+    .replace(/\r\n?/g, '\n')
+    .trim();
+
+  if (!requestText) {
+    throw new Error('Пустой текст заявки из СУПП.');
+  }
+
+  const infoText = String(payload.infoText || '')
+    .replace(/\r\n?/g, '\n')
+    .trim();
+
+  const ss = SpreadsheetApp.openById(PROBLEM_PICKER_BRIDGE_SPREADSHEET_ID);
+  const sh = ss.getSheetByName(sheetName);
+
+  if (!sh) {
+    throw new Error('Лист не найден: ' + sheetName);
+  }
+
+  const colSupp = getColByHeader(sh, 'Номер СУПП (последний)');
+  const colText = getColByHeader(sh, TEXT_HEADER);
+  const colInfo = getColByHeader(sh, INFO_HEADER);
+
+  if (!colSupp || !colText || !colInfo) {
+    throw new Error('Не найдены колонки «Номер СУПП (последний)», «Текст заявки» или «Информация из СУПП/ITIL».');
+  }
+
+  const rowSupp = String(sh.getRange(row, colSupp).getDisplayValue() || '').trim();
+
+  if (rowSupp.indexOf(suppNumber) === -1) {
+    throw new Error('Строка ' + row + ' больше не содержит СУПП ' + suppNumber + ' (сейчас: ' + rowSupp + ').');
+  }
+
+  const currentText = String(sh.getRange(row, colText).getDisplayValue() || '').trim();
+
+  if (currentText) {
+    throw new Error('Строка ' + row + ' уже содержит «Текст заявки», запись отменена.');
+  }
+
+  sh.getRange(row, colText).setValue(requestText);
+
+  const infoRichText = _problemPickerBridgeBuildSuppInfoRichText_(suppNumber, infoText);
+  sh.getRange(row, colInfo).setRichTextValue(infoRichText);
+
+  return {
+    sheetName: sheetName,
+    row: row,
+    suppNumber: suppNumber,
+    requestTextLength: requestText.length,
+    infoTextLength: infoRichText.getText().length
+  };
+}
+
+function _problemPickerBridgeBuildSuppInfoRichText_(suppNumber, infoText) {
+  const header = String(suppNumber || '').trim();
+  let fullText = String(infoText || '')
+    .replace(/\r\n?/g, '\n')
+    .trim();
+
+  if (fullText.indexOf(header) !== 0) {
+    fullText = header + (fullText ? '\n\n' + fullText : '');
+  }
+
+  if (fullText) {
+    fullText = fullText.trim() + '\n\n';
+  } else {
+    fullText = header + '\n\n';
+  }
+
+  const normalStyle = SpreadsheetApp.newTextStyle()
+    .setBold(false)
+    .setFontSize(10)
+    .build();
+
+  const headerStyle = SpreadsheetApp.newTextStyle()
+    .setBold(true)
+    .setFontSize(11)
+    .build();
+
+  const logStyle = SpreadsheetApp.newTextStyle()
+    .setBold(true)
+    .setFontSize(10)
+    .build();
+
+  const builder = SpreadsheetApp.newRichTextValue()
+    .setText(fullText)
+    .setTextStyle(0, fullText.length, normalStyle);
+
+  _problemPickerBridgeApplySuppInfoStyles_(builder, fullText, header, headerStyle, logStyle);
+
+  return builder.build();
+}
+
+function _problemPickerBridgeApplySuppInfoStyles_(builder, text, suppNumber, headerStyle, logStyle) {
+  const logLineRe = /^\d{2}\.\d{2}\.\d{4}\s+\d{1,2}:\d{2}:\d{2}\s+\/.*$/;
+  let pos = 0;
+
+  while (pos < text.length) {
+    const nextNewline = text.indexOf('\n', pos);
+    const end = nextNewline === -1 ? text.length : nextNewline;
+    const line = text.substring(pos, end);
+    const trimmed = line.trim();
+
+    if (trimmed === suppNumber) {
+      builder.setTextStyle(pos, end, headerStyle);
+    } else if (logLineRe.test(trimmed)) {
+      builder.setTextStyle(pos, end, logStyle);
+    }
+
+    pos = end + 1;
+  }
 }
 
 function _problemPickerBridgeJson_(payload) {
