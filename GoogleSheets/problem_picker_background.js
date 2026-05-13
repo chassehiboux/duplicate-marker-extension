@@ -382,7 +382,15 @@
   let bridgePostQueueNextId = 1;
   const BRIDGE_POST_BATCH_MAX_ITEMS = 10;
   const BRIDGE_POST_BATCH_DELAY_MS = 150;
-  const BRIDGE_POST_BATCH_ACTIONS = new Set(['saveItilData', 'saveSuppData']);
+  const BRIDGE_POST_BATCH_GROUPS = new Map([
+    ['saveItilData', 'fill'],
+    ['saveSuppData', 'fill'],
+    ['saveProblem', 'problem']
+  ]);
+  const BRIDGE_POST_BATCH_ACTION_BY_GROUP = new Map([
+    ['fill', 'saveFillDataBatch'],
+    ['problem', 'saveProblemBatch']
+  ]);
 
   function enqueueBridgePost(url, payload) {
     const normalizedUrl = normalizeBridgeUrl(url);
@@ -440,9 +448,9 @@
 
   function getBridgePostBatchKey(item) {
     const payload = item && item.payload ? item.payload : {};
-    const action = String(payload.action || '');
+    const group = getBridgePostBatchGroup(item);
 
-    if (!BRIDGE_POST_BATCH_ACTIONS.has(action)) return '';
+    if (!group) return '';
 
     const spreadsheetId = String(payload.spreadsheetId || '').trim();
     const sheetName = String(payload.sheetName || '').trim();
@@ -451,9 +459,21 @@
 
     return [
       item.url,
+      group,
       spreadsheetId,
       sheetName
     ].join('\u0001');
+  }
+
+  function getBridgePostBatchGroup(item) {
+    const payload = item && item.payload ? item.payload : {};
+    const action = String(payload.action || '');
+    return BRIDGE_POST_BATCH_GROUPS.get(action) || '';
+  }
+
+  function getBridgePostBatchAction(item) {
+    const group = getBridgePostBatchGroup(item);
+    return BRIDGE_POST_BATCH_ACTION_BY_GROUP.get(group) || '';
   }
 
   function takeBridgePostBatch(firstItem) {
@@ -495,8 +515,14 @@
     }
 
     const firstPayload = batch[0].payload || {};
+    const batchAction = getBridgePostBatchAction(batch[0]);
+    if (!batchAction) {
+      await postBridgeQueueItemsIndividually(batch);
+      return;
+    }
+
     const batchPayload = {
-      action: 'saveFillDataBatch',
+      action: batchAction,
       spreadsheetId: firstPayload.spreadsheetId,
       sheetName: firstPayload.sheetName,
       sourceAction: firstPayload.action,

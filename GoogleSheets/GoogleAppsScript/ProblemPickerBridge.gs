@@ -27,6 +27,8 @@ function doPost(e) {
 
     if (payload.action === 'saveProblem') {
       result = _problemPickerBridgeSaveProblem_(payload);
+    } else if (payload.action === 'saveProblemBatch') {
+      result = _problemPickerBridgeSaveProblemBatch_(payload);
     } else if (payload.action === 'saveItilData') {
       result = _problemPickerBridgeSaveItilData_(payload);
     } else if (payload.action === 'saveSuppData') {
@@ -121,6 +123,187 @@ function _problemPickerBridgeSaveProblem_(payload) {
     row: row,
     value: value
   };
+}
+
+function _problemPickerBridgeSaveProblemBatch_(payload) {
+  const spreadsheetId = String(payload.spreadsheetId || '').trim();
+
+  if (spreadsheetId !== PROBLEM_PICKER_BRIDGE_SPREADSHEET_ID) {
+    throw new Error('Некорректная таблица: ' + spreadsheetId);
+  }
+
+  const sheetName = String(payload.sheetName || '').trim();
+
+  if (PROBLEM_PICKER_BRIDGE_ALLOWED_SHEETS.indexOf(sheetName) === -1) {
+    throw new Error('Лист не разрешён для batch-классификации: ' + sheetName);
+  }
+
+  const rawItems = Array.isArray(payload.items) ? payload.items : [];
+
+  if (!rawItems.length) {
+    return {
+      total: 0,
+      successCount: 0,
+      failedCount: 0,
+      items: []
+    };
+  }
+
+  const ss = SpreadsheetApp.openById(PROBLEM_PICKER_BRIDGE_SPREADSHEET_ID);
+  const sh = ss.getSheetByName(sheetName);
+
+  if (!sh) {
+    throw new Error('Лист не найден: ' + sheetName);
+  }
+
+  const columns = _problemPickerBridgeGetHeaderMap_(sh);
+  const colProb = columns[PROBLEM_HEADER];
+  const colText = columns[TEXT_HEADER];
+  const resultsByIndex = {};
+  const normalizedItems = [];
+
+  rawItems.forEach(function(rawItem, index) {
+    try {
+      const item = _problemPickerBridgeNormalizeProblemBatchItem_(rawItem, spreadsheetId, sheetName, index);
+      normalizedItems.push(item);
+    } catch (error) {
+      resultsByIndex[index] = _problemPickerBridgeRawBatchFailure_(rawItem, error);
+    }
+  });
+
+  if (!colProb) {
+    _problemPickerBridgeFailBatchItems_(normalizedItems, 'Не найдена колонка «' + PROBLEM_HEADER + '».').forEach(function(itemResult) {
+      resultsByIndex[itemResult.batchIndex] = itemResult;
+    });
+  } else {
+    const duplicateRows = _problemPickerBridgeGetDuplicateRows_(normalizedItems);
+    const writable = [];
+
+    normalizedItems.forEach(function(item) {
+      if (duplicateRows[item.row]) {
+        resultsByIndex[item.batchIndex] = _problemPickerBridgeBatchFailure_(item, 'Строка ' + item.row + ' повторяется внутри batch.');
+        return;
+      }
+
+      if (item.hasCleanText && !colText) {
+        resultsByIndex[item.batchIndex] = _problemPickerBridgeBatchFailure_(item, 'Не найдена колонка «' + TEXT_HEADER + '».');
+        return;
+      }
+
+      writable.push(item);
+    });
+
+    _problemPickerBridgeWriteProblemBatchItems_(sh, writable, colProb, colText);
+    writable.forEach(function(item) {
+      resultsByIndex[item.batchIndex] = _problemPickerBridgeBatchSuccess_(item, {
+        sheetName: sheetName,
+        row: item.row,
+        value: item.value
+      });
+    });
+  }
+
+  const results = rawItems.map(function(rawItem, index) {
+    return resultsByIndex[index] || _problemPickerBridgeRawBatchFailure_(rawItem, 'Bridge не обработал строку batch-классификации.');
+  });
+  const successCount = results.filter(function(item) {
+    return item && item.success === true;
+  }).length;
+
+  return {
+    total: results.length,
+    successCount: successCount,
+    failedCount: results.length - successCount,
+    items: results
+  };
+}
+
+function _problemPickerBridgeNormalizeProblemBatchItem_(rawItem, spreadsheetId, sheetName, batchIndex) {
+  const payload = rawItem && typeof rawItem === 'object' ? rawItem : {};
+  const action = String(payload.action || '').trim();
+
+  if (action !== 'saveProblem') {
+    throw new Error('Некорректное действие batch-классификации: ' + action);
+  }
+
+  const itemSpreadsheetId = String(payload.spreadsheetId || '').trim();
+
+  if (itemSpreadsheetId !== spreadsheetId) {
+    throw new Error('Некорректная таблица batch-строки: ' + itemSpreadsheetId);
+  }
+
+  const itemSheetName = String(payload.sheetName || '').trim();
+
+  if (itemSheetName !== sheetName) {
+    throw new Error('Некорректный лист batch-строки: ' + itemSheetName);
+  }
+
+  const row = Number(payload.row);
+
+  if (!Number.isInteger(row) || row < 2) {
+    throw new Error('Некорректный номер строки batch-классификации: ' + payload.row);
+  }
+
+  const value = String(payload.value || '').trim();
+
+  if (!value) {
+    throw new Error('Пустое значение проблемы.');
+  }
+
+  if (PROBLEM_PICKER_BRIDGE_ALLOWED_VALUES.indexOf(value) === -1) {
+    throw new Error(
+      'Значение проблемы не входит в список разрешённых: «' + value + '». ' +
+      'Коды символов: ' + value.split('').map(function(ch) {
+        return ch.charCodeAt(0).toString(16);
+      }).join(' ')
+    );
+  }
+
+  const hasCleanText = Object.prototype.hasOwnProperty.call(payload, 'cleanText');
+
+  return {
+    action: action,
+    batchIndex: batchIndex,
+    clientQueueId: Number(payload.clientQueueId),
+    row: row,
+    value: value,
+    hasCleanText: hasCleanText,
+    cleanText: hasCleanText ? String(payload.cleanText || '') : ''
+  };
+}
+
+function _problemPickerBridgeWriteProblemBatchItems_(sh, items, colProb, colText) {
+  if (!items.length) return;
+
+  const sortedItems = items.slice().sort(function(a, b) {
+    return a.row - b.row;
+  });
+  const groups = _problemPickerBridgeBuildContiguousItemGroups_(sortedItems);
+
+  groups.forEach(function(group) {
+    const startRow = group[0].row;
+    const values = group.map(function(item) {
+      return [item.value];
+    });
+
+    sh.getRange(startRow, colProb, group.length, 1).setValues(values);
+  });
+
+  if (!colText) return;
+
+  const cleanTextItems = sortedItems.filter(function(item) {
+    return item.hasCleanText;
+  });
+  const cleanTextGroups = _problemPickerBridgeBuildContiguousItemGroups_(cleanTextItems);
+
+  cleanTextGroups.forEach(function(group) {
+    const startRow = group[0].row;
+    const values = group.map(function(item) {
+      return [item.cleanText];
+    });
+
+    sh.getRange(startRow, colText, group.length, 1).setValues(values);
+  });
 }
 
 function _problemPickerBridgeSaveItilData_(payload) {
