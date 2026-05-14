@@ -23,6 +23,47 @@ document.addEventListener('DOMContentLoaded', async () => {
   const todayDate = new Date().toLocaleDateString('ru-RU');
   const todayISO = new Date().toISOString().split('T')[0];
 
+  function sendDupSyncMessage(action, data = {}) {
+    return new Promise((resolve) => {
+      try {
+        chrome.runtime.sendMessage({ action, data }, (response) => {
+          const runtimeError = chrome.runtime && chrome.runtime.lastError
+            ? chrome.runtime.lastError.message
+            : '';
+          resolve(runtimeError
+            ? { success: false, error: runtimeError }
+            : (response || { success: false, error: 'NO_RESPONSE' }));
+        });
+      } catch (error) {
+        resolve({ success: false, error: error && error.message ? error.message : 'SEND_FAILED' });
+      }
+    });
+  }
+
+  function syncSetValues(values, options = {}) {
+    return sendDupSyncMessage('DUP_SYNC_SET', { values, options });
+  }
+
+  function syncCounterIncrement(counterKey, dateKey, delta, options = {}) {
+    return sendDupSyncMessage('DUP_SYNC_COUNTER_INCREMENT', { counterKey, dateKey, delta, options });
+  }
+
+  function syncCounterSet(counterKey, dateKey, value, options = {}) {
+    return sendDupSyncMessage('DUP_SYNC_COUNTER_SET', { counterKey, dateKey, value, options });
+  }
+
+  function syncProcessedEditSet(dateIso, path, item, options = {}) {
+    return sendDupSyncMessage('DUP_SYNC_PROCESSED_EDIT_SET', { dateIso, path, item, options });
+  }
+
+  function syncProcessedEditDelete(dateIso, path, options = {}) {
+    return sendDupSyncMessage('DUP_SYNC_PROCESSED_EDIT_DELETE', { dateIso, path, options });
+  }
+
+  function syncActionTag(path, tag, options = {}) {
+    return sendDupSyncMessage('DUP_SYNC_ACTION_TAG_SET', { path, tag, options });
+  }
+
   // === БЛОК СЧЕТЧИКА "АНАЛИЗ ИСПОЛНЕНИЯ" ===
   const todayCountEl = document.getElementById('today-count');
   const historyBtn = document.getElementById('btn-show-history');
@@ -39,24 +80,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   function modifyCounter(amount) {
-    chrome.storage.local.get(['stats_history'], (result) => {
-      let history = result.stats_history || {};
-      let current = history[todayDate] || 0;
-      let newVal = current + amount;
-      if (newVal < 0) newVal = 0;
-      history[todayDate] = newVal;
-      chrome.storage.local.set({ 'stats_history': history });
-    });
+    void syncCounterIncrement('stats_history', todayDate, amount, { reason: 'popup-counter' });
   }
 
   btnPlus.addEventListener('click', () => modifyCounter(1));
   btnMinus.addEventListener('click', (e) => {
     if (e.shiftKey) {
-        chrome.storage.local.get(['stats_history'], (result) => {
-            let history = result.stats_history || {};
-            history[todayDate] = 0;
-            chrome.storage.local.set({ 'stats_history': history });
-        });
+        void syncCounterSet('stats_history', todayDate, 0, { reason: 'popup-counter-reset' });
     } else {
         modifyCounter(-1);
     }
@@ -126,7 +156,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       
       if (todayCount !== todayTotalFromDetails) {
         history[todayDate] = todayTotalFromDetails;
-        chrome.storage.local.set({[EDITING_STATS_KEY]: history});
+        void syncCounterSet(EDITING_STATS_KEY, todayDate, todayTotalFromDetails, { reason: 'popup-editing-total-repair' });
         editingCountEl.textContent = todayTotalFromDetails;
       }
 
@@ -269,9 +299,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
           recalculateTotals(processed, history, todayISO);
           
-          chrome.storage.local.set({
-              [EDITING_STATS_KEY]: history,
-              [PROCESSED_EDITS_KEY]: processed 
+          void syncProcessedEditSet(todayISO, MANUAL_KEY, {
+              base_count: processed[todayISO][MANUAL_KEY],
+              unique_edocids: []
+          }, {
+              counterDateKey: todayDate,
+              counterValue: history[todayDate],
+              reason: 'popup-manual-editing-counter'
           });
       });
   }
@@ -308,7 +342,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
               if (newTag !== null) {
                   tags[path] = newTag.trim();
-                  chrome.storage.local.set({ [TAGS_KEY]: tags });
+                  void syncActionTag(path, newTag.trim(), { reason: 'popup-action-tag' });
               }
           });
           return;
@@ -322,7 +356,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                   if (processed[dateISO] && processed[dateISO][path] !== undefined) {
                       delete processed[dateISO][path];
                       recalculateTotals(processed, history, dateISO);
-                      chrome.storage.local.set({ [EDITING_STATS_KEY]: history, [PROCESSED_EDITS_KEY]: processed });
+                      void syncProcessedEditDelete(dateISO, path, {
+                          counterDateKey: dateISO.split('-').reverse().join('.'),
+                          reason: 'popup-processed-edit-delete'
+                      });
                   }
               });
           }
@@ -362,7 +399,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                           // Update to the new hybrid object format for manual edits
                           processed[dateISO][path] = { base_count: newCount, unique_edocids: [] };
                           recalculateTotals(processed, history, dateISO);
-                          chrome.storage.local.set({ [EDITING_STATS_KEY]: history, [PROCESSED_EDITS_KEY]: processed });
+                          void syncProcessedEditSet(dateISO, path, processed[dateISO][path], {
+                              counterDateKey: dateISO.split('-').reverse().join('.'),
+                              counterValue: history[dateISO.split('-').reverse().join('.')],
+                              reason: 'popup-processed-edit-update'
+                          });
                       }
                   });
               } else {
@@ -381,11 +422,18 @@ document.addEventListener('DOMContentLoaded', async () => {
   btnEditingMinus.addEventListener('click', (e) => {
       if (e.shiftKey) {
           chrome.storage.local.get([EDITING_STATS_KEY, PROCESSED_EDITS_KEY], (result) => {
-              let history = result[EDITING_STATS_KEY] || {};
-              let processed = result[PROCESSED_EDITS_KEY] || {};
-              history[todayDate] = 0;
-              if (processed[todayISO]) processed[todayISO] = {};
-              chrome.storage.local.set({ [EDITING_STATS_KEY]: history, [PROCESSED_EDITS_KEY]: processed });
+              const processed = result[PROCESSED_EDITS_KEY] || {};
+              const todayPaths = processed[todayISO] ? Object.keys(processed[todayISO]) : [];
+              if (!todayPaths.length) {
+                  void syncCounterSet(EDITING_STATS_KEY, todayDate, 0, { reason: 'popup-editing-reset-empty' });
+                  return;
+              }
+              todayPaths.forEach((path) => {
+                  void syncProcessedEditDelete(todayISO, path, {
+                      counterDateKey: todayDate,
+                      reason: 'popup-editing-reset'
+                  });
+              });
           });
       } else {
           modifyEditingCounter(-1);
@@ -474,24 +522,24 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Установка значений по умолчанию, если они не определены
     if (items['setting_copy_mode'] === undefined) {
       items['setting_copy_mode'] = true;
-      chrome.storage.local.set({ 'setting_copy_mode': true });
+      void syncSetValues({ 'setting_copy_mode': true }, { reason: 'popup-default-setting' });
     }
     if (items['setting_notify_execution'] === undefined) {
       items['setting_notify_execution'] = true;
-      chrome.storage.local.set({ 'setting_notify_execution': true });
+      void syncSetValues({ 'setting_notify_execution': true }, { reason: 'popup-default-setting' });
     }
     if (items['setting_notify_editing'] === undefined) {
       items['setting_notify_editing'] = true;
-      chrome.storage.local.set({ 'setting_notify_editing': true });
+      void syncSetValues({ 'setting_notify_editing': true }, { reason: 'popup-default-setting' });
     }
     if (items['setting_department_containers'] === undefined) {
       items['setting_department_containers'] = true;
-      chrome.storage.local.set({ 'setting_department_containers': true });
+      void syncSetValues({ 'setting_department_containers': true }, { reason: 'popup-default-setting' });
     }
     inputsSearch.forEach(id => {
       if (items[id] === undefined) {
         items[id] = true; // По умолчанию включены
-        chrome.storage.local.set({ [id]: true });
+        void syncSetValues({ [id]: true }, { reason: 'popup-default-setting' });
       }
     });
 
@@ -518,7 +566,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (element) {
       element.addEventListener('change', (e) => {
         const value = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
-        chrome.storage.local.set({ [settingId]: value });
+        void syncSetValues({ [settingId]: value }, { reason: 'popup-setting-change' });
       });
     }
   }
@@ -542,7 +590,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       const el = document.getElementById(id);
       if (el) {
           el.addEventListener('change', (e) => {
-              chrome.storage.local.set({ [id]: e.target.checked });
+              void syncSetValues({ [id]: e.target.checked }, { reason: 'popup-search-setting-change' });
               if (highlightModeToggle && highlightModeToggle.checked) {
                   runSearch('highlight');
               }
@@ -681,25 +729,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             removeProtectedStorageKeys(importedData);
             
             if (confirm("Вы уверены, что хотите импортировать данные? Все текущие настройки и история счетчиков будут ПЕРЕЗАПИСАНЫ. Это действие необратимо.")) {
-              chrome.storage.local.get(null, (currentData) => {
-                const keysToRemove = Object.keys(currentData || {}).filter((key) => !isProtectedStorageKey(key));
-                const finishImport = () => {
-                  chrome.storage.local.set(importedData, () => {
-                    chrome.runtime.sendMessage({ action: 'DUP_SUPABASE_SYNC_NOW' }, () => {
-                      if (chrome.runtime.lastError) {
-                        // Пользователь может быть не авторизован, тогда импорт остается локальным.
-                      }
-                    });
-                    alert('Импорт успешно завершен!');
-                    // UI обновится автоматически благодаря chrome.storage.onChanged
-                  });
-                };
-
-                if (keysToRemove.length) {
-                  chrome.storage.local.remove(keysToRemove, finishImport);
-                } else {
-                  finishImport();
+              sendDupSyncMessage('DUP_SYNC_IMPORT_JSON', { importedData }).then((response) => {
+                const result = response && response.result ? response.result : {};
+                if (!response || response.success === false || result.success === false) {
+                  alert(`Импорт не выполнен: ${(response && (response.error || result.error)) || 'неизвестная ошибка'}`);
+                  return;
                 }
+                alert('Импорт успешно завершен!');
               });
             }
           } catch (error) {

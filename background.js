@@ -139,6 +139,34 @@ function chromeStorageSetAsync(values) {
     });
 }
 
+function getDupSyncStore() {
+    return globalThis.__dupSupabaseSync || null;
+}
+
+async function dupSyncSetActionRule(path, status, tag, options = {}) {
+    const store = getDupSyncStore();
+    if (store && typeof store.setActionRule === 'function') {
+        return store.setActionRule(path, status, tag, options);
+    }
+    return { success: false, error: 'SYNC_STORE_UNAVAILABLE' };
+}
+
+async function dupSyncAddProcessedEdocids(dateIso, dateKey, edocids, options = {}) {
+    const store = getDupSyncStore();
+    if (store && typeof store.addProcessedEdocids === 'function') {
+        return store.addProcessedEdocids(dateIso, dateKey, edocids, options);
+    }
+    return { success: false, error: 'SYNC_STORE_UNAVAILABLE' };
+}
+
+async function dupSyncAddProcessedEditEdocid(dateIso, dateKey, path, edocid, options = {}) {
+    const store = getDupSyncStore();
+    if (store && typeof store.addProcessedEditEdocid === 'function') {
+        return store.addProcessedEditEdocid(dateIso, dateKey, path, edocid, options);
+    }
+    return { success: false, error: 'SYNC_STORE_UNAVAILABLE' };
+}
+
 function normalizeDepartmentContainerTarget(data) {
     const raw = data && typeof data === 'object' ? data : {};
     const depid = String(raw.depid || '').trim();
@@ -590,12 +618,6 @@ chrome.runtime.onInstalled.addListener(() => {
   
   // Инициализация хранилища для нового счетчика
   chrome.storage.local.get(['approved_actions', 'blocked_actions', 'pending_actions'], (result) => {
-    if (!result.approved_actions) {
-      chrome.storage.local.set({ 'approved_actions': [] });
-    }
-    if (!result.blocked_actions) {
-      chrome.storage.local.set({ 'blocked_actions': [] });
-    }
     if (!result.pending_actions) {
       chrome.storage.local.set({ 'pending_actions': [] });
     }
@@ -955,31 +977,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         case 'approve_action': {
             const { path, edocid, tag } = request.data;
             addLog(`Получено утверждение для '${path}' с тегом '${tag || ''}'`);
-            
-            chrome.storage.local.get(['approved_actions', 'pending_actions', 'action_tags'], (result) => {
-                let approved = result.approved_actions || [];
-                let pending = result.pending_actions || [];
-                let tags = result.action_tags || {};
-
-                if (!approved.includes(path)) {
-                    approved.push(path);
+            dupSyncSetActionRule(path, 'approved', tag || '', {
+                pendingMode: 'exact',
+                edocid,
+                reason: 'background-approve-action'
+            }).then((result) => {
+                if (!result || result.success === false) {
+                    sendResponse({ success: false, error: result && result.error ? result.error : 'SYNC_FAILED' });
+                    return;
                 }
-                
-                if (tag) {
-                    tags[path] = tag;
-                }
-
-                const newPending = pending.filter(p => !(p.path === path && p.edocid === edocid));
-
-                chrome.storage.local.set({ 
-                    'approved_actions': approved, 
-                    'pending_actions': newPending,
-                    'action_tags': tags
-                }, () => {
-                    // Счетчик НЕ увеличивается здесь, только при сохранении (POST)
-                    sendResponse({ success: true });
-                    chrome.runtime.sendMessage({ action: "pendingActionsUpdated" }); // Уведомить UI об изменениях
-                });
+                // Счетчик НЕ увеличивается здесь, только при сохранении (POST)
+                sendResponse({ success: true });
+                chrome.runtime.sendMessage({ action: "pendingActionsUpdated" }); // Уведомить UI об изменениях
             });
             return true; // для асинхронного ответа
         }
@@ -987,30 +996,17 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         case 'block_action': {
             const { path, edocid, tag } = request.data;
             addLog(`Получена блокировка для '${path}' с тегом '${tag || ''}'`);
-            chrome.storage.local.get(['blocked_actions', 'pending_actions', 'action_tags'], (result) => {
-                let blocked = result.blocked_actions || [];
-                let pending = result.pending_actions || [];
-                let tags = result.action_tags || {};
-
-                if (!blocked.includes(path)) {
-                    blocked.push(path);
+            dupSyncSetActionRule(path, 'blocked', tag || '', {
+                pendingMode: 'path',
+                edocid,
+                reason: 'background-block-action'
+            }).then((result) => {
+                if (!result || result.success === false) {
+                    sendResponse({ success: false, error: result && result.error ? result.error : 'SYNC_FAILED' });
+                    return;
                 }
-                
-                if (tag) {
-                    tags[path] = tag;
-                }
-
-                // Удаляем все ожидающие действия с этим путем
-                const newPending = pending.filter(p => p.path !== path);
-
-                chrome.storage.local.set({ 
-                    'blocked_actions': blocked, 
-                    'pending_actions': newPending,
-                    'action_tags': tags
-                }, () => {
-                    sendResponse({ success: true });
-                    chrome.runtime.sendMessage({ action: "pendingActionsUpdated" }); // Уведомить об изменении
-                });
+                sendResponse({ success: true });
+                chrome.runtime.sendMessage({ action: "pendingActionsUpdated" }); // Уведомить об изменении
             });
             return true; // для асинхронного ответа
         }
@@ -1019,31 +1015,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             const { path, currentStatus } = request.data;
             addLog(`Получен запрос на смену статуса для '${path}' с '${currentStatus}'`);
 
-            chrome.storage.local.get(['approved_actions', 'blocked_actions'], (result) => {
-                let approved = result.approved_actions || [];
-                let blocked = result.blocked_actions || [];
-
-                if (currentStatus === 'approved') {
-                    // Убираем из одобренных, добавляем в заблокированные
-                    approved = approved.filter(p => p !== path);
-                    if (!blocked.includes(path)) {
-                        blocked.push(path);
-                    }
-                } else { // currentStatus === 'blocked'
-                    // Убираем из заблокированных, добавляем в одобренные
-                    blocked = blocked.filter(p => p !== path);
-                    if (!approved.includes(path)) {
-                        approved.push(path);
-                    }
+            const nextStatus = currentStatus === 'approved' ? 'blocked' : 'approved';
+            dupSyncSetActionRule(path, nextStatus, '', {
+                reason: 'background-toggle-action-status'
+            }).then((result) => {
+                if (!result || result.success === false) {
+                    addLog(`Не удалось изменить статус для '${path}': ${result && result.error ? result.error : 'SYNC_FAILED'}`);
+                    sendResponse({ success: false, error: result && result.error ? result.error : 'SYNC_FAILED' });
+                    return;
                 }
-                
-                chrome.storage.local.set({ 
-                    'approved_actions': approved, 
-                    'blocked_actions': blocked 
-                }, () => {
-                    addLog(`Статус для '${path}' изменен.`);
-                    // UI обновится автоматически через `storage.onChanged`
-                });
+                addLog(`Статус для '${path}' изменен.`);
+                // UI обновится автоматически через `storage.onChanged`
+                sendResponse({ success: true });
             });
             return true;
         }
@@ -1220,51 +1203,33 @@ function processCounterLogic(edocids, tabId) { // Change parameter name
     const todayForHistory = new Date().toLocaleDateString('ru-RU');
     const todayForProcessed = new Date().toISOString().split('T')[0];
 
-    chrome.storage.local.get(['stats_history', 'processed_edocids'], (result) => {
-        let history = result.stats_history || {};
-        let processed = result.processed_edocids || {};
-
-        if (!processed[todayForProcessed]) {
-            processed[todayForProcessed] = [];
+    dupSyncAddProcessedEdocids(todayForProcessed, todayForHistory, edocids, {
+        reason: 'background-execution-analysis-counter'
+    }).then((syncResult) => {
+        if (!syncResult || syncResult.success === false) {
+            addLog(`Анализ. -> ошибка синхронизации счетчика: ${syncResult && syncResult.error ? syncResult.error : 'SYNC_FAILED'}`);
+            return;
         }
 
-        let newlyProcessedCount = 0; // New variable to track how many were actually added
-        const processedToday = processed[todayForProcessed]; // Reference to the array for today
-
-        edocids.forEach(edocid => { // Iterate over the array
-            if (!processedToday.includes(edocid)) {
-                processedToday.push(edocid);
-                newlyProcessedCount++;
-            } else {
-                addLog(`Анализ. -> edocid ${edocid} УЖЕ ЕСТЬ. Пропущено.`);
-            }
-        });
-
+        const newlyProcessedCount = Number(syncResult.addedCount || 0);
         if (newlyProcessedCount === 0) {
             addLog(`Анализ. -> Все edocids уже были. Счетчик НЕ увеличен.`);
             return;
         }
-        
-        history[todayForHistory] = (history[todayForHistory] || 0) + newlyProcessedCount; // Increment by newlyProcessedCount
-        
-        chrome.storage.local.set({ 
-            'stats_history': history,
-            'processed_edocids': processed 
-        }, () => {
-            const newCount = history[todayForHistory];
-            addLog(`Анализ. -> ДОБАВЛЕНО ${newlyProcessedCount}. Счетчик: ${newCount}.`);
 
-            // Проверяем настройку перед отправкой уведомления
-            chrome.storage.local.get('setting_notify_execution', (settings) => {
-                if (settings.setting_notify_execution !== false) {
-                    createExtensionNotification({
-                        type: 'basic',
-                        iconUrl: 'icon.png',
-                        title: 'Счетчик обновлен',
-                        message: `Анализ исполнения засчитан! Сегодня: ${newCount} шт. (Новых: ${newlyProcessedCount})`
-                    });
-                }
-            });
+        const newCount = Number(syncResult.value || 0);
+        addLog(`Анализ. -> ДОБАВЛЕНО ${newlyProcessedCount}. Счетчик: ${newCount}.`);
+
+        // Проверяем настройку перед отправкой уведомления
+        chrome.storage.local.get('setting_notify_execution', (settings) => {
+            if (settings.setting_notify_execution !== false) {
+                createExtensionNotification({
+                    type: 'basic',
+                    iconUrl: 'icon.png',
+                    title: 'Счетчик обновлен',
+                    message: `Анализ исполнения засчитан! Сегодня: ${newCount} шт. (Новых: ${newlyProcessedCount})`
+                });
+            }
         });
     });
 }
@@ -1415,70 +1380,26 @@ function _incrementEditingCounter(edocid, path) {
 
     const todayForHistory = new Date().toLocaleDateString('ru-RU');
     const todayForProcessed = new Date().toISOString().split('T')[0];
-    
-    const historyKey = 'editing_stats';
-    const processedKey = 'processed_edits';
-    const tagsKey = 'action_tags';
 
-    chrome.storage.local.get([historyKey, processedKey, tagsKey], (result) => {
-        let history = result[historyKey] || {};
-        let processed = result[processedKey] || {};
-        let tags = result[tagsKey] || {};
-
-        if (!processed[todayForProcessed]) {
-            processed[todayForProcessed] = {};
+    dupSyncAddProcessedEditEdocid(todayForProcessed, todayForHistory, path, edocid, {
+        reason: 'background-editing-counter'
+    }).then((syncResult) => {
+        if (!syncResult || syncResult.success === false) {
+            addLog(`Редакт. -> ошибка синхронизации счетчика: ${syncResult && syncResult.error ? syncResult.error : 'SYNC_FAILED'}`);
+            return;
         }
 
-        let pathData = processed[todayForProcessed][path];
-
-        // --- Миграция / Инициализация pathData к новой структуре ---
-        // Новая структура: { base_count: number, unique_edocids: string[] }
-        if (!pathData) { // Если данных нет, инициализируем
-            pathData = { base_count: 0, unique_edocids: [] };
-            processed[todayForProcessed][path] = pathData;
-        } else if (Array.isArray(pathData)) { // Если старый формат (массив edocid), мигрируем
-            pathData = { base_count: pathData.length, unique_edocids: pathData };
-            processed[todayForProcessed][path] = pathData;
-            addLog(`Редакт. -> Миграция массива для ${path} в новую структуру.`);
-        } else if (typeof pathData === 'number') { // Если старый формат (число от ручной правки), мигрируем
-            pathData = { base_count: pathData, unique_edocids: [] }; // Сброс unique_edocids при ручной правке
-            processed[todayForProcessed][path] = pathData;
-            addLog(`Редакт. -> Миграция числа для ${path} в новую структуру.`);
-        }
-        // --- Конец Миграции ---
-
-
-        if (pathData.unique_edocids.includes(edocid)) {
+        if (!syncResult.added) {
             addLog(`Редакт. -> УЖЕ ЕСТЬ (${path} - ${edocid}). Счетчик НЕ увеличен.`);
             return;
         }
-        
-        pathData.unique_edocids.push(edocid);
-        pathData.base_count++; // Увеличиваем общий счетчик для этого пути
 
+        chrome.storage.local.get(['action_tags'], (result) => {
+            const tags = result.action_tags || {};
+            const dayTotal = Number(syncResult.dayTotal || 0);
+            const actionCount = Number(syncResult.actionCount || 0);
+            const actionName = tags[path] || path;
 
-        // Пересчитываем общее количество за день
-        let dayTotal = 0;
-        Object.keys(processed[todayForProcessed]).forEach(p => {
-            const item = processed[todayForProcessed][p];
-            if (typeof item === 'object' && item !== null && 'base_count' in item) {
-                dayTotal += item.base_count;
-            } else { // Fallback для старых форматов, которые еще не были мигрированы
-                 dayTotal += typeof item === 'number' ? item : (Array.isArray(item) ? item.length : 0);
-            }
-        });
-        
-        history[todayForHistory] = dayTotal;
-        
-        const actionCount = pathData.base_count; // Это общее количество для данного пути
-        const actionName = tags[path] || path;
-
-
-        let dataToSet = {};
-        dataToSet[historyKey] = history;
-        dataToSet[processedKey] = processed;
-
-        chrome.storage.local.set(dataToSet, () => {
             addLog(`Редакт. -> ДОБАВЛЕН. Общий счетчик: ${dayTotal}.`);
             chrome.runtime.sendMessage({ action: "updateEditingCounter" });
 

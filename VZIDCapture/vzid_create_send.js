@@ -79,7 +79,17 @@
       [CLAIM_TYPE_LABEL_STORAGE_KEY]: claimType.label,
       [CLAIM_TYPE_UPDATED_AT_KEY]: new Date().toISOString()
     };
-    chrome.storage.local.set(payload);
+    try {
+      chrome.runtime.sendMessage({
+        action: 'DUP_SYNC_SET',
+        data: {
+          values: payload,
+          options: { reason: 'vzid-claim-type' }
+        }
+      }, () => {});
+    } catch (error) {
+      // background недоступен
+    }
     return claimType;
   }
 

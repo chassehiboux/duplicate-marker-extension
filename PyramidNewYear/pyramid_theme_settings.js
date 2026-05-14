@@ -175,6 +175,20 @@
         return !!(typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local);
     }
 
+    function syncSet(values, reason) {
+        try {
+            chrome.runtime.sendMessage({
+                action: 'DUP_SYNC_SET',
+                data: {
+                    values,
+                    options: { reason: reason || 'pyramid-theme-settings' }
+                }
+            }, () => {});
+        } catch (error) {
+            // background недоступен
+        }
+    }
+
     function readLocalCache(key) {
         try {
             const rawValue = window.localStorage.getItem(key);
@@ -428,9 +442,9 @@
         setCachedSettings(nextSettings, source || 'ui');
 
         if (!hasChromeStorage()) return;
-        chrome.storage.local.set({
+        syncSet({
             [FEATURE_STORAGE_KEY]: getSettingsSnapshot()
-        });
+        }, 'pyramid-theme-settings-save');
     }
 
     function updateSetting(themeKey, featureKey, enabled) {

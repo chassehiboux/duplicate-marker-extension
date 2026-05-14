@@ -102,6 +102,20 @@
         return !!(chrome && chrome.storage && chrome.storage.local);
     }
 
+    function syncSet(values, reason) {
+        try {
+            chrome.runtime.sendMessage({
+                action: 'DUP_SYNC_SET',
+                data: {
+                    values,
+                    options: { reason: reason || 'pyramid-christmas' }
+                }
+            }, () => {});
+        } catch (error) {
+            // background недоступен
+        }
+    }
+
     function dispatchThemeEvent(isActive) {
         try {
             window.dispatchEvent(new CustomEvent(THEME_EVENT_NAME, {
@@ -139,7 +153,7 @@
         writeCachedEnabledState(enabled);
 
         if (persist && hasChromeStorage()) {
-            chrome.storage.local.set({ [STORAGE_KEY]: enabled });
+            syncSet({ [STORAGE_KEY]: enabled }, 'pyramid-christmas-toggle');
         }
 
         if (!body) {

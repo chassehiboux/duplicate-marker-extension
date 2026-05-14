@@ -33,6 +33,20 @@
         return !!(chrome && chrome.storage && chrome.storage.local);
     }
 
+    function syncSet(values, reason) {
+        try {
+            chrome.runtime.sendMessage({
+                action: 'DUP_SYNC_SET',
+                data: {
+                    values,
+                    options: { reason: reason || 'pyramid-spring' }
+                }
+            }, () => {});
+        } catch (error) {
+            // background недоступен
+        }
+    }
+
     function readCachedEnabledState() {
         try {
             const rawValue = window.localStorage.getItem(STORAGE_CACHE_KEY);
@@ -203,7 +217,7 @@
         writeCachedEnabledState(enabled);
 
         if (persist && hasChromeStorage()) {
-            chrome.storage.local.set({ [STORAGE_KEY]: enabled });
+            syncSet({ [STORAGE_KEY]: enabled }, 'pyramid-spring-toggle');
         }
 
         if (!body) {

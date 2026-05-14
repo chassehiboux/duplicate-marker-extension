@@ -6,24 +6,31 @@
 
   const SUPABASE_URL = 'https://odljanxhmjysnduylvxz.supabase.co';
   const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_2Z6tbzq-QJFyJVmCTbhG4w_ZZAiNu-d';
-  const STATE_TABLE = 'extension_user_state';
-  const STATE_VERSION = 1;
+  const SCHEMA_VERSION = 2;
 
   const AUTH_SESSION_KEY = 'dup_supabase_auth_session_v1';
-  const SYNC_META_KEY = 'dup_supabase_sync_meta_v1';
-  const PRE_LOGIN_BACKUP_KEY = 'dup_supabase_pre_login_backup_v1';
-  const SYNC_DEBOUNCE_MS = 1500;
+  const LEGACY_SYNC_META_KEY = 'dup_supabase_sync_meta_v1';
+  const LEGACY_PRE_LOGIN_BACKUP_KEY = 'dup_supabase_pre_login_backup_v1';
+  const DEVICE_ID_KEY = 'dup_supabase_device_id_v1';
+  const OUTBOX_KEY = 'dup_supabase_outbox_v1';
+  const CACHE_REVISION_KEY = 'dup_supabase_cache_revision_v1';
+  const SYNC_META_KEY = 'dup_supabase_sync_meta_v2';
+  const PRE_LOGIN_BACKUP_KEY = 'dup_supabase_pre_login_backup_v2';
+
   const SESSION_REFRESH_MARGIN_MS = 60 * 1000;
+  const REQUEST_TIMEOUT_MS = 15000;
+  const RETRY_DELAYS_MS = [600, 1500, 3500];
+  const FLUSH_DEBOUNCE_MS = 250;
   const REALTIME_WS_URL = `${SUPABASE_URL.replace(/^http/i, 'ws')}/realtime/v1/websocket?apikey=${encodeURIComponent(SUPABASE_PUBLISHABLE_KEY)}&log_level=warning&vsn=1.0.0`;
-  const REALTIME_TOPIC = 'realtime:extension-user-state-sync';
+  const REALTIME_TOPIC = 'realtime:extension-sync-state';
   const REALTIME_JOIN_TIMEOUT_MS = 10000;
   const REALTIME_HEARTBEAT_MS = 25000;
   const REALTIME_PULL_DEBOUNCE_MS = 800;
   const REALTIME_RECONNECT_DELAYS_MS = [1000, 2000, 5000, 10000, 30000];
-  const FALLBACK_PULL_ALARM_NAME = 'dup_supabase_pull_fallback_v1';
+  const FALLBACK_PULL_ALARM_NAME = 'dup_supabase_pull_fallback_v2';
   const FALLBACK_PULL_MINUTES = 1;
 
-  const EXACT_SYNC_KEYS = new Set([
+  const KV_SYNC_KEYS = new Set([
     'setting_copy_mode',
     'setting_highlight_mode',
     'setting_notify_execution',
@@ -45,17 +52,20 @@
     'vzid_last_claim_type_label',
     'vzid_last_claim_type_updated_at',
     'dup_google_sheets_problem_picker_bridge_url',
+    'support_reminders_state_v1',
+    'dup_execution_analysis_params_v1',
+    'dup_execution_analysis_state_v1',
+    'dup_id_card_check_state_v1'
+  ]);
+
+  const STRUCTURED_SYNC_KEYS = new Set([
     'stats_history',
     'processed_edocids',
     'editing_stats',
     'processed_edits',
     'approved_actions',
     'blocked_actions',
-    'action_tags',
-    'support_reminders_state_v1',
-    'dup_execution_analysis_params_v1',
-    'dup_execution_analysis_state_v1',
-    'dup_id_card_check_state_v1'
+    'action_tags'
   ]);
 
   const STAGE_TIMER_KEYS = new Set([
@@ -67,6 +77,11 @@
 
   const EXACT_EXCLUDED_KEYS = new Set([
     AUTH_SESSION_KEY,
+    LEGACY_SYNC_META_KEY,
+    LEGACY_PRE_LOGIN_BACKUP_KEY,
+    DEVICE_ID_KEY,
+    OUTBOX_KEY,
+    CACHE_REVISION_KEY,
     SYNC_META_KEY,
     PRE_LOGIN_BACKUP_KEY,
     'extension_logs',
@@ -81,7 +96,8 @@
   ]);
 
   const SYNC_PREFIXES = [
-    'jqgrid_settings_'
+    'jqgrid_settings_',
+    'dup_ui_show_'
   ];
 
   const EXCLUDED_PREFIXES = [
@@ -92,9 +108,10 @@
   let currentSession = null;
   let currentUser = null;
   let bootStarted = false;
-  let applyingRemoteState = false;
-  let syncTimer = 0;
-  let syncInProgress = false;
+  let applyingCanonicalState = false;
+  let flushTimer = 0;
+  let flushInProgress = false;
+  let pullInProgress = false;
   let lastRuntimeMessage = '';
   let lastRuntimeError = '';
   let realtimeWanted = false;
@@ -162,6 +179,15 @@
     });
   }
 
+  function delay(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  function clearTimer(timerId) {
+    if (timerId) clearTimeout(timerId);
+    return 0;
+  }
+
   function cloneJson(value) {
     if (value === undefined) return undefined;
     try {
@@ -175,8 +201,26 @@
     return !!value && typeof value === 'object' && !Array.isArray(value);
   }
 
-  function isEmptyObject(value) {
-    return isPlainObject(value) && Object.keys(value).length === 0;
+  function toArray(value) {
+    return Array.isArray(value) ? value : [];
+  }
+
+  function uniqueStrings(values) {
+    const result = [];
+    const seen = new Set();
+    toArray(values).forEach((value) => {
+      const normalized = String(value || '').trim();
+      if (!normalized || seen.has(normalized)) return;
+      seen.add(normalized);
+      result.push(normalized);
+    });
+    return result;
+  }
+
+  function toNonNegativeInteger(value) {
+    const numberValue = Number(value || 0);
+    if (!Number.isFinite(numberValue)) return 0;
+    return Math.max(0, Math.trunc(numberValue));
   }
 
   function storageValueEquals(left, right) {
@@ -187,37 +231,25 @@
     }
   }
 
-  function parseTimestamp(value) {
-    const timestamp = Date.parse(String(value || ''));
-    return Number.isFinite(timestamp) ? timestamp : 0;
-  }
-
-  function getRemoteComparableTimestamp(remote) {
-    if (!remote || typeof remote !== 'object') return 0;
-    return parseTimestamp(remote.clientUpdatedAt || remote.updatedAt);
-  }
-
-  function getKnownRemoteComparableTimestamp(meta) {
-    if (!meta || typeof meta !== 'object') return 0;
-    return parseTimestamp(meta.remoteClientUpdatedAt || meta.remoteUpdatedAt);
-  }
-
-  function isRemoteKnownOrOlder(remote, meta) {
-    const remoteTimestamp = getRemoteComparableTimestamp(remote);
-    const knownTimestamp = getKnownRemoteComparableTimestamp(meta);
-    return !!remoteTimestamp && !!knownTimestamp && remoteTimestamp <= knownTimestamp;
-  }
-
   function isSyncableKey(key) {
     const normalizedKey = String(key || '').trim();
     if (!normalizedKey) return false;
     if (EXACT_EXCLUDED_KEYS.has(normalizedKey)) return false;
     if (EXCLUDED_PREFIXES.some((prefix) => normalizedKey.startsWith(prefix))) return false;
     if (STAGE_TIMER_KEYS.has(normalizedKey)) return false;
-    if (EXACT_SYNC_KEYS.has(normalizedKey)) return true;
+    if (KV_SYNC_KEYS.has(normalizedKey)) return true;
+    if (STRUCTURED_SYNC_KEYS.has(normalizedKey)) return true;
     if (normalizedKey.startsWith('dup_ui_show_')) return true;
     if (SYNC_PREFIXES.some((prefix) => normalizedKey.startsWith(prefix))) return true;
     return false;
+  }
+
+  function isKvSyncKey(key) {
+    const normalizedKey = String(key || '').trim();
+    if (!isSyncableKey(normalizedKey)) return false;
+    if (STRUCTURED_SYNC_KEYS.has(normalizedKey)) return false;
+    if (KV_SYNC_KEYS.has(normalizedKey)) return true;
+    return normalizedKey.startsWith('jqgrid_settings_') || normalizedKey.startsWith('dup_ui_show_');
   }
 
   function sanitizeExecutionAnalysisState(value) {
@@ -255,17 +287,13 @@
     Object.keys(allData || {}).forEach((key) => {
       if (!isSyncableKey(key)) return;
       const sanitized = sanitizeValueForCloud(key, allData[key]);
-      if (sanitized !== undefined) {
-        snapshot[key] = sanitized;
-      }
+      if (sanitized !== undefined) snapshot[key] = sanitized;
     });
     return snapshot;
   }
 
   function normalizeSession(rawSession) {
-    const source = rawSession && rawSession.session
-      ? rawSession.session
-      : rawSession;
+    const source = rawSession && rawSession.session ? rawSession.session : rawSession;
     if (!source || typeof source !== 'object') return null;
     const accessToken = String(source.access_token || '').trim();
     const refreshToken = String(source.refresh_token || '').trim();
@@ -307,41 +335,22 @@
     if (!error) return '';
     if (typeof error === 'string') return error;
     if (error instanceof Error && error.message) return error.message;
-
     if (typeof error === 'object') {
-      const fields = [
-        'message',
-        'error_description',
-        'error',
-        'msg',
-        'detail',
-        'hint',
-        'code'
-      ];
-
+      const fields = ['message', 'error_description', 'error', 'msg', 'detail', 'hint', 'code'];
       for (const field of fields) {
         const value = error[field];
-        if (typeof value === 'string' && value.trim()) {
-          return value.trim();
-        }
+        if (typeof value === 'string' && value.trim()) return value.trim();
         if (value && typeof value === 'object') {
           const nestedMessage = extractSupabaseErrorMessage(value);
           if (nestedMessage) return nestedMessage;
         }
       }
-
-      if (Array.isArray(error.errors) && error.errors.length) {
-        const nestedMessage = extractSupabaseErrorMessage(error.errors[0]);
-        if (nestedMessage) return nestedMessage;
-      }
-
       try {
         return JSON.stringify(error);
       } catch (jsonError) {
-        return '';
+        return String(error);
       }
     }
-
     return String(error);
   }
 
@@ -350,12 +359,11 @@
     const lower = message.toLowerCase();
     if (lower.includes('invalid login credentials')) return 'Неверная почта или пароль.';
     if (lower.includes('email not confirmed')) return 'Почта еще не подтверждена. Проверь письмо от Supabase и затем войди снова.';
-    if (lower.includes('user already registered') || lower.includes('user already exists') || lower.includes('email_exists')) return 'Пользователь с такой почтой уже зарегистрирован.';
-    if (lower.includes('password should be at least') || lower.includes('weak_password')) return 'Пароль слишком короткий.';
-    if (lower.includes('email address') && lower.includes('invalid')) return 'Некорректная почта.';
+    if (lower.includes('user already registered')) return 'Пользователь с такой почтой уже зарегистрирован.';
+    if (lower.includes('password should be at least')) return 'Пароль слишком короткий.';
     if (lower.includes('signup_disabled')) return 'Регистрация отключена в настройках Supabase Auth.';
-    if (lower.includes('token has expired') || lower.includes('invalid token')) return 'Код восстановления неверный или уже истек.';
-    if (lower.includes('rate limit') || lower.includes('over_email_send_rate_limit')) return 'Слишком много попыток. Подожди немного и попробуй снова.';
+    if (lower.includes('failed to fetch')) return 'NetworkError: не удалось подключиться к Supabase.';
+    if (lower.includes('timeout')) return 'timeout: Supabase не ответил вовремя.';
     return message;
   }
 
@@ -365,71 +373,32 @@
     try {
       return JSON.parse(text);
     } catch (error) {
-      return { message: text };
+      return text;
     }
   }
 
-  async function refreshSession() {
-    const session = currentSession || (await loadStoredSession());
-    if (!session || !session.refresh_token) {
-      throw new Error('Нет активной Supabase-сессии.');
-    }
-
-    const response = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
-      method: 'POST',
-      headers: authHeaders(),
-      body: JSON.stringify({ refresh_token: session.refresh_token })
-    });
-    const data = await parseSupabaseResponse(response);
-    if (!response.ok) {
-      await clearStoredSession();
-      throw new Error(localizeSupabaseError(data || response.statusText));
-    }
-
-    const refreshed = normalizeSession(data);
-    if (!refreshed) {
-      await clearStoredSession();
-      throw new Error('Supabase не вернул новую сессию.');
-    }
-    await persistSession(refreshed);
-    return refreshed;
-  }
-
-  async function ensureSession() {
-    let session = currentSession || (await loadStoredSession());
-    if (!session) {
-      throw new Error('Пользователь не авторизован.');
-    }
-    if (Number(session.expires_at || 0) - Date.now() < SESSION_REFRESH_MARGIN_MS) {
-      session = await refreshSession();
-    }
-    return session;
-  }
-
-  async function supabaseFetch(path, options = {}, requireAuth = true, retryOnUnauthorized = true) {
-    const session = requireAuth ? await ensureSession() : null;
-    const response = await fetch(`${SUPABASE_URL}${path}`, {
-      ...options,
-      headers: {
-        ...authHeaders(session),
-        ...(options.headers || {})
+  async function fetchWithTimeout(url, options = {}) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    try {
+      return await fetch(url, {
+        ...options,
+        signal: controller.signal
+      });
+    } catch (error) {
+      if (error && error.name === 'AbortError') {
+        const timeoutError = new Error('timeout');
+        timeoutError.isTimeout = true;
+        throw timeoutError;
       }
-    });
-    const data = await parseSupabaseResponse(response);
-
-    if (response.status === 401 && requireAuth && retryOnUnauthorized) {
-      await refreshSession();
-      return supabaseFetch(path, options, requireAuth, false);
-    }
-
-    if (!response.ok) {
-      const error = new Error(localizeSupabaseError(data || response.statusText));
-      error.status = response.status;
-      error.payload = data;
       throw error;
+    } finally {
+      clearTimeout(timeoutId);
     }
+  }
 
-    return data;
+  function isRetryableStatus(status) {
+    return [408, 429, 500, 502, 503, 504].includes(Number(status));
   }
 
   async function loadStoredSession() {
@@ -454,6 +423,91 @@
     currentSession = null;
     currentUser = null;
     await storageRemove(AUTH_SESSION_KEY);
+  }
+
+  async function refreshSession() {
+    if (!currentSession) await loadStoredSession();
+    if (!currentSession || !currentSession.refresh_token) {
+      throw new Error('Нет активной Supabase-сессии.');
+    }
+
+    const response = await fetchWithTimeout(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+      method: 'POST',
+      headers: authHeaders(null),
+      body: JSON.stringify({ refresh_token: currentSession.refresh_token })
+    });
+    const data = await parseSupabaseResponse(response);
+    if (!response.ok) {
+      throw new Error(localizeSupabaseError(data || response.statusText));
+    }
+    const session = normalizeSession(data);
+    if (!session) throw new Error('Supabase не вернул новую сессию.');
+    await persistSession(session);
+    return currentSession;
+  }
+
+  async function ensureSession() {
+    if (!currentSession) await loadStoredSession();
+    let session = currentSession;
+    if (!session) throw new Error('Пользователь не авторизован.');
+    if (Number(session.expires_at || 0) - Date.now() < SESSION_REFRESH_MARGIN_MS) {
+      session = await refreshSession();
+    }
+    return session;
+  }
+
+  async function supabaseFetch(path, options = {}, requireAuth = true, retryOnUnauthorized = true) {
+    let attempt = 0;
+    let refreshedAfter401 = !retryOnUnauthorized;
+
+    while (true) {
+      const session = requireAuth ? await ensureSession() : null;
+      let response = null;
+      let data = null;
+      try {
+        response = await fetchWithTimeout(`${SUPABASE_URL}${path}`, {
+          ...options,
+          headers: {
+            ...authHeaders(session),
+            ...(options.headers || {})
+          }
+        });
+        data = await parseSupabaseResponse(response);
+
+        if (response.status === 401 && requireAuth && !refreshedAfter401) {
+          refreshedAfter401 = true;
+          await refreshSession();
+          continue;
+        }
+
+        if (!response.ok) {
+          const error = new Error(localizeSupabaseError(data || response.statusText));
+          error.status = response.status;
+          error.payload = data;
+          throw error;
+        }
+
+        return data;
+      } catch (error) {
+        const retryable = error && (
+          error.isTimeout ||
+          error.status === undefined ||
+          isRetryableStatus(error.status)
+        );
+        if (!retryable || attempt >= RETRY_DELAYS_MS.length) {
+          throw error;
+        }
+        await delay(RETRY_DELAYS_MS[attempt]);
+        attempt += 1;
+      }
+    }
+  }
+
+  async function callRpc(name, payload = {}) {
+    return supabaseFetch(`/rest/v1/rpc/${encodeURIComponent(name)}`, {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    }, true);
   }
 
   async function fetchCurrentUser() {
@@ -484,14 +538,928 @@
     });
   }
 
+  async function getCacheRevision() {
+    const data = await storageGet(CACHE_REVISION_KEY);
+    const revision = Number(data[CACHE_REVISION_KEY] || 0);
+    return Number.isFinite(revision) ? Math.max(0, Math.trunc(revision)) : 0;
+  }
+
+  async function setCacheRevision(revision) {
+    const normalized = Number(revision || 0);
+    await storageSet({ [CACHE_REVISION_KEY]: Number.isFinite(normalized) ? Math.max(0, Math.trunc(normalized)) : 0 });
+  }
+
+  async function getOutbox() {
+    const data = await storageGet(OUTBOX_KEY);
+    return Array.isArray(data[OUTBOX_KEY]) ? data[OUTBOX_KEY] : [];
+  }
+
+  async function setOutbox(outbox) {
+    await storageSet({ [OUTBOX_KEY]: Array.isArray(outbox) ? outbox : [] });
+  }
+
+  function createRandomId() {
+    if (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') {
+      return globalThis.crypto.randomUUID();
+    }
+    return `${Date.now()}_${Math.random().toString(36).slice(2, 12)}`;
+  }
+
+  async function getDeviceId() {
+    const data = await storageGet(DEVICE_ID_KEY);
+    const existing = String(data[DEVICE_ID_KEY] || '').trim();
+    if (existing) return existing;
+    const next = `device:${createRandomId()}`;
+    await storageSet({ [DEVICE_ID_KEY]: next });
+    return next;
+  }
+
+  function getBrowserName() {
+    const ua = String((typeof navigator !== 'undefined' && navigator.userAgent) || '');
+    if (/firefox/i.test(ua)) return 'Firefox';
+    if (/edg/i.test(ua)) return 'Edge';
+    if (/chrome|chromium/i.test(ua)) return 'Chrome';
+    return 'Browser';
+  }
+
+  function getDeviceName() {
+    return `${getBrowserName()} ${new Date().toLocaleDateString('ru-RU')}`;
+  }
+
+  function makeMutationId(deviceId) {
+    return `${deviceId}:${Date.now()}:${createRandomId()}`;
+  }
+
+  function normalizeCanonicalState(rawState) {
+    if (!rawState || typeof rawState !== 'object') {
+      return {
+        schema_version: SCHEMA_VERSION,
+        revision: 0,
+        kv: {},
+        counter_days: [],
+        processed_edits: [],
+        processed_edocids: [],
+        action_rules: []
+      };
+    }
+    const normalized = {
+      schema_version: Number(rawState.schema_version || SCHEMA_VERSION),
+      revision: Number(rawState.revision || 0),
+      kv: rawState.kv && typeof rawState.kv === 'object' && !Array.isArray(rawState.kv) ? rawState.kv : {},
+      counter_days: Array.isArray(rawState.counter_days) ? rawState.counter_days : [],
+      processed_edits: Array.isArray(rawState.processed_edits) ? rawState.processed_edits : [],
+      processed_edocids: Array.isArray(rawState.processed_edocids) ? rawState.processed_edocids : [],
+      action_rules: Array.isArray(rawState.action_rules) ? rawState.action_rules : [],
+      server_time: rawState.server_time || ''
+    };
+    ['status', 'applied_revision', 'current_revision', 'error'].forEach((key) => {
+      if (Object.prototype.hasOwnProperty.call(rawState, key)) {
+        normalized[key] = rawState[key];
+      }
+    });
+    return normalized;
+  }
+
+  function buildLocalCacheFromCanonical(rawState) {
+    const state = normalizeCanonicalState(rawState);
+    const values = {};
+
+    Object.keys(state.kv || {}).forEach((key) => {
+      if (isKvSyncKey(key)) {
+        values[key] = cloneJson(state.kv[key]);
+      }
+    });
+
+    const statsHistory = {};
+    const editingStats = {};
+    state.counter_days.forEach((row) => {
+      if (!row || typeof row !== 'object') return;
+      const counterKey = String(row.counter_key || '').trim();
+      const dateKey = String(row.date_key || '').trim();
+      if (!dateKey) return;
+      if (counterKey === 'stats_history') {
+        statsHistory[dateKey] = toNonNegativeInteger(row.value);
+      } else if (counterKey === 'editing_stats') {
+        editingStats[dateKey] = toNonNegativeInteger(row.value);
+      }
+    });
+    values.stats_history = statsHistory;
+    values.editing_stats = editingStats;
+
+    const processedEdits = {};
+    state.processed_edits.forEach((row) => {
+      if (!row || typeof row !== 'object') return;
+      const dateIso = String(row.date_iso || '').trim();
+      const path = String(row.path || '').trim();
+      if (!dateIso || !path) return;
+      if (!processedEdits[dateIso]) processedEdits[dateIso] = {};
+      processedEdits[dateIso][path] = {
+        base_count: toNonNegativeInteger(row.base_count),
+        unique_edocids: uniqueStrings(row.unique_edocids)
+      };
+    });
+    values.processed_edits = processedEdits;
+
+    const processedEdocids = {};
+    state.processed_edocids.forEach((row) => {
+      if (!row || typeof row !== 'object') return;
+      const dateIso = String(row.date_iso || '').trim();
+      const edocid = String(row.edocid || '').trim();
+      if (!dateIso || !edocid) return;
+      if (!processedEdocids[dateIso]) processedEdocids[dateIso] = [];
+      if (!processedEdocids[dateIso].includes(edocid)) {
+        processedEdocids[dateIso].push(edocid);
+      }
+    });
+    values.processed_edocids = processedEdocids;
+
+    const approved = [];
+    const blocked = [];
+    const tags = {};
+    state.action_rules.forEach((row) => {
+      if (!row || typeof row !== 'object') return;
+      const path = String(row.path || '').trim();
+      const status = String(row.status || '').trim();
+      const tag = String(row.tag || '').trim();
+      if (!path) return;
+      if (status === 'approved' && !approved.includes(path)) approved.push(path);
+      if (status === 'blocked' && !blocked.includes(path)) blocked.push(path);
+      if (tag) tags[path] = tag;
+    });
+    values.approved_actions = approved;
+    values.blocked_actions = blocked;
+    values.action_tags = tags;
+
+    return values;
+  }
+
+  async function applyCanonicalState(rawState, options = {}) {
+    const outbox = await getOutbox();
+    if (outbox.length && options.force !== true) {
+      await setSyncMeta({
+        serverRevision: Number(rawState && rawState.revision || 0),
+        lastPullSkippedApplyAt: new Date().toISOString(),
+        lastPullSkippedApplyReason: 'outbox-not-empty'
+      });
+      return false;
+    }
+
+    const state = normalizeCanonicalState(rawState);
+    const nextValues = buildLocalCacheFromCanonical(state);
+    const localData = await storageGet(null);
+    const valuesToSet = {};
+    const keysToRemove = [];
+
+    Object.keys(nextValues).forEach((key) => {
+      if (!storageValueEquals(localData[key], nextValues[key])) {
+        valuesToSet[key] = nextValues[key];
+      }
+    });
+
+    Object.keys(localData || {}).forEach((key) => {
+      if (isSyncableKey(key) && !Object.prototype.hasOwnProperty.call(nextValues, key)) {
+        keysToRemove.push(key);
+      }
+    });
+
+    applyingCanonicalState = true;
+    try {
+      if (keysToRemove.length) await storageRemove(keysToRemove);
+      if (Object.keys(valuesToSet).length) await storageSet(valuesToSet);
+      await setCacheRevision(state.revision);
+    } finally {
+      applyingCanonicalState = false;
+    }
+
+    return keysToRemove.length > 0 || Object.keys(valuesToSet).length > 0;
+  }
+
+  function makeKvOperationsFromValues(values) {
+    const operations = [];
+    Object.entries(values || {}).forEach(([key, value]) => {
+      if (!isKvSyncKey(key)) return;
+      const sanitized = sanitizeValueForCloud(key, value);
+      if (sanitized === undefined) return;
+      operations.push({ type: 'kv_set', key, value: sanitized });
+    });
+    return operations;
+  }
+
+  function makeOperationsFromSnapshot(snapshot) {
+    const operations = [];
+
+    operations.push(...makeKvOperationsFromValues(snapshot));
+
+    ['stats_history', 'editing_stats'].forEach((counterKey) => {
+      const history = snapshot && isPlainObject(snapshot[counterKey]) ? snapshot[counterKey] : {};
+      Object.entries(history).forEach(([dateKey, value]) => {
+        operations.push({
+          type: 'counter_set',
+          counter_key: counterKey,
+          date_key: String(dateKey),
+          value: toNonNegativeInteger(value)
+        });
+      });
+    });
+
+    const processedEdocids = snapshot && isPlainObject(snapshot.processed_edocids) ? snapshot.processed_edocids : {};
+    Object.entries(processedEdocids).forEach(([dateIso, edocids]) => {
+      const uniqueEdocids = uniqueStrings(edocids);
+      if (uniqueEdocids.length) {
+        operations.push({
+          type: 'processed_edocids_add',
+          date_iso: String(dateIso),
+          date_key: isoToRuDateKey(dateIso),
+          edocids: uniqueEdocids
+        });
+      }
+    });
+
+    const processedEdits = snapshot && isPlainObject(snapshot.processed_edits) ? snapshot.processed_edits : {};
+    Object.entries(processedEdits).forEach(([dateIso, paths]) => {
+      if (!isPlainObject(paths)) return;
+      Object.entries(paths).forEach(([path, rawItem]) => {
+        const item = normalizeProcessedEditItem(rawItem);
+        operations.push({
+          type: 'processed_edit_set',
+          date_iso: String(dateIso),
+          path: String(path),
+          base_count: item.base_count,
+          unique_edocids: item.unique_edocids
+        });
+      });
+    });
+
+    const approved = new Set(uniqueStrings(snapshot && snapshot.approved_actions));
+    const blocked = new Set(uniqueStrings(snapshot && snapshot.blocked_actions));
+    const tags = snapshot && isPlainObject(snapshot.action_tags) ? snapshot.action_tags : {};
+    const actionPaths = new Set([...approved, ...blocked, ...Object.keys(tags || {})]);
+    actionPaths.forEach((path) => {
+      const status = blocked.has(path) ? 'blocked' : 'approved';
+      operations.push({
+        type: 'action_rule_set',
+        path,
+        status,
+        tag: String(tags[path] || '').trim()
+      });
+    });
+
+    return operations;
+  }
+
+  function normalizeProcessedEditItem(rawItem) {
+    if (isPlainObject(rawItem)) {
+      return {
+        base_count: toNonNegativeInteger(rawItem.base_count),
+        unique_edocids: uniqueStrings(rawItem.unique_edocids)
+      };
+    }
+    if (Array.isArray(rawItem)) {
+      return {
+        base_count: rawItem.length,
+        unique_edocids: uniqueStrings(rawItem)
+      };
+    }
+    return {
+      base_count: toNonNegativeInteger(rawItem),
+      unique_edocids: []
+    };
+  }
+
+  function isoToRuDateKey(dateIso) {
+    const parts = String(dateIso || '').split('-');
+    if (parts.length === 3) return `${parts[2]}.${parts[1]}.${parts[0]}`;
+    return String(dateIso || '');
+  }
+
+  function ruDateKeyToIso(dateKey) {
+    const parts = String(dateKey || '').split('.');
+    if (parts.length === 3) return `${parts[2]}-${parts[1]}-${parts[0]}`;
+    return String(dateKey || '');
+  }
+
+  async function registerDevice() {
+    const deviceId = await getDeviceId();
+    const data = await callRpc('extension_register_device', {
+      p_device_id: deviceId,
+      p_device_name: getDeviceName(),
+      p_browser: getBrowserName()
+    });
+    const state = data && data.state ? data.state : data;
+    await setSyncMeta({
+      deviceId,
+      lastDeviceRegisterAt: new Date().toISOString()
+    });
+    return normalizeCanonicalState(state);
+  }
+
+  async function getRemoteCanonicalState(reason = 'pull') {
+    const localRevision = await getCacheRevision();
+    const data = await callRpc('extension_get_state', {
+      p_since_revision: localRevision || null
+    });
+    const state = normalizeCanonicalState(data);
+    await setSyncMeta({
+      serverRevision: state.revision,
+      lastPullCheckAt: new Date().toISOString(),
+      lastPullReason: reason
+    });
+    return state;
+  }
+
+  async function appendOutboxOperations(operations, reason = 'local-change') {
+    const filteredOperations = toArray(operations).filter((operation) => operation && typeof operation === 'object');
+    if (!filteredOperations.length) return { queued: false };
+    if (!currentSession) await loadStoredSession();
+    if (!currentSession) return { queued: false, localOnly: true };
+
+    const deviceId = await getDeviceId();
+    const outbox = await getOutbox();
+    const item = {
+      mutationId: makeMutationId(deviceId),
+      deviceId,
+      baseRevision: await getCacheRevision(),
+      createdAt: new Date().toISOString(),
+      attempts: 0,
+      lastError: '',
+      reason,
+      operations: filteredOperations
+    };
+    outbox.push(item);
+    await setOutbox(outbox);
+    await setSyncMeta({
+      outboxSize: outbox.length,
+      lastQueuedAt: new Date().toISOString(),
+      lastError: ''
+    });
+    scheduleFlushOutbox(reason);
+    await broadcastStatus();
+    return { queued: true, item };
+  }
+
+  function scheduleFlushOutbox(reason = 'queued') {
+    if (flushTimer) clearTimeout(flushTimer);
+    flushTimer = setTimeout(() => {
+      flushTimer = 0;
+      void flushOutbox(reason);
+    }, FLUSH_DEBOUNCE_MS);
+  }
+
+  async function applyMutationItem(item) {
+    const result = await callRpc('extension_apply_mutation', {
+      p_device_id: item.deviceId,
+      p_mutation_id: item.mutationId,
+      p_base_revision: item.baseRevision,
+      p_operations: item.operations
+    });
+    return normalizeCanonicalState(result);
+  }
+
+  async function flushOutbox(reason = 'manual') {
+    if (flushInProgress) return { success: true, skipped: 'flush-in-progress' };
+    if (!currentSession) await loadStoredSession();
+    if (!currentSession) return { success: false, error: 'NO_SESSION' };
+
+    flushInProgress = true;
+    await broadcastStatus('Отправляю изменения в Supabase...');
+    try {
+      await ensureSession();
+      await registerDevice();
+
+      while (true) {
+        const outbox = await getOutbox();
+        if (!outbox.length) {
+          await setSyncMeta({
+            outboxSize: 0,
+            lastPushError: '',
+            lastError: '',
+            lastFlushAt: new Date().toISOString()
+          });
+          lastRuntimeError = '';
+          return { success: true };
+        }
+
+        const item = outbox[0];
+        item.attempts = Number(item.attempts || 0) + 1;
+        await setOutbox([item, ...outbox.slice(1)]);
+
+        try {
+          const state = await applyMutationItem(item);
+          if (state && state.status === 'conflict') {
+            const metaState = await getRemoteCanonicalState('conflict-rebase');
+            const rebasedRevision = Number(metaState.revision || state.current_revision || 0);
+            const nextItem = {
+              ...item,
+              mutationId: makeMutationId(item.deviceId),
+              baseRevision: rebasedRevision,
+              lastError: String(state.error || 'revision_mismatch'),
+              rebasedAt: new Date().toISOString()
+            };
+            await setOutbox([nextItem, ...outbox.slice(1)]);
+            await setCacheRevision(rebasedRevision);
+            if (String(state.error || '').startsWith('unknown_operation')) {
+              throw new Error(state.error);
+            }
+            continue;
+          }
+
+          const nextOutbox = outbox.slice(1);
+          await setOutbox(nextOutbox);
+          await applyCanonicalState(state, { force: true });
+          await setSyncMeta({
+            outboxSize: nextOutbox.length,
+            serverRevision: state.revision,
+            localRevision: state.revision,
+            lastPushAt: new Date().toISOString(),
+            lastPushError: '',
+            lastError: '',
+            lastReason: reason
+          });
+          lastRuntimeMessage = nextOutbox.length
+            ? `Отправлено изменение, осталось в очереди: ${nextOutbox.length}.`
+            : 'Все изменения отправлены в Supabase.';
+          lastRuntimeError = '';
+        } catch (error) {
+          const message = localizeSupabaseError(error);
+          const currentOutbox = await getOutbox();
+          if (currentOutbox.length) {
+            currentOutbox[0] = {
+              ...currentOutbox[0],
+              attempts: Number(currentOutbox[0].attempts || item.attempts || 0),
+              lastError: message,
+              lastAttemptAt: new Date().toISOString()
+            };
+            await setOutbox(currentOutbox);
+          }
+          lastRuntimeError = message;
+          await setSyncMeta({
+            outboxSize: currentOutbox.length,
+            lastPushError: message,
+            lastError: message,
+            lastPushAttemptAt: new Date().toISOString()
+          });
+          return { success: false, error: message };
+        }
+      }
+    } finally {
+      flushInProgress = false;
+      await broadcastStatus();
+    }
+  }
+
+  async function pullCanonicalState(reason = 'manual', options = {}) {
+    if (pullInProgress) return { success: true, skipped: 'pull-in-progress' };
+    if (!currentSession) await loadStoredSession();
+    if (!currentSession) return { success: false, error: 'NO_SESSION' };
+
+    pullInProgress = true;
+    if (options.quiet !== true) await broadcastStatus('Загружаю данные из Supabase...');
+    try {
+      await ensureSession();
+      await registerDevice();
+      const outbox = await getOutbox();
+      const state = await getRemoteCanonicalState(reason);
+      const localRevision = await getCacheRevision();
+      const shouldApply = options.forceApply === true || (!outbox.length && state.revision >= localRevision);
+      const applied = shouldApply ? await applyCanonicalState(state, { force: options.forceApply === true }) : false;
+      await setSyncMeta({
+        lastPullAt: new Date().toISOString(),
+        lastPullError: '',
+        lastError: '',
+        serverRevision: state.revision,
+        localRevision: await getCacheRevision(),
+        outboxSize: outbox.length,
+        lastReason: reason
+      });
+      lastRuntimeMessage = applied
+        ? 'Данные Supabase применены локально.'
+        : (outbox.length ? 'Pull выполнен, локальная очередь сохранена.' : 'Локальный кэш уже актуален.');
+      lastRuntimeError = '';
+      return { success: true, state, applied };
+    } catch (error) {
+      const message = localizeSupabaseError(error);
+      lastRuntimeError = message;
+      await setSyncMeta({
+        lastPullError: message,
+        lastError: message,
+        lastPullAttemptAt: new Date().toISOString()
+      });
+      return { success: false, error: message };
+    } finally {
+      pullInProgress = false;
+      await broadcastStatus();
+    }
+  }
+
+  async function bootstrapRemoteFromLocal(localSnapshot) {
+    const operations = makeOperationsFromSnapshot(localSnapshot || {});
+    if (!operations.length) return { success: true, skipped: 'empty-bootstrap' };
+    await appendOutboxOperations(operations, 'bootstrap');
+    return flushOutbox('bootstrap');
+  }
+
+  async function initializeAuthenticatedSession(reason) {
+    if (!currentSession) await loadStoredSession();
+    if (!currentSession) return;
+    try {
+      await ensureSession();
+      if (!currentUser) await fetchCurrentUser();
+      const preLoginSnapshot = await collectLocalSyncSnapshot();
+      await storageSet({
+        [PRE_LOGIN_BACKUP_KEY]: {
+          createdAt: new Date().toISOString(),
+          reason,
+          state: preLoginSnapshot
+        }
+      });
+
+      const registeredState = await registerDevice();
+      const remoteState = registeredState.revision > 0
+        ? registeredState
+        : await getRemoteCanonicalState(reason || 'auth');
+
+      if (remoteState.revision > 0) {
+        await applyCanonicalState(remoteState, { force: true });
+        await setSyncMeta({
+          lastPullAt: new Date().toISOString(),
+          lastPullError: '',
+          lastError: '',
+          serverRevision: remoteState.revision,
+          localRevision: remoteState.revision,
+          lastReason: reason
+        });
+        lastRuntimeMessage = 'Данные Supabase применены локально.';
+      } else {
+        await bootstrapRemoteFromLocal(preLoginSnapshot);
+        const stateAfterBootstrap = await getRemoteCanonicalState('bootstrap-confirm');
+        await applyCanonicalState(stateAfterBootstrap, { force: true });
+        await setSyncMeta({
+          lastPullAt: new Date().toISOString(),
+          serverRevision: stateAfterBootstrap.revision,
+          localRevision: stateAfterBootstrap.revision,
+          lastError: '',
+          lastReason: reason
+        });
+        lastRuntimeMessage = 'Локальные данные перенесены в Supabase.';
+      }
+
+      await ensureBackgroundSyncActive(reason || 'auth');
+      await broadcastStatus();
+    } catch (error) {
+      lastRuntimeError = localizeSupabaseError(error);
+      await setSyncMeta({ lastError: lastRuntimeError });
+      await broadcastStatus();
+    }
+  }
+
+  async function manualSync() {
+    await ensureSession();
+    await registerDevice();
+    const flushResult = await flushOutbox('manual');
+    const outbox = await getOutbox();
+    const pullResult = await pullCanonicalState('manual', {
+      forceApply: outbox.length === 0
+    });
+    return {
+      success: flushResult.success !== false && pullResult.success !== false,
+      flush: flushResult,
+      pull: pullResult
+    };
+  }
+
+  async function syncSet(values, options = {}) {
+    const nextValues = values && typeof values === 'object' ? values : {};
+    await storageSet(nextValues);
+
+    const operations = makeKvOperationsFromValues(nextValues);
+    if (options.queue !== false) {
+      await appendOutboxOperations(operations, options.reason || 'kv-set');
+    }
+    return { success: true, operationsQueued: operations.length };
+  }
+
+  async function syncRemove(keys, options = {}) {
+    const normalizedKeys = Array.isArray(keys) ? keys : [keys];
+    await storageRemove(normalizedKeys);
+    const operations = normalizedKeys
+      .map((key) => String(key || '').trim())
+      .filter((key) => isKvSyncKey(key))
+      .map((key) => ({ type: 'kv_delete', key }));
+    if (options.queue !== false) {
+      await appendOutboxOperations(operations, options.reason || 'kv-delete');
+    }
+    return { success: true, operationsQueued: operations.length };
+  }
+
+  async function incrementCounter(counterKey, dateKey, delta, options = {}) {
+    const storageKey = String(counterKey || '');
+    const normalizedDate = String(dateKey || '');
+    const amount = Number(delta || 0);
+    if (!storageKey || !normalizedDate || !Number.isFinite(amount) || amount === 0) {
+      return { success: false, error: 'INVALID_COUNTER_INCREMENT' };
+    }
+
+    const data = await storageGet(storageKey);
+    const history = isPlainObject(data[storageKey]) ? data[storageKey] : {};
+    const nextValue = Math.max(0, toNonNegativeInteger(history[normalizedDate]) + Math.trunc(amount));
+    history[normalizedDate] = nextValue;
+    await storageSet({ [storageKey]: history });
+    await appendOutboxOperations([{
+      type: 'counter_increment',
+      counter_key: storageKey,
+      date_key: normalizedDate,
+      delta: Math.trunc(amount)
+    }], options.reason || 'counter-increment');
+    return { success: true, value: nextValue };
+  }
+
+  async function setCounter(counterKey, dateKey, value, options = {}) {
+    const storageKey = String(counterKey || '');
+    const normalizedDate = String(dateKey || '');
+    if (!storageKey || !normalizedDate) return { success: false, error: 'INVALID_COUNTER_SET' };
+    const normalizedValue = toNonNegativeInteger(value);
+    const data = await storageGet(storageKey);
+    const history = isPlainObject(data[storageKey]) ? data[storageKey] : {};
+    history[normalizedDate] = normalizedValue;
+    await storageSet({ [storageKey]: history });
+    await appendOutboxOperations([{
+      type: 'counter_set',
+      counter_key: storageKey,
+      date_key: normalizedDate,
+      value: normalizedValue
+    }], options.reason || 'counter-set');
+    return { success: true, value: normalizedValue };
+  }
+
+  async function addProcessedEdocids(dateIso, dateKey, edocids, options = {}) {
+    const normalizedDateIso = String(dateIso || '').trim();
+    const normalizedDateKey = String(dateKey || '').trim() || isoToRuDateKey(normalizedDateIso);
+    const uniqueEdocids = uniqueStrings(edocids);
+    if (!normalizedDateIso || !uniqueEdocids.length) return { success: false, error: 'INVALID_EDOCIDS' };
+
+    const data = await storageGet(['processed_edocids', 'stats_history']);
+    const processed = isPlainObject(data.processed_edocids) ? data.processed_edocids : {};
+    const history = isPlainObject(data.stats_history) ? data.stats_history : {};
+    const processedToday = Array.isArray(processed[normalizedDateIso]) ? processed[normalizedDateIso] : [];
+    const newlyProcessed = uniqueEdocids.filter((edocid) => !processedToday.includes(edocid));
+    if (newlyProcessed.length) {
+      processed[normalizedDateIso] = [...processedToday, ...newlyProcessed];
+      history[normalizedDateKey] = toNonNegativeInteger(history[normalizedDateKey]) + newlyProcessed.length;
+      await storageSet({
+        processed_edocids: processed,
+        stats_history: history
+      });
+    }
+
+    await appendOutboxOperations([{
+      type: 'processed_edocids_add',
+      date_iso: normalizedDateIso,
+      date_key: normalizedDateKey,
+      edocids: uniqueEdocids
+    }], options.reason || 'processed-edocids-add');
+
+    return {
+      success: true,
+      addedCount: newlyProcessed.length,
+      value: toNonNegativeInteger(history[normalizedDateKey])
+    };
+  }
+
+  async function addProcessedEditEdocid(dateIso, dateKey, path, edocid, options = {}) {
+    const normalizedDateIso = String(dateIso || '').trim();
+    const normalizedDateKey = String(dateKey || '').trim() || isoToRuDateKey(normalizedDateIso);
+    const normalizedPath = String(path || '').trim();
+    const normalizedEdocid = String(edocid || '').trim();
+    if (!normalizedDateIso || !normalizedPath || !normalizedEdocid) {
+      return { success: false, error: 'INVALID_PROCESSED_EDIT' };
+    }
+
+    const data = await storageGet(['processed_edits', 'editing_stats']);
+    const processed = isPlainObject(data.processed_edits) ? data.processed_edits : {};
+    const history = isPlainObject(data.editing_stats) ? data.editing_stats : {};
+    if (!isPlainObject(processed[normalizedDateIso])) processed[normalizedDateIso] = {};
+    const item = normalizeProcessedEditItem(processed[normalizedDateIso][normalizedPath]);
+    const alreadyExists = item.unique_edocids.includes(normalizedEdocid);
+    if (!alreadyExists) {
+      item.unique_edocids.push(normalizedEdocid);
+      item.base_count += 1;
+      processed[normalizedDateIso][normalizedPath] = item;
+      history[normalizedDateKey] = toNonNegativeInteger(history[normalizedDateKey]) + 1;
+      await storageSet({
+        processed_edits: processed,
+        editing_stats: history
+      });
+    }
+
+    await appendOutboxOperations([{
+      type: 'processed_edit_add_edocid',
+      date_iso: normalizedDateIso,
+      date_key: normalizedDateKey,
+      path: normalizedPath,
+      edocid: normalizedEdocid
+    }], options.reason || 'processed-edit-add-edocid');
+
+    return {
+      success: true,
+      added: !alreadyExists,
+      dayTotal: toNonNegativeInteger(history[normalizedDateKey]),
+      actionCount: item.base_count
+    };
+  }
+
+  async function setProcessedEdit(dateIso, path, item, options = {}) {
+    const normalizedDateIso = String(dateIso || '').trim();
+    const normalizedPath = String(path || '').trim();
+    if (!normalizedDateIso || !normalizedPath) return { success: false, error: 'INVALID_PROCESSED_EDIT_SET' };
+    const normalizedItem = normalizeProcessedEditItem(item);
+    const data = await storageGet(['processed_edits', 'editing_stats']);
+    const processed = isPlainObject(data.processed_edits) ? data.processed_edits : {};
+    const history = isPlainObject(data.editing_stats) ? data.editing_stats : {};
+    if (!isPlainObject(processed[normalizedDateIso])) processed[normalizedDateIso] = {};
+    processed[normalizedDateIso][normalizedPath] = normalizedItem;
+    const counterDateKey = options.counterDateKey || isoToRuDateKey(normalizedDateIso);
+    const counterValue = options.counterValue !== undefined
+      ? toNonNegativeInteger(options.counterValue)
+      : calculateProcessedDayTotal(processed[normalizedDateIso]);
+    history[counterDateKey] = counterValue;
+    await storageSet({
+      processed_edits: processed,
+      editing_stats: history
+    });
+    await appendOutboxOperations([
+      {
+        type: 'processed_edit_set',
+        date_iso: normalizedDateIso,
+        path: normalizedPath,
+        base_count: normalizedItem.base_count,
+        unique_edocids: normalizedItem.unique_edocids
+      },
+      {
+        type: 'counter_set',
+        counter_key: 'editing_stats',
+        date_key: counterDateKey,
+        value: counterValue
+      }
+    ], options.reason || 'processed-edit-set');
+    return { success: true, counterValue };
+  }
+
+  async function deleteProcessedEdit(dateIso, path, options = {}) {
+    const normalizedDateIso = String(dateIso || '').trim();
+    const normalizedPath = String(path || '').trim();
+    if (!normalizedDateIso || !normalizedPath) return { success: false, error: 'INVALID_PROCESSED_EDIT_DELETE' };
+    const data = await storageGet(['processed_edits', 'editing_stats']);
+    const processed = isPlainObject(data.processed_edits) ? data.processed_edits : {};
+    const history = isPlainObject(data.editing_stats) ? data.editing_stats : {};
+    if (isPlainObject(processed[normalizedDateIso])) {
+      delete processed[normalizedDateIso][normalizedPath];
+    }
+    const counterDateKey = options.counterDateKey || isoToRuDateKey(normalizedDateIso);
+    const counterValue = calculateProcessedDayTotal(processed[normalizedDateIso]);
+    history[counterDateKey] = counterValue;
+    await storageSet({
+      processed_edits: processed,
+      editing_stats: history
+    });
+    await appendOutboxOperations([
+      {
+        type: 'processed_edit_delete',
+        date_iso: normalizedDateIso,
+        path: normalizedPath
+      },
+      {
+        type: 'counter_set',
+        counter_key: 'editing_stats',
+        date_key: counterDateKey,
+        value: counterValue
+      }
+    ], options.reason || 'processed-edit-delete');
+    return { success: true, counterValue };
+  }
+
+  function calculateProcessedDayTotal(dayProcessed) {
+    if (!isPlainObject(dayProcessed)) return 0;
+    return Object.values(dayProcessed).reduce((sum, item) => {
+      return sum + normalizeProcessedEditItem(item).base_count;
+    }, 0);
+  }
+
+  async function setActionRule(path, status, tag = '', options = {}) {
+    const normalizedPath = String(path || '').trim();
+    const normalizedStatus = String(status || '').trim();
+    if (!normalizedPath || !['approved', 'blocked'].includes(normalizedStatus)) {
+      return { success: false, error: 'INVALID_ACTION_RULE' };
+    }
+
+    const data = await storageGet(['approved_actions', 'blocked_actions', 'action_tags', 'pending_actions']);
+    let approved = uniqueStrings(data.approved_actions);
+    let blocked = uniqueStrings(data.blocked_actions);
+    const tags = isPlainObject(data.action_tags) ? data.action_tags : {};
+    let pending = Array.isArray(data.pending_actions) ? data.pending_actions : [];
+
+    if (normalizedStatus === 'approved') {
+      approved = approved.filter((item) => item !== normalizedPath);
+      blocked = blocked.filter((item) => item !== normalizedPath);
+      approved.push(normalizedPath);
+    } else {
+      approved = approved.filter((item) => item !== normalizedPath);
+      blocked = blocked.filter((item) => item !== normalizedPath);
+      blocked.push(normalizedPath);
+    }
+
+    const normalizedTag = String(tag || '').trim();
+    if (normalizedTag) {
+      tags[normalizedPath] = normalizedTag;
+    } else if (options.clearEmptyTag === true) {
+      delete tags[normalizedPath];
+    }
+
+    if (options.pendingMode === 'exact') {
+      const edocid = String(options.edocid || '');
+      pending = pending.filter((item) => !(item && item.path === normalizedPath && String(item.edocid || '') === edocid));
+    } else if (options.pendingMode === 'path') {
+      pending = pending.filter((item) => !(item && item.path === normalizedPath));
+    }
+
+    await storageSet({
+      approved_actions: approved,
+      blocked_actions: blocked,
+      action_tags: tags,
+      pending_actions: pending
+    });
+
+    await appendOutboxOperations([{
+      type: 'action_rule_set',
+      path: normalizedPath,
+      status: normalizedStatus,
+      tag: normalizedTag
+    }], options.reason || 'action-rule-set');
+
+    return { success: true, approved, blocked, tags, pending };
+  }
+
+  async function setActionTag(path, tag, options = {}) {
+    const normalizedPath = String(path || '').trim();
+    if (!normalizedPath) return { success: false, error: 'INVALID_ACTION_TAG' };
+    const data = await storageGet(['approved_actions', 'blocked_actions', 'action_tags']);
+    const approved = uniqueStrings(data.approved_actions);
+    const blocked = uniqueStrings(data.blocked_actions);
+    const tags = isPlainObject(data.action_tags) ? data.action_tags : {};
+    const normalizedTag = String(tag || '').trim();
+    if (normalizedTag) tags[normalizedPath] = normalizedTag;
+    else delete tags[normalizedPath];
+    await storageSet({ action_tags: tags });
+
+    const status = blocked.includes(normalizedPath) ? 'blocked' : 'approved';
+    if (!approved.includes(normalizedPath) && !blocked.includes(normalizedPath)) {
+      await storageSet({ approved_actions: [...approved, normalizedPath] });
+    }
+    await appendOutboxOperations([{
+      type: 'action_rule_set',
+      path: normalizedPath,
+      status,
+      tag: normalizedTag
+    }], options.reason || 'action-tag-set');
+    return { success: true, status, tag: normalizedTag };
+  }
+
+  async function importSyncData(importedData) {
+    const data = importedData && typeof importedData === 'object' ? cloneJson(importedData) : {};
+    if (!currentSession) await loadStoredSession();
+
+    if (!currentSession) {
+      const current = await storageGet(null);
+      const keysToRemove = Object.keys(current || {}).filter((key) => isSyncableKey(key));
+      if (keysToRemove.length) await storageRemove(keysToRemove);
+      await storageSet(data);
+      return { success: true, localOnly: true };
+    }
+
+    const localValues = {};
+    Object.keys(data || {}).forEach((key) => {
+      if (isSyncableKey(key)) localValues[key] = data[key];
+    });
+    const operations = makeOperationsFromSnapshot(localValues);
+    const current = await storageGet(null);
+    const keysToRemove = Object.keys(current || {}).filter((key) => isSyncableKey(key));
+    applyingCanonicalState = true;
+    try {
+      if (keysToRemove.length) await storageRemove(keysToRemove);
+      await storageSet(localValues);
+    } finally {
+      applyingCanonicalState = false;
+    }
+    await appendOutboxOperations(operations, 'json-import');
+    const flushResult = await flushOutbox('json-import');
+    if (flushResult.success !== false) {
+      await pullCanonicalState('json-import-confirm', { forceApply: true });
+    }
+    return flushResult;
+  }
+
   function makeRealtimeRef() {
     realtimeRefCounter += 1;
     return String(realtimeRefCounter);
-  }
-
-  function clearTimer(timerId) {
-    if (timerId) clearTimeout(timerId);
-    return 0;
   }
 
   function sendRealtimeMessage(socket, event, payload = {}, options = {}) {
@@ -553,33 +1521,17 @@
     return {};
   }
 
-  function getRealtimeChangeTimestamp(payload) {
-    const data = getRealtimeChangeData(payload);
-    const record = getRealtimeChangeRecord(payload);
-    return String(
-      record.client_updated_at ||
-      data.client_updated_at ||
-      data.commit_timestamp ||
-      ''
-    );
-  }
-
   function scheduleRealtimePull(reason = 'realtime') {
     realtimePullTimer = clearTimer(realtimePullTimer);
     realtimePullTimer = setTimeout(() => {
       realtimePullTimer = 0;
-      void pullRemoteState(reason, {
-        quiet: true,
-        skipIfRemoteNotNewer: true,
-        skipIfSyncScheduled: true
-      });
+      void pullCanonicalState(reason, { quiet: true });
     }, REALTIME_PULL_DEBOUNCE_MS);
   }
 
   async function handleRealtimePostgresChange(payload) {
     const data = getRealtimeChangeData(payload);
     if (!data || typeof data !== 'object') return;
-
     const eventType = String(data.type || data.eventType || '').toUpperCase();
     if (eventType && eventType !== 'INSERT' && eventType !== 'UPDATE') return;
 
@@ -587,25 +1539,15 @@
     const userId = String(record.user_id || '').trim();
     if (currentUser && currentUser.id && userId && userId !== String(currentUser.id)) return;
 
-    const meta = await getSyncMeta();
-    const remoteClientUpdatedAt = String(record.client_updated_at || '').trim();
-    if (remoteClientUpdatedAt && remoteClientUpdatedAt === String(meta.lastPushClientUpdatedAt || '')) {
-      await setSyncMeta({
-        remoteClientUpdatedAt,
-        realtimeLastEventAt: new Date().toISOString()
-      });
-      return;
-    }
-
-    const incomingTimestamp = parseTimestamp(getRealtimeChangeTimestamp(payload));
-    const knownTimestamp = getKnownRemoteComparableTimestamp(meta);
-    if (incomingTimestamp && knownTimestamp && incomingTimestamp <= knownTimestamp) return;
-
+    const remoteRevision = Number(record.revision || 0);
+    const localRevision = await getCacheRevision();
     await setSyncMeta({
       realtimeLastEventAt: new Date().toISOString(),
-      realtimeLastEventClientUpdatedAt: remoteClientUpdatedAt
+      serverRevision: remoteRevision || undefined
     });
-    scheduleRealtimePull('realtime');
+    if (!remoteRevision || remoteRevision > localRevision) {
+      scheduleRealtimePull('realtime');
+    }
   }
 
   function clearRealtimeTimers() {
@@ -639,14 +1581,14 @@
   function scheduleRealtimeReconnect(reason = 'closed') {
     if (!realtimeWanted || !currentSession) return;
     realtimeReconnectTimer = clearTimer(realtimeReconnectTimer);
-    const delay = REALTIME_RECONNECT_DELAYS_MS[
+    const delayMs = REALTIME_RECONNECT_DELAYS_MS[
       Math.min(realtimeReconnectAttempt, REALTIME_RECONNECT_DELAYS_MS.length - 1)
     ];
     realtimeReconnectAttempt += 1;
     realtimeReconnectTimer = setTimeout(() => {
       realtimeReconnectTimer = 0;
       void startRealtimeSubscription(`reconnect-${reason}`);
-    }, delay);
+    }, delayMs);
   }
 
   function stopRealtimeSubscription(options = {}) {
@@ -766,7 +1708,7 @@
             postgres_changes: [{
               event: '*',
               schema: 'public',
-              table: STATE_TABLE,
+              table: 'extension_sync_state',
               filter: `user_id=eq.${userId}`
             }],
             private: false
@@ -864,211 +1806,11 @@
     }
 
     await ensureBackgroundSyncActive('fallback-alarm');
-    await pullRemoteState('fallback-alarm', {
-      quiet: true,
-      skipIfRemoteNotNewer: true,
-      skipIfSyncScheduled: true
-    });
-  }
-
-  async function readRemoteState() {
-    const user = currentUser || await fetchCurrentUser();
-    if (!user || !user.id) throw new Error('Не удалось определить пользователя Supabase.');
-    const query = `/rest/v1/${STATE_TABLE}?select=state,state_version,updated_at,client_updated_at&user_id=eq.${encodeURIComponent(user.id)}&limit=1`;
-    const rows = await supabaseFetch(query, { method: 'GET' }, true);
-    const row = Array.isArray(rows) && rows.length ? rows[0] : null;
-    return row
-      ? {
-        exists: true,
-        state: row.state && typeof row.state === 'object' ? row.state : {},
-        updatedAt: row.updated_at || '',
-        clientUpdatedAt: row.client_updated_at || ''
-      }
-      : { exists: false, state: {}, updatedAt: '', clientUpdatedAt: '' };
-  }
-
-  async function upsertRemoteState(snapshot) {
-    const user = currentUser || await fetchCurrentUser();
-    if (!user || !user.id) throw new Error('Не удалось определить пользователя Supabase.');
-    const clientUpdatedAt = new Date().toISOString();
-    const payload = [{
-      user_id: user.id,
-      state: snapshot || {},
-      state_version: STATE_VERSION,
-      client_updated_at: clientUpdatedAt
-    }];
-    await supabaseFetch(`/rest/v1/${STATE_TABLE}?on_conflict=user_id`, {
-      method: 'POST',
-      headers: {
-        Prefer: 'resolution=merge-duplicates,return=minimal'
-      },
-      body: JSON.stringify(payload)
-    }, true);
-    return { clientUpdatedAt };
-  }
-
-  async function applyRemoteState(remoteState) {
-    const state = remoteState && typeof remoteState === 'object' ? remoteState : {};
-    const localData = await storageGet(null);
-    const valuesToSet = {};
-
-    Object.keys(state).forEach((key) => {
-      if (!isSyncableKey(key)) return;
-      const value = sanitizeValueForCloud(key, state[key]);
-      if (!storageValueEquals(localData[key], value)) {
-        valuesToSet[key] = value;
-      }
-    });
-
-    if (!Object.keys(valuesToSet).length) return false;
-
-    applyingRemoteState = true;
-    try {
-      await storageSet(valuesToSet);
-    } finally {
-      applyingRemoteState = false;
+    const outbox = await getOutbox();
+    if (outbox.length) {
+      await flushOutbox('fallback-alarm');
     }
-    return true;
-  }
-
-  async function pullRemoteState(reason = 'manual', options = {}) {
-    if (!currentSession) await loadStoredSession();
-    if (!currentSession) return { success: false, error: 'NO_SESSION' };
-    if (syncInProgress) return { success: true, skipped: 'sync-in-progress' };
-    if (options.skipIfSyncScheduled === true && syncTimer) {
-      return { success: true, skipped: 'local-sync-scheduled' };
-    }
-
-    syncInProgress = true;
-    if (options.quiet !== true) await broadcastStatus('Синхронизация...');
-    try {
-      await ensureSession();
-      if (!currentUser) {
-        currentUser = await fetchCurrentUser();
-      }
-      const remote = await readRemoteState();
-      const meta = await getSyncMeta();
-
-      if (
-        options.skipIfRemoteNotNewer === true &&
-        remote.exists &&
-        !isEmptyObject(remote.state) &&
-        isRemoteKnownOrOlder(remote, meta)
-      ) {
-        await setSyncMeta({
-          lastSyncAt: new Date().toISOString(),
-          lastPullCheckAt: new Date().toISOString(),
-          lastError: '',
-          lastReason: reason,
-          remoteUpdatedAt: remote.updatedAt || meta.remoteUpdatedAt || '',
-          remoteClientUpdatedAt: remote.clientUpdatedAt || meta.remoteClientUpdatedAt || ''
-        });
-        lastRuntimeError = '';
-        return { success: true, skipped: 'remote-not-newer' };
-      }
-
-      const localSnapshot = await collectLocalSyncSnapshot();
-
-      if (!remote.exists || isEmptyObject(remote.state)) {
-        const pushResult = await upsertRemoteState(localSnapshot);
-        await setSyncMeta({
-          lastSyncAt: new Date().toISOString(),
-          lastPullAt: new Date().toISOString(),
-          lastPushAt: new Date().toISOString(),
-          lastPushClientUpdatedAt: pushResult.clientUpdatedAt,
-          lastError: '',
-          lastReason: reason,
-          remoteWasEmpty: true,
-          remoteClientUpdatedAt: pushResult.clientUpdatedAt
-        });
-        lastRuntimeMessage = 'Локальные данные отправлены в Supabase.';
-        lastRuntimeError = '';
-        return { success: true, uploadedLocalState: true };
-      }
-
-      await storageSet({
-        [PRE_LOGIN_BACKUP_KEY]: {
-          createdAt: new Date().toISOString(),
-          reason,
-          state: localSnapshot
-        }
-      });
-      const applied = await applyRemoteState(remote.state);
-      await setSyncMeta({
-        lastSyncAt: new Date().toISOString(),
-        lastPullAt: new Date().toISOString(),
-        lastError: '',
-        lastReason: reason,
-        remoteUpdatedAt: remote.updatedAt || '',
-        remoteClientUpdatedAt: remote.clientUpdatedAt || ''
-      });
-      lastRuntimeMessage = applied
-        ? 'Данные Supabase применены локально.'
-        : 'Локальные данные уже совпадают с Supabase.';
-      lastRuntimeError = '';
-      return { success: true, appliedRemoteState: applied };
-    } catch (error) {
-      lastRuntimeError = localizeSupabaseError(error);
-      await setSyncMeta({ lastError: lastRuntimeError });
-      return { success: false, error: lastRuntimeError };
-    } finally {
-      syncInProgress = false;
-      await broadcastStatus();
-    }
-  }
-
-  async function flushSync(reason = 'storage-change') {
-    if (syncInProgress || applyingRemoteState) return;
-    if (!currentSession) await loadStoredSession();
-    if (!currentSession) return;
-
-    syncInProgress = true;
-    await broadcastStatus('Сохраняю в Supabase...');
-    try {
-      await ensureSession();
-      const snapshot = await collectLocalSyncSnapshot();
-      const pushResult = await upsertRemoteState(snapshot);
-      await setSyncMeta({
-        lastSyncAt: new Date().toISOString(),
-        lastPushAt: new Date().toISOString(),
-        lastPushClientUpdatedAt: pushResult.clientUpdatedAt,
-        remoteClientUpdatedAt: pushResult.clientUpdatedAt,
-        lastError: '',
-        lastReason: reason
-      });
-      lastRuntimeMessage = 'Данные сохранены в Supabase.';
-      lastRuntimeError = '';
-    } catch (error) {
-      lastRuntimeError = localizeSupabaseError(error);
-      await setSyncMeta({ lastError: lastRuntimeError });
-    } finally {
-      syncInProgress = false;
-      await broadcastStatus();
-    }
-  }
-
-  function scheduleSync(reason = 'storage-change') {
-    if (applyingRemoteState || !currentSession) return;
-    if (syncTimer) clearTimeout(syncTimer);
-    syncTimer = setTimeout(() => {
-      syncTimer = 0;
-      void flushSync(reason);
-    }, SYNC_DEBOUNCE_MS);
-  }
-
-  async function initializeAuthenticatedSession(reason) {
-    if (!currentSession) await loadStoredSession();
-    if (!currentSession) return;
-    try {
-      await ensureSession();
-      if (!currentUser) await fetchCurrentUser();
-      await pullRemoteState(reason || 'auth');
-      await ensureBackgroundSyncActive(reason || 'auth');
-    } catch (error) {
-      lastRuntimeError = localizeSupabaseError(error);
-      await setSyncMeta({ lastError: lastRuntimeError });
-      await broadcastStatus();
-    }
+    await pullCanonicalState('fallback-alarm', { quiet: true });
   }
 
   async function signIn(email, password) {
@@ -1076,9 +1818,7 @@
       email: String(email || '').trim(),
       password: String(password || '')
     };
-    if (!payload.email || !payload.password) {
-      throw new Error('Укажи почту и пароль.');
-    }
+    if (!payload.email || !payload.password) throw new Error('Укажи почту и пароль.');
 
     const data = await supabaseFetch('/auth/v1/token?grant_type=password', {
       method: 'POST',
@@ -1096,9 +1836,7 @@
       email: String(email || '').trim(),
       password: String(password || '')
     };
-    if (!payload.email || !payload.password) {
-      throw new Error('Укажи почту и пароль.');
-    }
+    if (!payload.email || !payload.password) throw new Error('Укажи почту и пароль.');
 
     const data = await supabaseFetch('/auth/v1/signup', {
       method: 'POST',
@@ -1123,11 +1861,12 @@
         await supabaseFetch('/auth/v1/logout', { method: 'POST' }, true);
       }
     } catch (error) {
-      // Даже если серверный logout не ответил, локальную сессию нужно убрать.
+      // Локальный выход нужен даже при ошибке серверного logout.
     }
     stopRealtimeSubscription();
     clearFallbackPullAlarm();
     await clearStoredSession();
+    await storageRemove([SYNC_META_KEY, OUTBOX_KEY]);
     lastRuntimeMessage = 'Выход выполнен. Данные снова хранятся локально.';
     await broadcastStatus();
     return getPublicStatus();
@@ -1174,18 +1913,33 @@
   async function getPublicStatus(messageOverride = '') {
     if (!currentSession) await loadStoredSession();
     const meta = await getSyncMeta();
+    const outbox = await getOutbox();
+    const localRevision = await getCacheRevision();
+    const serverRevision = Number(meta.serverRevision || localRevision || 0);
+    const lastError = lastRuntimeError || meta.lastError || meta.lastPushError || meta.lastPullError || '';
     return {
       configured: true,
       authenticated: !!currentSession,
       email: currentUser && currentUser.email ? String(currentUser.email) : '',
       userId: currentUser && currentUser.id ? String(currentUser.id) : '',
-      syncing: syncInProgress,
-      lastSyncAt: meta.lastSyncAt || '',
-      lastError: lastRuntimeError || meta.lastError || '',
+      syncing: flushInProgress || pullInProgress,
+      lastSyncAt: meta.lastPushAt || meta.lastPullAt || '',
+      lastPullAt: meta.lastPullAt || '',
+      lastPushAt: meta.lastPushAt || '',
+      lastPullError: meta.lastPullError || '',
+      lastPushError: meta.lastPushError || '',
+      lastError,
       message: messageOverride || lastRuntimeMessage || '',
       remotePriority: true,
       realtimeConnected: realtimeJoined,
-      realtimeStatus: meta.realtimeStatus || ''
+      realtimeStatus: meta.realtimeStatus || '',
+      realtimeLastError: meta.realtimeLastError || '',
+      serverRevision,
+      localRevision,
+      outboxSize: outbox.length,
+      outboxLastError: outbox.length ? String(outbox[0].lastError || '') : '',
+      deviceId: meta.deviceId || '',
+      schemaVersion: SCHEMA_VERSION
     };
   }
 
@@ -1208,42 +1962,76 @@
 
   async function handleRuntimeMessage(message) {
     const action = message && message.action ? String(message.action) : '';
-    const data = message && message.data && typeof message.data === 'object'
-      ? message.data
-      : {};
+    const data = message && message.data && typeof message.data === 'object' ? message.data : {};
 
     try {
       if (action === 'DUP_SUPABASE_GET_STATUS') {
         void ensureBackgroundSyncActive('status');
-        void pullRemoteState('panel-open', {
-          quiet: true,
-          skipIfRemoteNotNewer: true,
-          skipIfSyncScheduled: true
-        });
+        void pullCanonicalState('panel-open', { quiet: true });
         return { success: true, status: await getPublicStatus() };
       }
-      if (action === 'DUP_SUPABASE_SIGN_IN') {
-        return { success: true, status: await signIn(data.email, data.password) };
-      }
-      if (action === 'DUP_SUPABASE_SIGN_UP') {
-        return { success: true, status: await signUp(data.email, data.password) };
-      }
-      if (action === 'DUP_SUPABASE_SIGN_OUT') {
-        return { success: true, status: await signOut() };
-      }
+      if (action === 'DUP_SUPABASE_SIGN_IN') return { success: true, status: await signIn(data.email, data.password) };
+      if (action === 'DUP_SUPABASE_SIGN_UP') return { success: true, status: await signUp(data.email, data.password) };
+      if (action === 'DUP_SUPABASE_SIGN_OUT') return { success: true, status: await signOut() };
       if (action === 'DUP_SUPABASE_SYNC_NOW') {
-        const result = await pullRemoteState('manual');
+        const result = await manualSync();
         return { success: result.success !== false, status: await getPublicStatus(), result };
       }
       if (action === 'DUP_SUPABASE_SEND_PASSWORD_RECOVERY') {
         return { success: true, status: await sendPasswordRecovery(data.email) };
       }
       if (action === 'DUP_SUPABASE_CONFIRM_PASSWORD_RECOVERY') {
+        return { success: true, status: await confirmPasswordRecovery(data.email, data.token, data.password) };
+      }
+
+      if (action === 'DUP_SYNC_SET') return { success: true, result: await syncSet(data.values || {}, data.options || {}) };
+      if (action === 'DUP_SYNC_REMOVE') return { success: true, result: await syncRemove(data.keys || [], data.options || {}) };
+      if (action === 'DUP_SYNC_COUNTER_INCREMENT') {
+        return { success: true, result: await incrementCounter(data.counterKey, data.dateKey, data.delta, data.options || {}) };
+      }
+      if (action === 'DUP_SYNC_COUNTER_SET') {
+        return { success: true, result: await setCounter(data.counterKey, data.dateKey, data.value, data.options || {}) };
+      }
+      if (action === 'DUP_SYNC_PROCESSED_EDOCIDS_ADD') {
         return {
           success: true,
-          status: await confirmPasswordRecovery(data.email, data.token, data.password)
+          result: await addProcessedEdocids(data.dateIso, data.dateKey, data.edocids, data.options || {})
         };
       }
+      if (action === 'DUP_SYNC_PROCESSED_EDIT_ADD_EDOCID') {
+        return {
+          success: true,
+          result: await addProcessedEditEdocid(data.dateIso, data.dateKey, data.path, data.edocid, data.options || {})
+        };
+      }
+      if (action === 'DUP_SYNC_PROCESSED_EDIT_SET') {
+        return {
+          success: true,
+          result: await setProcessedEdit(data.dateIso, data.path, data.item, data.options || {})
+        };
+      }
+      if (action === 'DUP_SYNC_PROCESSED_EDIT_DELETE') {
+        return {
+          success: true,
+          result: await deleteProcessedEdit(data.dateIso, data.path, data.options || {})
+        };
+      }
+      if (action === 'DUP_SYNC_ACTION_RULE_SET') {
+        return {
+          success: true,
+          result: await setActionRule(data.path, data.status, data.tag, data.options || {})
+        };
+      }
+      if (action === 'DUP_SYNC_ACTION_TAG_SET') {
+        return {
+          success: true,
+          result: await setActionTag(data.path, data.tag, data.options || {})
+        };
+      }
+      if (action === 'DUP_SYNC_IMPORT_JSON') {
+        return { success: true, result: await importSyncData(data.importedData || {}) };
+      }
+
       return null;
     } catch (error) {
       const localizedError = localizeSupabaseError(error);
@@ -1256,21 +2044,11 @@
   if (chrome && chrome.runtime && chrome.runtime.onMessage) {
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const action = message && message.action ? String(message.action) : '';
-      if (!action.startsWith('DUP_SUPABASE_')) return false;
+      if (!action.startsWith('DUP_SUPABASE_') && !action.startsWith('DUP_SYNC_')) return false;
       handleRuntimeMessage(message).then((response) => {
         sendResponse(response || { success: false, error: 'UNKNOWN_ACTION' });
       });
       return true;
-    });
-  }
-
-  if (chrome && chrome.storage && chrome.storage.onChanged) {
-    chrome.storage.onChanged.addListener((changes, areaName) => {
-      if (areaName !== 'local' || applyingRemoteState || !currentSession) return;
-      const changedKeys = Object.keys(changes || {});
-      if (changedKeys.some((key) => isSyncableKey(key))) {
-        scheduleSync('storage-change');
-      }
     });
   }
 
@@ -1296,11 +2074,25 @@
 
   globalThis.__dupSupabaseSync = {
     isSyncableKey,
+    isKvSyncKey,
     collectLocalSyncSnapshot,
-    pullRemoteState,
-    flushSync,
+    pullRemoteState: pullCanonicalState,
+    flushSync: flushOutbox,
+    flushOutbox,
     startRealtimeSubscription,
-    stopRealtimeSubscription
+    stopRealtimeSubscription,
+    syncSet,
+    syncRemove,
+    incrementCounter,
+    setCounter,
+    addProcessedEdocids,
+    addProcessedEditEdocid,
+    setProcessedEdit,
+    deleteProcessedEdit,
+    setActionRule,
+    setActionTag,
+    importSyncData,
+    getPublicStatus
   };
 
   setTimeout(() => {

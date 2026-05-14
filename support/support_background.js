@@ -122,7 +122,14 @@
 
   function saveState(state) {
     return new Promise((resolve) => {
-      chrome.storage.local.set({ [STORAGE_KEY]: state }, () => resolve());
+      const store = globalThis.__dupSupabaseSync || null;
+      if (store && typeof store.syncSet === 'function') {
+        store.syncSet({ [STORAGE_KEY]: state }, { reason: 'support-reminders-state' })
+          .then(() => resolve())
+          .catch(() => resolve());
+        return;
+      }
+      resolve();
     });
   }
 

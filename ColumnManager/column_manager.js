@@ -389,8 +389,22 @@
     }
   }
 
+  function sendSyncSet(values) {
+    try {
+      chrome.runtime.sendMessage({
+        action: 'DUP_SYNC_SET',
+        data: {
+          values,
+          options: { reason: 'column-manager-state' }
+        }
+      }, () => {});
+    } catch (error) {
+      // background недоступен
+    }
+  }
+
   function saveState() {
-    chrome.storage.local.set({ [STORAGE_KEY]: state });
+    sendSyncSet({ [STORAGE_KEY]: state });
   }
 
 

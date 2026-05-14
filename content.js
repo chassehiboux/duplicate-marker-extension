@@ -1216,22 +1216,28 @@
   }
 
   function chromeStorageSet(values) {
-    return new Promise((resolve) => {
-      try {
-        chrome.storage.local.set(values, () => resolve(true));
-      } catch (error) {
-        resolve(false);
+    return sendRuntimeMessage({
+      action: 'DUP_SYNC_SET',
+      data: {
+        values,
+        options: { reason: 'content-storage-set' }
       }
+    }).then((response) => {
+      if (response && response.success !== false) return true;
+      return false;
     });
   }
 
   function chromeStorageRemove(keys) {
-    return new Promise((resolve) => {
-      try {
-        chrome.storage.local.remove(keys, () => resolve(true));
-      } catch (error) {
-        resolve(false);
+    return sendRuntimeMessage({
+      action: 'DUP_SYNC_REMOVE',
+      data: {
+        keys,
+        options: { reason: 'content-storage-remove' }
       }
+    }).then((response) => {
+      if (response && response.success !== false) return true;
+      return false;
     });
   }
 
@@ -3623,7 +3629,7 @@
         [definition.key]: input.checked
       };
       applyExtensionUiVisibilitySettings('panel-change');
-      chrome.storage.local.set({ [definition.storageKey]: input.checked });
+      void chromeStorageSet({ [definition.storageKey]: input.checked });
     }, { capture: true });
 
     const footer = document.createElement('div');
@@ -4558,7 +4564,7 @@
       // ignore
     }
     if (options.persist !== false) {
-      chrome.storage.local.set({ [FSSP_REESTR_GROUPING_STORAGE_KEY]: enabled });
+      void chromeStorageSet({ [FSSP_REESTR_GROUPING_STORAGE_KEY]: enabled });
     }
   }
 
@@ -6105,7 +6111,7 @@
       toggleCheckbox.addEventListener('change', () => {
         departmentDropdownShowHidden = toggleCheckbox.checked;
         syncDepartmentDropdownVisibility();
-        chrome.storage.local.set({ [DEPARTMENT_DROPDOWN_STATE_STORAGE_KEY]: departmentDropdownShowHidden });
+        void chromeStorageSet({ [DEPARTMENT_DROPDOWN_STATE_STORAGE_KEY]: departmentDropdownShowHidden });
       });
 
       const toggleText = document.createElement('span');

@@ -197,12 +197,15 @@
   }
 
   function chromeStorageSet(values) {
-    return new Promise((resolve) => {
-      try {
-        chrome.storage.local.set(values, () => resolve(true));
-      } catch (error) {
-        resolve(false);
+    return sendRuntimeMessage({
+      action: 'DUP_SYNC_SET',
+      data: {
+        values,
+        options: { reason: 'google-sheets-problem-picker' }
       }
+    }).then((response) => {
+      if (response && response.success !== false) return true;
+      return false;
     });
   }
 
