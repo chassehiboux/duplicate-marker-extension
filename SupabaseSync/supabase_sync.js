@@ -136,6 +136,7 @@
   let realtimeReconnectTimer = 0;
   let realtimeReconnectAttempt = 0;
   let realtimePullTimer = 0;
+  let outboxLock = Promise.resolve();
   let syncFlowState = {
     kind: '',
     title: '',
@@ -739,6 +740,129 @@
     await storageSet({ [OUTBOX_KEY]: Array.isArray(outbox) ? outbox : [] });
   }
 
+  function withOutboxLock(task) {
+    const run = outboxLock.catch(() => {}).then(task);
+    outboxLock = run.catch(() => {});
+    return run;
+  }
+
+  async function updateOutboxLocked(updater) {
+    return withOutboxLock(async () => {
+      const currentOutbox = await getOutbox();
+      const result = await updater(currentOutbox);
+      const nextOutbox = Array.isArray(result && result.outbox)
+        ? result.outbox
+        : currentOutbox;
+      if (nextOutbox !== currentOutbox) {
+        await setOutbox(nextOutbox);
+      }
+      return {
+        ...(result && typeof result === 'object' ? result : {}),
+        outbox: nextOutbox
+      };
+    });
+  }
+
+  async function appendOutboxOperationsUnlocked(operations, reason = 'local-change') {
+    const filteredOperations = expandSupportReminderOperations(operations)
+      .filter((operation) => operation && typeof operation === 'object');
+    if (!filteredOperations.length) return { queued: false };
+    if (!currentSession) await loadStoredSession();
+    if (!currentSession) return { queued: false, localOnly: true };
+
+    const deviceId = await getDeviceId();
+    const outbox = await getOutbox();
+    const item = {
+      mutationId: makeMutationId(deviceId),
+      deviceId,
+      baseRevision: await getCacheRevision(),
+      createdAt: new Date().toISOString(),
+      attempts: 0,
+      lastError: '',
+      reason,
+      operations: filteredOperations
+    };
+    const nextOutbox = [...outbox, item];
+    await setOutbox(nextOutbox);
+    await setSyncMeta({
+      outboxSize: nextOutbox.length,
+      lastQueuedAt: new Date().toISOString(),
+      lastError: ''
+    });
+    return { queued: true, item, outboxSize: nextOutbox.length };
+  }
+
+  async function claimNextOutboxItemForAttempt() {
+    return updateOutboxLocked(async (outbox) => {
+      if (!outbox.length) return { item: null, outbox };
+      const item = {
+        ...outbox[0],
+        attempts: Number(outbox[0].attempts || 0) + 1,
+        lastAttemptAt: new Date().toISOString()
+      };
+      return {
+        item,
+        outbox: [item, ...outbox.slice(1)]
+      };
+    });
+  }
+
+  async function removeOutboxItemByMutationId(mutationId) {
+    const normalizedMutationId = String(mutationId || '');
+    return updateOutboxLocked(async (outbox) => {
+      const nextOutbox = outbox.filter((item) => String(item && item.mutationId || '') !== normalizedMutationId);
+      return {
+        removed: nextOutbox.length !== outbox.length,
+        outbox: nextOutbox
+      };
+    });
+  }
+
+  async function rebaseOutboxItemByMutationId(sourceItem, baseRevision, errorText) {
+    const sourceMutationId = String(sourceItem && sourceItem.mutationId || '');
+    return updateOutboxLocked(async (outbox) => {
+      const index = outbox.findIndex((item) => String(item && item.mutationId || '') === sourceMutationId);
+      if (index < 0) return { rebased: false, item: null, outbox };
+
+      const currentItem = outbox[index] || sourceItem;
+      const nextItem = {
+        ...currentItem,
+        mutationId: makeMutationId(currentItem.deviceId || sourceItem.deviceId),
+        baseRevision,
+        lastError: String(errorText || 'revision_mismatch'),
+        rebasedAt: new Date().toISOString()
+      };
+      const nextOutbox = [...outbox];
+      nextOutbox[index] = nextItem;
+      return {
+        rebased: true,
+        item: nextItem,
+        outbox: nextOutbox
+      };
+    });
+  }
+
+  async function markOutboxItemError(mutationId, message, fallbackAttempts = 0) {
+    const normalizedMutationId = String(mutationId || '');
+    return updateOutboxLocked(async (outbox) => {
+      const index = outbox.findIndex((item) => String(item && item.mutationId || '') === normalizedMutationId);
+      if (index < 0) return { updated: false, outbox };
+
+      const nextItem = {
+        ...outbox[index],
+        attempts: Number(outbox[index].attempts || fallbackAttempts || 0),
+        lastError: message,
+        lastAttemptAt: new Date().toISOString()
+      };
+      const nextOutbox = [...outbox];
+      nextOutbox[index] = nextItem;
+      return {
+        updated: true,
+        outbox: nextOutbox
+      };
+    });
+  }
+
   function createRandomId() {
     if (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') {
       return globalThis.crypto.randomUUID();
@@ -965,44 +1089,47 @@
   }
 
   async function applyCanonicalState(rawState, options = {}) {
-    const outbox = await getOutbox();
-    if (outbox.length && options.force !== true) {
-      await setSyncMeta({
-        serverRevision: Number(rawState && rawState.revision || 0),
-        lastPullSkippedApplyAt: new Date().toISOString(),
-        lastPullSkippedApplyReason: 'outbox-not-empty'
+    return withOutboxLock(async () => {
+      const outbox = await getOutbox();
+      if (outbox.length) {
+        await setSyncMeta({
+          serverRevision: Number(rawState && rawState.revision || 0),
+          outboxSize: outbox.length,
+          lastPullSkippedApplyAt: new Date().toISOString(),
+          lastPullSkippedApplyReason: 'outbox-not-empty'
+        });
+        return false;
+      }
+
+      const state = normalizeCanonicalState(rawState);
+      const nextValues = buildLocalCacheFromCanonical(state);
+      const localData = await storageGet(null);
+      const valuesToSet = {};
+      const keysToRemove = [];
+
+      Object.keys(nextValues).forEach((key) => {
+        if (!storageValueEquals(localData[key], nextValues[key])) {
+          valuesToSet[key] = nextValues[key];
+        }
       });
-      return false;
-    }
 
-    const state = normalizeCanonicalState(rawState);
-    const nextValues = buildLocalCacheFromCanonical(state);
-    const localData = await storageGet(null);
-    const valuesToSet = {};
-    const keysToRemove = [];
+      Object.keys(localData || {}).forEach((key) => {
+        if (isSyncableKey(key) && !Object.prototype.hasOwnProperty.call(nextValues, key)) {
+          keysToRemove.push(key);
+        }
+      });
 
-    Object.keys(nextValues).forEach((key) => {
-      if (!storageValueEquals(localData[key], nextValues[key])) {
-        valuesToSet[key] = nextValues[key];
+      applyingCanonicalState = true;
+      try {
+        if (keysToRemove.length) await storageRemove(keysToRemove);
+        if (Object.keys(valuesToSet).length) await storageSet(valuesToSet);
+        await setCacheRevision(state.revision);
+      } finally {
+        applyingCanonicalState = false;
       }
+
+      return keysToRemove.length > 0 || Object.keys(valuesToSet).length > 0;
     });
-
-    Object.keys(localData || {}).forEach((key) => {
-      if (isSyncableKey(key) && !Object.prototype.hasOwnProperty.call(nextValues, key)) {
-        keysToRemove.push(key);
-      }
-    });
-
-    applyingCanonicalState = true;
-    try {
-      if (keysToRemove.length) await storageRemove(keysToRemove);
-      if (Object.keys(valuesToSet).length) await storageSet(valuesToSet);
-      await setCacheRevision(state.revision);
-    } finally {
-      applyingCanonicalState = false;
-    }
-
-    return keysToRemove.length > 0 || Object.keys(valuesToSet).length > 0;
   }
 
   function makeKvOperationsFromValues(values) {
@@ -1154,34 +1281,12 @@
   }
 
   async function appendOutboxOperations(operations, reason = 'local-change') {
-    const filteredOperations = expandSupportReminderOperations(operations)
-      .filter((operation) => operation && typeof operation === 'object');
-    if (!filteredOperations.length) return { queued: false };
-    if (!currentSession) await loadStoredSession();
-    if (!currentSession) return { queued: false, localOnly: true };
-
-    const deviceId = await getDeviceId();
-    const outbox = await getOutbox();
-    const item = {
-      mutationId: makeMutationId(deviceId),
-      deviceId,
-      baseRevision: await getCacheRevision(),
-      createdAt: new Date().toISOString(),
-      attempts: 0,
-      lastError: '',
-      reason,
-      operations: filteredOperations
-    };
-    outbox.push(item);
-    await setOutbox(outbox);
-    await setSyncMeta({
-      outboxSize: outbox.length,
-      lastQueuedAt: new Date().toISOString(),
-      lastError: ''
-    });
-    scheduleFlushOutbox(reason);
-    await broadcastStatus();
-    return { queued: true, item };
+    const result = await withOutboxLock(() => appendOutboxOperationsUnlocked(operations, reason));
+    if (result && result.queued) {
+      scheduleFlushOutbox(reason);
+      await broadcastStatus();
+    }
+    return result;
   }
 
   function scheduleFlushOutbox(reason = 'queued') {
@@ -1241,8 +1346,8 @@
       setSyncFlowStep('prepare', 'done');
 
       while (true) {
-        const outbox = await getOutbox();
-        if (!outbox.length) {
+        const claim = await claimNextOutboxItemForAttempt();
+        if (!claim.item) {
           await setSyncMeta({
             outboxSize: 0,
             lastPushError: '',
@@ -1255,9 +1360,7 @@
           return { success: true };
         }
 
-        const item = outbox[0];
-        item.attempts = Number(item.attempts || 0) + 1;
-        await setOutbox([item, ...outbox.slice(1)]);
+        const item = claim.item;
 
         try {
           setSyncFlowStep('request', 'active', `Операций: ${toArray(item.operations).length}`);
@@ -1272,58 +1375,58 @@
           if (state && state.status === 'conflict') {
             const metaState = await getRemoteCanonicalState('conflict-rebase');
             const rebasedRevision = Number(metaState.revision || state.current_revision || 0);
-            const nextItem = {
-              ...item,
-              mutationId: makeMutationId(item.deviceId),
-              baseRevision: rebasedRevision,
-              lastError: String(state.error || 'revision_mismatch'),
-              rebasedAt: new Date().toISOString()
-            };
-            await setOutbox([nextItem, ...outbox.slice(1)]);
+            const rebaseResult = await rebaseOutboxItemByMutationId(
+              item,
+              rebasedRevision,
+              String(state.error || 'revision_mismatch')
+            );
             await setCacheRevision(rebasedRevision);
             if (String(state.error || '').startsWith('unknown_operation')) {
               throw new Error(state.error);
             }
+            await setSyncMeta({
+              outboxSize: rebaseResult.outbox.length,
+              serverRevision: rebasedRevision,
+              lastPushError: String(state.error || 'revision_mismatch'),
+              lastReason: reason
+            });
             setSyncFlowStep('write', 'active', 'Повторная отправка после обновления revision');
             continue;
           }
 
-          const nextOutbox = outbox.slice(1);
-          await setOutbox(nextOutbox);
-          setSyncFlowStep('cache', 'active', 'Применяю ответ локально');
-          await applyCanonicalState(state, { force: true });
-          setSyncFlowStep('cache', 'done');
+          const removeResult = await removeOutboxItemByMutationId(item.mutationId);
+          const pendingAfterRemove = removeResult.outbox.length;
+          let applied = false;
+          if (pendingAfterRemove === 0) {
+            setSyncFlowStep('cache', 'active', 'Применяю ответ локально');
+            applied = await applyCanonicalState(state, { force: true });
+            setSyncFlowStep('cache', 'done', applied ? 'Кэш обновлен' : 'Кэш уже актуален');
+          } else {
+            setSyncFlowStep('cache', 'done', 'Есть новые pending изменения, canonical state не применен');
+          }
+          const latestOutbox = await getOutbox();
           await setSyncMeta({
-            outboxSize: nextOutbox.length,
+            outboxSize: latestOutbox.length,
             serverRevision: state.revision,
-            localRevision: state.revision,
+            localRevision: await getCacheRevision(),
             lastPushAt: new Date().toISOString(),
             lastPushError: '',
             lastError: '',
             lastReason: reason
           });
-          lastRuntimeMessage = nextOutbox.length
-            ? `Отправлено изменение, осталось в очереди: ${nextOutbox.length}.`
+          lastRuntimeMessage = latestOutbox.length
+            ? `Отправлено изменение, осталось в очереди: ${latestOutbox.length}.`
             : 'Все изменения отправлены в Supabase.';
           lastRuntimeError = '';
-          if (!nextOutbox.length) finishSyncFlow(true);
+          if (!latestOutbox.length) finishSyncFlow(true);
           await broadcastStatus(lastRuntimeMessage);
         } catch (error) {
           const message = localizeSupabaseError(error);
-          const currentOutbox = await getOutbox();
-          if (currentOutbox.length) {
-            currentOutbox[0] = {
-              ...currentOutbox[0],
-              attempts: Number(currentOutbox[0].attempts || item.attempts || 0),
-              lastError: message,
-              lastAttemptAt: new Date().toISOString()
-            };
-            await setOutbox(currentOutbox);
-          }
+          const errorResult = await markOutboxItemError(item.mutationId, message, item.attempts);
           lastRuntimeError = message;
           setSyncFlowError(message);
           await setSyncMeta({
-            outboxSize: currentOutbox.length,
+            outboxSize: errorResult.outbox.length,
             lastPushError: message,
             lastError: message,
             lastPushAttemptAt: new Date().toISOString()
@@ -1353,7 +1456,7 @@
       await ensureSession();
       await registerDevice();
       if (traceFlow) setSyncFlowStep('prepare', 'done');
-      const outbox = await getOutbox();
+      const outboxBeforeRequest = await getOutbox();
       if (traceFlow) {
         setSyncFlowStep('request', 'active', `Local revision: ${await getCacheRevision()}`);
         await broadcastStatus('Запрос состояния отправлен в Supabase...');
@@ -1364,7 +1467,8 @@
         setSyncFlowStep('response', 'done', `Server revision: ${Number(state.revision || 0)}`);
       }
       const localRevision = await getCacheRevision();
-      const shouldApply = options.forceApply === true || (!outbox.length && state.revision >= localRevision);
+      const latestOutbox = await getOutbox();
+      const shouldApply = !latestOutbox.length && (options.forceApply === true || state.revision >= localRevision);
       if (traceFlow) setSyncFlowStep('cache', 'active', shouldApply ? 'Применяю canonical state' : 'Локальная очередь не перезаписана');
       const applied = shouldApply ? await applyCanonicalState(state, { force: options.forceApply === true }) : false;
       if (traceFlow) setSyncFlowStep('cache', 'done', applied ? 'Кэш обновлен' : 'Кэш уже актуален');
@@ -1374,12 +1478,14 @@
         lastError: '',
         serverRevision: state.revision,
         localRevision: await getCacheRevision(),
-        outboxSize: outbox.length,
+        outboxSize: latestOutbox.length,
         lastReason: reason
       });
       lastRuntimeMessage = applied
         ? 'Данные Supabase применены локально.'
-        : (outbox.length ? 'Pull выполнен, локальная очередь сохранена.' : 'Локальный кэш уже актуален.');
+        : ((latestOutbox.length || outboxBeforeRequest.length)
+          ? 'Pull выполнен, локальная очередь сохранена.'
+          : 'Локальный кэш уже актуален.');
       lastRuntimeError = '';
       if (traceFlow) {
         setSyncFlowStep('panel', 'done');
@@ -1429,18 +1535,36 @@
       const remoteState = registeredState.revision > 0
         ? registeredState
         : await getRemoteCanonicalState(reason || 'auth');
+      const pendingOutbox = await getOutbox();
+
+      if (pendingOutbox.length) {
+        await setSyncMeta({
+          serverRevision: remoteState.revision,
+          localRevision: await getCacheRevision(),
+          outboxSize: pendingOutbox.length,
+          lastError: '',
+          lastReason: reason
+        });
+        lastRuntimeMessage = 'Есть локальная очередь изменений, сначала отправляю ее в Supabase.';
+        await ensureBackgroundSyncActive(reason || 'auth');
+        await broadcastStatus();
+        void flushOutbox(reason || 'auth-pending');
+        return;
+      }
 
       if (remoteState.revision > 0) {
-        await applyCanonicalState(remoteState, { force: true });
+        const applied = await applyCanonicalState(remoteState, { force: true });
         await setSyncMeta({
           lastPullAt: new Date().toISOString(),
           lastPullError: '',
           lastError: '',
           serverRevision: remoteState.revision,
-          localRevision: remoteState.revision,
+          localRevision: await getCacheRevision(),
           lastReason: reason
         });
-        lastRuntimeMessage = 'Данные Supabase применены локально.';
+        lastRuntimeMessage = applied
+          ? 'Данные Supabase применены локально.'
+          : 'Локальный кэш уже актуален.';
       } else {
         await bootstrapRemoteFromLocal(preLoginSnapshot);
         const stateAfterBootstrap = await getRemoteCanonicalState('bootstrap-confirm');
@@ -1480,39 +1604,55 @@
   }
 
   async function syncSet(values, options = {}) {
-    const nextValues = values && typeof values === 'object' ? values : {};
-    const previousValues = Object.prototype.hasOwnProperty.call(nextValues, SUPPORT_REMINDERS_STORAGE_KEY)
-      ? await storageGet([SUPPORT_REMINDERS_STORAGE_KEY])
-      : {};
-    await storageSet(nextValues);
+    const reason = options.reason || 'kv-set';
+    const result = await withOutboxLock(async () => {
+      const nextValues = values && typeof values === 'object' ? values : {};
+      const previousValues = Object.prototype.hasOwnProperty.call(nextValues, SUPPORT_REMINDERS_STORAGE_KEY)
+        ? await storageGet([SUPPORT_REMINDERS_STORAGE_KEY])
+        : {};
+      await storageSet(nextValues);
 
-    const operations = makeOperationsFromValues(nextValues, previousValues);
-    if (options.queue !== false) {
-      await appendOutboxOperations(operations, options.reason || 'kv-set');
+      const operations = makeOperationsFromValues(nextValues, previousValues);
+      const enqueueResult = options.queue !== false
+        ? await appendOutboxOperationsUnlocked(operations, reason)
+        : { queued: false };
+      return { success: true, operationsQueued: operations.length, enqueueResult };
+    });
+    if (result.enqueueResult && result.enqueueResult.queued) {
+      scheduleFlushOutbox(reason);
+      await broadcastStatus();
     }
-    return { success: true, operationsQueued: operations.length };
+    return { success: true, operationsQueued: result.operationsQueued };
   }
 
   async function syncRemove(keys, options = {}) {
-    const normalizedKeys = Array.isArray(keys) ? keys : [keys];
-    const hasSupportReminders = normalizedKeys
-      .map((key) => String(key || '').trim())
-      .includes(SUPPORT_REMINDERS_STORAGE_KEY);
-    const previousValues = hasSupportReminders
-      ? await storageGet([SUPPORT_REMINDERS_STORAGE_KEY])
-      : {};
-    await storageRemove(normalizedKeys);
-    const operations = normalizedKeys
-      .map((key) => String(key || '').trim())
-      .filter((key) => isKvSyncKey(key))
-      .map((key) => ({ type: 'kv_delete', key }));
-    if (hasSupportReminders) {
-      operations.push(...makeSupportReminderDeleteOperations(previousValues[SUPPORT_REMINDERS_STORAGE_KEY]));
+    const reason = options.reason || 'kv-delete';
+    const result = await withOutboxLock(async () => {
+      const normalizedKeys = Array.isArray(keys) ? keys : [keys];
+      const hasSupportReminders = normalizedKeys
+        .map((key) => String(key || '').trim())
+        .includes(SUPPORT_REMINDERS_STORAGE_KEY);
+      const previousValues = hasSupportReminders
+        ? await storageGet([SUPPORT_REMINDERS_STORAGE_KEY])
+        : {};
+      await storageRemove(normalizedKeys);
+      const operations = normalizedKeys
+        .map((key) => String(key || '').trim())
+        .filter((key) => isKvSyncKey(key))
+        .map((key) => ({ type: 'kv_delete', key }));
+      if (hasSupportReminders) {
+        operations.push(...makeSupportReminderDeleteOperations(previousValues[SUPPORT_REMINDERS_STORAGE_KEY]));
+      }
+      const enqueueResult = options.queue !== false
+        ? await appendOutboxOperationsUnlocked(operations, reason)
+        : { queued: false };
+      return { success: true, operationsQueued: operations.length, enqueueResult };
+    });
+    if (result.enqueueResult && result.enqueueResult.queued) {
+      scheduleFlushOutbox(reason);
+      await broadcastStatus();
     }
-    if (options.queue !== false) {
-      await appendOutboxOperations(operations, options.reason || 'kv-delete');
-    }
-    return { success: true, operationsQueued: operations.length };
+    return { success: true, operationsQueued: result.operationsQueued };
   }
 
   async function incrementCounter(counterKey, dateKey, delta, options = {}) {
@@ -1523,36 +1663,52 @@
       return { success: false, error: 'INVALID_COUNTER_INCREMENT' };
     }
 
-    const data = await storageGet(storageKey);
-    const history = isPlainObject(data[storageKey]) ? data[storageKey] : {};
-    const nextValue = Math.max(0, toNonNegativeInteger(history[normalizedDate]) + Math.trunc(amount));
-    history[normalizedDate] = nextValue;
-    await storageSet({ [storageKey]: history });
-    await appendOutboxOperations([{
-      type: 'counter_increment',
-      counter_key: storageKey,
-      date_key: normalizedDate,
-      delta: Math.trunc(amount)
-    }], options.reason || 'counter-increment');
-    return { success: true, value: nextValue };
+    const reason = options.reason || 'counter-increment';
+    const result = await withOutboxLock(async () => {
+      const data = await storageGet(storageKey);
+      const history = isPlainObject(data[storageKey]) ? data[storageKey] : {};
+      const nextValue = Math.max(0, toNonNegativeInteger(history[normalizedDate]) + Math.trunc(amount));
+      history[normalizedDate] = nextValue;
+      await storageSet({ [storageKey]: history });
+      const enqueueResult = await appendOutboxOperationsUnlocked([{
+        type: 'counter_increment',
+        counter_key: storageKey,
+        date_key: normalizedDate,
+        delta: Math.trunc(amount)
+      }], reason);
+      return { success: true, value: nextValue, enqueueResult };
+    });
+    if (result.enqueueResult && result.enqueueResult.queued) {
+      scheduleFlushOutbox(reason);
+      await broadcastStatus();
+    }
+    return { success: true, value: result.value };
   }
 
   async function setCounter(counterKey, dateKey, value, options = {}) {
     const storageKey = String(counterKey || '');
     const normalizedDate = String(dateKey || '');
     if (!storageKey || !normalizedDate) return { success: false, error: 'INVALID_COUNTER_SET' };
-    const normalizedValue = toNonNegativeInteger(value);
-    const data = await storageGet(storageKey);
-    const history = isPlainObject(data[storageKey]) ? data[storageKey] : {};
-    history[normalizedDate] = normalizedValue;
-    await storageSet({ [storageKey]: history });
-    await appendOutboxOperations([{
-      type: 'counter_set',
-      counter_key: storageKey,
-      date_key: normalizedDate,
-      value: normalizedValue
-    }], options.reason || 'counter-set');
-    return { success: true, value: normalizedValue };
+    const reason = options.reason || 'counter-set';
+    const result = await withOutboxLock(async () => {
+      const normalizedValue = toNonNegativeInteger(value);
+      const data = await storageGet(storageKey);
+      const history = isPlainObject(data[storageKey]) ? data[storageKey] : {};
+      history[normalizedDate] = normalizedValue;
+      await storageSet({ [storageKey]: history });
+      const enqueueResult = await appendOutboxOperationsUnlocked([{
+        type: 'counter_set',
+        counter_key: storageKey,
+        date_key: normalizedDate,
+        value: normalizedValue
+      }], reason);
+      return { success: true, value: normalizedValue, enqueueResult };
+    });
+    if (result.enqueueResult && result.enqueueResult.queued) {
+      scheduleFlushOutbox(reason);
+      await broadcastStatus();
+    }
+    return { success: true, value: result.value };
   }
 
   async function addProcessedEdocids(dateIso, dateKey, edocids, options = {}) {
@@ -1561,31 +1717,44 @@
     const uniqueEdocids = uniqueStrings(edocids);
     if (!normalizedDateIso || !uniqueEdocids.length) return { success: false, error: 'INVALID_EDOCIDS' };
 
-    const data = await storageGet(['processed_edocids', 'stats_history']);
-    const processed = isPlainObject(data.processed_edocids) ? data.processed_edocids : {};
-    const history = isPlainObject(data.stats_history) ? data.stats_history : {};
-    const processedToday = Array.isArray(processed[normalizedDateIso]) ? processed[normalizedDateIso] : [];
-    const newlyProcessed = uniqueEdocids.filter((edocid) => !processedToday.includes(edocid));
-    if (newlyProcessed.length) {
-      processed[normalizedDateIso] = [...processedToday, ...newlyProcessed];
-      history[normalizedDateKey] = toNonNegativeInteger(history[normalizedDateKey]) + newlyProcessed.length;
-      await storageSet({
-        processed_edocids: processed,
-        stats_history: history
-      });
+    const reason = options.reason || 'processed-edocids-add';
+    const result = await withOutboxLock(async () => {
+      const data = await storageGet(['processed_edocids', 'stats_history']);
+      const processed = isPlainObject(data.processed_edocids) ? data.processed_edocids : {};
+      const history = isPlainObject(data.stats_history) ? data.stats_history : {};
+      const processedToday = Array.isArray(processed[normalizedDateIso]) ? processed[normalizedDateIso] : [];
+      const newlyProcessed = uniqueEdocids.filter((edocid) => !processedToday.includes(edocid));
+      if (newlyProcessed.length) {
+        processed[normalizedDateIso] = [...processedToday, ...newlyProcessed];
+        history[normalizedDateKey] = toNonNegativeInteger(history[normalizedDateKey]) + newlyProcessed.length;
+        await storageSet({
+          processed_edocids: processed,
+          stats_history: history
+        });
+      }
+
+      const enqueueResult = await appendOutboxOperationsUnlocked([{
+        type: 'processed_edocids_add',
+        date_iso: normalizedDateIso,
+        date_key: normalizedDateKey,
+        edocids: uniqueEdocids
+      }], reason);
+
+      return {
+        success: true,
+        addedCount: newlyProcessed.length,
+        value: toNonNegativeInteger(history[normalizedDateKey]),
+        enqueueResult
+      };
+    });
+    if (result.enqueueResult && result.enqueueResult.queued) {
+      scheduleFlushOutbox(reason);
+      await broadcastStatus();
     }
-
-    await appendOutboxOperations([{
-      type: 'processed_edocids_add',
-      date_iso: normalizedDateIso,
-      date_key: normalizedDateKey,
-      edocids: uniqueEdocids
-    }], options.reason || 'processed-edocids-add');
-
     return {
       success: true,
-      addedCount: newlyProcessed.length,
-      value: toNonNegativeInteger(history[normalizedDateKey])
+      addedCount: result.addedCount,
+      value: result.value
     };
   }
 
@@ -1598,36 +1767,50 @@
       return { success: false, error: 'INVALID_PROCESSED_EDIT' };
     }
 
-    const data = await storageGet(['processed_edits', 'editing_stats']);
-    const processed = isPlainObject(data.processed_edits) ? data.processed_edits : {};
-    const history = isPlainObject(data.editing_stats) ? data.editing_stats : {};
-    if (!isPlainObject(processed[normalizedDateIso])) processed[normalizedDateIso] = {};
-    const item = normalizeProcessedEditItem(processed[normalizedDateIso][normalizedPath]);
-    const alreadyExists = item.unique_edocids.includes(normalizedEdocid);
-    if (!alreadyExists) {
-      item.unique_edocids.push(normalizedEdocid);
-      item.base_count += 1;
-      processed[normalizedDateIso][normalizedPath] = item;
-      history[normalizedDateKey] = toNonNegativeInteger(history[normalizedDateKey]) + 1;
-      await storageSet({
-        processed_edits: processed,
-        editing_stats: history
-      });
+    const reason = options.reason || 'processed-edit-add-edocid';
+    const result = await withOutboxLock(async () => {
+      const data = await storageGet(['processed_edits', 'editing_stats']);
+      const processed = isPlainObject(data.processed_edits) ? data.processed_edits : {};
+      const history = isPlainObject(data.editing_stats) ? data.editing_stats : {};
+      if (!isPlainObject(processed[normalizedDateIso])) processed[normalizedDateIso] = {};
+      const item = normalizeProcessedEditItem(processed[normalizedDateIso][normalizedPath]);
+      const alreadyExists = item.unique_edocids.includes(normalizedEdocid);
+      if (!alreadyExists) {
+        item.unique_edocids.push(normalizedEdocid);
+        item.base_count += 1;
+        processed[normalizedDateIso][normalizedPath] = item;
+        history[normalizedDateKey] = toNonNegativeInteger(history[normalizedDateKey]) + 1;
+        await storageSet({
+          processed_edits: processed,
+          editing_stats: history
+        });
+      }
+
+      const enqueueResult = await appendOutboxOperationsUnlocked([{
+        type: 'processed_edit_add_edocid',
+        date_iso: normalizedDateIso,
+        date_key: normalizedDateKey,
+        path: normalizedPath,
+        edocid: normalizedEdocid
+      }], reason);
+
+      return {
+        success: true,
+        added: !alreadyExists,
+        dayTotal: toNonNegativeInteger(history[normalizedDateKey]),
+        actionCount: item.base_count,
+        enqueueResult
+      };
+    });
+    if (result.enqueueResult && result.enqueueResult.queued) {
+      scheduleFlushOutbox(reason);
+      await broadcastStatus();
     }
-
-    await appendOutboxOperations([{
-      type: 'processed_edit_add_edocid',
-      date_iso: normalizedDateIso,
-      date_key: normalizedDateKey,
-      path: normalizedPath,
-      edocid: normalizedEdocid
-    }], options.reason || 'processed-edit-add-edocid');
-
     return {
       success: true,
-      added: !alreadyExists,
-      dayTotal: toNonNegativeInteger(history[normalizedDateKey]),
-      actionCount: item.base_count
+      added: result.added,
+      dayTotal: result.dayTotal,
+      actionCount: result.actionCount
     };
   }
 
@@ -1635,70 +1818,86 @@
     const normalizedDateIso = String(dateIso || '').trim();
     const normalizedPath = String(path || '').trim();
     if (!normalizedDateIso || !normalizedPath) return { success: false, error: 'INVALID_PROCESSED_EDIT_SET' };
-    const normalizedItem = normalizeProcessedEditItem(item);
-    const data = await storageGet(['processed_edits', 'editing_stats']);
-    const processed = isPlainObject(data.processed_edits) ? data.processed_edits : {};
-    const history = isPlainObject(data.editing_stats) ? data.editing_stats : {};
-    if (!isPlainObject(processed[normalizedDateIso])) processed[normalizedDateIso] = {};
-    processed[normalizedDateIso][normalizedPath] = normalizedItem;
-    const counterDateKey = options.counterDateKey || isoToRuDateKey(normalizedDateIso);
-    const counterValue = options.counterValue !== undefined
-      ? toNonNegativeInteger(options.counterValue)
-      : calculateProcessedDayTotal(processed[normalizedDateIso]);
-    history[counterDateKey] = counterValue;
-    await storageSet({
-      processed_edits: processed,
-      editing_stats: history
+    const reason = options.reason || 'processed-edit-set';
+    const result = await withOutboxLock(async () => {
+      const normalizedItem = normalizeProcessedEditItem(item);
+      const data = await storageGet(['processed_edits', 'editing_stats']);
+      const processed = isPlainObject(data.processed_edits) ? data.processed_edits : {};
+      const history = isPlainObject(data.editing_stats) ? data.editing_stats : {};
+      if (!isPlainObject(processed[normalizedDateIso])) processed[normalizedDateIso] = {};
+      processed[normalizedDateIso][normalizedPath] = normalizedItem;
+      const counterDateKey = options.counterDateKey || isoToRuDateKey(normalizedDateIso);
+      const counterValue = options.counterValue !== undefined
+        ? toNonNegativeInteger(options.counterValue)
+        : calculateProcessedDayTotal(processed[normalizedDateIso]);
+      history[counterDateKey] = counterValue;
+      await storageSet({
+        processed_edits: processed,
+        editing_stats: history
+      });
+      const enqueueResult = await appendOutboxOperationsUnlocked([
+        {
+          type: 'processed_edit_set',
+          date_iso: normalizedDateIso,
+          path: normalizedPath,
+          base_count: normalizedItem.base_count,
+          unique_edocids: normalizedItem.unique_edocids
+        },
+        {
+          type: 'counter_set',
+          counter_key: 'editing_stats',
+          date_key: counterDateKey,
+          value: counterValue
+        }
+      ], reason);
+      return { success: true, counterValue, enqueueResult };
     });
-    await appendOutboxOperations([
-      {
-        type: 'processed_edit_set',
-        date_iso: normalizedDateIso,
-        path: normalizedPath,
-        base_count: normalizedItem.base_count,
-        unique_edocids: normalizedItem.unique_edocids
-      },
-      {
-        type: 'counter_set',
-        counter_key: 'editing_stats',
-        date_key: counterDateKey,
-        value: counterValue
-      }
-    ], options.reason || 'processed-edit-set');
-    return { success: true, counterValue };
+    if (result.enqueueResult && result.enqueueResult.queued) {
+      scheduleFlushOutbox(reason);
+      await broadcastStatus();
+    }
+    return { success: true, counterValue: result.counterValue };
   }
 
   async function deleteProcessedEdit(dateIso, path, options = {}) {
     const normalizedDateIso = String(dateIso || '').trim();
     const normalizedPath = String(path || '').trim();
     if (!normalizedDateIso || !normalizedPath) return { success: false, error: 'INVALID_PROCESSED_EDIT_DELETE' };
-    const data = await storageGet(['processed_edits', 'editing_stats']);
-    const processed = isPlainObject(data.processed_edits) ? data.processed_edits : {};
-    const history = isPlainObject(data.editing_stats) ? data.editing_stats : {};
-    if (isPlainObject(processed[normalizedDateIso])) {
-      delete processed[normalizedDateIso][normalizedPath];
-    }
-    const counterDateKey = options.counterDateKey || isoToRuDateKey(normalizedDateIso);
-    const counterValue = calculateProcessedDayTotal(processed[normalizedDateIso]);
-    history[counterDateKey] = counterValue;
-    await storageSet({
-      processed_edits: processed,
-      editing_stats: history
-    });
-    await appendOutboxOperations([
-      {
-        type: 'processed_edit_delete',
-        date_iso: normalizedDateIso,
-        path: normalizedPath
-      },
-      {
-        type: 'counter_set',
-        counter_key: 'editing_stats',
-        date_key: counterDateKey,
-        value: counterValue
+    const reason = options.reason || 'processed-edit-delete';
+    const result = await withOutboxLock(async () => {
+      const data = await storageGet(['processed_edits', 'editing_stats']);
+      const processed = isPlainObject(data.processed_edits) ? data.processed_edits : {};
+      const history = isPlainObject(data.editing_stats) ? data.editing_stats : {};
+      if (isPlainObject(processed[normalizedDateIso])) {
+        delete processed[normalizedDateIso][normalizedPath];
       }
-    ], options.reason || 'processed-edit-delete');
-    return { success: true, counterValue };
+      const counterDateKey = options.counterDateKey || isoToRuDateKey(normalizedDateIso);
+      const counterValue = calculateProcessedDayTotal(processed[normalizedDateIso]);
+      history[counterDateKey] = counterValue;
+      await storageSet({
+        processed_edits: processed,
+        editing_stats: history
+      });
+      const enqueueResult = await appendOutboxOperationsUnlocked([
+        {
+          type: 'processed_edit_delete',
+          date_iso: normalizedDateIso,
+          path: normalizedPath
+        },
+        {
+          type: 'counter_set',
+          counter_key: 'editing_stats',
+          date_key: counterDateKey,
+          value: counterValue
+        }
+      ], reason);
+      return { success: true, counterValue, enqueueResult };
+    });
+    if (result.enqueueResult && result.enqueueResult.queued) {
+      scheduleFlushOutbox(reason);
+      await broadcastStatus();
+    }
+    return { success: true, counterValue: result.counterValue };
   }
 
   function calculateProcessedDayTotal(dayProcessed) {
@@ -1715,76 +1914,98 @@
       return { success: false, error: 'INVALID_ACTION_RULE' };
     }
 
-    const data = await storageGet(['approved_actions', 'blocked_actions', 'action_tags', 'pending_actions']);
-    let approved = uniqueStrings(data.approved_actions);
-    let blocked = uniqueStrings(data.blocked_actions);
-    const tags = isPlainObject(data.action_tags) ? data.action_tags : {};
-    let pending = Array.isArray(data.pending_actions) ? data.pending_actions : [];
+    const reason = options.reason || 'action-rule-set';
+    const result = await withOutboxLock(async () => {
+      const data = await storageGet(['approved_actions', 'blocked_actions', 'action_tags', 'pending_actions']);
+      let approved = uniqueStrings(data.approved_actions);
+      let blocked = uniqueStrings(data.blocked_actions);
+      const tags = isPlainObject(data.action_tags) ? data.action_tags : {};
+      let pending = Array.isArray(data.pending_actions) ? data.pending_actions : [];
 
-    if (normalizedStatus === 'approved') {
-      approved = approved.filter((item) => item !== normalizedPath);
-      blocked = blocked.filter((item) => item !== normalizedPath);
-      approved.push(normalizedPath);
-    } else {
-      approved = approved.filter((item) => item !== normalizedPath);
-      blocked = blocked.filter((item) => item !== normalizedPath);
-      blocked.push(normalizedPath);
-    }
+      if (normalizedStatus === 'approved') {
+        approved = approved.filter((item) => item !== normalizedPath);
+        blocked = blocked.filter((item) => item !== normalizedPath);
+        approved.push(normalizedPath);
+      } else {
+        approved = approved.filter((item) => item !== normalizedPath);
+        blocked = blocked.filter((item) => item !== normalizedPath);
+        blocked.push(normalizedPath);
+      }
 
-    const normalizedTag = String(tag || '').trim();
-    if (normalizedTag) {
-      tags[normalizedPath] = normalizedTag;
-    } else if (options.clearEmptyTag === true) {
-      delete tags[normalizedPath];
-    }
+      const normalizedTag = String(tag || '').trim();
+      if (normalizedTag) {
+        tags[normalizedPath] = normalizedTag;
+      } else if (options.clearEmptyTag === true) {
+        delete tags[normalizedPath];
+      }
 
-    if (options.pendingMode === 'exact') {
-      const edocid = String(options.edocid || '');
-      pending = pending.filter((item) => !(item && item.path === normalizedPath && String(item.edocid || '') === edocid));
-    } else if (options.pendingMode === 'path') {
-      pending = pending.filter((item) => !(item && item.path === normalizedPath));
-    }
+      if (options.pendingMode === 'exact') {
+        const edocid = String(options.edocid || '');
+        pending = pending.filter((item) => !(item && item.path === normalizedPath && String(item.edocid || '') === edocid));
+      } else if (options.pendingMode === 'path') {
+        pending = pending.filter((item) => !(item && item.path === normalizedPath));
+      }
 
-    await storageSet({
-      approved_actions: approved,
-      blocked_actions: blocked,
-      action_tags: tags,
-      pending_actions: pending
+      await storageSet({
+        approved_actions: approved,
+        blocked_actions: blocked,
+        action_tags: tags,
+        pending_actions: pending
+      });
+
+      const enqueueResult = await appendOutboxOperationsUnlocked([{
+        type: 'action_rule_set',
+        path: normalizedPath,
+        status: normalizedStatus,
+        tag: normalizedTag
+      }], reason);
+
+      return { success: true, approved, blocked, tags, pending, enqueueResult };
     });
-
-    await appendOutboxOperations([{
-      type: 'action_rule_set',
-      path: normalizedPath,
-      status: normalizedStatus,
-      tag: normalizedTag
-    }], options.reason || 'action-rule-set');
-
-    return { success: true, approved, blocked, tags, pending };
+    if (result.enqueueResult && result.enqueueResult.queued) {
+      scheduleFlushOutbox(reason);
+      await broadcastStatus();
+    }
+    return {
+      success: true,
+      approved: result.approved,
+      blocked: result.blocked,
+      tags: result.tags,
+      pending: result.pending
+    };
   }
 
   async function setActionTag(path, tag, options = {}) {
     const normalizedPath = String(path || '').trim();
     if (!normalizedPath) return { success: false, error: 'INVALID_ACTION_TAG' };
-    const data = await storageGet(['approved_actions', 'blocked_actions', 'action_tags']);
-    const approved = uniqueStrings(data.approved_actions);
-    const blocked = uniqueStrings(data.blocked_actions);
-    const tags = isPlainObject(data.action_tags) ? data.action_tags : {};
-    const normalizedTag = String(tag || '').trim();
-    if (normalizedTag) tags[normalizedPath] = normalizedTag;
-    else delete tags[normalizedPath];
-    await storageSet({ action_tags: tags });
+    const reason = options.reason || 'action-tag-set';
+    const result = await withOutboxLock(async () => {
+      const data = await storageGet(['approved_actions', 'blocked_actions', 'action_tags']);
+      const approved = uniqueStrings(data.approved_actions);
+      const blocked = uniqueStrings(data.blocked_actions);
+      const tags = isPlainObject(data.action_tags) ? data.action_tags : {};
+      const normalizedTag = String(tag || '').trim();
+      if (normalizedTag) tags[normalizedPath] = normalizedTag;
+      else delete tags[normalizedPath];
+      await storageSet({ action_tags: tags });
 
-    const status = blocked.includes(normalizedPath) ? 'blocked' : 'approved';
-    if (!approved.includes(normalizedPath) && !blocked.includes(normalizedPath)) {
-      await storageSet({ approved_actions: [...approved, normalizedPath] });
+      const status = blocked.includes(normalizedPath) ? 'blocked' : 'approved';
+      if (!approved.includes(normalizedPath) && !blocked.includes(normalizedPath)) {
+        await storageSet({ approved_actions: [...approved, normalizedPath] });
+      }
+      const enqueueResult = await appendOutboxOperationsUnlocked([{
+        type: 'action_rule_set',
+        path: normalizedPath,
+        status,
+        tag: normalizedTag
+      }], reason);
+      return { success: true, status, tag: normalizedTag, enqueueResult };
+    });
+    if (result.enqueueResult && result.enqueueResult.queued) {
+      scheduleFlushOutbox(reason);
+      await broadcastStatus();
     }
-    await appendOutboxOperations([{
-      type: 'action_rule_set',
-      path: normalizedPath,
-      status,
-      tag: normalizedTag
-    }], options.reason || 'action-tag-set');
-    return { success: true, status, tag: normalizedTag };
+    return { success: true, status: result.status, tag: result.tag };
   }
 
   async function importSyncData(importedData) {
@@ -1804,16 +2025,22 @@
       if (isSyncableKey(key)) localValues[key] = data[key];
     });
     const operations = makeOperationsFromSnapshot(localValues);
-    const current = await storageGet(null);
-    const keysToRemove = Object.keys(current || {}).filter((key) => isSyncableKey(key));
-    applyingCanonicalState = true;
-    try {
-      if (keysToRemove.length) await storageRemove(keysToRemove);
-      await storageSet(localValues);
-    } finally {
-      applyingCanonicalState = false;
+    const enqueueResult = await withOutboxLock(async () => {
+      const current = await storageGet(null);
+      const keysToRemove = Object.keys(current || {}).filter((key) => isSyncableKey(key));
+      applyingCanonicalState = true;
+      try {
+        if (keysToRemove.length) await storageRemove(keysToRemove);
+        await storageSet(localValues);
+      } finally {
+        applyingCanonicalState = false;
+      }
+      return appendOutboxOperationsUnlocked(operations, 'json-import');
+    });
+    if (enqueueResult && enqueueResult.queued) {
+      scheduleFlushOutbox('json-import');
+      await broadcastStatus();
     }
-    await appendOutboxOperations(operations, 'json-import');
     const flushResult = await flushOutbox('json-import');
     if (flushResult.success !== false) {
       await pullCanonicalState('json-import-confirm', { forceApply: true });
@@ -2230,7 +2457,7 @@
     stopRealtimeSubscription();
     clearFallbackPullAlarm();
     await clearStoredSession();
-    await storageRemove([SYNC_META_KEY, OUTBOX_KEY]);
+    await withOutboxLock(() => storageRemove([SYNC_META_KEY, OUTBOX_KEY]));
     lastRuntimeMessage = 'Выход выполнен. Данные снова хранятся локально.';
     await broadcastStatus();
     return getPublicStatus();
