@@ -61,6 +61,15 @@
     return String(value);
   }
 
+  function escapeHtml(value) {
+    return String(value || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
   function initSupabaseAuthUi() {
     const root = $('supabase-auth-root');
     const mainButton = $('supabase-auth-main');
@@ -77,6 +86,7 @@
     const signUpButton = $('supabase-auth-sign-up');
     const signOutButton = $('supabase-auth-sign-out');
     const syncNowButton = $('supabase-auth-sync-now');
+    const syncFlowNode = $('supabase-sync-flow');
     const resetToggle = $('supabase-auth-reset-toggle');
     const resetPanel = $('supabase-auth-reset');
     const resetEmailInput = $('supabase-auth-reset-email');
@@ -157,6 +167,37 @@
       return lines.join('\n');
     }
 
+    function renderSyncFlow(flow, authenticated) {
+      if (!syncFlowNode) return;
+      const steps = flow && Array.isArray(flow.steps) ? flow.steps : [];
+      if (!authenticated || !steps.length) {
+        syncFlowNode.hidden = true;
+        syncFlowNode.innerHTML = '';
+        return;
+      }
+
+      const titleText = String(flow.title || 'Синхронизация Supabase').trim();
+      const rows = steps.map((step) => {
+        const status = String(step.status || 'pending');
+        const detail = String(step.detail || '').trim();
+        return `
+          <div class="supabase-sync-step is-${escapeHtml(status)}">
+            <span class="supabase-sync-step-dot" aria-hidden="true"></span>
+            <span class="supabase-sync-step-text">
+              <span class="supabase-sync-step-label">${escapeHtml(step.label || '')}</span>
+              ${detail ? `<span class="supabase-sync-step-detail">${escapeHtml(detail)}</span>` : ''}
+            </span>
+          </div>
+        `;
+      }).join('');
+
+      syncFlowNode.hidden = false;
+      syncFlowNode.innerHTML = `
+        <div class="supabase-sync-flow-title">${escapeHtml(titleText)}</div>
+        <div class="supabase-sync-flow-steps">${rows}</div>
+      `;
+    }
+
     function renderStatus(status) {
       currentStatus = status || {};
       const authenticated = currentStatus.authenticated === true;
@@ -168,6 +209,7 @@
 
       root.classList.toggle('is-authenticated', authenticated);
       root.classList.toggle('has-pending', authenticated && outboxSize > 0);
+      root.classList.toggle('is-syncing', authenticated && isSyncing);
       title.textContent = authenticated ? 'Supabase включен' : 'Синхронизация';
       subtitle.textContent = authenticated
         ? (email || 'Пользователь авторизован')
@@ -177,6 +219,7 @@
       if (signedIn) signedIn.hidden = !authenticated;
 
       if (authenticated) {
+        renderSyncFlow(currentStatus.syncFlow || {}, true);
         setStatusText(
           buildSignedInStatusText({
             ...currentStatus,
@@ -185,6 +228,7 @@
           !!errorText
         );
       } else {
+        renderSyncFlow(null, false);
         setStatusText('Без входа все данные остаются только в этом браузере.');
       }
     }

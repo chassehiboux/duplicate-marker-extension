@@ -16,6 +16,7 @@
   const CACHE_REVISION_KEY = 'dup_supabase_cache_revision_v1';
   const SYNC_META_KEY = 'dup_supabase_sync_meta_v2';
   const PRE_LOGIN_BACKUP_KEY = 'dup_supabase_pre_login_backup_v2';
+  const SUPPORT_REMINDERS_STORAGE_KEY = 'support_reminders_state_v1';
 
   const SESSION_REFRESH_MARGIN_MS = 60 * 1000;
   const REQUEST_TIMEOUT_MS = 15000;
@@ -52,10 +53,17 @@
     'vzid_last_claim_type_label',
     'vzid_last_claim_type_updated_at',
     'dup_google_sheets_problem_picker_bridge_url',
-    'support_reminders_state_v1',
+    SUPPORT_REMINDERS_STORAGE_KEY,
     'dup_execution_analysis_params_v1',
     'dup_execution_analysis_state_v1',
     'dup_id_card_check_state_v1'
+  ]);
+
+  const SUPPORT_REMINDER_OPERATION_TYPES = new Set([
+    'support_reminder_set',
+    'support_reminder_archive_set',
+    'support_reminder_active_delete',
+    'support_reminder_archive_delete'
   ]);
 
   const STRUCTURED_SYNC_KEYS = new Set([
@@ -128,6 +136,13 @@
   let realtimeReconnectTimer = 0;
   let realtimeReconnectAttempt = 0;
   let realtimePullTimer = 0;
+  let syncFlowState = {
+    kind: '',
+    title: '',
+    active: false,
+    steps: [],
+    updatedAt: ''
+  };
 
   function hasChromeStorage() {
     return !!(chrome && chrome.storage && chrome.storage.local);
@@ -237,6 +252,7 @@
     if (EXACT_EXCLUDED_KEYS.has(normalizedKey)) return false;
     if (EXCLUDED_PREFIXES.some((prefix) => normalizedKey.startsWith(prefix))) return false;
     if (STAGE_TIMER_KEYS.has(normalizedKey)) return false;
+    if (normalizedKey === SUPPORT_REMINDERS_STORAGE_KEY) return true;
     if (KV_SYNC_KEYS.has(normalizedKey)) return true;
     if (STRUCTURED_SYNC_KEYS.has(normalizedKey)) return true;
     if (normalizedKey.startsWith('dup_ui_show_')) return true;
@@ -247,6 +263,7 @@
   function isKvSyncKey(key) {
     const normalizedKey = String(key || '').trim();
     if (!isSyncableKey(normalizedKey)) return false;
+    if (normalizedKey === SUPPORT_REMINDERS_STORAGE_KEY) return false;
     if (STRUCTURED_SYNC_KEYS.has(normalizedKey)) return false;
     if (KV_SYNC_KEYS.has(normalizedKey)) return true;
     return normalizedKey.startsWith('jqgrid_settings_') || normalizedKey.startsWith('dup_ui_show_');
@@ -279,6 +296,170 @@
       return sanitizeIdCardCheckState(value);
     }
     return cloneJson(value);
+  }
+
+  function normalizeSupportRequest(rawRequest) {
+    if (!rawRequest || typeof rawRequest !== 'object') return null;
+
+    const requestId = String(rawRequest.requestId || '').trim();
+    if (!requestId) return null;
+
+    return {
+      requestId,
+      requestNumber: String(rawRequest.requestNumber || '').trim(),
+      subject: String(rawRequest.subject || '').trim(),
+      stage: String(rawRequest.stage || '').trim(),
+      status: String(rawRequest.status || '').trim(),
+      supportNumber: String(rawRequest.supportNumber || '').trim(),
+      assignee: String(rawRequest.assignee || '').trim(),
+      initiator: String(rawRequest.initiator || '').trim(),
+      createdAt: String(rawRequest.createdAt || '').trim(),
+      filterType: String(rawRequest.filterType || '').trim(),
+      filterLabel: String(rawRequest.filterLabel || '').trim()
+    };
+  }
+
+  function normalizeSupportReminder(rawReminder) {
+    if (!rawReminder || typeof rawReminder !== 'object') return null;
+
+    const requestId = String(rawReminder.requestId || '').trim();
+    if (!requestId) return null;
+
+    return {
+      requestId,
+      note: String(rawReminder.note || '').trim(),
+      createdAt: String(rawReminder.createdAt || ''),
+      updatedAt: String(rawReminder.updatedAt || ''),
+      lastSeenAt: String(rawReminder.lastSeenAt || ''),
+      lastNotifiedStage: String(rawReminder.lastNotifiedStage || ''),
+      skipAutoArchive: !!rawReminder.skipAutoArchive,
+      lastKnown: normalizeSupportRequest(rawReminder.lastKnown) || null
+    };
+  }
+
+  function normalizeSupportArchiveEntry(rawEntry) {
+    if (!rawEntry || typeof rawEntry !== 'object') return null;
+
+    const requestId = String(rawEntry.requestId || '').trim();
+    if (!requestId) return null;
+
+    return {
+      requestId,
+      note: String(rawEntry.note || '').trim(),
+      createdAt: String(rawEntry.createdAt || ''),
+      updatedAt: String(rawEntry.updatedAt || ''),
+      archivedAt: String(rawEntry.archivedAt || ''),
+      archivedReason: String(rawEntry.archivedReason || ''),
+      lastKnown: normalizeSupportRequest(rawEntry.lastKnown) || null
+    };
+  }
+
+  function normalizeSupportReminderState(rawState) {
+    const source = rawState && typeof rawState === 'object' ? rawState : {};
+    const rawReminders = source.reminders && typeof source.reminders === 'object' ? source.reminders : {};
+    const rawArchive = source.archive && typeof source.archive === 'object' ? source.archive : {};
+    const reminders = {};
+    const archive = {};
+
+    Object.values(rawReminders).forEach((item) => {
+      const normalized = normalizeSupportReminder(item);
+      if (normalized) reminders[normalized.requestId] = normalized;
+    });
+
+    Object.values(rawArchive).forEach((item) => {
+      const normalized = normalizeSupportArchiveEntry(item);
+      if (normalized) archive[normalized.requestId] = normalized;
+    });
+
+    return { reminders, archive };
+  }
+
+  function makeSupportReminderDeleteOperations(rawState) {
+    const state = normalizeSupportReminderState(rawState);
+    const operations = [];
+    Object.keys(state.reminders).forEach((requestId) => {
+      operations.push({ type: 'support_reminder_active_delete', request_id: requestId });
+    });
+    Object.keys(state.archive).forEach((requestId) => {
+      operations.push({ type: 'support_reminder_archive_delete', request_id: requestId });
+    });
+    return operations;
+  }
+
+  function makeSupportReminderOperationsFromState(nextRawState, previousRawState) {
+    const nextState = normalizeSupportReminderState(nextRawState);
+    const hasPrevious = previousRawState !== undefined;
+    const previousState = hasPrevious ? normalizeSupportReminderState(previousRawState) : null;
+    const operations = [];
+
+    Object.values(nextState.reminders).forEach((reminder) => {
+      const previousReminder = previousState ? previousState.reminders[reminder.requestId] : null;
+      if (!previousState || !storageValueEquals(previousReminder, reminder)) {
+        operations.push({
+          type: 'support_reminder_set',
+          request_id: reminder.requestId,
+          reminder
+        });
+      }
+    });
+
+    Object.values(nextState.archive).forEach((archiveEntry) => {
+      const previousArchiveEntry = previousState ? previousState.archive[archiveEntry.requestId] : null;
+      if (!previousState || !storageValueEquals(previousArchiveEntry, archiveEntry)) {
+        operations.push({
+          type: 'support_reminder_archive_set',
+          request_id: archiveEntry.requestId,
+          archive: archiveEntry
+        });
+      }
+    });
+
+    if (previousState) {
+      Object.keys(previousState.reminders).forEach((requestId) => {
+        if (!nextState.reminders[requestId] && !nextState.archive[requestId]) {
+          operations.push({ type: 'support_reminder_active_delete', request_id: requestId });
+        }
+      });
+      Object.keys(previousState.archive).forEach((requestId) => {
+        if (!nextState.archive[requestId] && !nextState.reminders[requestId]) {
+          operations.push({ type: 'support_reminder_archive_delete', request_id: requestId });
+        }
+      });
+    }
+
+    return operations;
+  }
+
+  function expandSupportReminderOperations(operations, previousValues = {}) {
+    const expanded = [];
+
+    toArray(operations).forEach((operation) => {
+      if (!operation || typeof operation !== 'object') return;
+      const type = String(operation.type || '');
+      const key = String(operation.key || '').trim();
+
+      if (type === 'kv_set' && key === SUPPORT_REMINDERS_STORAGE_KEY) {
+        expanded.push(...makeSupportReminderOperationsFromState(
+          operation.value,
+          previousValues[SUPPORT_REMINDERS_STORAGE_KEY]
+        ));
+        return;
+      }
+
+      if (type === 'kv_delete' && key === SUPPORT_REMINDERS_STORAGE_KEY) {
+        expanded.push(...makeSupportReminderDeleteOperations(previousValues[SUPPORT_REMINDERS_STORAGE_KEY]));
+        return;
+      }
+
+      expanded.push(operation);
+    });
+
+    return expanded;
+  }
+
+  function isSupportReminderOperation(operation) {
+    const type = String(operation && operation.type || '');
+    return SUPPORT_REMINDER_OPERATION_TYPES.has(type);
   }
 
   async function collectLocalSyncSnapshot() {
@@ -590,6 +771,96 @@
     return `${deviceId}:${Date.now()}:${createRandomId()}`;
   }
 
+  function createSyncFlowSteps(kind) {
+    if (kind === 'push') {
+      return [
+        { id: 'prepare', label: 'Подготовка сессии', status: 'pending', detail: '' },
+        { id: 'request', label: 'Запрос отправлен в Supabase', status: 'pending', detail: '' },
+        { id: 'write', label: 'Supabase применяет запись', status: 'pending', detail: '' },
+        { id: 'response', label: 'Ответ Supabase получен', status: 'pending', detail: '' },
+        { id: 'cache', label: 'Локальный кэш обновлен', status: 'pending', detail: '' }
+      ];
+    }
+
+    return [
+      { id: 'prepare', label: 'Подготовка сессии', status: 'pending', detail: '' },
+      { id: 'request', label: 'Запрос состояния отправлен', status: 'pending', detail: '' },
+      { id: 'response', label: 'Ответ Supabase получен', status: 'pending', detail: '' },
+      { id: 'cache', label: 'Локальный кэш обновлен', status: 'pending', detail: '' },
+      { id: 'panel', label: 'Панель получила статус', status: 'pending', detail: '' }
+    ];
+  }
+
+  function startSyncFlow(kind, title) {
+    syncFlowState = {
+      kind,
+      title,
+      active: true,
+      steps: createSyncFlowSteps(kind),
+      updatedAt: new Date().toISOString()
+    };
+  }
+
+  function setSyncFlowStep(stepId, status, detail = '') {
+    if (!syncFlowState || !Array.isArray(syncFlowState.steps)) return;
+    syncFlowState.steps = syncFlowState.steps.map((step) => {
+      if (!step || step.id !== stepId) return step;
+      return {
+        ...step,
+        status,
+        detail: String(detail || '')
+      };
+    });
+    syncFlowState.updatedAt = new Date().toISOString();
+  }
+
+  function setSyncFlowError(message) {
+    if (!syncFlowState || !Array.isArray(syncFlowState.steps)) return;
+    let marked = false;
+    syncFlowState.steps = syncFlowState.steps.map((step) => {
+      if (marked || !step || step.status === 'done') return step;
+      marked = true;
+      return {
+        ...step,
+        status: 'error',
+        detail: String(message || '')
+      };
+    });
+    syncFlowState.active = false;
+    syncFlowState.updatedAt = new Date().toISOString();
+  }
+
+  function finishSyncFlow(success, message = '') {
+    if (!syncFlowState || !Array.isArray(syncFlowState.steps)) return;
+    syncFlowState.steps = syncFlowState.steps.map((step) => {
+      if (!step || step.status === 'done') return step;
+      if (success) {
+        return { ...step, status: 'done', detail: step.detail || '' };
+      }
+      if (step.status === 'active') {
+        return { ...step, status: 'error', detail: String(message || '') };
+      }
+      return step;
+    });
+    syncFlowState.active = false;
+    syncFlowState.updatedAt = new Date().toISOString();
+  }
+
+  function getPublicSyncFlow() {
+    return {
+      kind: syncFlowState.kind || '',
+      title: syncFlowState.title || '',
+      active: syncFlowState.active === true,
+      updatedAt: syncFlowState.updatedAt || '',
+      steps: toArray(syncFlowState.steps).map((step) => ({
+        id: String(step.id || ''),
+        label: String(step.label || ''),
+        status: String(step.status || 'pending'),
+        detail: String(step.detail || '')
+      }))
+    };
+  }
+
   function normalizeCanonicalState(rawState) {
     if (!rawState || typeof rawState !== 'object') {
       return {
@@ -625,7 +896,7 @@
     const values = {};
 
     Object.keys(state.kv || {}).forEach((key) => {
-      if (isKvSyncKey(key)) {
+      if (key === SUPPORT_REMINDERS_STORAGE_KEY || isKvSyncKey(key)) {
         values[key] = cloneJson(state.kv[key]);
       }
     });
@@ -737,6 +1008,7 @@
   function makeKvOperationsFromValues(values) {
     const operations = [];
     Object.entries(values || {}).forEach(([key, value]) => {
+      if (key === SUPPORT_REMINDERS_STORAGE_KEY) return;
       if (!isKvSyncKey(key)) return;
       const sanitized = sanitizeValueForCloud(key, value);
       if (sanitized === undefined) return;
@@ -745,10 +1017,24 @@
     return operations;
   }
 
+  function makeOperationsFromValues(values, previousValues = {}) {
+    const operations = makeKvOperationsFromValues(values);
+    if (Object.prototype.hasOwnProperty.call(values || {}, SUPPORT_REMINDERS_STORAGE_KEY)) {
+      operations.push(...makeSupportReminderOperationsFromState(
+        values[SUPPORT_REMINDERS_STORAGE_KEY],
+        previousValues[SUPPORT_REMINDERS_STORAGE_KEY]
+      ));
+    }
+    return operations;
+  }
+
   function makeOperationsFromSnapshot(snapshot) {
     const operations = [];
 
     operations.push(...makeKvOperationsFromValues(snapshot));
+    if (Object.prototype.hasOwnProperty.call(snapshot || {}, SUPPORT_REMINDERS_STORAGE_KEY)) {
+      operations.push(...makeSupportReminderOperationsFromState(snapshot[SUPPORT_REMINDERS_STORAGE_KEY]));
+    }
 
     ['stats_history', 'editing_stats'].forEach((counterKey) => {
       const history = snapshot && isPlainObject(snapshot[counterKey]) ? snapshot[counterKey] : {};
@@ -868,7 +1154,8 @@
   }
 
   async function appendOutboxOperations(operations, reason = 'local-change') {
-    const filteredOperations = toArray(operations).filter((operation) => operation && typeof operation === 'object');
+    const filteredOperations = expandSupportReminderOperations(operations)
+      .filter((operation) => operation && typeof operation === 'object');
     if (!filteredOperations.length) return { queued: false };
     if (!currentSession) await loadStoredSession();
     if (!currentSession) return { queued: false, localOnly: true };
@@ -906,12 +1193,36 @@
   }
 
   async function applyMutationItem(item) {
-    const result = await callRpc('extension_apply_mutation', {
-      p_device_id: item.deviceId,
-      p_mutation_id: item.mutationId,
-      p_base_revision: item.baseRevision,
-      p_operations: item.operations
-    });
+    const operations = expandSupportReminderOperations(item.operations);
+    const supportOperations = operations.filter((operation) => isSupportReminderOperation(operation));
+    const regularOperations = operations.filter((operation) => !isSupportReminderOperation(operation));
+    const hasBothKinds = supportOperations.length > 0 && regularOperations.length > 0;
+    let result = null;
+
+    if (regularOperations.length) {
+      result = await callRpc('extension_apply_mutation', {
+        p_device_id: item.deviceId,
+        p_mutation_id: hasBothKinds ? `${item.mutationId}:main` : item.mutationId,
+        p_base_revision: item.baseRevision,
+        p_operations: regularOperations
+      });
+      const regularState = normalizeCanonicalState(result);
+      if (regularState && regularState.status === 'conflict') return regularState;
+    }
+
+    if (supportOperations.length) {
+      result = await callRpc('extension_apply_support_reminders_mutation', {
+        p_device_id: item.deviceId,
+        p_mutation_id: hasBothKinds ? `${item.mutationId}:support` : item.mutationId,
+        p_base_revision: item.baseRevision,
+        p_operations: supportOperations
+      });
+    }
+
+    if (!result) {
+      result = await getRemoteCanonicalState('empty-mutation');
+    }
+
     return normalizeCanonicalState(result);
   }
 
@@ -921,10 +1232,13 @@
     if (!currentSession) return { success: false, error: 'NO_SESSION' };
 
     flushInProgress = true;
-    await broadcastStatus('Отправляю изменения в Supabase...');
+    startSyncFlow('push', 'Отправка изменений в Supabase');
+    setSyncFlowStep('prepare', 'active', reason);
+    await broadcastStatus('Готовлю отправку изменений в Supabase...');
     try {
       await ensureSession();
       await registerDevice();
+      setSyncFlowStep('prepare', 'done');
 
       while (true) {
         const outbox = await getOutbox();
@@ -936,6 +1250,8 @@
             lastFlushAt: new Date().toISOString()
           });
           lastRuntimeError = '';
+          finishSyncFlow(true);
+          await broadcastStatus('Очередь изменений пуста.');
           return { success: true };
         }
 
@@ -944,7 +1260,15 @@
         await setOutbox([item, ...outbox.slice(1)]);
 
         try {
+          setSyncFlowStep('request', 'active', `Операций: ${toArray(item.operations).length}`);
+          setSyncFlowStep('write', 'active', 'Ожидаю подтверждение записи');
+          setSyncFlowStep('response', 'pending');
+          setSyncFlowStep('cache', 'pending');
+          await broadcastStatus('Запрос отправлен в Supabase...');
           const state = await applyMutationItem(item);
+          setSyncFlowStep('request', 'done');
+          setSyncFlowStep('write', state && state.status === 'conflict' ? 'error' : 'done');
+          setSyncFlowStep('response', 'done', `Revision: ${Number(state.revision || state.applied_revision || 0)}`);
           if (state && state.status === 'conflict') {
             const metaState = await getRemoteCanonicalState('conflict-rebase');
             const rebasedRevision = Number(metaState.revision || state.current_revision || 0);
@@ -960,12 +1284,15 @@
             if (String(state.error || '').startsWith('unknown_operation')) {
               throw new Error(state.error);
             }
+            setSyncFlowStep('write', 'active', 'Повторная отправка после обновления revision');
             continue;
           }
 
           const nextOutbox = outbox.slice(1);
           await setOutbox(nextOutbox);
+          setSyncFlowStep('cache', 'active', 'Применяю ответ локально');
           await applyCanonicalState(state, { force: true });
+          setSyncFlowStep('cache', 'done');
           await setSyncMeta({
             outboxSize: nextOutbox.length,
             serverRevision: state.revision,
@@ -979,6 +1306,8 @@
             ? `Отправлено изменение, осталось в очереди: ${nextOutbox.length}.`
             : 'Все изменения отправлены в Supabase.';
           lastRuntimeError = '';
+          if (!nextOutbox.length) finishSyncFlow(true);
+          await broadcastStatus(lastRuntimeMessage);
         } catch (error) {
           const message = localizeSupabaseError(error);
           const currentOutbox = await getOutbox();
@@ -992,6 +1321,7 @@
             await setOutbox(currentOutbox);
           }
           lastRuntimeError = message;
+          setSyncFlowError(message);
           await setSyncMeta({
             outboxSize: currentOutbox.length,
             lastPushError: message,
@@ -1013,15 +1343,31 @@
     if (!currentSession) return { success: false, error: 'NO_SESSION' };
 
     pullInProgress = true;
-    if (options.quiet !== true) await broadcastStatus('Загружаю данные из Supabase...');
+    const traceFlow = options.quiet !== true;
+    if (traceFlow) {
+      startSyncFlow('pull', 'Загрузка состояния из Supabase');
+      setSyncFlowStep('prepare', 'active', reason);
+      await broadcastStatus('Готовлю загрузку данных из Supabase...');
+    }
     try {
       await ensureSession();
       await registerDevice();
+      if (traceFlow) setSyncFlowStep('prepare', 'done');
       const outbox = await getOutbox();
+      if (traceFlow) {
+        setSyncFlowStep('request', 'active', `Local revision: ${await getCacheRevision()}`);
+        await broadcastStatus('Запрос состояния отправлен в Supabase...');
+      }
       const state = await getRemoteCanonicalState(reason);
+      if (traceFlow) {
+        setSyncFlowStep('request', 'done');
+        setSyncFlowStep('response', 'done', `Server revision: ${Number(state.revision || 0)}`);
+      }
       const localRevision = await getCacheRevision();
       const shouldApply = options.forceApply === true || (!outbox.length && state.revision >= localRevision);
+      if (traceFlow) setSyncFlowStep('cache', 'active', shouldApply ? 'Применяю canonical state' : 'Локальная очередь не перезаписана');
       const applied = shouldApply ? await applyCanonicalState(state, { force: options.forceApply === true }) : false;
+      if (traceFlow) setSyncFlowStep('cache', 'done', applied ? 'Кэш обновлен' : 'Кэш уже актуален');
       await setSyncMeta({
         lastPullAt: new Date().toISOString(),
         lastPullError: '',
@@ -1035,10 +1381,16 @@
         ? 'Данные Supabase применены локально.'
         : (outbox.length ? 'Pull выполнен, локальная очередь сохранена.' : 'Локальный кэш уже актуален.');
       lastRuntimeError = '';
+      if (traceFlow) {
+        setSyncFlowStep('panel', 'done');
+        finishSyncFlow(true);
+        await broadcastStatus(lastRuntimeMessage);
+      }
       return { success: true, state, applied };
     } catch (error) {
       const message = localizeSupabaseError(error);
       lastRuntimeError = message;
+      if (traceFlow) setSyncFlowError(message);
       await setSyncMeta({
         lastPullError: message,
         lastError: message,
@@ -1129,9 +1481,12 @@
 
   async function syncSet(values, options = {}) {
     const nextValues = values && typeof values === 'object' ? values : {};
+    const previousValues = Object.prototype.hasOwnProperty.call(nextValues, SUPPORT_REMINDERS_STORAGE_KEY)
+      ? await storageGet([SUPPORT_REMINDERS_STORAGE_KEY])
+      : {};
     await storageSet(nextValues);
 
-    const operations = makeKvOperationsFromValues(nextValues);
+    const operations = makeOperationsFromValues(nextValues, previousValues);
     if (options.queue !== false) {
       await appendOutboxOperations(operations, options.reason || 'kv-set');
     }
@@ -1140,11 +1495,20 @@
 
   async function syncRemove(keys, options = {}) {
     const normalizedKeys = Array.isArray(keys) ? keys : [keys];
+    const hasSupportReminders = normalizedKeys
+      .map((key) => String(key || '').trim())
+      .includes(SUPPORT_REMINDERS_STORAGE_KEY);
+    const previousValues = hasSupportReminders
+      ? await storageGet([SUPPORT_REMINDERS_STORAGE_KEY])
+      : {};
     await storageRemove(normalizedKeys);
     const operations = normalizedKeys
       .map((key) => String(key || '').trim())
       .filter((key) => isKvSyncKey(key))
       .map((key) => ({ type: 'kv_delete', key }));
+    if (hasSupportReminders) {
+      operations.push(...makeSupportReminderDeleteOperations(previousValues[SUPPORT_REMINDERS_STORAGE_KEY]));
+    }
     if (options.queue !== false) {
       await appendOutboxOperations(operations, options.reason || 'kv-delete');
     }
@@ -1939,7 +2303,8 @@
       outboxSize: outbox.length,
       outboxLastError: outbox.length ? String(outbox[0].lastError || '') : '',
       deviceId: meta.deviceId || '',
-      schemaVersion: SCHEMA_VERSION
+      schemaVersion: SCHEMA_VERSION,
+      syncFlow: getPublicSyncFlow()
     };
   }
 
@@ -1967,7 +2332,7 @@
     try {
       if (action === 'DUP_SUPABASE_GET_STATUS') {
         void ensureBackgroundSyncActive('status');
-        void pullCanonicalState('panel-open', { quiet: true });
+        void pullCanonicalState('panel-open');
         return { success: true, status: await getPublicStatus() };
       }
       if (action === 'DUP_SUPABASE_SIGN_IN') return { success: true, status: await signIn(data.email, data.password) };
