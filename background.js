@@ -2,7 +2,7 @@
 
 // --- Подключение модулей ---
 try {
-    importScripts('supabase_sync.js');
+    importScripts('SupabaseSync/supabase_sync.js');
     importScripts('Check_INN_DeathDate/inn_death_background.js');
     importScripts('support/support_background.js');
     importScripts('GoogleSheets/problem_picker_background.js');
@@ -1090,7 +1090,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 fileBase64: data.fileBase64
             });
 
-            const previewUrl = chrome.runtime.getURL(`vzid_capture_preview.html?token=${encodeURIComponent(token)}`);
+            const previewUrl = chrome.runtime.getURL(`VZIDCapture/vzid_capture_preview.html?token=${encodeURIComponent(token)}`);
             chrome.tabs.create({ url: previewUrl }, (tab) => {
                 if (chrome.runtime.lastError) {
                     sendResponse({

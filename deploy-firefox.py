@@ -33,20 +33,17 @@ SIGNING_APPROVAL_TIMEOUT_MS = 30 * 60 * 1000
 
 ROOT_FILES = [
     'background.js',
-    'column_manager.js',
     'content.js',
     'extension_ui_config.js',
     'popup.html',
     'popup.js',
-    'supabase_auth_ui.js',
-    'supabase_sync.js',
     'version.json',
-    'vzid_capture_preview.html',
-    'vzid_capture_preview.js',
-    'vzid_create_send.js',
 ]
 
 DIR_FILES = {
+    'ColumnManager': [
+        'column_manager.js',
+    ],
     'Check_INN_DeathDate': [
         'inn_death_background.js',
         'inn_death_content.js',
@@ -74,15 +71,24 @@ DIR_FILES = {
         'timer_content.js',
         'timer_styles.css',
     ],
+    'SupabaseSync': [
+        'supabase_auth_ui.js',
+        'supabase_sync.js',
+    ],
     'support': [
         'support_background.js',
         'support_content.js',
         'support_popup.js',
     ],
+    'VZIDCapture': [
+        'vzid_capture_preview.html',
+        'vzid_capture_preview.js',
+        'vzid_create_send.js',
+    ],
 }
 
 FIREFOX_BACKGROUND_IMPORTS = [
-    'supabase_sync.js',
+    'SupabaseSync/supabase_sync.js',
     'Check_INN_DeathDate/inn_death_background.js',
     'support/support_background.js',
     'GoogleSheets/problem_picker_background.js',

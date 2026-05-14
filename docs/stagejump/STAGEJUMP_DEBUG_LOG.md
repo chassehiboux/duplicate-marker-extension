@@ -3,7 +3,7 @@
 Дата: 2026-02-20
 
 ## Шаги
-- [x] Шаг 1: Подготовка и чтение правил (AGENTS.md, STAGEJUMP_RULES.md, playwight skill).
+- [x] Шаг 1: Подготовка и чтение правил (AGENTS.md, docs/stagejump/STAGEJUMP_RULES.md, playwight skill).
 - [x] Шаг 2: Локализация кода StageJump и автофильтра в content.js.
 - [x] Шаг 3: Полный цикл в браузере /ovzid/status/all -> переход в стадию.
 - [x] Шаг 4: Сбор фактов (логи, postData, состояние StageTimer) и определение причины.
@@ -19,7 +19,7 @@
 - [ ] Шаг 14: Повторная live-верификация после фактической перезагрузки расширения в браузере.
 
 ## Журнал действий
-1. Прочитаны AGENTS.md, STAGEJUMP_RULES.md и skill playwright.
+1. Прочитаны AGENTS.md, docs/stagejump/STAGEJUMP_RULES.md и skill playwright.
 2. Локализованы ключевые функции в content.js: waitForStageTimerGate, applyStageJumpDebtIdFilterOnce, runAttempt.
 3. Запуск полного цикла в браузере: /ovzid/status/all -> фильтр ЛС -> клик StageJump.
 3.1 Открыта страница https://kgn.pyramid.vostok-electra.ru/ovzid/status/all (чистая сессия Playwright).
@@ -30,7 +30,7 @@
 5. Проверка вручную в консоли: тот же путь setGridParam + reloadGrid с DebtID=554117 работает корректно.
 6. Вывод: проблема в gate-ветке ожидания (runAttempt), а не в jqGrid API.
 7. Внесена правка в content.js: добавлен hard fallback после STAGE_TIMER_LOADING_FALLBACK_MS при отрисованном гриде, чтобы запускать one-shot фильтр и не зависать в wait.
-8. Обновлен AGENTS.md: добавлено правило обязательной сверки с последним шагом журнала STAGEJUMP_DEBUG_LOG.md.
+8. Обновлен AGENTS.md: добавлено правило обязательной сверки с последним шагом журнала docs/stagejump/STAGEJUMP_DEBUG_LOG.md.
 9. Для проверки новой ветки добавлен отдельный warning-лог: "Принудительный fallback gate...".
 10. Повторный прогон после правки в текущем браузерном контексте показал старое поведение (таймаут 60с, без нового лога hard fallback).
 11. Вывод: активная сессия браузера использует ранее загруженную версию расширения; для проверки новой логики требуется перезагрузка расширения/новый браузерный процесс.
@@ -201,7 +201,7 @@
 176. `extension_ui_config.js` подключён в `manifest.json` перед `content.js` и перед `StageTimer/timer_content.js`; для standalone StageTimer файл добавлен в сборку через `deploy_VZID.py`, чтобы не было расхождения между двумя расширениями.
 177. В `content.js` и `StageTimer/timer_content.js` добавено чтение глобального конфига: принудительные состояния из `forcedVisibility` теперь перекрывают пользовательские `F2`-настройки, а заблокированные глобальным конфигом пункты показываются в панели `F2` как disabled.
 178. В `StageTimer/timer_styles.css` добавлен визуальный статус для заблокированных `F2`-пунктов, а в `AGENTS.md` зафиксировано новое правило: при добавлении/удалении UI-элементов обязательно обновлять `extension_ui_config.js`, меню `F2` и связанные селекторы скрытия.
-179. Проверки после правок: `node --check content.js`, `node --check StageTimer/timer_content.js`, `node --check extension_ui_config.js` и `python -m py_compile deploy_VZID.py` — OK; поиск типовых признаков mojibake по изменённым файлам не выявил искажений, кроме старой буквальной строки-примера в `STAGEJUMP_DEBUG_LOG.md`.
+179. Проверки после правок: `node --check content.js`, `node --check StageTimer/timer_content.js`, `node --check extension_ui_config.js` и `python -m py_compile deploy_VZID.py` — OK; поиск типовых признаков mojibake по изменённым файлам не выявил искажений, кроме старой буквальной строки-примера в `docs/stagejump/STAGEJUMP_DEBUG_LOG.md`.
 180. По дополнительному уточнению пользователя в `extension_ui_config.js` добавлены отдельные русские комментарии к `globalEnabled` и каждому ключу `forcedVisibility`, чтобы корневой конфиг можно было править без чтения кода расширения.
 181. Повторная проверка после документирования конфига: `node --check extension_ui_config.js` — OK; локальный поиск типовых признаков mojibake дал только буквальные шаблоны-поиска внутри самого журнала, без новых искажений в коде.
 182. По уточнению пользователя для `innBatchTools` в `content.js` добавлен селектор `.my-super-btn`: красная кнопка `ПРОВЕРИТЬ ИНН/СМЕРТЬ` внутри карточки/`iframe` теперь скрывается тем же переключателем `F2` и глобальным `extension_ui_config.js`, что и пакетная кнопка с окнами проверки.

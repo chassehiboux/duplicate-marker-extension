@@ -51,7 +51,7 @@
       "js": [
         "extension_ui_config.js",
         "content.js",
-        "column_manager.js"
+        "ColumnManager/column_manager.js"
       ],
       "run_at": "document_end",
       "all_frames": false
@@ -95,7 +95,7 @@
         "*://*.pyramid-vostok.electra.ru/*"
       ],
       "js": [
-        "vzid_create_send.js"
+        "VZIDCapture/vzid_create_send.js"
       ],
       "run_at": "document_idle",
       "all_frames": true

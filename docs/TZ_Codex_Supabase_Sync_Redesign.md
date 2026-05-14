@@ -66,8 +66,8 @@ firefox-adaptation
 Перед началом работ изучить текущие файлы:
 
 ```text
-supabase_sync.js
-supabase_auth_ui.js
+SupabaseSync/supabase_sync.js
+SupabaseSync/supabase_auth_ui.js
 background.js
 popup.js
 manifest.json
@@ -749,7 +749,7 @@ dup_supabase_pre_login_backup_v2
 sync_store.js
 ```
 
-или внутри `supabase_sync.js`, но архитектурно отделить:
+или внутри `SupabaseSync/supabase_sync.js`, но архитектурно отделить:
 
 ```js
 DupSyncStore.get(key)
@@ -871,7 +871,7 @@ Last error
 
 ## 17. Статусы в UI
 
-Переделать статус в `supabase_auth_ui.js`.
+Переделать статус в `SupabaseSync/supabase_auth_ui.js`.
 
 Статус должен показывать не только "Realtime: подключен", а примерно:
 

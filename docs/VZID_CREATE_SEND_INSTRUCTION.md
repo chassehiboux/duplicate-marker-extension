@@ -2,7 +2,7 @@
 
 ## 1. Кратко о текущей логике
 Точка входа:
-- `manifest.json` подключает `vzid_create_send.js` на страницах Pyramid.
+- `manifest.json` подключает `VZIDCapture/vzid_create_send.js` на страницах Pyramid.
 
 Что делает модуль:
 1. На странице/iframe `/ovzid/claims/fssp` добавляет кнопку `Создать и отправить` рядом с `Сформировать заявление`.
@@ -11,7 +11,7 @@
 4. Открывает тестовую страницу расширения и передаёт туда тип уведомления, номер ИП и PDF.
 
 ## 2. Откуда берётся номер ИП
-Сейчас номер ИП определяется в `vzid_create_send.js` по приоритету:
+Сейчас номер ИП определяется в `VZIDCapture/vzid_create_send.js` по приоритету:
 1. Из выбранной строки грида родительской страницы (`window.parent.document`).
 2. По известным колонкам `aria-describedby` (например, `list_RegNumIP`).
 3. По индексу колонки с заголовком `Номер ИП`.
@@ -42,20 +42,20 @@
 
 ## 4. Где что менять, если нужны новые поля из грида
 Файлы:
-1. `vzid_create_send.js` — извлечение данных из формы/грида и отправка в background.
+1. `VZIDCapture/vzid_create_send.js` — извлечение данных из формы/грида и отправка в background.
 2. `background.js` — приём данных (`VZID_OPEN_CAPTURE_PREVIEW`) и выдача по token.
-3. `vzid_capture_preview.html` и `vzid_capture_preview.js` — отображение новых полей.
+3. `VZIDCapture/vzid_capture_preview.html` и `VZIDCapture/vzid_capture_preview.js` — отображение новых полей.
 
 ## 5. Как добавить ещё одно поле из грида
 Пример: добавить `ФИО` и `ЛС`.
 
 Шаги:
-1. В `vzid_create_send.js` добавить функции получения нужных полей по аналогии с номером ИП.
+1. В `VZIDCapture/vzid_create_send.js` добавить функции получения нужных полей по аналогии с номером ИП.
 2. Собрать данные из выбранной строки перед отправкой в background.
 3. Добавить поля в объект `data` при `chrome.runtime.sendMessage({ action: 'VZID_OPEN_CAPTURE_PREVIEW', data: ... })`.
 4. В `background.js` сохранить эти поля в `vzidCaptureStore`.
-5. В `vzid_capture_preview.html` добавить блоки вывода.
-6. В `vzid_capture_preview.js` прочитать и вывести эти поля.
+5. В `VZIDCapture/vzid_capture_preview.html` добавить блоки вывода.
+6. В `VZIDCapture/vzid_capture_preview.js` прочитать и вывести эти поля.
 
 ## 6. Рекомендуемый шаблон извлечения поля из строки
 Используйте 3 уровня fallback:
@@ -71,7 +71,7 @@
 2. В DevTools посмотрите `aria-describedby` нужной ячейки.
 3. Убедитесь, что в заголовке колонки текст совпадает с ожидаемым.
 4. Проверьте, что поле уходит в `VZID_OPEN_CAPTURE_PREVIEW` и сохраняется в `background.js`.
-5. Проверьте вывод на `vzid_capture_preview.html`.
+5. Проверьте вывод на `VZIDCapture/vzid_capture_preview.html`.
 
 ## 8. Ограничение по выбору строк
 Кнопка `Создать и отправить` создаётся только если в гриде выбрана ровно одна строка.
