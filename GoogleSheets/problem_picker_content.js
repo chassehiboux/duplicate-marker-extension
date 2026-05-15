@@ -94,6 +94,7 @@
     queue: [],
     currentIndex: 0,
     successCount: 0,
+    skippedCount: 0,
     failedCount: 0,
     currentItem: null,
     sheetName: '',
@@ -111,6 +112,7 @@
     queue: [],
     currentIndex: 0,
     successCount: 0,
+    skippedCount: 0,
     failedCount: 0,
     currentItem: null,
     sheetName: '',
@@ -498,6 +500,7 @@
       queue,
       currentIndex: 0,
       successCount: 0,
+      skippedCount: 0,
       failedCount: 0,
       currentItem: null,
       sheetName,
@@ -746,7 +749,7 @@
     if (!(menu instanceof HTMLElement)) return;
 
     const total = suppState.queue.length;
-    const processed = Math.min(total, suppState.successCount + suppState.failedCount);
+    const processed = Math.min(total, suppState.successCount + suppState.skippedCount + suppState.failedCount);
 
     const collected = $('.gs-problem-picker-supp-collected', menu);
     const progress = $('.gs-problem-picker-supp-progress', menu);
@@ -775,7 +778,7 @@
     if (!(menu instanceof HTMLElement)) return;
 
     const total = newResponseState.queue.length;
-    const processed = Math.min(total, newResponseState.successCount + newResponseState.failedCount);
+    const processed = Math.min(total, newResponseState.successCount + newResponseState.skippedCount + newResponseState.failedCount);
 
     const collected = $('.gs-problem-picker-new-response-collected', menu);
     const progress = $('.gs-problem-picker-new-response-progress', menu);
@@ -1366,7 +1369,7 @@
   }
 
   async function startItilFill() {
-    if (itilState.isRunning || suppState.isRunning) return;
+    if (itilState.isRunning || suppState.isRunning || newResponseState.isRunning) return;
 
     const runId = itilRunId + 1;
     itilRunId = runId;
@@ -1561,6 +1564,7 @@
       queue: [],
       currentIndex: 0,
       successCount: 0,
+      skippedCount: 0,
       failedCount: 0,
       currentItem: null,
       sheetName: '',
@@ -1578,7 +1582,7 @@
   }
 
   async function startSuppFill(limit) {
-    if (suppState.isRunning || itilState.isRunning) return;
+    if (suppState.isRunning || itilState.isRunning || newResponseState.isRunning) return;
 
     const maxRows = Math.max(0, Number(limit || 0));
     const isTestRun = maxRows === 1;
@@ -1590,6 +1594,7 @@
       queue: [],
       currentIndex: 0,
       successCount: 0,
+      skippedCount: 0,
       failedCount: 0,
       currentItem: null,
       isRunning: true,
@@ -1694,6 +1699,19 @@
         }
 
         const result = response.result || {};
+        if (result.skipped === true) {
+          suppState = {
+            ...suppState,
+            currentIndex: index + 1,
+            skippedCount: suppState.skippedCount + 1,
+            currentItem: null,
+            statusText: `Строка ${item.row} пропущена: ${result.skipMessage || 'не дождался результата поиска СУПП.'}`,
+            lastError: ''
+          };
+          renderSuppStatus();
+          continue;
+        }
+
         queueSuppBridgeSave(result, item);
         const textLength = Number(result.requestTextLength || 0);
         const infoLength = Number(result.infoTextLength || 0);
@@ -1731,10 +1749,10 @@
         stopRequested: false,
         currentItem: null,
         statusText: wasStopped
-          ? `Остановлено. Обработано строк: ${suppState.successCount}/${rowsToProcess}. Цвет сброшен: ${bridgeFinalize.resetRowsCount}.`
+          ? `Остановлено. Подготовлено строк: ${suppState.successCount}/${rowsToProcess}. Пропущено: ${suppState.skippedCount}. Цвет сброшен: ${bridgeFinalize.resetRowsCount}.`
           : isTestRun
-            ? `Тестовый запуск завершён. Обработано строк: ${suppState.successCount}/${rowsToProcess}. Цвет сброшен: ${bridgeFinalize.resetRowsCount}.`
-            : `Готово. Обработано строк: ${suppState.successCount}/${suppState.queue.length}. Цвет сброшен: ${bridgeFinalize.resetRowsCount}.`,
+            ? `Тестовый запуск завершён. Подготовлено строк: ${suppState.successCount}/${rowsToProcess}. Пропущено: ${suppState.skippedCount}. Цвет сброшен: ${bridgeFinalize.resetRowsCount}.`
+            : `Готово. Подготовлено строк: ${suppState.successCount}/${suppState.queue.length}. Пропущено: ${suppState.skippedCount}. Цвет сброшен: ${bridgeFinalize.resetRowsCount}.`,
         lastError: bridgeFinalize.errorText
       };
       renderSuppStatus();
@@ -1786,6 +1804,7 @@
       queue: [],
       currentIndex: 0,
       successCount: 0,
+      skippedCount: 0,
       failedCount: 0,
       currentItem: null,
       sheetName: '',
@@ -1821,6 +1840,7 @@
       queue: [],
       currentIndex: 0,
       successCount: 0,
+      skippedCount: 0,
       failedCount: 0,
       currentItem: null,
       isRunning: true,
@@ -1936,6 +1956,19 @@
         }
 
         const result = response.result || {};
+        if (result.skipped === true) {
+          newResponseState = {
+            ...newResponseState,
+            currentIndex: index + 1,
+            skippedCount: newResponseState.skippedCount + 1,
+            currentItem: null,
+            statusText: `Строка ${item.row} пропущена: ${result.skipMessage || 'не дождался результата поиска СУПП.'}`,
+            lastError: ''
+          };
+          renderNewResponseStatus();
+          continue;
+        }
+
         queueNewResponseBridgeSave(result, item);
         const infoLength = Number(result.infoTextLength || result.solutionTextLength || 0);
         newResponseState = {
@@ -1969,8 +2002,8 @@
         stopRequested: false,
         currentItem: null,
         statusText: wasStopped
-          ? `Остановлено. Обработано строк: ${newResponseState.successCount}/${newResponseState.queue.length}. Цвет сброшен: ${bridgeFinalize.resetRowsCount}.`
-          : `Готово. Обработано строк: ${newResponseState.successCount}/${newResponseState.queue.length}. Цвет сброшен: ${bridgeFinalize.resetRowsCount}.`,
+          ? `Остановлено. Подготовлено строк: ${newResponseState.successCount}/${newResponseState.queue.length}. Пропущено: ${newResponseState.skippedCount}. Цвет сброшен: ${bridgeFinalize.resetRowsCount}.`
+          : `Готово. Подготовлено строк: ${newResponseState.successCount}/${newResponseState.queue.length}. Пропущено: ${newResponseState.skippedCount}. Цвет сброшен: ${bridgeFinalize.resetRowsCount}.`,
         lastError: bridgeFinalize.errorText
       };
       renderNewResponseStatus();

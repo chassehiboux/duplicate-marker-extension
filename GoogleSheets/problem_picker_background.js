@@ -712,6 +712,15 @@
     if (!result || result.success !== true) {
       throw new Error(result && result.error ? result.error : 'Не удалось получить данные из СУПП.');
     }
+    if (result.skipped === true) {
+      return {
+        row,
+        suppNumber,
+        skipped: true,
+        skipReason: String(result.skipReason || 'search-result-unavailable'),
+        skipMessage: String(result.skipMessage || `СУПП ${suppNumber}: заявка пропущена.`)
+      };
+    }
 
     const itilData = useItilRequestText ? await collectItilFillData(itilNumber) : null;
     const requestText = useItilRequestText
@@ -801,6 +810,15 @@
     const result = await executeInTab(tab.id, collectSuppRequestData, [suppNumber]);
     if (!result || result.success !== true) {
       throw new Error(result && result.error ? result.error : 'Не удалось получить данные из СУПП.');
+    }
+    if (result.skipped === true) {
+      return {
+        row,
+        suppNumber,
+        skipped: true,
+        skipReason: String(result.skipReason || 'search-result-unavailable'),
+        skipMessage: String(result.skipMessage || `СУПП ${suppNumber}: заявка пропущена.`)
+      };
     }
 
     const infoText = processSuppInfoText(suppNumber, result.commentsText || '', result.discussionText || '');
@@ -1566,11 +1584,21 @@
         await closeGlobalSearchPopup();
 
         if (attempt === 2) {
-          throw new Error(searchState.notFound
-            ? `Заявка ${number} не найдена в поиске СУПП.`
-            : `Не дождался результата поиска СУПП ${number}.`);
+          return searchState.notFound
+            ? {
+              skipped: true,
+              skipReason: 'not-found',
+              skipMessage: `Заявка ${number} не найдена в поиске СУПП.`
+            }
+            : {
+              skipped: true,
+              skipReason: 'search-timeout',
+              skipMessage: `Не дождался результата поиска СУПП ${number}.`
+            };
         }
       }
+
+      return { skipped: true, skipReason: 'search-result-unavailable', skipMessage: `Не удалось открыть поиск СУПП ${number}.` };
     }
 
     function getInfoIframeText() {
@@ -1824,7 +1852,15 @@
 
     try {
       await waitFor(findGlobalSearchInput, 90000, 'страница СУПП');
-      await openSuppRequestFromSearch();
+      const openResult = await openSuppRequestFromSearch();
+      if (openResult && openResult.skipped === true) {
+        return {
+          success: true,
+          skipped: true,
+          skipReason: openResult.skipReason,
+          skipMessage: openResult.skipMessage
+        };
+      }
 
       const requestText = await waitFor(getInfoIframeText, 60000, `текст заявки СУПП ${number}`);
       const commentsText = extractCommentsText(requestText);
