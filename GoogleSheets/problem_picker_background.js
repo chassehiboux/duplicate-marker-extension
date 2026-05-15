@@ -5,6 +5,8 @@
   const SAVE_ACTION = 'GOOGLE_SHEETS_PROBLEM_PICKER_SAVE';
   const ITIL_FILL_ACTION = 'GOOGLE_SHEETS_ITIL_FILL_ROW';
   const SUPP_FILL_ACTION = 'GOOGLE_SHEETS_SUPP_FILL_ROW';
+  const ITIL_INFO_REFRESH_ACTION = 'GOOGLE_SHEETS_ITIL_REFRESH_INFO_ROW';
+  const SUPP_INFO_REFRESH_ACTION = 'GOOGLE_SHEETS_SUPP_REFRESH_INFO_ROW';
   const ITIL_URL = 'http://tmn-vpitil1c01/ITIL/ru_RU/';
   const SUPP_URL = 'http://tmn-vpsupp1c01.corp.vostok-electra.ru/PMS/ru_RU/';
 
@@ -741,6 +743,81 @@
       itilNumber,
       requestTextSource,
       requestTextLength: requestText.length,
+      infoTextLength: infoText.length,
+      bridgePayload
+    };
+  }
+
+  async function runItilInfoRefreshRow(data) {
+    const payload = data && data.payload ? data.payload : {};
+    const row = Number(payload.row);
+    const itilNumber = String(payload.itilNumber || '').trim();
+    const sheetName = String(payload.sheetName || '').trim();
+    const spreadsheetId = String(payload.spreadsheetId || '').trim();
+    const columns = payload.columns && typeof payload.columns === 'object' ? payload.columns : null;
+
+    if (spreadsheetId !== SPREADSHEET_ID) throw new Error('Некорректная таблица для обновления INFO из ITIL.');
+    if (!sheetName) throw new Error('Не передан лист для обновления INFO из ITIL.');
+    if (!Number.isInteger(row) || row < 2) throw new Error('Некорректный номер строки для обновления INFO из ITIL.');
+    if (!itilNumber) throw new Error('Не передан номер ITIL.');
+    normalizeBridgeUrl(data.bridgeUrl);
+
+    const itilData = await collectItilFillData(itilNumber);
+    const solutionText = String(itilData.solutionText || '').trim();
+
+    const bridgePayload = {
+      action: 'saveItilInfoData',
+      spreadsheetId,
+      sheetName,
+      row,
+      itilNumber,
+      columns,
+      solutionText
+    };
+
+    return {
+      row,
+      itilNumber,
+      solutionTextLength: solutionText.length,
+      bridgePayload
+    };
+  }
+
+  async function runSuppInfoRefreshRow(data) {
+    const payload = data && data.payload ? data.payload : {};
+    const row = Number(payload.row);
+    const suppNumber = String(payload.suppNumber || '').trim();
+    const sheetName = String(payload.sheetName || '').trim();
+    const spreadsheetId = String(payload.spreadsheetId || '').trim();
+    const columns = payload.columns && typeof payload.columns === 'object' ? payload.columns : null;
+
+    if (spreadsheetId !== SPREADSHEET_ID) throw new Error('Некорректная таблица для обновления INFO из СУПП.');
+    if (!sheetName) throw new Error('Не передан лист для обновления INFO из СУПП.');
+    if (!Number.isInteger(row) || row < 2) throw new Error('Некорректный номер строки для обновления INFO из СУПП.');
+    if (!/^ЗНР-[A-Za-zА-Яа-яЁё0-9-]+$/.test(suppNumber)) throw new Error('Не передан корректный номер СУПП.');
+    normalizeBridgeUrl(data.bridgeUrl);
+
+    const tab = await getOrCreateSuppTab();
+    const result = await executeInTab(tab.id, collectSuppRequestData, [suppNumber]);
+    if (!result || result.success !== true) {
+      throw new Error(result && result.error ? result.error : 'Не удалось получить данные из СУПП.');
+    }
+
+    const infoText = processSuppInfoText(suppNumber, result.commentsText || '', result.discussionText || '');
+
+    const bridgePayload = {
+      action: 'saveSuppInfoData',
+      spreadsheetId,
+      sheetName,
+      row,
+      suppNumber,
+      columns,
+      infoText
+    };
+
+    return {
+      row,
+      suppNumber,
       infoTextLength: infoText.length,
       bridgePayload
     };
@@ -1777,7 +1854,13 @@
   }
 
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    if (!request || (request.action !== SAVE_ACTION && request.action !== ITIL_FILL_ACTION && request.action !== SUPP_FILL_ACTION)) return false;
+    if (!request || (
+      request.action !== SAVE_ACTION
+      && request.action !== ITIL_FILL_ACTION
+      && request.action !== SUPP_FILL_ACTION
+      && request.action !== ITIL_INFO_REFRESH_ACTION
+      && request.action !== SUPP_INFO_REFRESH_ACTION
+    )) return false;
 
     if (!isAllowedSender(sender)) {
       sendResponse({ success: false, error: 'Запрос разрешён только со страницы настроенной Google-таблицы.' });
@@ -1793,9 +1876,16 @@
           return;
         }
 
-        const result = request.action === ITIL_FILL_ACTION
-          ? await runItilFillRow(data)
-          : await runSuppFillRow(data);
+        let result;
+        if (request.action === ITIL_FILL_ACTION) {
+          result = await runItilFillRow(data);
+        } else if (request.action === SUPP_FILL_ACTION) {
+          result = await runSuppFillRow(data);
+        } else if (request.action === ITIL_INFO_REFRESH_ACTION) {
+          result = await runItilInfoRefreshRow(data);
+        } else {
+          result = await runSuppInfoRefreshRow(data);
+        }
         sendResponse({ success: true, result });
       } catch (error) {
         sendResponse({

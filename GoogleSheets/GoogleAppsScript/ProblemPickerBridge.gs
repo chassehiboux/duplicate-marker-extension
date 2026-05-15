@@ -1,5 +1,6 @@
 const PROBLEM_PICKER_BRIDGE_SPREADSHEET_ID = '1A7bsMpcMegLvTIpdRBa06TD5RxGi64Cw3goYydbujNo';
 const PROBLEM_PICKER_BRIDGE_ALLOWED_SHEETS = ['Заявки', 'Заявки (наши)'];
+const PROBLEM_PICKER_BRIDGE_NEW_RESPONSE_GREEN = '#00ff00';
 
 // Bridge больше не зависит от PROBLEM_OPTIONS из Code.gs.
 // Так меньше риск, что /exec работает с другим набором глобальных переменных.
@@ -31,6 +32,12 @@ function doPost(e) {
       result = _problemPickerBridgeSaveItilData_(payload);
     } else if (payload.action === 'saveSuppData') {
       result = _problemPickerBridgeSaveSuppData_(payload);
+    } else if (payload.action === 'getNewResponseRows') {
+      result = _problemPickerBridgeGetNewResponseRows_(payload);
+    } else if (payload.action === 'saveItilInfoData') {
+      result = _problemPickerBridgeSaveItilInfoData_(payload);
+    } else if (payload.action === 'saveSuppInfoData') {
+      result = _problemPickerBridgeSaveSuppInfoData_(payload);
     } else if (payload.action === 'resetInfoEditColors') {
       result = _problemPickerBridgeResetInfoEditColors_(payload);
     } else {
@@ -113,6 +120,83 @@ function _problemPickerBridgeResetRowColors_(sh, row, colResp, colSupp) {
   if (colResp) ranges.push(_problemPickerBridgeColumnToA1_(colResp) + row);
   if (colSupp) ranges.push(_problemPickerBridgeColumnToA1_(colSupp) + row);
   if (ranges.length) sh.getRangeList(ranges).setBackground('#f5f5f5');
+}
+
+function _problemPickerBridgeGetNewResponseRows_(payload) {
+  const spreadsheetId = String(payload.spreadsheetId || '').trim();
+
+  if (spreadsheetId !== PROBLEM_PICKER_BRIDGE_SPREADSHEET_ID) {
+    throw new Error('Некорректная таблица: ' + spreadsheetId);
+  }
+
+  const sheetName = String(payload.sheetName || '').trim();
+
+  if (PROBLEM_PICKER_BRIDGE_ALLOWED_SHEETS.indexOf(sheetName) === -1) {
+    throw new Error('Лист не разрешён для поиска новых ответов: ' + sheetName);
+  }
+
+  const ss = SpreadsheetApp.openById(PROBLEM_PICKER_BRIDGE_SPREADSHEET_ID);
+  const sh = ss.getSheetByName(sheetName);
+
+  if (!sh) {
+    throw new Error('Лист не найден: ' + sheetName);
+  }
+
+  const colItil = getColByHeader(sh, 'Номер ITIL');
+  const colSupp = getColByHeader(sh, 'Номер СУПП (последний)');
+  const colInfo = getColByHeader(sh, INFO_HEADER);
+  const colResp = getColByHeader(sh, 'Пришел новый ответ');
+
+  if (!colItil || !colSupp || !colInfo || !colResp) {
+    throw new Error('Не найдены колонки «Номер ITIL», «Номер СУПП (последний)», «Информация из СУПП/ITIL» или «Пришел новый ответ».');
+  }
+
+  const lastRow = sh.getLastRow();
+  if (lastRow < 2) {
+    return {
+      sheetName: sheetName,
+      rowsCount: 0,
+      columns: {
+        itil: colItil,
+        supp: colSupp,
+        info: colInfo,
+        response: colResp
+      },
+      rows: []
+    };
+  }
+
+  const rowCount = lastRow - 1;
+  const responseColors = sh.getRange(2, colResp, rowCount, 1).getBackgrounds();
+  const minColumn = Math.min(colItil, colSupp);
+  const maxColumn = Math.max(colItil, colSupp);
+  const rowValues = sh.getRange(2, minColumn, rowCount, maxColumn - minColumn + 1).getDisplayValues();
+  const targetColor = String(PROBLEM_PICKER_BRIDGE_NEW_RESPONSE_GREEN).toLowerCase();
+  const rows = [];
+
+  for (let index = 0; index < rowCount; index++) {
+    const background = String(responseColors[index] && responseColors[index][0] || '').toLowerCase();
+    if (background !== targetColor) continue;
+
+    const values = rowValues[index] || [];
+    rows.push({
+      row: index + 2,
+      itilNumber: String(values[colItil - minColumn] || '').trim(),
+      suppValue: String(values[colSupp - minColumn] || '').trim()
+    });
+  }
+
+  return {
+    sheetName: sheetName,
+    rowsCount: rowCount,
+    columns: {
+      itil: colItil,
+      supp: colSupp,
+      info: colInfo,
+      response: colResp
+    },
+    rows: rows
+  };
 }
 
 function _problemPickerBridgeSaveProblem_(payload) {
@@ -269,6 +353,80 @@ function _problemPickerBridgeSaveItilData_(payload) {
   };
 }
 
+function _problemPickerBridgeSaveItilInfoData_(payload) {
+  const spreadsheetId = String(payload.spreadsheetId || '').trim();
+
+  if (spreadsheetId !== PROBLEM_PICKER_BRIDGE_SPREADSHEET_ID) {
+    throw new Error('Некорректная таблица: ' + spreadsheetId);
+  }
+
+  const sheetName = String(payload.sheetName || '').trim();
+
+  if (PROBLEM_PICKER_BRIDGE_ALLOWED_SHEETS.indexOf(sheetName) === -1) {
+    throw new Error('Лист не разрешён для обновления INFO из ITIL: ' + sheetName);
+  }
+
+  const row = Number(payload.row);
+
+  if (!Number.isInteger(row) || row < 2) {
+    throw new Error('Некорректный номер строки: ' + payload.row);
+  }
+
+  const itilNumber = String(payload.itilNumber || '').trim();
+
+  if (!itilNumber) {
+    throw new Error('Пустой номер ITIL.');
+  }
+
+  const solutionText = String(payload.solutionText || '')
+    .replace(/\r\n?/g, '\n')
+    .trim();
+
+  const ss = SpreadsheetApp.openById(PROBLEM_PICKER_BRIDGE_SPREADSHEET_ID);
+  const sh = ss.getSheetByName(sheetName);
+
+  if (!sh) {
+    throw new Error('Лист не найден: ' + sheetName);
+  }
+
+  const colItil = _problemPickerBridgeColumn_(payload, 'itil', sh, 'Номер ITIL');
+  const colSupp = _problemPickerBridgeColumn_(payload, 'supp', sh, 'Номер СУПП (последний)');
+  const colInfo = _problemPickerBridgeColumn_(payload, 'info', sh, INFO_HEADER);
+
+  if (!colItil || !colSupp || !colInfo) {
+    throw new Error('Не найдены колонки «Номер ITIL», «Номер СУПП (последний)» или «Информация из СУПП/ITIL».');
+  }
+
+  const rowValues = _problemPickerBridgeReadRowDisplayValues_(sh, row, [colItil, colSupp]);
+  const rowItil = String(rowValues[colItil] || '').trim();
+
+  if (rowItil !== itilNumber) {
+    throw new Error('Строка ' + row + ' больше не соответствует ITIL ' + itilNumber + ' (сейчас: ' + rowItil + ').');
+  }
+
+  const rowSupp = String(rowValues[colSupp] || '').trim();
+
+  if (rowSupp !== '–') {
+    throw new Error('Строка ' + row + ' больше не подходит для обновления INFO из ITIL: «Номер СУПП (последний)» = ' + rowSupp + '.');
+  }
+
+  const infoRichText = _problemPickerBridgeBuildItilInfoRichText_(solutionText);
+  sh.getRange(row, colInfo).setRichTextValue(infoRichText);
+  _problemPickerBridgeResetRowColors_(
+    sh,
+    row,
+    _problemPickerBridgeOptionalColumn_(payload, 'response', sh, 'Пришел новый ответ'),
+    colSupp
+  );
+
+  return {
+    sheetName: sheetName,
+    row: row,
+    itilNumber: itilNumber,
+    solutionTextLength: solutionText.length
+  };
+}
+
 function _problemPickerBridgeBuildItilInfoRichText_(solutionText) {
   const title = 'ИТИЛ';
   const body = String(solutionText || '').trim();
@@ -379,6 +537,73 @@ function _problemPickerBridgeSaveSuppData_(payload) {
     row: row,
     suppNumber: suppNumber,
     requestTextLength: requestText.length,
+    infoTextLength: infoRichText.getText().length
+  };
+}
+
+function _problemPickerBridgeSaveSuppInfoData_(payload) {
+  const spreadsheetId = String(payload.spreadsheetId || '').trim();
+
+  if (spreadsheetId !== PROBLEM_PICKER_BRIDGE_SPREADSHEET_ID) {
+    throw new Error('Некорректная таблица: ' + spreadsheetId);
+  }
+
+  const sheetName = String(payload.sheetName || '').trim();
+
+  if (PROBLEM_PICKER_BRIDGE_ALLOWED_SHEETS.indexOf(sheetName) === -1) {
+    throw new Error('Лист не разрешён для обновления INFO из СУПП: ' + sheetName);
+  }
+
+  const row = Number(payload.row);
+
+  if (!Number.isInteger(row) || row < 2) {
+    throw new Error('Некорректный номер строки: ' + payload.row);
+  }
+
+  const suppNumber = String(payload.suppNumber || '').trim();
+
+  if (!/^ЗНР-[A-Za-zА-Яа-яЁё0-9-]+$/.test(suppNumber)) {
+    throw new Error('Некорректный номер СУПП: ' + payload.suppNumber);
+  }
+
+  const infoText = String(payload.infoText || '')
+    .replace(/\r\n?/g, '\n')
+    .trim();
+
+  const ss = SpreadsheetApp.openById(PROBLEM_PICKER_BRIDGE_SPREADSHEET_ID);
+  const sh = ss.getSheetByName(sheetName);
+
+  if (!sh) {
+    throw new Error('Лист не найден: ' + sheetName);
+  }
+
+  const colSupp = _problemPickerBridgeColumn_(payload, 'supp', sh, 'Номер СУПП (последний)');
+  const colInfo = _problemPickerBridgeColumn_(payload, 'info', sh, INFO_HEADER);
+
+  if (!colSupp || !colInfo) {
+    throw new Error('Не найдены колонки «Номер СУПП (последний)» или «Информация из СУПП/ITIL».');
+  }
+
+  const rowValues = _problemPickerBridgeReadRowDisplayValues_(sh, row, [colSupp]);
+  const rowSupp = String(rowValues[colSupp] || '').trim();
+
+  if (rowSupp.indexOf(suppNumber) === -1) {
+    throw new Error('Строка ' + row + ' больше не содержит СУПП ' + suppNumber + ' (сейчас: ' + rowSupp + ').');
+  }
+
+  const infoRichText = _problemPickerBridgeBuildSuppInfoRichText_(suppNumber, infoText);
+  sh.getRange(row, colInfo).setRichTextValue(infoRichText);
+  _problemPickerBridgeResetRowColors_(
+    sh,
+    row,
+    _problemPickerBridgeOptionalColumn_(payload, 'response', sh, 'Пришел новый ответ'),
+    colSupp
+  );
+
+  return {
+    sheetName: sheetName,
+    row: row,
+    suppNumber: suppNumber,
     infoTextLength: infoRichText.getText().length
   };
 }
