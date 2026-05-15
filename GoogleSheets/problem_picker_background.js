@@ -7,8 +7,12 @@
   const SUPP_FILL_ACTION = 'GOOGLE_SHEETS_SUPP_FILL_ROW';
   const ITIL_INFO_REFRESH_ACTION = 'GOOGLE_SHEETS_ITIL_REFRESH_INFO_ROW';
   const SUPP_INFO_REFRESH_ACTION = 'GOOGLE_SHEETS_SUPP_REFRESH_INFO_ROW';
+  const CHATGPT_SEARCH_ACTION = 'GOOGLE_SHEETS_CHATGPT_SEARCH';
+  const CHATGPT_OPEN_TAB_ACTION = 'GOOGLE_SHEETS_CHATGPT_OPEN_TAB';
   const ITIL_URL = 'http://tmn-vpitil1c01/ITIL/ru_RU/';
   const SUPP_URL = 'http://tmn-vpsupp1c01.corp.vostok-electra.ru/PMS/ru_RU/';
+  const CHATGPT_TEMPORARY_URL = 'https://chatgpt.com/?temporary-chat=true';
+  const CHATGPT_URL_PREFIX = 'https://chatgpt.com/';
 
   function isAllowedSender(sender) {
     const url = sender && sender.url ? String(sender.url) : '';
@@ -632,6 +636,54 @@
 
     await waitForTabReady(created.id, SUPP_URL);
     return activateTabForInteractiveAutomation(created, SUPP_URL, 'СУПП');
+  }
+
+  async function createChatGptTemporaryTab() {
+    const created = await tabsCreate({ url: CHATGPT_TEMPORARY_URL, active: false });
+    if (!created || !Number.isInteger(created.id)) {
+      throw new Error('Не удалось открыть временный чат ChatGPT.');
+    }
+
+    await waitForTabReady(created.id, CHATGPT_URL_PREFIX);
+    return created;
+  }
+
+  async function activateChatGptTab(tabId) {
+    if (!Number.isInteger(tabId)) throw new Error('Не передан tabId вкладки ChatGPT.');
+
+    const tab = await tabsGet(tabId);
+    if (!tab || !String(tab.url || '').startsWith(CHATGPT_URL_PREFIX)) {
+      throw new Error('Вкладка ChatGPT больше недоступна.');
+    }
+
+    return activateTabForInteractiveAutomation(tab, CHATGPT_URL_PREFIX, 'ChatGPT');
+  }
+
+  async function runChatGptSearch(data) {
+    const payload = data && data.payload ? data.payload : {};
+    const fileName = String(payload.fileName || '').trim();
+    const csvText = String(payload.csvText || '');
+    const promptText = String(payload.promptText || '').trim();
+
+    if (!fileName) throw new Error('Не передано имя CSV-файла для ChatGPT.');
+    if (!csvText) throw new Error('CSV-файл для ChatGPT пустой.');
+    if (!promptText) throw new Error('Не передан текст запроса для ChatGPT.');
+
+    const tab = await createChatGptTemporaryTab();
+    const result = await executeInTab(tab.id, runChatGptSearchInPage, [{
+      fileName,
+      csvText,
+      promptText
+    }]);
+
+    if (!result || result.success === false) {
+      throw new Error(result && result.error ? result.error : 'Не удалось получить ответ ChatGPT.');
+    }
+
+    return {
+      ...result,
+      tabId: tab.id
+    };
   }
 
   async function runItilFillRow(data) {
@@ -1889,6 +1941,107 @@
     }
   }
 
+  async function runChatGptSearchInPage(payload) {
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    const waitFor = async (getter, timeoutMs, description) => {
+      const startedAt = Date.now();
+      while ((Date.now() - startedAt) < timeoutMs) {
+        const value = getter();
+        if (value) return value;
+        await sleep(250);
+      }
+      throw new Error(`Не дождался: ${description}.`);
+    };
+
+    const getComposer = () => document.querySelector('#prompt-textarea[contenteditable="true"]')
+      || document.querySelector('[contenteditable="true"][role="textbox"]');
+    const getUploadInput = () => document.querySelector('#upload-files')
+      || Array.from(document.querySelectorAll('input[type="file"]')).find((input) => !input.accept);
+    const getSendButton = () => document.querySelector('[data-testid="send-button"]')
+      || Array.from(document.querySelectorAll('button')).find((button) => /отправ/i.test(String(button.getAttribute('aria-label') || '')));
+    const getStopButton = () => document.querySelector('[data-testid="stop-button"]')
+      || Array.from(document.querySelectorAll('button')).find((button) => /останов/i.test(String(button.getAttribute('aria-label') || '')));
+    const getAssistantMessages = () => Array.from(document.querySelectorAll('[data-message-author-role="assistant"]'));
+
+    const waitForFinishedAnswer = async () => {
+      const timeoutMs = 10 * 60 * 1000;
+      const startedAt = Date.now();
+      let lastText = '';
+      let stableSince = 0;
+
+      while ((Date.now() - startedAt) < timeoutMs) {
+        const assistantMessages = getAssistantMessages();
+        const latestAssistant = assistantMessages[assistantMessages.length - 1] || null;
+        const latestText = latestAssistant ? String(latestAssistant.innerText || '').trim() : '';
+        const isGenerating = !!getStopButton();
+
+        if (latestText && !isGenerating) {
+          if (latestText === lastText) {
+            if (!stableSince) stableSince = Date.now();
+            if ((Date.now() - stableSince) >= 1200) return latestAssistant;
+          } else {
+            lastText = latestText;
+            stableSince = 0;
+          }
+        } else if (latestText !== lastText) {
+          lastText = latestText;
+          stableSince = 0;
+        }
+
+        await sleep(350);
+      }
+
+      throw new Error('Не дождался завершения ответа ChatGPT.');
+    };
+
+    try {
+      const fileName = String(payload && payload.fileName || '').trim();
+      const csvText = String(payload && payload.csvText || '');
+      const promptText = String(payload && payload.promptText || '').trim();
+      if (!fileName || !csvText || !promptText) {
+        throw new Error('Для поиска ChatGPT переданы неполные данные.');
+      }
+
+      const composer = await waitFor(getComposer, 90000, 'поле ввода ChatGPT');
+      const uploadInput = await waitFor(getUploadInput, 90000, 'поле загрузки файлов ChatGPT');
+
+      const file = new File([csvText], fileName, { type: 'text/csv' });
+      const dataTransfer = new DataTransfer();
+      dataTransfer.items.add(file);
+      uploadInput.files = dataTransfer.files;
+      uploadInput.dispatchEvent(new Event('change', { bubbles: true }));
+
+      await waitFor(() => String(document.body && document.body.innerText || '').includes(fileName), 90000, 'прикрепление CSV-файла');
+
+      composer.focus();
+      const selection = window.getSelection();
+      if (selection) {
+        selection.removeAllRanges();
+        const range = document.createRange();
+        range.selectNodeContents(composer);
+        selection.addRange(range);
+      }
+      document.execCommand('insertText', false, promptText);
+
+      const sendButton = await waitFor(getSendButton, 30000, 'кнопку отправки ChatGPT');
+      sendButton.click();
+
+      await waitFor(() => getAssistantMessages().length > 0 || !!getStopButton(), 60000, 'начало ответа ChatGPT');
+      const assistantMessage = await waitForFinishedAnswer();
+
+      return {
+        success: true,
+        answerText: String(assistantMessage.innerText || '').trim()
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error && error.message ? error.message : String(error)
+      };
+    }
+  }
+
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (!request || (
       request.action !== SAVE_ACTION
@@ -1896,6 +2049,8 @@
       && request.action !== SUPP_FILL_ACTION
       && request.action !== ITIL_INFO_REFRESH_ACTION
       && request.action !== SUPP_INFO_REFRESH_ACTION
+      && request.action !== CHATGPT_SEARCH_ACTION
+      && request.action !== CHATGPT_OPEN_TAB_ACTION
     )) return false;
 
     if (!isAllowedSender(sender)) {
@@ -1919,8 +2074,12 @@
           result = await runSuppFillRow(data);
         } else if (request.action === ITIL_INFO_REFRESH_ACTION) {
           result = await runItilInfoRefreshRow(data);
-        } else {
+        } else if (request.action === SUPP_INFO_REFRESH_ACTION) {
           result = await runSuppInfoRefreshRow(data);
+        } else if (request.action === CHATGPT_SEARCH_ACTION) {
+          result = await runChatGptSearch(data);
+        } else {
+          result = await activateChatGptTab(Number(data.tabId));
         }
         sendResponse({ success: true, result });
       } catch (error) {

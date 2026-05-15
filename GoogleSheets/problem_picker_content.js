@@ -19,12 +19,32 @@
   const SUPP_FILL_ACTION = 'GOOGLE_SHEETS_SUPP_FILL_ROW';
   const ITIL_INFO_REFRESH_ACTION = 'GOOGLE_SHEETS_ITIL_REFRESH_INFO_ROW';
   const SUPP_INFO_REFRESH_ACTION = 'GOOGLE_SHEETS_SUPP_REFRESH_INFO_ROW';
+  const CHATGPT_SEARCH_ACTION = 'GOOGLE_SHEETS_CHATGPT_SEARCH';
+  const CHATGPT_OPEN_TAB_ACTION = 'GOOGLE_SHEETS_CHATGPT_OPEN_TAB';
   const ITIL_NUMBER_HEADER = 'Номер ITIL';
   const SUPP_NUMBER_HEADER = 'Номер СУПП (последний)';
   const ITIL_INFO_HEADER = 'Информация из СУПП/ITIL';
   const NEW_RESPONSE_HEADER = 'Пришел новый ответ';
+  const CHATGPT_SEARCH_SHEET_NAME = 'Заявки';
+  const CHATGPT_RESULT_SHEET_NAME = 'Поиск заявок (ИИ)';
+  const CHATGPT_ROW_ID_HEADER = '__row_id';
+  const CHATGPT_SEARCH_FILE_NAME = 'zayavki-search.csv';
+  const CHATGPT_SEARCH_VISIBLE_HEADERS = Object.freeze([
+    'Дата заявки',
+    'Проблемы',
+    'Инициатор',
+    ITIL_NUMBER_HEADER,
+    SUPP_NUMBER_HEADER,
+    TEXT_HEADER,
+    ITIL_INFO_HEADER
+  ]);
+  const CHATGPT_SEARCH_CSV_HEADERS = Object.freeze([
+    CHATGPT_ROW_ID_HEADER,
+    ...CHATGPT_SEARCH_VISIBLE_HEADERS
+  ]);
   const ROOT_ID = 'dup-google-sheets-problem-picker-root';
   const MODAL_ID = 'dup-google-sheets-problem-picker-modal';
+  const CHATGPT_SEARCH_MODAL_ID = 'dup-google-sheets-chatgpt-search-modal';
   const MENU_ID = 'dup-google-sheets-problem-picker-menu';
   const MENU_OVERLAY_ID = 'dup-google-sheets-problem-picker-menu-overlay';
   const STYLE_ID = 'dup-google-sheets-problem-picker-style';
@@ -72,6 +92,18 @@
   let itilRunId = 0;
   let suppRunId = 0;
   let newResponseRunId = 0;
+
+  let chatGptSearchState = {
+    isRunning: false,
+    query: '',
+    statusText: 'Введите запрос и запустите поиск.',
+    lastError: '',
+    compactRowsCount: 0,
+    foundCount: 0,
+    chatTabId: null,
+    sentPrompt: '',
+    resultSheetId: null
+  };
 
   let itilState = {
     queue: [],
@@ -278,6 +310,10 @@
     return `https://docs.google.com/spreadsheets/d/${encodeURIComponent(CONFIG.spreadsheetId)}/export?format=csv&gid=${encodeURIComponent(gid)}`;
   }
 
+  function getChatGptSearchCsvUrl() {
+    return `https://docs.google.com/spreadsheets/d/${encodeURIComponent(CONFIG.spreadsheetId)}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(CHATGPT_SEARCH_SHEET_NAME)}`;
+  }
+
   function parseCsv(text) {
     const rows = [];
     let row = [];
@@ -320,6 +356,126 @@
     }
 
     return rows;
+  }
+
+  function stringifyCsvCell(value) {
+    const text = String(value == null ? '' : value);
+    return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  }
+
+  function buildCsvText(rows) {
+    return (rows || [])
+      .map((row) => (row || []).map(stringifyCsvCell).join(','))
+      .join('\r\n');
+  }
+
+  function buildChatGptSearchPrompt(query) {
+    return `${String(query || '').trim()}
+
+Используй только данные из приложенного CSV-файла. Не используй внешние знания, интернет, догадки или сведения, которых нет в CSV.
+
+Ищи заявки по смыслу, а не по точному совпадению слов.
+Приоритет анализа:
+1. Главный источник смысла — столбец «Текст заявки».
+2. Второй по важности — столбец «Информация из СУПП/ITIL».
+3. Остальные столбцы используй только как вспомогательные признаки для уточнения и подтверждения совпадения, но не как основной критерий поиска.
+
+Не своди поиск к полям «Проблемы», «Инициатор», номерам заявок или буквальному совпадению формулировок.
+
+Верни только один JSON-объект без markdown, без пояснений до или после него, строго в таком формате:
+{"matches":[{"row_id":123,"reason":"краткое объяснение совпадения"}]}
+
+Правила ответа:
+- row_id бери только из столбца «${CHATGPT_ROW_ID_HEADER}» приложенного CSV;
+- добавляй строку только если она действительно соответствует смыслу запроса;
+- reason можешь оставить пустой строкой, если пояснение не нужно;
+- не возвращай исходные данные строк и не переписывай значения других столбцов;
+- если совпадений нет, верни ровно {"matches":[]}.`;
+  }
+
+  async function loadChatGptSearchCsv() {
+    const response = await fetch(getChatGptSearchCsvUrl(), { credentials: 'omit' });
+    if (!response.ok) throw new Error(`CSV-экспорт листа «${CHATGPT_SEARCH_SHEET_NAME}» вернул HTTP ${response.status}.`);
+
+    const rows = parseCsv(await response.text());
+    const headers = rows[0] || [];
+    const columnIndexes = CHATGPT_SEARCH_VISIBLE_HEADERS.map((header) => headers.indexOf(header));
+    const missingHeaders = CHATGPT_SEARCH_VISIBLE_HEADERS.filter((header, index) => columnIndexes[index] < 0);
+    if (missingHeaders.length) {
+      throw new Error(`Не найдены колонки для поиска: ${missingHeaders.join(', ')}.`);
+    }
+
+    const compactRows = [CHATGPT_SEARCH_CSV_HEADERS.slice()];
+    const rowMap = {};
+    for (let index = 1; index < rows.length; index++) {
+      const sourceRow = rows[index] || [];
+      const visibleRow = columnIndexes.map((columnIndex) => String(sourceRow[columnIndex] || ''));
+      if (!visibleRow.some((cell) => cell.trim())) continue;
+
+      const rowId = index + 1;
+      compactRows.push([String(rowId), ...visibleRow]);
+      rowMap[rowId] = visibleRow;
+    }
+
+    return {
+      csvText: buildCsvText(compactRows),
+      rowsCount: compactRows.length - 1,
+      headers: CHATGPT_SEARCH_VISIBLE_HEADERS.slice(),
+      rowMap
+    };
+  }
+
+  function parseChatGptSearchMatches(answerText) {
+    const text = String(answerText || '').trim();
+    if (!text) throw new Error('ChatGPT вернул пустой ответ.');
+
+    let parsed = null;
+    try {
+      parsed = JSON.parse(text);
+    } catch (error) {
+      const match = text.match(/\{[\s\S]*\}/);
+      if (match) {
+        parsed = JSON.parse(match[0]);
+      } else {
+        throw new Error('ChatGPT вернул ответ не в JSON-формате.');
+      }
+    }
+
+    const source = parsed && Array.isArray(parsed.matches) ? parsed.matches : null;
+    if (!source) throw new Error('ChatGPT вернул JSON без массива matches.');
+
+    const seen = new Set();
+    return source.map((item) => {
+      const rowId = Number(item && item.row_id);
+      if (!Number.isInteger(rowId) || rowId < 2 || seen.has(rowId)) return null;
+      seen.add(rowId);
+      return {
+        rowId,
+        reason: String(item && item.reason || '').trim()
+      };
+    }).filter(Boolean);
+  }
+
+  function buildChatGptSearchResultTable(csv, matches) {
+    const headers = [...csv.headers];
+    const hasReasons = matches.some((match) => match.reason);
+    if (hasReasons) headers.push('Пояснение совпадения');
+
+    const missingRowIds = [];
+    const rows = matches.map((match) => {
+      const sourceRow = csv.rowMap[match.rowId];
+      if (!Array.isArray(sourceRow)) {
+        missingRowIds.push(match.rowId);
+        return null;
+      }
+      return hasReasons ? [...sourceRow, match.reason] : sourceRow.slice();
+    }).filter(Boolean);
+
+    if (missingRowIds.length) {
+      throw new Error(`ChatGPT вернул неизвестные row_id: ${missingRowIds.join(', ')}.`);
+    }
+
+    return { headers, rows };
   }
 
   async function loadQueue() {
@@ -612,7 +768,7 @@
     style.textContent = `
       #${ROOT_ID}{position:fixed;right:18px;bottom:58px;z-index:2147483640;display:flex;flex-direction:column;align-items:flex-end;gap:6px;font-family:"Segoe UI",Tahoma,sans-serif}
       #${ROOT_ID} .gs-problem-picker-actions{display:flex;gap:6px}
-      #${ROOT_ID} button,#${MODAL_ID} button{border:1px solid #b7c2d3;border-radius:7px;background:#fff;color:#162033;cursor:pointer;font:600 13px/1.2 "Segoe UI",Tahoma,sans-serif;padding:8px 12px}
+      #${ROOT_ID} button,#${MODAL_ID} button,#${CHATGPT_SEARCH_MODAL_ID} button{border:1px solid #b7c2d3;border-radius:7px;background:#fff;color:#162033;cursor:pointer;font:600 13px/1.2 "Segoe UI",Tahoma,sans-serif;padding:8px 12px}
       #${ROOT_ID} .gs-problem-picker-open{border-color:#1155cc;background:#1155cc;color:#fff;box-shadow:0 8px 22px rgba(17,85,204,.24)}
       #${ROOT_ID} .gs-problem-picker-url{min-width:44px}
       #${ROOT_ID} .gs-problem-picker-status{max-width:360px;min-height:18px;padding:5px 8px;border-radius:6px;background:rgba(255,255,255,.94);color:#24513a;font-size:12px;box-shadow:0 6px 18px rgba(15,23,42,.12)}
@@ -634,12 +790,14 @@
       #${MENU_ID} .gs-problem-picker-status{min-height:18px;color:#24513a;font-size:13px}
       #${MENU_ID} .gs-problem-picker-status.is-error,#${MENU_ID} .gs-problem-picker-itil-status.is-error,#${MENU_ID} .gs-problem-picker-supp-status.is-error,#${MENU_ID} .gs-problem-picker-new-response-status.is-error{color:#b3261e}
       #${MENU_ID} .gs-problem-picker-itil-status,#${MENU_ID} .gs-problem-picker-supp-status,#${MENU_ID} .gs-problem-picker-new-response-status{min-height:18px;color:#24513a;font-size:13px;overflow-wrap:anywhere}
-      #${ROOT_ID} button,#${MODAL_ID} button,#${MENU_ID} button{border:1px solid #b7c2d3;border-radius:7px;background:#fff;color:#162033;cursor:pointer;font:600 13px/1.2 "Segoe UI",Tahoma,sans-serif;padding:8px 12px}
+      #${MENU_ID} .gs-problem-picker-chatgpt-note{color:#566176;font-size:13px;line-height:1.45}
+      #${ROOT_ID} button,#${MODAL_ID} button,#${CHATGPT_SEARCH_MODAL_ID} button,#${MENU_ID} button{border:1px solid #b7c2d3;border-radius:7px;background:#fff;color:#162033;cursor:pointer;font:600 13px/1.2 "Segoe UI",Tahoma,sans-serif;padding:8px 12px}
       #${MENU_ID} button:disabled{opacity:.58;cursor:default}
-      #${MENU_ID} .gs-problem-picker-open,#${MENU_ID} .gs-problem-picker-itil-start,#${MENU_ID} .gs-problem-picker-supp-start,#${MENU_ID} .gs-problem-picker-supp-test,#${MENU_ID} .gs-problem-picker-new-response-start{border-color:#1155cc;background:#1155cc;color:#fff;box-shadow:0 8px 22px rgba(17,85,204,.2)}
+      #${MENU_ID} .gs-problem-picker-open,#${MENU_ID} .gs-problem-picker-chatgpt-search-open,#${MENU_ID} .gs-problem-picker-itil-start,#${MENU_ID} .gs-problem-picker-supp-start,#${MENU_ID} .gs-problem-picker-supp-test,#${MENU_ID} .gs-problem-picker-new-response-start{border-color:#1155cc;background:#1155cc;color:#fff;box-shadow:0 8px 22px rgba(17,85,204,.2)}
       #${MENU_ID} .gs-problem-picker-itil-stop,#${MENU_ID} .gs-problem-picker-supp-stop,#${MENU_ID} .gs-problem-picker-new-response-stop{border-color:#b3261e;color:#b3261e}
       #${MODAL_ID}{position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;background:rgba(17,24,39,.42);font-family:"Segoe UI",Tahoma,sans-serif}
-      #${MODAL_ID}[hidden],html.dup-ext-screenshot-mode #${ROOT_ID},html.dup-ext-screenshot-mode #${MODAL_ID},html.dup-ext-screenshot-mode #${MENU_ID},html.dup-ext-screenshot-mode #${MENU_OVERLAY_ID}{display:none!important}
+      #${CHATGPT_SEARCH_MODAL_ID}{position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;background:rgba(15,23,42,.48);font-family:"Segoe UI",Tahoma,sans-serif}
+      #${MODAL_ID}[hidden],#${CHATGPT_SEARCH_MODAL_ID}[hidden],html.dup-ext-screenshot-mode #${ROOT_ID},html.dup-ext-screenshot-mode #${MODAL_ID},html.dup-ext-screenshot-mode #${CHATGPT_SEARCH_MODAL_ID},html.dup-ext-screenshot-mode #${MENU_ID},html.dup-ext-screenshot-mode #${MENU_OVERLAY_ID}{display:none!important}
       #${MODAL_ID} .gs-problem-picker-layout{width:min(1292px,calc(100vw - 32px));height:min(680px,calc(100vh - 32px));display:grid;grid-template-columns:minmax(0,980px) 298px;gap:14px;align-items:stretch}
       #${MODAL_ID} .gs-problem-picker-panel{width:100%;height:100%;min-width:0;display:grid;grid-template-rows:auto auto minmax(0,1fr) auto;gap:14px;box-sizing:border-box;padding:22px;border:1px solid #d6dce8;border-radius:8px;background:#fbfcfe;color:#172033;box-shadow:0 24px 70px rgba(15,23,42,.26)}
       #${MODAL_ID} .gs-problem-picker-header,#${MODAL_ID} .gs-problem-picker-footer{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}
@@ -659,10 +817,35 @@
       #${MODAL_ID} .gs-problem-picker-category-button:hover:not(:disabled),#${MODAL_ID} .gs-problem-picker-category-button:focus-visible{border-color:#1155cc;background:#eef5ff;color:#0f3f99;outline:none}
       #${MODAL_ID} .gs-problem-picker-category-button.is-default{border-color:#1155cc;background:#1155cc;color:#fff;box-shadow:0 8px 22px rgba(17,85,204,.2)}
       #${MODAL_ID} .gs-problem-picker-category-button:disabled{opacity:.58;cursor:default;box-shadow:none}
+      #${CHATGPT_SEARCH_MODAL_ID} .gs-chatgpt-search-card{width:min(1180px,100%);max-height:min(780px,calc(100vh - 32px));display:grid;grid-template-rows:auto auto auto auto;gap:16px;box-sizing:border-box;padding:22px;border:1px solid rgba(182,193,210,.92);border-radius:16px;background:linear-gradient(145deg,#fbfdff 0%,#f3f7ff 54%,#eef6f3 100%);color:#172033;box-shadow:0 28px 90px rgba(15,23,42,.28)}
+      #${CHATGPT_SEARCH_MODAL_ID} .gs-chatgpt-search-header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
+      #${CHATGPT_SEARCH_MODAL_ID} .gs-chatgpt-search-kicker{margin-bottom:5px;color:#49627b;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
+      #${CHATGPT_SEARCH_MODAL_ID} .gs-chatgpt-search-title{font-size:24px;line-height:1.2;font-weight:700}
+      #${CHATGPT_SEARCH_MODAL_ID} .gs-chatgpt-search-subtitle{margin-top:6px;color:#566176;font-size:13px;line-height:1.45}
+      #${CHATGPT_SEARCH_MODAL_ID} .gs-chatgpt-search-close{width:36px;height:36px;padding:0;font-size:22px;line-height:1}
+      #${CHATGPT_SEARCH_MODAL_ID} .gs-chatgpt-search-form{display:grid;gap:10px;padding:16px;border:1px solid rgba(183,194,211,.72);border-radius:12px;background:rgba(255,255,255,.78)}
+      #${CHATGPT_SEARCH_MODAL_ID} .gs-chatgpt-search-label{font-size:13px;font-weight:700;color:#253044}
+      #${CHATGPT_SEARCH_MODAL_ID} .gs-chatgpt-search-input{width:100%;min-height:92px;resize:vertical;box-sizing:border-box;border:1px solid #c8d2e1;border-radius:10px;background:#fff;color:#172033;font:14px/1.5 "Segoe UI",Tahoma,sans-serif;padding:12px 13px}
+      #${CHATGPT_SEARCH_MODAL_ID} .gs-chatgpt-search-input:focus{outline:2px solid rgba(17,85,204,.18);border-color:#1155cc}
+      #${CHATGPT_SEARCH_MODAL_ID} .gs-chatgpt-search-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+      #${CHATGPT_SEARCH_MODAL_ID} .gs-chatgpt-search-start{border-color:#1155cc;background:#1155cc;color:#fff;box-shadow:0 10px 26px rgba(17,85,204,.2)}
+      #${CHATGPT_SEARCH_MODAL_ID} .gs-chatgpt-search-open-chat[hidden]{display:none!important}
+      #${CHATGPT_SEARCH_MODAL_ID} .gs-chatgpt-search-status{min-height:19px;color:#24513a;font-size:13px;line-height:1.45}
+      #${CHATGPT_SEARCH_MODAL_ID} .gs-chatgpt-search-status.is-error{color:#b3261e}
+      #${CHATGPT_SEARCH_MODAL_ID} .gs-chatgpt-search-result-meta{display:flex;flex-wrap:wrap;gap:8px;color:#566176;font-size:12px}
+      #${CHATGPT_SEARCH_MODAL_ID} .gs-chatgpt-search-pill{padding:5px 9px;border-radius:999px;background:rgba(17,85,204,.1);color:#0f3f99;font-weight:700}
+      #${CHATGPT_SEARCH_MODAL_ID} .gs-chatgpt-search-details{border-top:1px solid rgba(183,194,211,.72);padding-top:12px}
+      #${CHATGPT_SEARCH_MODAL_ID} .gs-chatgpt-search-details[hidden]{display:none!important}
+      #${CHATGPT_SEARCH_MODAL_ID} .gs-chatgpt-search-details summary{cursor:pointer;color:#314157;font-size:13px;font-weight:700}
+      #${CHATGPT_SEARCH_MODAL_ID} .gs-chatgpt-search-prompt{max-height:180px;overflow:auto;margin:10px 0 0;padding:12px;border-radius:10px;background:rgba(15,23,42,.05);white-space:pre-wrap;color:#334155;font:12px/1.5 Consolas,"Courier New",monospace}
       @media (max-width:1323px){
         #${MODAL_ID}{align-items:flex-start;overflow:auto;padding:16px;box-sizing:border-box}
         #${MODAL_ID} .gs-problem-picker-layout{width:min(980px,100%);height:auto;min-height:min(680px,calc(100vh - 32px));grid-template-columns:1fr;grid-template-rows:minmax(520px,680px) auto}
         #${MODAL_ID} .gs-problem-picker-category-rail{height:auto;max-height:260px}
+      }
+      @media (max-width:860px){
+        #${CHATGPT_SEARCH_MODAL_ID}{align-items:flex-start;overflow:auto}
+        #${CHATGPT_SEARCH_MODAL_ID} .gs-chatgpt-search-card{max-height:none;grid-template-rows:auto auto auto auto}
       }
     `;
     (document.head || document.documentElement).appendChild(style);
@@ -798,6 +981,140 @@
     if (stopButton instanceof HTMLButtonElement) stopButton.disabled = !newResponseState.isRunning || !!newResponseState.stopRequested;
   }
 
+  function setChatGptSearchStatus(text, isError) {
+    chatGptSearchState.statusText = String(text || '');
+    chatGptSearchState.lastError = isError ? String(text || '') : '';
+    renderChatGptSearchModal();
+  }
+
+  function renderChatGptSearchModal() {
+    const modal = document.getElementById(CHATGPT_SEARCH_MODAL_ID);
+    if (!(modal instanceof HTMLElement)) return;
+
+    const queryInput = $('.gs-chatgpt-search-input', modal);
+    const startButton = $('.gs-chatgpt-search-start', modal);
+    const openChatButton = $('.gs-chatgpt-search-open-chat', modal);
+    const status = $('.gs-chatgpt-search-status', modal);
+    const resultMeta = $('.gs-chatgpt-search-result-meta', modal);
+    const details = $('.gs-chatgpt-search-details', modal);
+    const prompt = $('.gs-chatgpt-search-prompt', modal);
+
+    if (queryInput instanceof HTMLTextAreaElement) {
+      if (queryInput.value !== chatGptSearchState.query) queryInput.value = chatGptSearchState.query;
+      queryInput.disabled = chatGptSearchState.isRunning;
+    }
+
+    if (startButton instanceof HTMLButtonElement) {
+      startButton.disabled = chatGptSearchState.isRunning;
+      startButton.textContent = chatGptSearchState.isRunning ? 'Ищу…' : 'Найти заявки';
+    }
+
+    if (openChatButton instanceof HTMLButtonElement) {
+      const hasChatTab = Number.isInteger(chatGptSearchState.chatTabId);
+      openChatButton.hidden = !hasChatTab;
+      openChatButton.disabled = chatGptSearchState.isRunning || !hasChatTab;
+    }
+
+    if (status instanceof HTMLElement) {
+      status.textContent = chatGptSearchState.lastError || chatGptSearchState.statusText || '';
+      status.classList.toggle('is-error', !!chatGptSearchState.lastError);
+    }
+
+    if (resultMeta instanceof HTMLElement) {
+      resultMeta.replaceChildren();
+      if (chatGptSearchState.compactRowsCount > 0) {
+        const rowsPill = document.createElement('span');
+        rowsPill.className = 'gs-chatgpt-search-pill';
+        rowsPill.textContent = `Строк в CSV: ${chatGptSearchState.compactRowsCount}`;
+        resultMeta.appendChild(rowsPill);
+      }
+      if (chatGptSearchState.foundCount > 0 || chatGptSearchState.resultSheetId !== null) {
+        const foundPill = document.createElement('span');
+        foundPill.className = 'gs-chatgpt-search-pill';
+        foundPill.textContent = `Найдено заявок: ${chatGptSearchState.foundCount}`;
+        resultMeta.appendChild(foundPill);
+      }
+    }
+
+    if (details instanceof HTMLDetailsElement) {
+      details.hidden = !chatGptSearchState.sentPrompt;
+    }
+    if (prompt instanceof HTMLElement) {
+      prompt.textContent = chatGptSearchState.sentPrompt || '';
+    }
+  }
+
+  function closeChatGptSearchModal() {
+    const modal = document.getElementById(CHATGPT_SEARCH_MODAL_ID);
+    if (modal instanceof HTMLElement) modal.hidden = true;
+  }
+
+  function ensureChatGptSearchModal() {
+    ensureStyle();
+
+    const existing = document.getElementById(CHATGPT_SEARCH_MODAL_ID);
+    if (existing instanceof HTMLElement) return existing;
+
+    const modal = document.createElement('div');
+    modal.id = CHATGPT_SEARCH_MODAL_ID;
+    modal.hidden = true;
+    modal.innerHTML = `
+      <section class="gs-chatgpt-search-card" role="dialog" aria-modal="true" aria-label="Поиск заявки через ChatGPT">
+        <header class="gs-chatgpt-search-header">
+          <div>
+            <div class="gs-chatgpt-search-kicker">Google Sheets → ChatGPT</div>
+            <div class="gs-chatgpt-search-title">Поиск заявки</div>
+            <div class="gs-chatgpt-search-subtitle">Расширение само соберёт компактный CSV листа «Заявки», отправит запрос в фоновый временный чат и запишет найденные строки на лист «${CHATGPT_RESULT_SHEET_NAME}».</div>
+          </div>
+          <button type="button" class="gs-chatgpt-search-close" aria-label="Закрыть">×</button>
+        </header>
+
+        <section class="gs-chatgpt-search-form">
+          <label class="gs-chatgpt-search-label" for="dup-google-sheets-chatgpt-search-input">Введите произвольный запрос для поиска заявки</label>
+          <textarea id="dup-google-sheets-chatgpt-search-input" class="gs-chatgpt-search-input" placeholder="Например: заявки Зуйкевич Данил Иванович по теме ЕПГУ"></textarea>
+          <div class="gs-chatgpt-search-actions">
+            <button type="button" class="gs-chatgpt-search-start">Найти заявки</button>
+            <button type="button" class="gs-chatgpt-search-open-chat" hidden>Открыть чат ChatGPT</button>
+          </div>
+          <div class="gs-chatgpt-search-status" aria-live="polite"></div>
+        </section>
+
+        <div class="gs-chatgpt-search-result-meta"></div>
+
+        <details class="gs-chatgpt-search-details" hidden>
+          <summary>Что было отправлено</summary>
+          <pre class="gs-chatgpt-search-prompt"></pre>
+        </details>
+      </section>
+    `;
+
+    $('.gs-chatgpt-search-close', modal)?.addEventListener('click', closeChatGptSearchModal, { capture: true });
+    $('.gs-chatgpt-search-start', modal)?.addEventListener('click', () => {
+      void startChatGptSearch();
+    }, { capture: true });
+    $('.gs-chatgpt-search-open-chat', modal)?.addEventListener('click', () => {
+      void openChatGptSearchTab();
+    }, { capture: true });
+    $('.gs-chatgpt-search-input', modal)?.addEventListener('input', (event) => {
+      const target = event.target;
+      if (target instanceof HTMLTextAreaElement) chatGptSearchState.query = target.value;
+    });
+
+    (document.body || document.documentElement).appendChild(modal);
+    renderChatGptSearchModal();
+    return modal;
+  }
+
+  function openChatGptSearchModal() {
+    closeMenu();
+    const modal = ensureChatGptSearchModal();
+    modal.hidden = false;
+    renderChatGptSearchModal();
+
+    const queryInput = $('.gs-chatgpt-search-input', modal);
+    if (queryInput instanceof HTMLTextAreaElement) queryInput.focus();
+  }
+
   function closeMenu() {
     const overlay = document.getElementById(MENU_OVERLAY_ID);
     const menu = document.getElementById(MENU_ID);
@@ -848,6 +1165,14 @@
           <button type="button" class="gs-problem-picker-url">URL bridge</button>
         </div>
         <div class="gs-problem-picker-status" aria-live="polite"></div>
+      </section>
+
+      <section class="gs-problem-picker-menu-section">
+        <div class="gs-problem-picker-menu-section-title">Поиск заявки через ChatGPT</div>
+        <div class="gs-problem-picker-menu-actions">
+          <button type="button" class="gs-problem-picker-chatgpt-search-open">Поиск заявки</button>
+        </div>
+        <div class="gs-problem-picker-chatgpt-note">В фоне откроется временный чат, а найденные заявки будут записаны на лист «${CHATGPT_RESULT_SHEET_NAME}».</div>
       </section>
 
       <section class="gs-problem-picker-menu-section">
@@ -913,6 +1238,7 @@
     $('.gs-problem-picker-url', menu)?.addEventListener('click', () => {
       void promptBridgeUrl();
     }, { capture: true });
+    $('.gs-problem-picker-chatgpt-search-open', menu)?.addEventListener('click', openChatGptSearchModal, { capture: true });
     $('.gs-problem-picker-itil-start', menu)?.addEventListener('click', () => {
       void startItilFill();
     }, { capture: true });
@@ -981,9 +1307,15 @@
   function handleMenuEscape(event) {
     if (event.type !== 'keydown' || event.repeat || event.key !== 'Escape') return;
     const menu = document.getElementById(MENU_ID);
+    const chatGptSearchModal = document.getElementById(CHATGPT_SEARCH_MODAL_ID);
     if (menu instanceof HTMLElement && !menu.hidden) {
       event.preventDefault();
       closeMenu();
+      return;
+    }
+    if (chatGptSearchModal instanceof HTMLElement && !chatGptSearchModal.hidden) {
+      event.preventDefault();
+      closeChatGptSearchModal();
     }
   }
 
@@ -997,6 +1329,126 @@
     const next = prompt('Вставь URL Apps Script bridge:', current);
     if (next === null) return;
     await saveBridgeUrl(next);
+  }
+
+  async function startChatGptSearch() {
+    if (chatGptSearchState.isRunning) return;
+
+    const modal = ensureChatGptSearchModal();
+    const queryInput = $('.gs-chatgpt-search-input', modal);
+    const query = queryInput instanceof HTMLTextAreaElement
+      ? String(queryInput.value || '').trim()
+      : String(chatGptSearchState.query || '').trim();
+
+    if (!query) {
+      chatGptSearchState.query = '';
+      setChatGptSearchStatus('Введите запрос для поиска заявки.', true);
+      if (queryInput instanceof HTMLTextAreaElement) queryInput.focus();
+      return;
+    }
+
+    chatGptSearchState = {
+      ...chatGptSearchState,
+      isRunning: true,
+      query,
+      statusText: 'Собираю компактный CSV листа «Заявки»...',
+      lastError: '',
+      compactRowsCount: 0,
+      foundCount: 0,
+      chatTabId: null,
+      sentPrompt: buildChatGptSearchPrompt(query),
+      resultSheetId: null
+    };
+    renderChatGptSearchModal();
+
+    try {
+      await loadBridgeUrl();
+      if (!state.bridgeUrl) {
+        throw new Error('URL bridge не задан. Нажми F2, затем «URL bridge».');
+      }
+
+      const csv = await loadChatGptSearchCsv();
+      chatGptSearchState.compactRowsCount = csv.rowsCount;
+      chatGptSearchState.statusText = 'В фоне открываю временный чат ChatGPT, прикрепляю CSV и жду ответ...';
+      renderChatGptSearchModal();
+
+      const response = await sendRuntimeMessage({
+        action: CHATGPT_SEARCH_ACTION,
+        data: {
+          payload: {
+            fileName: CHATGPT_SEARCH_FILE_NAME,
+            csvText: csv.csvText,
+            promptText: chatGptSearchState.sentPrompt
+          }
+        }
+      });
+
+      if (!response || response.success === false) {
+        throw new Error(response && response.error ? response.error : 'Не удалось выполнить поиск через ChatGPT.');
+      }
+
+      const result = response.result && typeof response.result === 'object' ? response.result : {};
+      const matches = parseChatGptSearchMatches(result.answerText);
+      const resultTable = buildChatGptSearchResultTable(csv, matches);
+
+      const bridgeResponse = await sendRuntimeMessage({
+        action: SAVE_ACTION,
+        data: {
+          bridgeUrl: state.bridgeUrl,
+          payload: {
+            action: 'saveAiSearchResults',
+            spreadsheetId: CONFIG.spreadsheetId,
+            sheetName: CHATGPT_RESULT_SHEET_NAME,
+            headers: resultTable.headers,
+            rows: resultTable.rows
+          }
+        }
+      });
+
+      if (!bridgeResponse || bridgeResponse.success !== true) {
+        throw new Error(getRuntimeResponseError(bridgeResponse, 'bridge не записал результаты поиска'));
+      }
+
+      const bridgeResult = getBridgeActionResult(bridgeResponse);
+      chatGptSearchState = {
+        ...chatGptSearchState,
+        foundCount: resultTable.rows.length,
+        chatTabId: Number.isInteger(result.tabId) ? result.tabId : null,
+        statusText: resultTable.rows.length
+          ? `Найдено заявок: ${resultTable.rows.length}. Результат записан на лист «${CHATGPT_RESULT_SHEET_NAME}».`
+          : `Подходящие заявки не найдены. Лист «${CHATGPT_RESULT_SHEET_NAME}» очищен.`,
+        lastError: '',
+        resultSheetId: Number.isInteger(bridgeResult && bridgeResult.sheetId) ? bridgeResult.sheetId : null
+      };
+
+      if (Number.isInteger(chatGptSearchState.resultSheetId)) {
+        location.hash = `gid=${chatGptSearchState.resultSheetId}`;
+      }
+    } catch (error) {
+      chatGptSearchState = {
+        ...chatGptSearchState,
+        statusText: '',
+        lastError: error && error.message ? error.message : 'Не удалось выполнить поиск через ChatGPT.'
+      };
+    } finally {
+      chatGptSearchState.isRunning = false;
+      renderChatGptSearchModal();
+    }
+  }
+
+  async function openChatGptSearchTab() {
+    if (!Number.isInteger(chatGptSearchState.chatTabId)) return;
+
+    const response = await sendRuntimeMessage({
+      action: CHATGPT_OPEN_TAB_ACTION,
+      data: {
+        tabId: chatGptSearchState.chatTabId
+      }
+    });
+
+    if (!response || response.success === false) {
+      setChatGptSearchStatus(response && response.error ? response.error : 'Не удалось открыть вкладку ChatGPT.', true);
+    }
   }
 
   function ensureModal() {
@@ -2043,12 +2495,14 @@
 
     const root = document.getElementById(ROOT_ID);
     const modal = document.getElementById(MODAL_ID);
+    const chatGptSearchModal = document.getElementById(CHATGPT_SEARCH_MODAL_ID);
     const menu = document.getElementById(MENU_ID);
     const menuOverlay = document.getElementById(MENU_OVERLAY_ID);
 
     return !!(
       (root && root.contains(target))
       || (modal && modal.contains(target))
+      || (chatGptSearchModal && chatGptSearchModal.contains(target))
       || (menu && menu.contains(target))
       || (menuOverlay && menuOverlay.contains(target))
     );

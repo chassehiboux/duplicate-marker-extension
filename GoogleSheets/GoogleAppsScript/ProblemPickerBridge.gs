@@ -40,6 +40,8 @@ function doPost(e) {
       result = _problemPickerBridgeSaveSuppInfoData_(payload);
     } else if (payload.action === 'resetInfoEditColors') {
       result = _problemPickerBridgeResetInfoEditColors_(payload);
+    } else if (payload.action === 'saveAiSearchResults') {
+      result = _problemPickerBridgeSaveAiSearchResults_(payload);
     } else {
       throw new Error('Неизвестное действие bridge: ' + payload.action);
     }
@@ -733,6 +735,58 @@ function _problemPickerBridgeResetInfoEditColors_(payload) {
     sheetName: sheetName,
     rowsCount: validRows.length,
     rangesCount: ranges.length
+  };
+}
+
+function _problemPickerBridgeSaveAiSearchResults_(payload) {
+  const spreadsheetId = String(payload.spreadsheetId || '').trim();
+  if (spreadsheetId !== PROBLEM_PICKER_BRIDGE_SPREADSHEET_ID) {
+    throw new Error('Некорректная таблица: ' + spreadsheetId);
+  }
+
+  const sheetName = String(payload.sheetName || '').trim();
+  if (sheetName !== 'Поиск заявок (ИИ)') {
+    throw new Error('Некорректный лист результатов ИИ-поиска: ' + sheetName);
+  }
+
+  const headers = Array.isArray(payload.headers) ? payload.headers.map(function(value) {
+    return String(value == null ? '' : value);
+  }) : [];
+  if (!headers.length) {
+    throw new Error('Не переданы заголовки результатов ИИ-поиска.');
+  }
+
+  const rows = Array.isArray(payload.rows) ? payload.rows.map(function(row) {
+    return Array.isArray(row) ? row.map(function(value) {
+      return String(value == null ? '' : value);
+    }) : [];
+  }) : [];
+
+  rows.forEach(function(row, index) {
+    if (row.length !== headers.length) {
+      throw new Error('Строка результата ИИ-поиска ' + (index + 1) + ' содержит ' + row.length + ' ячеек вместо ' + headers.length + '.');
+    }
+  });
+
+  const ss = SpreadsheetApp.openById(PROBLEM_PICKER_BRIDGE_SPREADSHEET_ID);
+  const sh = ss.getSheetByName(sheetName) || ss.insertSheet(sheetName);
+  sh.clear();
+
+  const values = [headers].concat(rows);
+  const range = sh.getRange(1, 1, values.length, headers.length);
+  range.setNumberFormat('@');
+  range.setValues(values);
+
+  sh.setFrozenRows(1);
+  if (sh.getFilter()) sh.getFilter().remove();
+  range.createFilter();
+  sh.autoResizeColumns(1, headers.length);
+
+  return {
+    sheetName: sheetName,
+    sheetId: sh.getSheetId(),
+    rowsCount: rows.length,
+    columnsCount: headers.length
   };
 }
 
