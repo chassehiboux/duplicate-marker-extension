@@ -300,6 +300,20 @@
     return activeTab instanceof HTMLElement ? String(activeTab.textContent || '').trim() : '';
   }
 
+  function activateSheetTabByName(sheetName) {
+    const targetName = String(sheetName || '').trim();
+    if (!targetName) return false;
+
+    const tab = Array.from(document.querySelectorAll('.docs-sheet-tab')).find((candidate) => {
+      const nameElement = $('.docs-sheet-tab-name', candidate) || candidate;
+      return String(nameElement.textContent || '').trim() === targetName;
+    });
+
+    if (!(tab instanceof HTMLElement)) return false;
+    tab.click();
+    return true;
+  }
+
   function getActiveGid() {
     const searchGid = new URLSearchParams(location.search || '').get('gid');
     if (searchGid) return String(searchGid).trim();
@@ -312,8 +326,12 @@
     return `https://docs.google.com/spreadsheets/d/${encodeURIComponent(CONFIG.spreadsheetId)}/export?format=csv&gid=${encodeURIComponent(gid)}`;
   }
 
+  function getSheetCsvUrl(sheetName) {
+    return `https://docs.google.com/spreadsheets/d/${encodeURIComponent(CONFIG.spreadsheetId)}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}`;
+  }
+
   function getChatGptSearchCsvUrl() {
-    return `https://docs.google.com/spreadsheets/d/${encodeURIComponent(CONFIG.spreadsheetId)}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(CHATGPT_SEARCH_SHEET_NAME)}`;
+    return getSheetCsvUrl(CHATGPT_SEARCH_SHEET_NAME);
   }
 
   function parseCsv(text) {
@@ -478,6 +496,56 @@
     }
 
     return { headers, rows };
+  }
+
+  function wait(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  function normalizeCsvTable(rows) {
+    return (rows || []).map((row) => (row || []).map((value) => String(value == null ? '' : value)));
+  }
+
+  function areCsvTablesEqual(leftRows, rightRows) {
+    const left = normalizeCsvTable(leftRows);
+    const right = normalizeCsvTable(rightRows);
+
+    if (left.length !== right.length) return false;
+
+    for (let rowIndex = 0; rowIndex < left.length; rowIndex++) {
+      const leftRow = left[rowIndex] || [];
+      const rightRow = right[rowIndex] || [];
+      if (leftRow.length !== rightRow.length) return false;
+
+      for (let columnIndex = 0; columnIndex < leftRow.length; columnIndex++) {
+        if (leftRow[columnIndex] !== rightRow[columnIndex]) return false;
+      }
+    }
+
+    return true;
+  }
+
+  async function verifyChatGptResultSheetWrite(resultTable) {
+    const expectedRows = [resultTable.headers].concat(resultTable.rows);
+
+    for (let attempt = 0; attempt < 8; attempt++) {
+      if (attempt) await wait(1000);
+
+      try {
+        const response = await fetch(`${getSheetCsvUrl(CHATGPT_RESULT_SHEET_NAME)}&cache_bust=${Date.now()}-${attempt}`, {
+          credentials: 'omit',
+          cache: 'no-store'
+        });
+        if (!response.ok) continue;
+
+        const actualRows = parseCsv(await response.text());
+        if (areCsvTablesEqual(expectedRows, actualRows)) return true;
+      } catch (error) {
+        // После сетевой ошибки bridge повторная проверка листа — best effort.
+      }
+    }
+
+    return false;
   }
 
   async function loadQueue() {
@@ -1411,11 +1479,19 @@
         }
       });
 
+      let bridgeResult = null;
       if (!bridgeResponse || bridgeResponse.success !== true) {
-        throw new Error(getRuntimeResponseError(bridgeResponse, 'bridge не записал результаты поиска'));
+        chatGptSearchState.statusText = `Bridge не вернул подтверждение. Проверяю лист «${CHATGPT_RESULT_SHEET_NAME}»...`;
+        renderChatGptSearchModal();
+
+        const writeVerified = await verifyChatGptResultSheetWrite(resultTable);
+        if (!writeVerified) {
+          throw new Error(getRuntimeResponseError(bridgeResponse, 'bridge не записал результаты поиска'));
+        }
+      } else {
+        bridgeResult = getBridgeActionResult(bridgeResponse);
       }
 
-      const bridgeResult = getBridgeActionResult(bridgeResponse);
       chatGptSearchState = {
         ...chatGptSearchState,
         foundCount: resultTable.rows.length,
@@ -1429,6 +1505,8 @@
 
       if (Number.isInteger(chatGptSearchState.resultSheetId)) {
         location.hash = `gid=${chatGptSearchState.resultSheetId}`;
+      } else {
+        activateSheetTabByName(CHATGPT_RESULT_SHEET_NAME);
       }
 
       if (Number.isInteger(chatGptSearchState.chatTabId)) {

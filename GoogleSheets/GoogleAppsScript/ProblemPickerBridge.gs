@@ -776,11 +776,19 @@ function _problemPickerBridgeSaveAiSearchResults_(payload) {
   const range = sh.getRange(1, 1, values.length, headers.length);
   range.setNumberFormat('@');
   range.setValues(values);
+  range.setVerticalAlignment('top');
+  range.setWrap(true);
 
   sh.setFrozenRows(1);
   if (sh.getFilter()) sh.getFilter().remove();
   range.createFilter();
-  sh.autoResizeColumns(1, headers.length);
+  headers.forEach(function(header, index) {
+    const width = header === 'Текст заявки' || header === 'Информация из СУПП/ITIL'
+      ? 913
+      : 171;
+    sh.setColumnWidth(index + 1, width);
+  });
+  sh.setRowHeights(1, values.length, 55);
 
   return {
     sheetName: sheetName,
