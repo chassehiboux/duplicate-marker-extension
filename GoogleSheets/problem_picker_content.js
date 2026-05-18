@@ -1100,9 +1100,71 @@
       value.className = 'gs-request-summary-value';
       value.textContent = valueText;
 
-      field.append(label, value);
+      const valueRow = document.createElement('div');
+      valueRow.className = 'gs-request-summary-value-row';
+
+      const copyButton = document.createElement('button');
+      copyButton.type = 'button';
+      copyButton.className = 'gs-request-summary-copy';
+      copyButton.textContent = 'копировать';
+      copyButton.title = `Копировать: ${labelText}`;
+      copyButton.setAttribute('aria-label', `Копировать поле «${labelText}»`);
+      copyButton.disabled = !valueText || valueText === '—';
+      copyButton.addEventListener('click', () => {
+        void copySummaryValue(copyButton, valueText);
+      }, { capture: true });
+
+      valueRow.append(value, copyButton);
+      field.append(label, valueRow);
       container.appendChild(field);
     });
+  }
+
+  async function copyTextToClipboard(value) {
+    const text = String(value || '');
+    if (!text) return false;
+
+    try {
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch (_) {}
+
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.setAttribute('readonly', 'readonly');
+    textarea.style.position = 'fixed';
+    textarea.style.left = '-9999px';
+    textarea.style.top = '0';
+
+    (document.body || document.documentElement).appendChild(textarea);
+    textarea.select();
+
+    try {
+      return document.execCommand('copy');
+    } catch (_) {
+      return false;
+    } finally {
+      textarea.remove();
+    }
+  }
+
+  async function copySummaryValue(button, value) {
+    if (!(button instanceof HTMLButtonElement) || button.disabled) return;
+
+    const copied = await copyTextToClipboard(value);
+    const previousText = button.textContent || 'копировать';
+    button.textContent = copied ? 'скопировано' : 'не вышло';
+    button.classList.toggle('is-copied', copied);
+    button.classList.toggle('is-error', !copied);
+    button.disabled = true;
+
+    window.setTimeout(() => {
+      button.textContent = previousText;
+      button.classList.remove('is-copied', 'is-error');
+      button.disabled = !value || value === '—';
+    }, 1200);
   }
 
   function renderInfoBlocks(container, blocks) {
@@ -1176,10 +1238,16 @@
       #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-close-x{width:34px;height:34px;padding:0;font-size:22px;line-height:1}
       #${MODAL_ID} .gs-problem-picker-progress{width:fit-content;padding:5px 10px;border-radius:999px;background:#e8f3ee;color:#14532d;font-size:13px;font-weight:700}
       #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-progress{width:fit-content;padding:5px 10px;border-radius:999px;background:#e8f3ee;color:#14532d;font-size:13px;font-weight:700}
-      #${MODAL_ID} .gs-request-summary,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}
-      #${MODAL_ID} .gs-request-summary-item,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-item{min-width:0;padding:10px 11px;border:1px solid #dbe2ec;border-radius:10px;background:#f7f9fc}
+      #${MODAL_ID} .gs-request-summary,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary{display:flex;flex-wrap:wrap;align-items:stretch;justify-content:flex-start;gap:8px}
+      #${MODAL_ID} .gs-request-summary-item,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-item{flex:0 1 auto;width:max-content;max-width:min(320px,100%);min-width:0;padding:9px 10px;border:1px solid #dbe2ec;border-radius:10px;background:#f7f9fc}
       #${MODAL_ID} .gs-request-summary-label,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-label{margin-bottom:4px;color:#64748b;font-size:11px;font-weight:700;letter-spacing:.02em;text-transform:uppercase}
+      #${MODAL_ID} .gs-request-summary-value-row,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-value-row{display:flex;align-items:center;gap:6px;min-width:0}
       #${MODAL_ID} .gs-request-summary-value,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-value{min-width:0;overflow-wrap:anywhere;color:#172033;font-size:13px;font-weight:600;line-height:1.35}
+      #${MODAL_ID} .gs-request-summary-copy,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-copy{flex:none;padding:3px 6px;border-radius:999px;border-color:#d1d9e6;background:#fff;color:#526071;font-size:10px;font-weight:700;line-height:1;text-transform:lowercase;box-shadow:none}
+      #${MODAL_ID} .gs-request-summary-copy:hover:not(:disabled),#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-copy:hover:not(:disabled){border-color:#1155cc;color:#0f3f99;background:#eef5ff}
+      #${MODAL_ID} .gs-request-summary-copy.is-copied,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-copy.is-copied{border-color:#8ec9a3;background:#e8f3ee;color:#14532d}
+      #${MODAL_ID} .gs-request-summary-copy.is-error,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-copy.is-error{border-color:#f0b7b3;background:#fff1f0;color:#b3261e}
+      #${MODAL_ID} .gs-request-summary-copy:disabled,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-copy:disabled{opacity:.58;cursor:default}
       #${MODAL_ID} .gs-problem-picker-text-grid{min-width:0;min-height:0;overflow:hidden;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
       #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-problem-picker-text-grid{min-width:0;min-height:0;overflow:hidden;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
       #${MODAL_ID} .gs-problem-picker-text-wrap{min-width:0;min-height:0;overflow:hidden;display:grid;grid-template-rows:auto minmax(0,1fr);gap:8px}
@@ -1232,7 +1300,6 @@
       @media (max-width:980px){
         #${MODAL_ID} .gs-problem-picker-text-grid{grid-template-columns:1fr;grid-template-rows:repeat(2,minmax(0,1fr))}
         #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-problem-picker-text-grid{grid-template-columns:1fr;grid-template-rows:repeat(2,minmax(0,1fr))}
-        #${MODAL_ID} .gs-request-summary,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary{grid-template-columns:repeat(2,minmax(0,1fr))}
       }
       @media (max-width:860px){
         #${CHATGPT_SEARCH_MODAL_ID}{align-items:flex-start;overflow:auto}
