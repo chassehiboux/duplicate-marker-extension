@@ -21,6 +21,9 @@ function _escapeRegExp_(s){ return String(s).replace(/[.*+?^${}()|[\]\\]/g,'\\$&
 
 /* ---------- константы ---------- */
 const SRC_SHEET   = 'Заявки';
+const ITIL_SHEET  = 'ITIL';
+const INITIATORS_SHEET = 'Инициаторы ITIL';
+const INITIATOR_LIST_HEADER = 'Уникальный инициатор';
 const INFO_HEADER = 'Информация из СУПП/ITIL';
 const GREEN       = '#274e13';
 
@@ -138,53 +141,536 @@ function _applyInfoEditSideEffects_(sh, startRow, numRows, options) {
 function findNewRequests() {
   showToast('🔎 Ищу новые заявки…', 30, 'Новые заявки');
 
-  const ss   = SpreadsheetApp.getActive();
-  const src  = ss.getSheetByName(SRC_SHEET);
-  const itil = ss.getSheetByName('ITIL');
-  if (!src || !itil) { toastDone('Новые заявки'); return; }
+  const ctx = _getNewRequestsContext_({
+    title: 'Новые заявки',
+    needSourceDate: true,
+    needItilDate: true
+  });
+  if (!ctx) return;
 
-  const colDateSrc   = getColByHeader(src,  'Дата заявки');
-  const colTicketSrc = getColByHeader(src,  'Номер ITIL');
-  const colDateIt    = getColByHeader(itil, 'Дата');
-  const colNumIt     = getColByHeader(itil, 'Номер');
-  if (!colDateSrc || !colTicketSrc || !colDateIt || !colNumIt) {
-    toastDone('Новые заявки'); return;
+  // После ручного добавления старых периодов последняя строка уже не обязана
+  // содержать самую свежую дату, поэтому используем максимальную дату в колонке.
+  const latestDate = _getLatestDateInColumn_(ctx.src, ctx.colDateSrc);
+  if (!(latestDate instanceof Date)) {
+    toastDone('Новые заявки');
+    return;
   }
 
-  // 1. Ищем последнюю дату в Заявках
-  let lastDate = null;
-  for (let r = src.getLastRow(); r >= 2; r--) {
-    const v = src.getRange(r, colDateSrc).getValue();
-    if (v) { lastDate = v; break; }
-  }
-  if (!(lastDate instanceof Date)) { toastDone('Новые заявки'); return; }
+  const add = _collectMissingNewRequestNumbers_(ctx, {
+    needDate: true,
+    predicate: row => row.date instanceof Date && row.date > latestDate
+  });
 
-  // 2. Ищем более новые строки в ITIL
-  const nIt    = itil.getLastRow() - 1;
-  const dates  = itil.getRange(2, colDateIt, nIt, 1).getValues();
-  const nums   = itil.getRange(2, colNumIt , nIt, 1).getValues();
-  const add    = [];
-  for (let i = 0; i < nIt; i++) {
-    const d = dates[i][0];
-    if (d instanceof Date && d > lastDate) add.push(nums[i][0]);
-  }
-  if (!add.length) { toastDone('Новые заявки'); return; }
+  _appendNewRequestNumbers_(ctx, add, 'Новые заявки');
+}
 
-  // 3. Вставляем новые номера
-  const start   = src.getLastRow() + 1;
-  const values  = add.map(v => [v]);
-  const rng     = src.getRange(start, colTicketSrc, values.length, 1);
-  rng.setValues(values);
+function findNewRequestsByPeriod() {
+  const ui = SpreadsheetApp.getUi();
+  const res = ui.prompt(
+    'Новые заявки за период',
+    'Введите период в формате дд.мм.гггг-дд.мм.гггг',
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (res.getSelectedButton() !== ui.Button.OK) return;
+
+  const period = _parseRuPeriod_(res.getResponseText());
+  if (!period) {
+    ui.alert('Введите корректный период в формате дд.мм.гггг-дд.мм.гггг, где первая дата не позже второй.');
+    return;
+  }
+
+  showToast('🔎 Ищу новые заявки за период…', 30, 'Новые заявки');
+
+  const ctx = _getNewRequestsContext_({
+    title: 'Новые заявки',
+    needItilDate: true
+  });
+  if (!ctx) return;
+
+  const add = _collectMissingNewRequestNumbers_(ctx, {
+    needDate: true,
+    predicate: row =>
+      row.date instanceof Date &&
+      row.date >= period.start &&
+      row.date < period.endExclusive
+  });
+
+  _appendNewRequestNumbers_(ctx, add, 'Новые заявки');
+}
+
+function showNewRequestsInitiatorPicker() {
+  const initiators = _getUniqueItilInitiators_();
+  if (!initiators.length) {
+    showToast('На листе «Инициаторы ITIL» не найден список инициаторов.', 5, 'Новые заявки');
+    return;
+  }
+
+  const html = HtmlService.createHtmlOutput(_buildInitiatorPickerHtml_(initiators))
+    .setWidth(620)
+    .setHeight(680);
+
+  SpreadsheetApp.getUi().showModalDialog(html, 'Новые заявки по инициаторам');
+}
+
+function appendMissingNewRequestsByInitiators(selectedInitiators) {
+  const initiatorKeys = new Set(
+    (Array.isArray(selectedInitiators) ? selectedInitiators : [])
+      .map(_normalizeTextKey_)
+      .filter(Boolean)
+  );
+  if (!initiatorKeys.size) {
+    throw new Error('Не выбраны инициаторы.');
+  }
+
+  showToast('🔎 Ищу новые заявки выбранных инициаторов…', 30, 'Новые заявки');
+
+  const ctx = _getNewRequestsContext_({
+    title: 'Новые заявки',
+    needInitiator: true
+  });
+  if (!ctx) {
+    return { added: 0 };
+  }
+
+  const add = _collectMissingNewRequestNumbers_(ctx, {
+    needInitiator: true,
+    predicate: row => initiatorKeys.has(_normalizeTextKey_(row.initiator))
+  });
+
+  return {
+    added: _appendNewRequestNumbers_(ctx, add, 'Новые заявки')
+  };
+}
+
+function _getNewRequestsContext_(options) {
+  const title = options && options.title ? options.title : 'Новые заявки';
+  const needSourceDate = !!(options && options.needSourceDate);
+  const needItilDate = !!(options && options.needItilDate);
+  const needInitiator = !!(options && options.needInitiator);
+
+  const ss = SpreadsheetApp.getActive();
+  const src = ss.getSheetByName(SRC_SHEET);
+  const itil = ss.getSheetByName(ITIL_SHEET);
+  if (!src || !itil) {
+    showToast('Не найдены листы «Заявки» или «ITIL».', 5, title);
+    return null;
+  }
+
+  const colTicketSrc = getColByHeader(src, 'Номер ITIL');
+  const colDateSrc = needSourceDate ? getColByHeader(src, 'Дата заявки') : null;
+  const colNumIt = getColByHeader(itil, 'Номер');
+  const colDateIt = needItilDate ? getColByHeader(itil, 'Дата') : null;
+  const colInitiatorIt = needInitiator ? getColByHeader(itil, 'Инициатор') : null;
+
+  if (
+    !colTicketSrc ||
+    !colNumIt ||
+    (needSourceDate && !colDateSrc) ||
+    (needItilDate && !colDateIt) ||
+    (needInitiator && !colInitiatorIt)
+  ) {
+    showToast('Не найдены нужные колонки на листах «Заявки» или «ITIL».', 5, title);
+    return null;
+  }
+
+  return {
+    src: src,
+    itil: itil,
+    colTicketSrc: colTicketSrc,
+    colDateSrc: colDateSrc,
+    colNumIt: colNumIt,
+    colDateIt: colDateIt,
+    colInitiatorIt: colInitiatorIt
+  };
+}
+
+function _getLatestDateInColumn_(sh, col) {
+  const nRows = sh.getLastRow() - 1;
+  if (nRows <= 0) return null;
+
+  const values = sh.getRange(2, col, nRows, 1).getValues();
+  let latest = null;
+  for (let i = 0; i < values.length; i++) {
+    const d = values[i][0];
+    if (d instanceof Date && (!latest || d > latest)) latest = d;
+  }
+  return latest;
+}
+
+function _collectMissingNewRequestNumbers_(ctx, options) {
+  const predicate = options && options.predicate ? options.predicate : () => true;
+  const needDate = !!(options && options.needDate);
+  const needInitiator = !!(options && options.needInitiator);
+
+  const existingKeys = _getExistingTicketKeys_(ctx.src, ctx.colTicketSrc);
+  const nRows = ctx.itil.getLastRow() - 1;
+  if (nRows <= 0) return [];
+
+  const nums = ctx.itil.getRange(2, ctx.colNumIt, nRows, 1).getValues();
+  const dates = needDate
+    ? ctx.itil.getRange(2, ctx.colDateIt, nRows, 1).getValues()
+    : null;
+  const initiators = needInitiator
+    ? ctx.itil.getRange(2, ctx.colInitiatorIt, nRows, 1).getDisplayValues()
+    : null;
+
+  const add = [];
+  const seen = new Set();
+  for (let i = 0; i < nRows; i++) {
+    const ticket = nums[i][0];
+    const ticketKey = _normalizeTicketKey_(ticket);
+    if (!ticketKey || existingKeys.has(ticketKey) || seen.has(ticketKey)) continue;
+
+    const row = {
+      ticket: ticket,
+      date: dates ? dates[i][0] : null,
+      initiator: initiators ? initiators[i][0] : ''
+    };
+    if (!predicate(row)) continue;
+
+    add.push(ticket);
+    seen.add(ticketKey);
+  }
+  return add;
+}
+
+function _getExistingTicketKeys_(sh, col) {
+  const nRows = sh.getLastRow() - 1;
+  if (nRows <= 0) return new Set();
+
+  const values = sh.getRange(2, col, nRows, 1).getValues();
+  const keys = new Set();
+  for (let i = 0; i < values.length; i++) {
+    const key = _normalizeTicketKey_(values[i][0]);
+    if (key) keys.add(key);
+  }
+  return keys;
+}
+
+function _normalizeTicketKey_(value) {
+  return value === null || value === undefined ? '' : String(value).trim();
+}
+
+function _normalizeTextKey_(value) {
+  return value === null || value === undefined ? '' : String(value).trim();
+}
+
+function _appendNewRequestNumbers_(ctx, add, title) {
+  if (!add.length) {
+    showToast('Новых заявок не найдено', 3, title);
+    return 0;
+  }
+
+  const start = ctx.src.getLastRow() + 1;
+  const values = add.map(v => [v]);
+  ctx.src.getRange(start, ctx.colTicketSrc, values.length, 1).setValues(values);
   SpreadsheetApp.flush();
 
   // --- ПУНКТ 6 и 7: ПРИМЕНЕНИЕ ШАБЛОНОВ И ДАТ ---
   const newRowIndices = values.map((_, i) => start + i);
-  applyTemplatesToRows(src, newRowIndices);
+  applyTemplatesToRows(ctx.src, newRowIndices);
 
   // --- ПУНКТ 3: ОБНОВЛЕНИЕ HIGHLIGHTS + ФОРМАТИРОВАНИЕ ---
   refreshHighlights();
 
-  toastDone('Новые заявки');
+  showToast(`✅ Добавлено новых заявок: ${add.length}`, 3, title);
+  return add.length;
+}
+
+function _parseRuPeriod_(value) {
+  const match = String(value || '').trim().match(/^(\d{2}\.\d{2}\.\d{4})\s*-\s*(\d{2}\.\d{2}\.\d{4})$/);
+  if (!match) return null;
+
+  const start = _parseRuDate_(match[1]);
+  const end = _parseRuDate_(match[2]);
+  if (!start || !end || start > end) return null;
+
+  return {
+    start: start,
+    endExclusive: new Date(end.getFullYear(), end.getMonth(), end.getDate() + 1)
+  };
+}
+
+function _parseRuDate_(value) {
+  const match = String(value || '').match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
+  if (!match) return null;
+
+  const day = Number(match[1]);
+  const month = Number(match[2]);
+  const year = Number(match[3]);
+  const date = new Date(year, month - 1, day);
+  if (
+    date.getFullYear() !== year ||
+    date.getMonth() !== month - 1 ||
+    date.getDate() !== day
+  ) {
+    return null;
+  }
+  return date;
+}
+
+function _getUniqueItilInitiators_() {
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName(INITIATORS_SHEET);
+  if (!sh) return [];
+
+  const col = getColByHeader(sh, INITIATOR_LIST_HEADER);
+  if (!col) return [];
+
+  const nRows = sh.getLastRow() - 1;
+  if (nRows <= 0) return [];
+
+  const values = sh.getRange(2, col, nRows, 1).getDisplayValues();
+  const initiators = [];
+  const seen = new Set();
+  for (let i = 0; i < values.length; i++) {
+    const value = _normalizeTextKey_(values[i][0]);
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    initiators.push(value);
+  }
+  return initiators;
+}
+
+function _buildInitiatorPickerHtml_(initiators) {
+  const initiatorsJson = JSON.stringify(initiators).replace(/<\//g, '<\\/');
+  return `<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top">
+    <meta charset="utf-8">
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: Arial, sans-serif;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: #f8f9fa;
+        color: #202124;
+      }
+      .app {
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+      }
+      .header {
+        padding: 20px 22px 14px;
+        background: #fff;
+        border-bottom: 1px solid #dadce0;
+      }
+      h1 {
+        margin: 0 0 14px;
+        font-size: 20px;
+        line-height: 1.25;
+      }
+      .search {
+        width: 100%;
+        border: 1px solid #dadce0;
+        border-radius: 8px;
+        padding: 11px 12px;
+        font-size: 14px;
+        outline: none;
+      }
+      .search:focus {
+        border-color: #1a73e8;
+        box-shadow: 0 0 0 2px rgba(26, 115, 232, 0.15);
+      }
+      .toolbar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        padding: 12px 22px;
+        font-size: 13px;
+      }
+      .toolbar-actions {
+        display: flex;
+        gap: 8px;
+      }
+      .link-button {
+        border: 0;
+        background: transparent;
+        color: #1a73e8;
+        padding: 0;
+        cursor: pointer;
+        font-size: 13px;
+      }
+      .list {
+        flex: 1;
+        overflow: auto;
+        margin: 0 22px;
+        padding: 8px 0;
+        border: 1px solid #dadce0;
+        border-radius: 10px;
+        background: #fff;
+      }
+      .item {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        padding: 9px 14px;
+        line-height: 1.35;
+      }
+      .item:hover {
+        background: #f1f3f4;
+      }
+      .item input {
+        margin-top: 2px;
+      }
+      .empty {
+        display: none;
+        padding: 22px 14px;
+        color: #5f6368;
+        text-align: center;
+      }
+      .footer {
+        display: flex;
+        justify-content: flex-end;
+        gap: 10px;
+        padding: 16px 22px 20px;
+      }
+      button {
+        border-radius: 8px;
+        border: 1px solid #dadce0;
+        background: #fff;
+        padding: 10px 14px;
+        cursor: pointer;
+        font-size: 14px;
+      }
+      .primary {
+        border-color: #1a73e8;
+        background: #1a73e8;
+        color: #fff;
+      }
+      button:disabled {
+        cursor: default;
+        opacity: 0.55;
+      }
+      .status {
+        min-height: 18px;
+        padding: 0 22px;
+        color: #d93025;
+        font-size: 13px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <div class="header">
+        <h1>Найти новые заявки по инициаторам</h1>
+        <input id="search" class="search" type="text" placeholder="Поиск по инициатору..." autofocus>
+      </div>
+      <div class="toolbar">
+        <div id="counter">Выбрано: 0</div>
+        <div class="toolbar-actions">
+          <button id="selectVisible" class="link-button" type="button">Выбрать видимые</button>
+          <button id="clearSelection" class="link-button" type="button">Снять выбор</button>
+        </div>
+      </div>
+      <div id="list" class="list"></div>
+      <div id="empty" class="empty">Ничего не найдено</div>
+      <div id="status" class="status"></div>
+      <div class="footer">
+        <button id="cancel" type="button">Отмена</button>
+        <button id="submit" class="primary" type="button" disabled>Добавить заявки</button>
+      </div>
+    </div>
+    <script>
+      const initiators = ${initiatorsJson};
+      const list = document.getElementById('list');
+      const empty = document.getElementById('empty');
+      const search = document.getElementById('search');
+      const counter = document.getElementById('counter');
+      const submit = document.getElementById('submit');
+      const status = document.getElementById('status');
+      const selected = new Set();
+
+      function normalize(value) {
+        return String(value || '').trim().toLocaleLowerCase('ru-RU');
+      }
+
+      function render() {
+        const query = normalize(search.value);
+        const fragment = document.createDocumentFragment();
+        let visibleCount = 0;
+
+        list.textContent = '';
+        initiators.forEach(name => {
+          if (query && !normalize(name).includes(query)) return;
+          visibleCount += 1;
+
+          const label = document.createElement('label');
+          label.className = 'item';
+
+          const checkbox = document.createElement('input');
+          checkbox.type = 'checkbox';
+          checkbox.checked = selected.has(name);
+          checkbox.addEventListener('change', () => {
+            if (checkbox.checked) selected.add(name);
+            else selected.delete(name);
+            updateState();
+          });
+
+          const text = document.createElement('span');
+          text.textContent = name;
+
+          label.appendChild(checkbox);
+          label.appendChild(text);
+          fragment.appendChild(label);
+        });
+
+        list.appendChild(fragment);
+        empty.style.display = visibleCount ? 'none' : 'block';
+      }
+
+      function updateState() {
+        counter.textContent = 'Выбрано: ' + selected.size;
+        submit.disabled = selected.size === 0;
+      }
+
+      function getVisibleNames() {
+        const query = normalize(search.value);
+        return initiators.filter(name => !query || normalize(name).includes(query));
+      }
+
+      search.addEventListener('input', render);
+      document.getElementById('selectVisible').addEventListener('click', () => {
+        getVisibleNames().forEach(name => selected.add(name));
+        render();
+        updateState();
+      });
+      document.getElementById('clearSelection').addEventListener('click', () => {
+        selected.clear();
+        render();
+        updateState();
+      });
+      document.getElementById('cancel').addEventListener('click', () => google.script.host.close());
+      submit.addEventListener('click', () => {
+        status.textContent = '';
+        submit.disabled = true;
+        submit.textContent = 'Добавляю...';
+        google.script.run
+          .withSuccessHandler(result => {
+            status.style.color = '#188038';
+            status.textContent = 'Добавлено заявок: ' + (result && result.added ? result.added : 0);
+            setTimeout(() => google.script.host.close(), 500);
+          })
+          .withFailureHandler(error => {
+            status.style.color = '#d93025';
+            status.textContent = error && error.message ? error.message : 'Не удалось добавить заявки.';
+            submit.textContent = 'Добавить заявки';
+            updateState();
+          })
+          .appendMissingNewRequestsByInitiators(Array.from(selected));
+      });
+
+      render();
+      updateState();
+    </script>
+  </body>
+</html>`;
 }
 
 /* ==========================================================
@@ -1168,6 +1654,8 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('⚙️ Управление заявками')
     .addItem('🔎 Найти новые заявки', 'findNewRequests')
+    .addItem('📅 Найти новые заявки за период', 'findNewRequestsByPeriod')
+    .addItem('👥 Найти новые заявки по инициаторам', 'showNewRequestsInitiatorPicker')
     // Старое окно problemPicker отключено. Классификацию запускает расширение.
     // .addItem('📋 Обработать не классифицированные заявки', 'processUnclassifiedRequests')
     .addItem('🗑️ Удалить помеченные строки', 'deleteMarkedRows')
