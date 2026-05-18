@@ -1960,6 +1960,12 @@
       || Array.from(document.querySelectorAll('input[type="file"]')).find((input) => !input.accept);
     const getSendButton = () => document.querySelector('[data-testid="send-button"]')
       || Array.from(document.querySelectorAll('button')).find((button) => /отправ/i.test(String(button.getAttribute('aria-label') || '')));
+    const getReadySendButton = () => {
+      const button = getSendButton();
+      if (!(button instanceof HTMLButtonElement)) return null;
+      if (button.disabled || button.getAttribute('aria-disabled') === 'true') return null;
+      return button;
+    };
     const getStopButton = () => document.querySelector('[data-testid="stop-button"]')
       || Array.from(document.querySelectorAll('button')).find((button) => /останов/i.test(String(button.getAttribute('aria-label') || '')));
     const getAssistantMessages = () => Array.from(document.querySelectorAll('[data-message-author-role="assistant"]'));
@@ -2024,7 +2030,7 @@
       }
       document.execCommand('insertText', false, promptText);
 
-      const sendButton = await waitFor(getSendButton, 30000, 'кнопку отправки ChatGPT');
+      const sendButton = await waitFor(getReadySendButton, 90000, 'готовую кнопку отправки ChatGPT после обработки CSV');
       sendButton.click();
 
       await waitFor(() => getAssistantMessages().length > 0 || !!getStopButton(), 60000, 'начало ответа ChatGPT');
