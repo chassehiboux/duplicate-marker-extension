@@ -166,6 +166,110 @@
     return `${dd}.${mm}.${yyyy}`;
   }
 
+  function normalizeInlineInfoLogText(value) {
+    return String(value || '').replace(/\s+/g, ' ').trim();
+  }
+
+  function normalizeInfoLogBodyKey(value) {
+    return normalizeMultilineText(value)
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLocaleLowerCase('ru-RU');
+  }
+
+  function parseFormattedInfoLog(log) {
+    const text = normalizeMultilineText(log && log.text);
+    if (!text) return null;
+
+    const lines = text.split('\n');
+    const header = lines.shift() || '';
+    const match = header.match(/^(\d{2}\.\d{2}\.\d{4}\s+\d{1,2}:\d{2}:\d{2})\s+\/\s*(.*?)\s+\/\s*(.*)$/);
+    if (!match) return null;
+
+    const sender = normalizeInlineInfoLogText(match[2]);
+    const metadata = normalizeInlineInfoLogText(match[3]);
+    const body = normalizeMultilineText(lines.join('\n'));
+    const bodyKey = normalizeInfoLogBodyKey(body);
+
+    return {
+      timestamp: match[1],
+      sender,
+      senderKey: sender.toLocaleLowerCase('ru-RU'),
+      metadataParts: metadata ? [metadata] : [],
+      body,
+      bodyKey
+    };
+  }
+
+  function sortInfoLogMetadataParts(parts) {
+    return parts.slice().sort((left, right) => {
+      const leftPriority = left.includes('→') ? 0 : 1;
+      const rightPriority = right.includes('→') ? 0 : 1;
+      return leftPriority - rightPriority;
+    });
+  }
+
+  function buildFormattedInfoLogText(parsed) {
+    const metadata = sortInfoLogMetadataParts(parsed.metadataParts || []).join(' / ');
+    const headerSuffix = metadata ? ` ${metadata}` : '';
+    return `${parsed.timestamp} / ${parsed.sender} /${headerSuffix}${parsed.body ? `\n${parsed.body}` : ''}`;
+  }
+
+  function mergeInfoLogMetadata(primary, duplicate) {
+    const seen = new Set();
+    const mergedParts = [];
+
+    (primary.metadataParts || []).concat(duplicate.metadataParts || []).forEach((part) => {
+      const normalized = normalizeInlineInfoLogText(part);
+      const key = normalized.toLocaleLowerCase('ru-RU');
+      if (!normalized || seen.has(key)) return;
+      seen.add(key);
+      mergedParts.push(normalized);
+    });
+
+    primary.metadataParts = mergedParts;
+    primary.text = buildFormattedInfoLogText(primary);
+    return primary;
+  }
+
+  function mergeDuplicateInfoLogs(logs) {
+    const merged = [];
+
+    (logs || []).forEach((log) => {
+      const parsed = parseFormattedInfoLog(log);
+      if (!parsed || !parsed.senderKey || !parsed.bodyKey) {
+        merged.push(log);
+        return;
+      }
+
+      const existing = merged.find((item) => item
+        && item.__parsedInfoLog
+        && item.__parsedInfoLog.senderKey === parsed.senderKey
+        && item.__parsedInfoLog.bodyKey === parsed.bodyKey);
+
+      if (!existing) {
+        merged.push({
+          ...log,
+          __parsedInfoLog: {
+            ...parsed,
+            text: log.text
+          }
+        });
+        return;
+      }
+
+      mergeInfoLogMetadata(existing.__parsedInfoLog, parsed);
+      existing.text = existing.__parsedInfoLog.text;
+    });
+
+    return merged.map((log) => {
+      if (!log || !log.__parsedInfoLog) return log;
+      const cleanLog = { ...log };
+      delete cleanLog.__parsedInfoLog;
+      return cleanLog;
+    });
+  }
+
   function extractLogsFromInfoBlock(lines) {
     const logs = [];
     const looseText = [];
@@ -268,10 +372,11 @@
     if (buffer.length) looseText.push(buffer.join('\n'));
 
     logs.sort((a, b) => (b.dateObj - a.dateObj) || (b.originalIndex - a.originalIndex));
+    const deduplicatedLogs = mergeDuplicateInfoLogs(logs);
 
     const resultParts = [];
     if (looseText.length) resultParts.push(looseText.join('\n'));
-    logs.forEach((log) => resultParts.push(log.text));
+    deduplicatedLogs.forEach((log) => resultParts.push(log.text));
     return resultParts.join('\n\n');
   }
 
