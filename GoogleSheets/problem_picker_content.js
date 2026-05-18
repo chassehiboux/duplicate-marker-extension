@@ -1096,28 +1096,55 @@
       label.className = 'gs-request-summary-label';
       label.textContent = labelText;
 
+      const header = document.createElement('div');
+      header.className = 'gs-request-summary-header';
+
       const value = document.createElement('div');
       value.className = 'gs-request-summary-value';
       value.textContent = valueText;
 
-      const valueRow = document.createElement('div');
-      valueRow.className = 'gs-request-summary-value-row';
-
       const copyButton = document.createElement('button');
       copyButton.type = 'button';
       copyButton.className = 'gs-request-summary-copy';
-      copyButton.textContent = 'копировать';
       copyButton.title = `Копировать: ${labelText}`;
       copyButton.setAttribute('aria-label', `Копировать поле «${labelText}»`);
       copyButton.disabled = !valueText || valueText === '—';
+      setSummaryCopyButtonIcon(copyButton, 'copy');
       copyButton.addEventListener('click', () => {
         void copySummaryValue(copyButton, valueText);
       }, { capture: true });
 
-      valueRow.append(value, copyButton);
-      field.append(label, valueRow);
+      header.append(label, copyButton);
+      field.append(header, value);
       container.appendChild(field);
     });
+  }
+
+  function setSummaryCopyButtonIcon(button, stateName) {
+    if (!(button instanceof HTMLButtonElement)) return;
+
+    const icons = {
+      copy: `
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M9 8.25A2.25 2.25 0 0 1 11.25 6h6.5A2.25 2.25 0 0 1 20 8.25v9.5A2.25 2.25 0 0 1 17.75 20h-6.5A2.25 2.25 0 0 1 9 17.75v-9.5Z"></path>
+          <path d="M6.75 16H6A2 2 0 0 1 4 14V6a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v.25"></path>
+        </svg>
+      `,
+      copied: `
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="m5 12.5 4.25 4.25L19 7"></path>
+        </svg>
+      `,
+      error: `
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 8v5"></path>
+          <path d="M12 17.5h.01"></path>
+          <path d="M10.29 3.86 2.82 17a2 2 0 0 0 1.74 3h14.88a2 2 0 0 0 1.74-3L13.71 3.86a2 2 0 0 0-3.42 0Z"></path>
+        </svg>
+      `
+    };
+
+    button.innerHTML = icons[stateName] || icons.copy;
   }
 
   async function copyTextToClipboard(value) {
@@ -1154,14 +1181,13 @@
     if (!(button instanceof HTMLButtonElement) || button.disabled) return;
 
     const copied = await copyTextToClipboard(value);
-    const previousText = button.textContent || 'копировать';
-    button.textContent = copied ? 'скопировано' : 'не вышло';
+    setSummaryCopyButtonIcon(button, copied ? 'copied' : 'error');
     button.classList.toggle('is-copied', copied);
     button.classList.toggle('is-error', !copied);
     button.disabled = true;
 
     window.setTimeout(() => {
-      button.textContent = previousText;
+      setSummaryCopyButtonIcon(button, 'copy');
       button.classList.remove('is-copied', 'is-error');
       button.disabled = !value || value === '—';
     }, 1200);
@@ -1239,11 +1265,12 @@
       #${MODAL_ID} .gs-problem-picker-progress{width:fit-content;padding:5px 10px;border-radius:999px;background:#e8f3ee;color:#14532d;font-size:13px;font-weight:700}
       #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-progress{width:fit-content;padding:5px 10px;border-radius:999px;background:#e8f3ee;color:#14532d;font-size:13px;font-weight:700}
       #${MODAL_ID} .gs-request-summary,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary{display:flex;flex-wrap:wrap;align-items:stretch;justify-content:flex-start;gap:8px}
-      #${MODAL_ID} .gs-request-summary-item,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-item{flex:0 1 auto;width:max-content;max-width:min(320px,100%);min-width:0;padding:9px 10px;border:1px solid #dbe2ec;border-radius:10px;background:#f7f9fc}
-      #${MODAL_ID} .gs-request-summary-label,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-label{margin-bottom:4px;color:#64748b;font-size:11px;font-weight:700;letter-spacing:.02em;text-transform:uppercase}
-      #${MODAL_ID} .gs-request-summary-value-row,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-value-row{display:flex;align-items:center;gap:6px;min-width:0}
+      #${MODAL_ID} .gs-request-summary-item,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-item{flex:0 1 auto;width:max-content;max-width:min(320px,100%);min-width:0;padding:8px 9px 9px;border:1px solid #dbe2ec;border-radius:10px;background:#f7f9fc}
+      #${MODAL_ID} .gs-request-summary-header,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-header{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:4px}
+      #${MODAL_ID} .gs-request-summary-label,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-label{min-width:0;color:#64748b;font-size:11px;font-weight:700;letter-spacing:.02em;text-transform:uppercase}
       #${MODAL_ID} .gs-request-summary-value,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-value{min-width:0;overflow-wrap:anywhere;color:#172033;font-size:13px;font-weight:600;line-height:1.35}
-      #${MODAL_ID} .gs-request-summary-copy,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-copy{flex:none;padding:3px 6px;border-radius:999px;border-color:#d1d9e6;background:#fff;color:#526071;font-size:10px;font-weight:700;line-height:1;text-transform:lowercase;box-shadow:none}
+      #${MODAL_ID} .gs-request-summary-copy,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-copy{flex:none;width:20px;height:20px;display:grid;place-items:center;padding:0;border-radius:6px;border-color:#d1d9e6;background:#fff;color:#526071;line-height:1;box-shadow:none}
+      #${MODAL_ID} .gs-request-summary-copy svg,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-copy svg{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
       #${MODAL_ID} .gs-request-summary-copy:hover:not(:disabled),#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-copy:hover:not(:disabled){border-color:#1155cc;color:#0f3f99;background:#eef5ff}
       #${MODAL_ID} .gs-request-summary-copy.is-copied,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-copy.is-copied{border-color:#8ec9a3;background:#e8f3ee;color:#14532d}
       #${MODAL_ID} .gs-request-summary-copy.is-error,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-copy.is-error{border-color:#f0b7b3;background:#fff1f0;color:#b3261e}
