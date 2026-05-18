@@ -9,6 +9,8 @@
   const SUPP_INFO_REFRESH_ACTION = 'GOOGLE_SHEETS_SUPP_REFRESH_INFO_ROW';
   const CHATGPT_SEARCH_ACTION = 'GOOGLE_SHEETS_CHATGPT_SEARCH';
   const CHATGPT_OPEN_TAB_ACTION = 'GOOGLE_SHEETS_CHATGPT_OPEN_TAB';
+  const CHATGPT_PROGRESS_ACTION = 'GOOGLE_SHEETS_CHATGPT_PROGRESS';
+  const CHATGPT_CLOSE_TAB_ACTION = 'GOOGLE_SHEETS_CHATGPT_CLOSE_TAB';
   const ITIL_URL = 'http://tmn-vpitil1c01/ITIL/ru_RU/';
   const SUPP_URL = 'http://tmn-vpsupp1c01.corp.vostok-electra.ru/PMS/ru_RU/';
   const CHATGPT_TEMPORARY_URL = 'https://chatgpt.com/?temporary-chat=true';
@@ -457,6 +459,19 @@
     });
   }
 
+  function tabsRemove(tabId) {
+    return new Promise((resolve, reject) => {
+      chrome.tabs.remove(tabId, () => {
+        const runtimeError = chrome.runtime && chrome.runtime.lastError ? chrome.runtime.lastError.message : '';
+        if (runtimeError) {
+          reject(new Error(runtimeError));
+          return;
+        }
+        resolve(true);
+      });
+    });
+  }
+
   function tabsUpdate(tabId, updateProperties) {
     return new Promise((resolve, reject) => {
       chrome.tabs.update(tabId, updateProperties, (tab) => {
@@ -659,7 +674,34 @@
     return activateTabForInteractiveAutomation(tab, CHATGPT_URL_PREFIX, 'ChatGPT');
   }
 
-  async function runChatGptSearch(data) {
+  async function closeChatGptTab(tabId) {
+    if (!Number.isInteger(tabId)) throw new Error('Не передан tabId вкладки ChatGPT.');
+
+    const tab = await tabsGet(tabId);
+    if (!tab || !String(tab.url || '').startsWith(CHATGPT_URL_PREFIX)) {
+      throw new Error('Вкладка ChatGPT больше недоступна.');
+    }
+
+    await tabsRemove(tabId);
+    return { tabId };
+  }
+
+  function sendChatGptProgress(targetTabId, statusText) {
+    if (!Number.isInteger(targetTabId) || !statusText) return;
+
+    try {
+      chrome.tabs.sendMessage(targetTabId, {
+        action: CHATGPT_PROGRESS_ACTION,
+        data: { statusText }
+      }, () => {
+        void (chrome.runtime && chrome.runtime.lastError);
+      });
+    } catch (error) {
+      // Прогресс не должен ломать основной сценарий.
+    }
+  }
+
+  async function runChatGptSearch(data, progressTabId) {
     const payload = data && data.payload ? data.payload : {};
     const fileName = String(payload.fileName || '').trim();
     const csvText = String(payload.csvText || '');
@@ -670,18 +712,27 @@
     if (!promptText) throw new Error('Не передан текст запроса для ChatGPT.');
 
     const tab = await createChatGptTemporaryTab();
-    const result = await executeInTab(tab.id, runChatGptSearchInPage, [{
+    sendChatGptProgress(progressTabId, 'Временный чат ChatGPT открыт. Прикрепляю CSV и готовлю сообщение...');
+
+    const sendResult = await executeInTab(tab.id, prepareAndSendChatGptSearchInPage, [{
       fileName,
       csvText,
       promptText
     }]);
 
-    if (!result || result.success === false) {
-      throw new Error(result && result.error ? result.error : 'Не удалось получить ответ ChatGPT.');
+    if (!sendResult || sendResult.success === false) {
+      throw new Error(sendResult && sendResult.error ? sendResult.error : 'Не удалось отправить запрос в ChatGPT.');
+    }
+
+    sendChatGptProgress(progressTabId, 'ChatGPT принял сообщение. Жду завершения ответа...');
+
+    const answerResult = await executeInTab(tab.id, waitForChatGptAnswerInPage, []);
+    if (!answerResult || answerResult.success === false) {
+      throw new Error(answerResult && answerResult.error ? answerResult.error : 'Не удалось получить ответ ChatGPT.');
     }
 
     return {
-      ...result,
+      ...answerResult,
       tabId: tab.id
     };
   }
@@ -1941,7 +1992,7 @@
     }
   }
 
-  async function runChatGptSearchInPage(payload) {
+  async function prepareAndSendChatGptSearchInPage(payload) {
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
     const waitFor = async (getter, timeoutMs, description) => {
@@ -1969,37 +2020,6 @@
     const getStopButton = () => document.querySelector('[data-testid="stop-button"]')
       || Array.from(document.querySelectorAll('button')).find((button) => /останов/i.test(String(button.getAttribute('aria-label') || '')));
     const getAssistantMessages = () => Array.from(document.querySelectorAll('[data-message-author-role="assistant"]'));
-
-    const waitForFinishedAnswer = async () => {
-      const timeoutMs = 10 * 60 * 1000;
-      const startedAt = Date.now();
-      let lastText = '';
-      let stableSince = 0;
-
-      while ((Date.now() - startedAt) < timeoutMs) {
-        const assistantMessages = getAssistantMessages();
-        const latestAssistant = assistantMessages[assistantMessages.length - 1] || null;
-        const latestText = latestAssistant ? String(latestAssistant.innerText || '').trim() : '';
-        const isGenerating = !!getStopButton();
-
-        if (latestText && !isGenerating) {
-          if (latestText === lastText) {
-            if (!stableSince) stableSince = Date.now();
-            if ((Date.now() - stableSince) >= 1200) return latestAssistant;
-          } else {
-            lastText = latestText;
-            stableSince = 0;
-          }
-        } else if (latestText !== lastText) {
-          lastText = latestText;
-          stableSince = 0;
-        }
-
-        await sleep(350);
-      }
-
-      throw new Error('Не дождался завершения ответа ChatGPT.');
-    };
 
     try {
       const fileName = String(payload && payload.fileName || '').trim();
@@ -2034,12 +2054,57 @@
       sendButton.click();
 
       await waitFor(() => getAssistantMessages().length > 0 || !!getStopButton(), 60000, 'начало ответа ChatGPT');
-      const assistantMessage = await waitForFinishedAnswer();
-
       return {
-        success: true,
-        answerText: String(assistantMessage.innerText || '').trim()
+        success: true
       };
+    } catch (error) {
+      return {
+        success: false,
+        error: error && error.message ? error.message : String(error)
+      };
+    }
+  }
+
+  async function waitForChatGptAnswerInPage() {
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const getStopButton = () => document.querySelector('[data-testid="stop-button"]')
+      || Array.from(document.querySelectorAll('button')).find((button) => /останов/i.test(String(button.getAttribute('aria-label') || '')));
+    const getAssistantMessages = () => Array.from(document.querySelectorAll('[data-message-author-role="assistant"]'));
+
+    try {
+      const timeoutMs = 10 * 60 * 1000;
+      const startedAt = Date.now();
+      let lastText = '';
+      let stableSince = 0;
+
+      while ((Date.now() - startedAt) < timeoutMs) {
+        const assistantMessages = getAssistantMessages();
+        const latestAssistant = assistantMessages[assistantMessages.length - 1] || null;
+        const latestText = latestAssistant ? String(latestAssistant.innerText || '').trim() : '';
+        const isGenerating = !!getStopButton();
+
+        if (latestText && !isGenerating) {
+          if (latestText === lastText) {
+            if (!stableSince) stableSince = Date.now();
+            if ((Date.now() - stableSince) >= 1200) {
+              return {
+                success: true,
+                answerText: latestText
+              };
+            }
+          } else {
+            lastText = latestText;
+            stableSince = 0;
+          }
+        } else if (latestText !== lastText) {
+          lastText = latestText;
+          stableSince = 0;
+        }
+
+        await sleep(350);
+      }
+
+      throw new Error('Не дождался завершения ответа ChatGPT.');
     } catch (error) {
       return {
         success: false,
@@ -2057,6 +2122,7 @@
       && request.action !== SUPP_INFO_REFRESH_ACTION
       && request.action !== CHATGPT_SEARCH_ACTION
       && request.action !== CHATGPT_OPEN_TAB_ACTION
+      && request.action !== CHATGPT_CLOSE_TAB_ACTION
     )) return false;
 
     if (!isAllowedSender(sender)) {
@@ -2083,9 +2149,14 @@
         } else if (request.action === SUPP_INFO_REFRESH_ACTION) {
           result = await runSuppInfoRefreshRow(data);
         } else if (request.action === CHATGPT_SEARCH_ACTION) {
-          result = await runChatGptSearch(data);
-        } else {
+          const progressTabId = sender && sender.tab && Number.isInteger(sender.tab.id)
+            ? sender.tab.id
+            : null;
+          result = await runChatGptSearch(data, progressTabId);
+        } else if (request.action === CHATGPT_OPEN_TAB_ACTION) {
           result = await activateChatGptTab(Number(data.tabId));
+        } else {
+          result = await closeChatGptTab(Number(data.tabId));
         }
         sendResponse({ success: true, result });
       } catch (error) {

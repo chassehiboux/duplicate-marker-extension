@@ -21,6 +21,8 @@
   const SUPP_INFO_REFRESH_ACTION = 'GOOGLE_SHEETS_SUPP_REFRESH_INFO_ROW';
   const CHATGPT_SEARCH_ACTION = 'GOOGLE_SHEETS_CHATGPT_SEARCH';
   const CHATGPT_OPEN_TAB_ACTION = 'GOOGLE_SHEETS_CHATGPT_OPEN_TAB';
+  const CHATGPT_PROGRESS_ACTION = 'GOOGLE_SHEETS_CHATGPT_PROGRESS';
+  const CHATGPT_CLOSE_TAB_ACTION = 'GOOGLE_SHEETS_CHATGPT_CLOSE_TAB';
   const ITIL_NUMBER_HEADER = 'Номер ITIL';
   const SUPP_NUMBER_HEADER = 'Номер СУПП (последний)';
   const ITIL_INFO_HEADER = 'Информация из СУПП/ITIL';
@@ -1369,7 +1371,7 @@
 
       const csv = await loadChatGptSearchCsv();
       chatGptSearchState.compactRowsCount = csv.rowsCount;
-      chatGptSearchState.statusText = 'В фоне открываю временный чат ChatGPT, прикрепляю CSV и жду ответ...';
+      chatGptSearchState.statusText = 'В фоне открываю временный чат ChatGPT и готовлю отправку...';
       renderChatGptSearchModal();
 
       const response = await sendRuntimeMessage({
@@ -1388,9 +1390,13 @@
       }
 
       const result = response.result && typeof response.result === 'object' ? response.result : {};
+      chatGptSearchState.statusText = 'Ответ ChatGPT получен. Обрабатываю найденные строки...';
+      renderChatGptSearchModal();
       const matches = parseChatGptSearchMatches(result.answerText);
       const resultTable = buildChatGptSearchResultTable(csv, matches);
 
+      chatGptSearchState.statusText = `Отправляю результат через bridge на лист «${CHATGPT_RESULT_SHEET_NAME}»...`;
+      renderChatGptSearchModal();
       const bridgeResponse = await sendRuntimeMessage({
         action: SAVE_ACTION,
         data: {
@@ -1423,6 +1429,16 @@
 
       if (Number.isInteger(chatGptSearchState.resultSheetId)) {
         location.hash = `gid=${chatGptSearchState.resultSheetId}`;
+      }
+
+      if (Number.isInteger(chatGptSearchState.chatTabId)) {
+        await sendRuntimeMessage({
+          action: CHATGPT_CLOSE_TAB_ACTION,
+          data: {
+            tabId: chatGptSearchState.chatTabId
+          }
+        });
+        chatGptSearchState.chatTabId = null;
       }
     } catch (error) {
       chatGptSearchState = {
@@ -2586,6 +2602,19 @@
     document.addEventListener('keydown', handleMenuEscape, true);
     void loadBridgeUrl();
   }
+
+  chrome.runtime.onMessage.addListener((request) => {
+    if (!request || request.action !== CHATGPT_PROGRESS_ACTION) return false;
+    if (!chatGptSearchState.isRunning) return false;
+
+    const statusText = String(request.data && request.data.statusText || '').trim();
+    if (!statusText) return false;
+
+    chatGptSearchState.statusText = statusText;
+    chatGptSearchState.lastError = '';
+    renderChatGptSearchModal();
+    return false;
+  });
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', init, { once: true });
