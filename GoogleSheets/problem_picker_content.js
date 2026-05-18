@@ -409,6 +409,7 @@
 - row_id бери только из столбца «${CHATGPT_ROW_ID_HEADER}» приложенного CSV;
 - добавляй строку только если она действительно соответствует смыслу запроса;
 - reason можешь оставить пустой строкой, если пояснение не нужно;
+- JSON должен быть валидным: используй двойные кавычки и не ставь завершающие запятые перед } или ];
 - не возвращай исходные данные строк и не переписывай значения других столбцов;
 - если совпадений нет, верни ровно {"matches":[]}.`;
   }
@@ -449,17 +450,7 @@
     const text = String(answerText || '').trim();
     if (!text) throw new Error('ChatGPT вернул пустой ответ.');
 
-    let parsed = null;
-    try {
-      parsed = JSON.parse(text);
-    } catch (error) {
-      const match = text.match(/\{[\s\S]*\}/);
-      if (match) {
-        parsed = JSON.parse(match[0]);
-      } else {
-        throw new Error('ChatGPT вернул ответ не в JSON-формате.');
-      }
-    }
+    const parsed = parseChatGptSearchJson(text);
 
     const source = parsed && Array.isArray(parsed.matches) ? parsed.matches : null;
     if (!source) throw new Error('ChatGPT вернул JSON без массива matches.');
@@ -474,6 +465,87 @@
         reason: String(item && item.reason || '').trim()
       };
     }).filter(Boolean);
+  }
+
+  function parseChatGptSearchJson(text) {
+    const candidates = [];
+    const addCandidate = (value) => {
+      const candidate = normalizeChatGptSearchJsonCandidate(value);
+      if (candidate && !candidates.includes(candidate)) candidates.push(candidate);
+    };
+
+    addCandidate(text);
+    addCandidate(extractFirstJsonObjectText(text));
+
+    let lastError = null;
+    for (const candidate of candidates) {
+      try {
+        return JSON.parse(candidate);
+      } catch (error) {
+        lastError = error;
+      }
+
+      const repaired = repairChatGptSearchJson(candidate);
+      if (repaired === candidate) continue;
+
+      try {
+        return JSON.parse(repaired);
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    throw new Error(lastError && lastError.message
+      ? `ChatGPT вернул некорректный JSON: ${lastError.message}`
+      : 'ChatGPT вернул ответ не в JSON-формате.');
+  }
+
+  function normalizeChatGptSearchJsonCandidate(value) {
+    return String(value || '')
+      .trim()
+      .replace(/^```(?:json)?\s*/i, '')
+      .replace(/\s*```$/i, '')
+      .trim();
+  }
+
+  function repairChatGptSearchJson(value) {
+    return String(value || '').replace(/,\s*([}\]])/g, '$1');
+  }
+
+  function extractFirstJsonObjectText(value) {
+    const text = String(value || '');
+    const startIndex = text.indexOf('{');
+    if (startIndex < 0) return '';
+
+    let depth = 0;
+    let inString = false;
+    let isEscaped = false;
+
+    for (let index = startIndex; index < text.length; index++) {
+      const ch = text[index];
+
+      if (inString) {
+        if (isEscaped) {
+          isEscaped = false;
+        } else if (ch === '\\') {
+          isEscaped = true;
+        } else if (ch === '"') {
+          inString = false;
+        }
+        continue;
+      }
+
+      if (ch === '"') {
+        inString = true;
+      } else if (ch === '{') {
+        depth++;
+      } else if (ch === '}') {
+        depth--;
+        if (!depth) return text.slice(startIndex, index + 1);
+      }
+    }
+
+    return '';
   }
 
   function buildChatGptSearchResultTable(csv, matches) {
