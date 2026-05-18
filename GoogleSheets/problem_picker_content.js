@@ -636,21 +636,24 @@
     const rows = parseCsv(await response.text());
     const headers = rows[0] || [];
     const textColumnIndex = headers.indexOf(TEXT_HEADER);
+    const infoColumnIndex = headers.indexOf(ITIL_INFO_HEADER);
     const problemColumnIndex = headers.indexOf(PROBLEM_HEADER);
-    if (textColumnIndex < 0 || problemColumnIndex < 0) {
-      throw new Error('Не найдены колонки «Текст заявки» или «Проблемы».');
+    if (textColumnIndex < 0 || infoColumnIndex < 0 || problemColumnIndex < 0) {
+      throw new Error('Не найдены колонки «Текст заявки», «Информация из СУПП/ITIL» или «Проблемы».');
     }
 
     const queue = [];
     for (let index = 1; index < rows.length; index++) {
       const row = rows[index] || [];
       const text = String(row[textColumnIndex] || '').trim();
+      const info = String(row[infoColumnIndex] || '').trim();
       const problem = String(row[problemColumnIndex] || '').trim();
 
       if (text && !problem) {
         queue.push({
           row: index + 1,
-          text
+          text,
+          info
         });
       }
     }
@@ -668,6 +671,7 @@
       rowsCount: rows.length,
       columns: {
         text: textColumnIndex + 1,
+        info: infoColumnIndex + 1,
         problem: problemColumnIndex + 1
       },
       isLoading: false
@@ -940,16 +944,18 @@
       #${MODAL_ID}{position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;background:rgba(17,24,39,.42);font-family:"Segoe UI",Tahoma,sans-serif}
       #${CHATGPT_SEARCH_MODAL_ID}{position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;background:rgba(15,23,42,.48);font-family:"Segoe UI",Tahoma,sans-serif}
       #${MODAL_ID}[hidden],#${CHATGPT_SEARCH_MODAL_ID}[hidden],html.dup-ext-screenshot-mode #${ROOT_ID},html.dup-ext-screenshot-mode #${MODAL_ID},html.dup-ext-screenshot-mode #${CHATGPT_SEARCH_MODAL_ID},html.dup-ext-screenshot-mode #${MENU_ID},html.dup-ext-screenshot-mode #${MENU_OVERLAY_ID}{display:none!important}
-      #${MODAL_ID} .gs-problem-picker-layout{width:min(1292px,calc(100vw - 32px));height:min(680px,calc(100vh - 32px));display:grid;grid-template-columns:minmax(0,980px) 298px;gap:14px;align-items:stretch}
+      #${MODAL_ID} .gs-problem-picker-layout{width:min(1840px,calc(100vw - 32px));height:min(680px,calc(100vh - 32px));display:grid;grid-template-columns:minmax(0,1fr) 298px;gap:14px;align-items:stretch}
       #${MODAL_ID} .gs-problem-picker-panel{width:100%;height:100%;min-width:0;display:grid;grid-template-rows:auto auto minmax(0,1fr) auto;gap:14px;box-sizing:border-box;padding:22px;border:1px solid #d6dce8;border-radius:8px;background:#fbfcfe;color:#172033;box-shadow:0 24px 70px rgba(15,23,42,.26)}
       #${MODAL_ID} .gs-problem-picker-header,#${MODAL_ID} .gs-problem-picker-footer{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}
       #${MODAL_ID} .gs-problem-picker-title{font-size:22px;line-height:1.2;font-weight:700}
       #${MODAL_ID} .gs-problem-picker-meta,#${MODAL_ID} .gs-problem-picker-message{color:#566176;font-size:13px}
       #${MODAL_ID} .gs-problem-picker-close-x{width:34px;height:34px;padding:0;font-size:22px;line-height:1}
       #${MODAL_ID} .gs-problem-picker-progress{width:fit-content;padding:5px 10px;border-radius:999px;background:#e8f3ee;color:#14532d;font-size:13px;font-weight:700}
+      #${MODAL_ID} .gs-problem-picker-text-grid{min-height:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
       #${MODAL_ID} .gs-problem-picker-text-wrap{min-height:0;display:grid;grid-template-rows:auto minmax(0,1fr);gap:8px}
       #${MODAL_ID} .gs-problem-picker-label{color:#4b5563;font-size:13px;font-weight:700}
       #${MODAL_ID} .gs-problem-picker-text{min-height:0;overflow:auto;white-space:pre-wrap;border:1px solid #d7dce6;border-left:6px solid #2d6cdf;border-radius:8px;background:#fff;padding:14px;color:#1f2937;font-size:15px;line-height:1.55}
+      #${MODAL_ID} .gs-problem-picker-info{border-left-color:#2e7d32}
       #${MODAL_ID} .gs-problem-picker-footer{align-items:center;border-top:1px solid #e3e8f0;padding-top:14px}
       #${MODAL_ID} .gs-problem-picker-buttons{display:flex;flex-shrink:0;gap:10px}
       #${MODAL_ID} .gs-problem-picker-category-rail{height:100%;min-width:0;display:grid;grid-template-rows:auto minmax(0,1fr);gap:12px;box-sizing:border-box;padding:18px;border:1px solid #d6dce8;border-radius:8px;background:#f8fafc;color:#172033;box-shadow:0 24px 70px rgba(15,23,42,.18)}
@@ -980,10 +986,13 @@
       #${CHATGPT_SEARCH_MODAL_ID} .gs-chatgpt-search-details[hidden]{display:none!important}
       #${CHATGPT_SEARCH_MODAL_ID} .gs-chatgpt-search-details summary{cursor:pointer;color:#314157;font-size:13px;font-weight:700}
       #${CHATGPT_SEARCH_MODAL_ID} .gs-chatgpt-search-prompt{max-height:180px;overflow:auto;margin:10px 0 0;padding:12px;border-radius:10px;background:rgba(15,23,42,.05);white-space:pre-wrap;color:#334155;font:12px/1.5 Consolas,"Courier New",monospace}
-      @media (max-width:1323px){
+      @media (max-width:1480px){
         #${MODAL_ID}{align-items:flex-start;overflow:auto;padding:16px;box-sizing:border-box}
-        #${MODAL_ID} .gs-problem-picker-layout{width:min(980px,100%);height:auto;min-height:min(680px,calc(100vh - 32px));grid-template-columns:1fr;grid-template-rows:minmax(520px,680px) auto}
+        #${MODAL_ID} .gs-problem-picker-layout{width:min(1180px,100%);height:auto;min-height:min(680px,calc(100vh - 32px));grid-template-columns:1fr;grid-template-rows:minmax(520px,680px) auto}
         #${MODAL_ID} .gs-problem-picker-category-rail{height:auto;max-height:260px}
+      }
+      @media (max-width:980px){
+        #${MODAL_ID} .gs-problem-picker-text-grid{grid-template-columns:1fr}
       }
       @media (max-width:860px){
         #${CHATGPT_SEARCH_MODAL_ID}{align-items:flex-start;overflow:auto}
@@ -1637,9 +1646,15 @@
             <button type="button" class="gs-problem-picker-close-x" aria-label="Закрыть">×</button>
           </header>
           <div class="gs-problem-picker-progress"></div>
-          <div class="gs-problem-picker-text-wrap">
-            <div class="gs-problem-picker-label gs-problem-picker-text-label"></div>
-            <div class="gs-problem-picker-text"></div>
+          <div class="gs-problem-picker-text-grid">
+            <div class="gs-problem-picker-text-wrap">
+              <div class="gs-problem-picker-label gs-problem-picker-text-label"></div>
+              <div class="gs-problem-picker-text"></div>
+            </div>
+            <div class="gs-problem-picker-text-wrap">
+              <div class="gs-problem-picker-label gs-problem-picker-info-label"></div>
+              <div class="gs-problem-picker-text gs-problem-picker-info"></div>
+            </div>
           </div>
           <footer class="gs-problem-picker-footer">
             <div class="gs-problem-picker-message" aria-live="polite"></div>
@@ -1705,6 +1720,8 @@
     const progress = $('.gs-problem-picker-progress', modal);
     const textLabel = $('.gs-problem-picker-text-label', modal);
     const text = $('.gs-problem-picker-text', modal);
+    const infoLabel = $('.gs-problem-picker-info-label', modal);
+    const info = $('.gs-problem-picker-info', modal);
     const categoryButtons = getCategoryButtons(modal);
 
     const pending = state.pendingSaveCount ? ` · в фоне: ${state.pendingSaveCount}` : '';
@@ -1718,6 +1735,8 @@
       if (progress instanceof HTMLElement) progress.textContent = `Отправлено: ${state.sentCount}/${state.queue.length}${pending}${failed}`;
       if (textLabel instanceof HTMLElement) textLabel.textContent = 'Неклассифицированных заявок нет';
       if (text instanceof HTMLElement) text.textContent = 'Очередь завершена.';
+      if (infoLabel instanceof HTMLElement) infoLabel.textContent = 'Информация из СУПП/ITIL';
+      if (info instanceof HTMLElement) info.textContent = '';
       categoryButtons.forEach((button) => {
         button.disabled = true;
         button.title = '';
@@ -1728,6 +1747,8 @@
       }
       if (textLabel instanceof HTMLElement) textLabel.textContent = `Текст заявки (строка ${item.row}):`;
       if (text instanceof HTMLElement) text.textContent = item.text || '';
+      if (infoLabel instanceof HTMLElement) infoLabel.textContent = 'Информация из СУПП/ITIL:';
+      if (info instanceof HTMLElement) info.textContent = item.info || '';
       categoryButtons.forEach((button) => {
         button.disabled = !state.bridgeUrl;
         button.title = state.bridgeUrl ? '' : 'Нажми F2, затем «URL bridge» и задай Apps Script bridge.';
