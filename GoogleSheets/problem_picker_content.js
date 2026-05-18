@@ -27,6 +27,8 @@
   const SUPP_NUMBER_HEADER = 'Номер СУПП (последний)';
   const ITIL_INFO_HEADER = 'Информация из СУПП/ITIL';
   const NEW_RESPONSE_HEADER = 'Пришел новый ответ';
+  const REQUEST_DATE_HEADER = 'Дата заявки';
+  const INITIATOR_HEADER = 'Инициатор';
   const CHATGPT_SEARCH_SHEET_NAME = 'Заявки';
   const CHATGPT_RESULT_SHEET_NAME = 'Поиск заявок (ИИ)';
   const CHATGPT_ROW_ID_HEADER = '__row_id';
@@ -46,6 +48,7 @@
   ]);
   const ROOT_ID = 'dup-google-sheets-problem-picker-root';
   const MODAL_ID = 'dup-google-sheets-problem-picker-modal';
+  const NEW_RESPONSE_REVIEW_MODAL_ID = 'dup-google-sheets-new-response-review-modal';
   const CHATGPT_SEARCH_MODAL_ID = 'dup-google-sheets-chatgpt-search-modal';
   const MENU_ID = 'dup-google-sheets-problem-picker-menu';
   const MENU_OVERLAY_ID = 'dup-google-sheets-problem-picker-menu-overlay';
@@ -150,6 +153,7 @@
     failedCount: 0,
     currentItem: null,
     sheetName: '',
+    gid: '',
     rowsCount: 0,
     columns: null,
     isRunning: false,
@@ -157,6 +161,13 @@
     pendingBridgeSaves: [],
     statusText: 'Ожидание запуска.',
     lastError: ''
+  };
+  let newResponseReviewState = {
+    queue: [],
+    currentIndex: 0,
+    totalExpected: 0,
+    isProcessing: false,
+    statusText: 'Ожидание запуска.'
   };
 
   const $ = (selector, root = document) => root.querySelector(selector);
@@ -638,8 +649,20 @@
     const textColumnIndex = headers.indexOf(TEXT_HEADER);
     const infoColumnIndex = headers.indexOf(ITIL_INFO_HEADER);
     const problemColumnIndex = headers.indexOf(PROBLEM_HEADER);
-    if (textColumnIndex < 0 || infoColumnIndex < 0 || problemColumnIndex < 0) {
-      throw new Error('Не найдены колонки «Текст заявки», «Информация из СУПП/ITIL» или «Проблемы».');
+    const dateColumnIndex = headers.indexOf(REQUEST_DATE_HEADER);
+    const initiatorColumnIndex = headers.indexOf(INITIATOR_HEADER);
+    const itilColumnIndex = headers.indexOf(ITIL_NUMBER_HEADER);
+    const suppColumnIndex = headers.indexOf(SUPP_NUMBER_HEADER);
+    if (
+      textColumnIndex < 0 ||
+      infoColumnIndex < 0 ||
+      problemColumnIndex < 0 ||
+      dateColumnIndex < 0 ||
+      initiatorColumnIndex < 0 ||
+      itilColumnIndex < 0 ||
+      suppColumnIndex < 0
+    ) {
+      throw new Error('Не найдены колонки «Дата заявки», «Инициатор», «Номер ITIL», «Номер СУПП (последний)», «Текст заявки», «Информация из СУПП/ITIL» или «Проблемы».');
     }
 
     const queue = [];
@@ -653,7 +676,11 @@
         queue.push({
           row: index + 1,
           text,
-          info
+          info,
+          date: String(row[dateColumnIndex] || '').trim(),
+          initiator: String(row[initiatorColumnIndex] || '').trim(),
+          itilNumber: String(row[itilColumnIndex] || '').trim(),
+          suppValue: String(row[suppColumnIndex] || '').trim()
         });
       }
     }
@@ -672,7 +699,11 @@
       columns: {
         text: textColumnIndex + 1,
         info: infoColumnIndex + 1,
-        problem: problemColumnIndex + 1
+        problem: problemColumnIndex + 1,
+        date: dateColumnIndex + 1,
+        initiator: initiatorColumnIndex + 1,
+        itil: itilColumnIndex + 1,
+        supp: suppColumnIndex + 1
       },
       isLoading: false
     };
@@ -744,6 +775,58 @@
     const text = String(value || '').replace(/\r\n?/g, '\n');
     const matches = text.match(/ЗНР-[A-Za-zА-Яа-яЁё0-9-]+/g);
     return matches && matches.length ? matches[matches.length - 1].trim() : '';
+  }
+
+  async function loadCurrentSheetSnapshot() {
+    const sheetName = getActiveSheetName();
+    const allowedSheets = Array.isArray(CONFIG.allowedSheetNames) ? CONFIG.allowedSheetNames : [];
+    if (!allowedSheets.includes(sheetName)) {
+      throw new Error('Открой лист «Заявки» или «Заявки (наши)».');
+    }
+
+    const gid = getActiveGid();
+    if (!gid) throw new Error('Не удалось определить gid активного листа.');
+
+    const response = await fetch(getCsvUrl(gid), { credentials: 'omit' });
+    if (!response.ok) throw new Error(`CSV-экспорт вернул HTTP ${response.status}.`);
+
+    const rows = parseCsv(await response.text());
+    const headers = rows[0] || [];
+    const indexes = {
+      date: headers.indexOf(REQUEST_DATE_HEADER),
+      initiator: headers.indexOf(INITIATOR_HEADER),
+      itil: headers.indexOf(ITIL_NUMBER_HEADER),
+      supp: headers.indexOf(SUPP_NUMBER_HEADER),
+      text: headers.indexOf(TEXT_HEADER),
+      info: headers.indexOf(ITIL_INFO_HEADER)
+    };
+
+    if (Object.values(indexes).some((index) => index < 0)) {
+      throw new Error('Не найдены колонки «Дата заявки», «Инициатор», «Номер ITIL», «Номер СУПП (последний)», «Текст заявки» или «Информация из СУПП/ITIL».');
+    }
+
+    const byRow = new Map();
+    for (let index = 1; index < rows.length; index++) {
+      const row = rows[index] || [];
+      const rowNumber = index + 1;
+      byRow.set(rowNumber, {
+        row: rowNumber,
+        date: String(row[indexes.date] || '').trim(),
+        initiator: String(row[indexes.initiator] || '').trim(),
+        itilNumber: String(row[indexes.itil] || '').trim(),
+        suppValue: String(row[indexes.supp] || '').trim(),
+        text: String(row[indexes.text] || '').trim(),
+        info: String(row[indexes.info] || '').trim()
+      });
+    }
+
+    return {
+      sheetName,
+      gid,
+      rowsCount: rows.length,
+      indexes,
+      byRow
+    };
   }
 
   async function loadSuppQueue() {
@@ -827,11 +910,8 @@
   }
 
   async function loadNewResponseQueue() {
-    const sheetName = getActiveSheetName();
-    const allowedSheets = Array.isArray(CONFIG.allowedSheetNames) ? CONFIG.allowedSheetNames : [];
-    if (!allowedSheets.includes(sheetName)) {
-      throw new Error('Открой лист «Заявки» или «Заявки (наши)».');
-    }
+    const snapshot = await loadCurrentSheetSnapshot();
+    const sheetName = snapshot.sheetName;
 
     const response = await sendRuntimeMessage({
       action: SAVE_ACTION,
@@ -859,6 +939,7 @@
       const itilNumber = String(rowData && rowData.itilNumber || '').trim();
       const suppValue = String(rowData && rowData.suppValue || '').trim();
       const suppNumber = extractSuppNumber(suppValue);
+      const snapshotItem = snapshot.byRow.get(row) || null;
 
       if (suppNumber) {
         return {
@@ -866,7 +947,8 @@
           mode: 'supp',
           suppNumber,
           suppValue,
-          itilNumber
+          itilNumber,
+          ...(snapshotItem || {})
         };
       }
 
@@ -875,7 +957,8 @@
           row,
           mode: 'itil',
           itilNumber,
-          suppValue
+          suppValue,
+          ...(snapshotItem || {})
         };
       }
 
@@ -883,7 +966,8 @@
         row,
         mode: 'invalid',
         suppValue,
-        itilNumber
+        itilNumber,
+        ...(snapshotItem || {})
       };
     });
 
@@ -895,8 +979,15 @@
       failedCount: 0,
       currentItem: null,
       sheetName,
+      gid: snapshot.gid,
       rowsCount: Number(bridgeResult.rowsCount || 0),
-      columns: bridgeResult.columns && typeof bridgeResult.columns === 'object' ? bridgeResult.columns : null,
+      columns: {
+        ...(bridgeResult.columns && typeof bridgeResult.columns === 'object' ? bridgeResult.columns : {}),
+        date: snapshot.indexes.date + 1,
+        initiator: snapshot.indexes.initiator + 1,
+        text: snapshot.indexes.text + 1,
+        info: snapshot.indexes.info + 1
+      },
       lastError: '',
       statusText: queue.length ? 'Очередь новых ответов собрана.' : 'Строк с новым ответом не найдено.'
     };
@@ -904,6 +995,134 @@
 
   function getCurrentItem() {
     return state.queue[state.currentIndex] || null;
+  }
+
+  function getNewResponseReviewCurrentItem() {
+    return newResponseReviewState.queue[newResponseReviewState.currentIndex] || null;
+  }
+
+  function normalizeInfoText(value) {
+    return String(value || '')
+      .replace(/\r\n?/g, '\n')
+      .trim();
+  }
+
+  function splitInfoBlocks(value) {
+    const text = normalizeInfoText(value);
+    if (!text) return [];
+    return text
+      .split(/\n{2,}/)
+      .map((block) => block.trim())
+      .filter(Boolean);
+  }
+
+  function buildInfoBlockCounts(blocks) {
+    const counts = new Map();
+    blocks.forEach((block) => {
+      counts.set(block, (counts.get(block) || 0) + 1);
+    });
+    return counts;
+  }
+
+  function buildItilInfoText(solutionText) {
+    const body = normalizeInfoText(solutionText);
+    return body ? `ИТИЛ\n\n${body}` : 'ИТИЛ';
+  }
+
+  function buildSuppInfoText(suppNumber, infoText) {
+    const header = String(suppNumber || '').trim();
+    let fullText = normalizeInfoText(infoText);
+    if (header && fullText.indexOf(header) !== 0) {
+      fullText = header + (fullText ? `\n\n${fullText}` : '');
+    }
+    return normalizeInfoText(fullText);
+  }
+
+  function isInfoHeaderBlock(block, item) {
+    const normalized = String(block || '').trim();
+    return normalized === 'ИТИЛ' || (!!item && normalized === String(item.suppNumber || '').trim());
+  }
+
+  function buildInfoBlockDiff(beforeInfo, afterInfo, item) {
+    const previousCounts = buildInfoBlockCounts(splitInfoBlocks(beforeInfo));
+    return splitInfoBlocks(afterInfo).map((block) => {
+      const previousCount = previousCounts.get(block) || 0;
+      if (previousCount > 0) {
+        previousCounts.set(block, previousCount - 1);
+        return { text: block, isNew: false };
+      }
+      return { text: block, isNew: !isInfoHeaderBlock(block, item) };
+    });
+  }
+
+  function buildNewResponseReviewItem(item, result) {
+    const payload = result && result.bridgePayload && typeof result.bridgePayload === 'object'
+      ? result.bridgePayload
+      : {};
+    const afterInfo = item && item.mode === 'supp'
+      ? buildSuppInfoText(item.suppNumber, payload.infoText)
+      : buildItilInfoText(payload.solutionText);
+
+    return {
+      row: Number(item && item.row),
+      date: String(item && item.date || '').trim(),
+      initiator: String(item && item.initiator || '').trim(),
+      itilNumber: String(item && item.itilNumber || '').trim(),
+      suppValue: String(item && item.suppValue || '').trim(),
+      text: String(item && item.text || '').trim(),
+      beforeInfo: String(item && item.info || '').trim(),
+      afterInfo,
+      infoBlocks: buildInfoBlockDiff(item && item.info, afterInfo, item)
+    };
+  }
+
+  function renderRequestSummary(container, item) {
+    if (!(container instanceof HTMLElement)) return;
+
+    const fields = [
+      ['Номер строки', item && item.row ? String(item.row) : '—'],
+      ['Дата заявки', item && item.date ? item.date : '—'],
+      ['Инициатор', item && item.initiator ? item.initiator : '—'],
+      ['Номер ITIL', item && item.itilNumber ? item.itilNumber : '—'],
+      ['Номер СУПП (последний)', item && item.suppValue ? item.suppValue : '—']
+    ];
+
+    container.replaceChildren();
+    fields.forEach(([labelText, valueText]) => {
+      const field = document.createElement('div');
+      field.className = 'gs-request-summary-item';
+
+      const label = document.createElement('div');
+      label.className = 'gs-request-summary-label';
+      label.textContent = labelText;
+
+      const value = document.createElement('div');
+      value.className = 'gs-request-summary-value';
+      value.textContent = valueText;
+
+      field.append(label, value);
+      container.appendChild(field);
+    });
+  }
+
+  function renderInfoBlocks(container, blocks) {
+    if (!(container instanceof HTMLElement)) return;
+    container.replaceChildren();
+
+    if (!Array.isArray(blocks) || !blocks.length) {
+      container.textContent = '';
+      return;
+    }
+
+    blocks.forEach((block) => {
+      const element = document.createElement('div');
+      element.className = 'gs-info-block';
+      if (block && block.isNew) {
+        element.classList.add('is-new');
+      }
+      element.textContent = block && block.text ? block.text : '';
+      container.appendChild(element);
+    });
   }
 
   function ensureStyle() {
@@ -914,11 +1133,11 @@
     style.textContent = `
       #${ROOT_ID}{position:fixed;right:18px;bottom:58px;z-index:2147483640;display:flex;flex-direction:column;align-items:flex-end;gap:6px;font-family:"Segoe UI",Tahoma,sans-serif}
       #${ROOT_ID} .gs-problem-picker-actions{display:flex;gap:6px}
-      #${ROOT_ID} button,#${MODAL_ID} button,#${CHATGPT_SEARCH_MODAL_ID} button{border:1px solid #b7c2d3;border-radius:7px;background:#fff;color:#162033;cursor:pointer;font:600 13px/1.2 "Segoe UI",Tahoma,sans-serif;padding:8px 12px}
+      #${ROOT_ID} button,#${MODAL_ID} button,#${NEW_RESPONSE_REVIEW_MODAL_ID} button,#${CHATGPT_SEARCH_MODAL_ID} button{border:1px solid #b7c2d3;border-radius:7px;background:#fff;color:#162033;cursor:pointer;font:600 13px/1.2 "Segoe UI",Tahoma,sans-serif;padding:8px 12px}
       #${ROOT_ID} .gs-problem-picker-open{border-color:#1155cc;background:#1155cc;color:#fff;box-shadow:0 8px 22px rgba(17,85,204,.24)}
       #${ROOT_ID} .gs-problem-picker-url{min-width:44px}
       #${ROOT_ID} .gs-problem-picker-status{max-width:360px;min-height:18px;padding:5px 8px;border-radius:6px;background:rgba(255,255,255,.94);color:#24513a;font-size:12px;box-shadow:0 6px 18px rgba(15,23,42,.12)}
-      #${ROOT_ID} .gs-problem-picker-status.is-error,#${MODAL_ID} .gs-problem-picker-message.is-error{color:#b3261e}
+      #${ROOT_ID} .gs-problem-picker-status.is-error,#${MODAL_ID} .gs-problem-picker-message.is-error,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-message.is-error{color:#b3261e}
       #${MENU_OVERLAY_ID}{position:fixed;inset:0;z-index:2147483644;background:rgba(17,24,39,.38);font-family:"Segoe UI",Tahoma,sans-serif}
       #${MENU_ID}{position:fixed;right:24px;top:76px;z-index:2147483645;width:min(560px,calc(100vw - 32px));max-height:calc(100vh - 110px);overflow:auto;box-sizing:border-box;padding:18px;border:1px solid #d5dce8;border-radius:8px;background:#fbfcfe;color:#172033;box-shadow:0 24px 70px rgba(15,23,42,.24);font-family:"Segoe UI",Tahoma,sans-serif}
       #${MENU_OVERLAY_ID}[hidden],#${MENU_ID}[hidden]{display:none!important}
@@ -937,27 +1156,46 @@
       #${MENU_ID} .gs-problem-picker-status.is-error,#${MENU_ID} .gs-problem-picker-itil-status.is-error,#${MENU_ID} .gs-problem-picker-supp-status.is-error,#${MENU_ID} .gs-problem-picker-new-response-status.is-error{color:#b3261e}
       #${MENU_ID} .gs-problem-picker-itil-status,#${MENU_ID} .gs-problem-picker-supp-status,#${MENU_ID} .gs-problem-picker-new-response-status{min-height:18px;color:#24513a;font-size:13px;overflow-wrap:anywhere}
       #${MENU_ID} .gs-problem-picker-chatgpt-note{color:#566176;font-size:13px;line-height:1.45}
-      #${ROOT_ID} button,#${MODAL_ID} button,#${CHATGPT_SEARCH_MODAL_ID} button,#${MENU_ID} button{border:1px solid #b7c2d3;border-radius:7px;background:#fff;color:#162033;cursor:pointer;font:600 13px/1.2 "Segoe UI",Tahoma,sans-serif;padding:8px 12px}
+      #${ROOT_ID} button,#${MODAL_ID} button,#${NEW_RESPONSE_REVIEW_MODAL_ID} button,#${CHATGPT_SEARCH_MODAL_ID} button,#${MENU_ID} button{border:1px solid #b7c2d3;border-radius:7px;background:#fff;color:#162033;cursor:pointer;font:600 13px/1.2 "Segoe UI",Tahoma,sans-serif;padding:8px 12px}
       #${MENU_ID} button:disabled{opacity:.58;cursor:default}
       #${MENU_ID} .gs-problem-picker-open,#${MENU_ID} .gs-problem-picker-chatgpt-search-open,#${MENU_ID} .gs-problem-picker-itil-start,#${MENU_ID} .gs-problem-picker-supp-start,#${MENU_ID} .gs-problem-picker-supp-test,#${MENU_ID} .gs-problem-picker-new-response-start{border-color:#1155cc;background:#1155cc;color:#fff;box-shadow:0 8px 22px rgba(17,85,204,.2)}
       #${MENU_ID} .gs-problem-picker-itil-stop,#${MENU_ID} .gs-problem-picker-supp-stop,#${MENU_ID} .gs-problem-picker-new-response-stop{border-color:#b3261e;color:#b3261e}
-      #${MODAL_ID}{position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;background:rgba(17,24,39,.42);font-family:"Segoe UI",Tahoma,sans-serif}
+      #${MODAL_ID},#${NEW_RESPONSE_REVIEW_MODAL_ID}{position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;background:rgba(17,24,39,.42);font-family:"Segoe UI",Tahoma,sans-serif}
       #${CHATGPT_SEARCH_MODAL_ID}{position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;background:rgba(15,23,42,.48);font-family:"Segoe UI",Tahoma,sans-serif}
-      #${MODAL_ID}[hidden],#${CHATGPT_SEARCH_MODAL_ID}[hidden],html.dup-ext-screenshot-mode #${ROOT_ID},html.dup-ext-screenshot-mode #${MODAL_ID},html.dup-ext-screenshot-mode #${CHATGPT_SEARCH_MODAL_ID},html.dup-ext-screenshot-mode #${MENU_ID},html.dup-ext-screenshot-mode #${MENU_OVERLAY_ID}{display:none!important}
+      #${MODAL_ID}[hidden],#${NEW_RESPONSE_REVIEW_MODAL_ID}[hidden],#${CHATGPT_SEARCH_MODAL_ID}[hidden],html.dup-ext-screenshot-mode #${ROOT_ID},html.dup-ext-screenshot-mode #${MODAL_ID},html.dup-ext-screenshot-mode #${NEW_RESPONSE_REVIEW_MODAL_ID},html.dup-ext-screenshot-mode #${CHATGPT_SEARCH_MODAL_ID},html.dup-ext-screenshot-mode #${MENU_ID},html.dup-ext-screenshot-mode #${MENU_OVERLAY_ID}{display:none!important}
       #${MODAL_ID} .gs-problem-picker-layout{width:min(1840px,calc(100vw - 32px));height:min(680px,calc(100vh - 32px));display:grid;grid-template-columns:minmax(0,1fr) 298px;gap:14px;align-items:stretch}
-      #${MODAL_ID} .gs-problem-picker-panel{width:100%;height:100%;min-width:0;display:grid;grid-template-rows:auto auto minmax(0,1fr) auto;gap:14px;box-sizing:border-box;padding:22px;border:1px solid #d6dce8;border-radius:8px;background:#fbfcfe;color:#172033;box-shadow:0 24px 70px rgba(15,23,42,.26)}
+      #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-layout{width:min(1540px,calc(100vw - 32px));height:min(680px,calc(100vh - 32px));display:grid;grid-template-columns:1fr;align-items:stretch}
+      #${MODAL_ID} .gs-problem-picker-panel,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-panel{width:100%;height:100%;min-width:0;display:grid;grid-template-rows:auto auto auto minmax(0,1fr) auto;gap:14px;box-sizing:border-box;padding:22px;border:1px solid #d6dce8;border-radius:8px;background:#fbfcfe;color:#172033;box-shadow:0 24px 70px rgba(15,23,42,.26)}
       #${MODAL_ID} .gs-problem-picker-header,#${MODAL_ID} .gs-problem-picker-footer{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}
+      #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-header,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-footer{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}
       #${MODAL_ID} .gs-problem-picker-title{font-size:22px;line-height:1.2;font-weight:700}
+      #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-title{font-size:22px;line-height:1.2;font-weight:700}
       #${MODAL_ID} .gs-problem-picker-meta,#${MODAL_ID} .gs-problem-picker-message{color:#566176;font-size:13px}
+      #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-meta,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-message{color:#566176;font-size:13px}
       #${MODAL_ID} .gs-problem-picker-close-x{width:34px;height:34px;padding:0;font-size:22px;line-height:1}
+      #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-close-x{width:34px;height:34px;padding:0;font-size:22px;line-height:1}
       #${MODAL_ID} .gs-problem-picker-progress{width:fit-content;padding:5px 10px;border-radius:999px;background:#e8f3ee;color:#14532d;font-size:13px;font-weight:700}
+      #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-progress{width:fit-content;padding:5px 10px;border-radius:999px;background:#e8f3ee;color:#14532d;font-size:13px;font-weight:700}
+      #${MODAL_ID} .gs-request-summary,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}
+      #${MODAL_ID} .gs-request-summary-item,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-item{min-width:0;padding:10px 11px;border:1px solid #dbe2ec;border-radius:10px;background:#f7f9fc}
+      #${MODAL_ID} .gs-request-summary-label,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-label{margin-bottom:4px;color:#64748b;font-size:11px;font-weight:700;letter-spacing:.02em;text-transform:uppercase}
+      #${MODAL_ID} .gs-request-summary-value,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-value{min-width:0;overflow-wrap:anywhere;color:#172033;font-size:13px;font-weight:600;line-height:1.35}
       #${MODAL_ID} .gs-problem-picker-text-grid{min-height:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+      #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-problem-picker-text-grid{min-height:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
       #${MODAL_ID} .gs-problem-picker-text-wrap{min-height:0;display:grid;grid-template-rows:auto minmax(0,1fr);gap:8px}
+      #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-problem-picker-text-wrap{min-height:0;display:grid;grid-template-rows:auto minmax(0,1fr);gap:8px}
       #${MODAL_ID} .gs-problem-picker-label{color:#4b5563;font-size:13px;font-weight:700}
+      #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-problem-picker-label{color:#4b5563;font-size:13px;font-weight:700}
       #${MODAL_ID} .gs-problem-picker-text{min-height:0;overflow:auto;white-space:pre-wrap;border:1px solid #d7dce6;border-left:6px solid #2d6cdf;border-radius:8px;background:#fff;padding:14px;color:#1f2937;font-size:15px;line-height:1.55}
+      #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-problem-picker-text{min-height:0;overflow:auto;white-space:pre-wrap;border:1px solid #d7dce6;border-left:6px solid #2d6cdf;border-radius:8px;background:#fff;padding:14px;color:#1f2937;font-size:15px;line-height:1.55}
       #${MODAL_ID} .gs-problem-picker-info{border-left-color:#2e7d32}
+      #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-problem-picker-info{border-left-color:#2e7d32}
+      #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-info-block + .gs-info-block{margin-top:12px}
+      #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-info-block.is-new{padding:10px 12px;border-radius:12px;background:rgba(34,197,94,.16);box-shadow:inset 0 0 0 1px rgba(22,163,74,.16)}
       #${MODAL_ID} .gs-problem-picker-footer{align-items:center;border-top:1px solid #e3e8f0;padding-top:14px}
+      #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-footer{align-items:center;border-top:1px solid #e3e8f0;padding-top:14px}
       #${MODAL_ID} .gs-problem-picker-buttons{display:flex;flex-shrink:0;gap:10px}
+      #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-buttons{display:flex;flex-shrink:0;gap:10px}
       #${MODAL_ID} .gs-problem-picker-category-rail{height:100%;min-width:0;display:grid;grid-template-rows:auto minmax(0,1fr);gap:12px;box-sizing:border-box;padding:18px;border:1px solid #d6dce8;border-radius:8px;background:#f8fafc;color:#172033;box-shadow:0 24px 70px rgba(15,23,42,.18)}
       #${MODAL_ID} .gs-problem-picker-category-title{font-size:15px;line-height:1.25;font-weight:700;color:#253044}
       #${MODAL_ID} .gs-problem-picker-category-list{min-height:0;overflow:auto;display:grid;align-content:start;gap:8px;padding-right:2px}
@@ -987,12 +1225,15 @@
       #${CHATGPT_SEARCH_MODAL_ID} .gs-chatgpt-search-details summary{cursor:pointer;color:#314157;font-size:13px;font-weight:700}
       #${CHATGPT_SEARCH_MODAL_ID} .gs-chatgpt-search-prompt{max-height:180px;overflow:auto;margin:10px 0 0;padding:12px;border-radius:10px;background:rgba(15,23,42,.05);white-space:pre-wrap;color:#334155;font:12px/1.5 Consolas,"Courier New",monospace}
       @media (max-width:1480px){
-        #${MODAL_ID}{align-items:flex-start;overflow:auto;padding:16px;box-sizing:border-box}
+        #${MODAL_ID},#${NEW_RESPONSE_REVIEW_MODAL_ID}{align-items:flex-start;overflow:auto;padding:16px;box-sizing:border-box}
         #${MODAL_ID} .gs-problem-picker-layout{width:min(1180px,100%);height:auto;min-height:min(680px,calc(100vh - 32px));grid-template-columns:1fr;grid-template-rows:minmax(520px,680px) auto}
+        #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-layout{width:min(1180px,100%);height:auto;min-height:min(680px,calc(100vh - 32px))}
         #${MODAL_ID} .gs-problem-picker-category-rail{height:auto;max-height:260px}
       }
       @media (max-width:980px){
         #${MODAL_ID} .gs-problem-picker-text-grid{grid-template-columns:1fr}
+        #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-problem-picker-text-grid{grid-template-columns:1fr}
+        #${MODAL_ID} .gs-request-summary,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary{grid-template-columns:repeat(2,minmax(0,1fr))}
       }
       @media (max-width:860px){
         #${CHATGPT_SEARCH_MODAL_ID}{align-items:flex-start;overflow:auto}
@@ -1130,6 +1371,7 @@
     }
     if (startButton instanceof HTMLButtonElement) startButton.disabled = newResponseState.isRunning || itilState.isRunning || suppState.isRunning;
     if (stopButton instanceof HTMLButtonElement) stopButton.disabled = !newResponseState.isRunning || !!newResponseState.stopRequested;
+    renderNewResponseReviewModal();
   }
 
   function setChatGptSearchStatus(text, isError) {
@@ -1455,9 +1697,10 @@
     toggleMenu();
   }
 
-  function handleMenuEscape(event) {
+function handleMenuEscape(event) {
     if (event.type !== 'keydown' || event.repeat || event.key !== 'Escape') return;
     const menu = document.getElementById(MENU_ID);
+    const newResponseReviewModal = document.getElementById(NEW_RESPONSE_REVIEW_MODAL_ID);
     const chatGptSearchModal = document.getElementById(CHATGPT_SEARCH_MODAL_ID);
     if (menu instanceof HTMLElement && !menu.hidden) {
       event.preventDefault();
@@ -1467,6 +1710,11 @@
     if (chatGptSearchModal instanceof HTMLElement && !chatGptSearchModal.hidden) {
       event.preventDefault();
       closeChatGptSearchModal();
+      return;
+    }
+    if (newResponseReviewModal instanceof HTMLElement && !newResponseReviewModal.hidden) {
+      event.preventDefault();
+      closeNewResponseReviewModal();
     }
   }
 
@@ -1646,6 +1894,7 @@
             <button type="button" class="gs-problem-picker-close-x" aria-label="Закрыть">×</button>
           </header>
           <div class="gs-problem-picker-progress"></div>
+          <div class="gs-request-summary"></div>
           <div class="gs-problem-picker-text-grid">
             <div class="gs-problem-picker-text-wrap">
               <div class="gs-problem-picker-label gs-problem-picker-text-label"></div>
@@ -1718,6 +1967,7 @@
     const item = getCurrentItem();
     const meta = $('.gs-problem-picker-meta', modal);
     const progress = $('.gs-problem-picker-progress', modal);
+    const summary = $('.gs-request-summary', modal);
     const textLabel = $('.gs-problem-picker-text-label', modal);
     const text = $('.gs-problem-picker-text', modal);
     const infoLabel = $('.gs-problem-picker-info-label', modal);
@@ -1733,6 +1983,7 @@
 
     if (!item) {
       if (progress instanceof HTMLElement) progress.textContent = `Отправлено: ${state.sentCount}/${state.queue.length}${pending}${failed}`;
+      renderRequestSummary(summary, null);
       if (textLabel instanceof HTMLElement) textLabel.textContent = 'Неклассифицированных заявок нет';
       if (text instanceof HTMLElement) text.textContent = 'Очередь завершена.';
       if (infoLabel instanceof HTMLElement) infoLabel.textContent = 'Информация из СУПП/ITIL';
@@ -1745,6 +1996,7 @@
       if (progress instanceof HTMLElement) {
         progress.textContent = `Очередь: ${state.currentIndex + 1}/${state.queue.length} · отправлено: ${state.sentCount}${pending}${failed}`;
       }
+      renderRequestSummary(summary, item);
       if (textLabel instanceof HTMLElement) textLabel.textContent = `Текст заявки (строка ${item.row}):`;
       if (text instanceof HTMLElement) text.textContent = item.text || '';
       if (infoLabel instanceof HTMLElement) infoLabel.textContent = 'Информация из СУПП/ITIL:';
@@ -1766,6 +2018,148 @@
     } else {
       setModalMessage(item ? '' : 'Классификация завершена.', false);
     }
+  }
+
+  function closeNewResponseReviewModal() {
+    const modal = document.getElementById(NEW_RESPONSE_REVIEW_MODAL_ID);
+    if (modal instanceof HTMLElement) modal.hidden = true;
+  }
+
+  function ensureNewResponseReviewModal() {
+    ensureStyle();
+
+    const existing = document.getElementById(NEW_RESPONSE_REVIEW_MODAL_ID);
+    if (existing instanceof HTMLElement) return existing;
+
+    const modal = document.createElement('div');
+    modal.id = NEW_RESPONSE_REVIEW_MODAL_ID;
+    modal.hidden = true;
+    modal.innerHTML = `
+      <div class="gs-new-response-review-layout" role="dialog" aria-modal="true" aria-label="Просмотр новых ответов">
+        <section class="gs-new-response-review-panel">
+          <header class="gs-new-response-review-header">
+            <div>
+              <div class="gs-new-response-review-title">Новые ответы</div>
+              <div class="gs-new-response-review-meta"></div>
+            </div>
+            <button type="button" class="gs-new-response-review-close-x" aria-label="Закрыть">×</button>
+          </header>
+          <div class="gs-new-response-review-progress"></div>
+          <div class="gs-request-summary"></div>
+          <div class="gs-problem-picker-text-grid">
+            <div class="gs-problem-picker-text-wrap">
+              <div class="gs-problem-picker-label gs-new-response-review-text-label">Текст заявки:</div>
+              <div class="gs-problem-picker-text gs-new-response-review-text"></div>
+            </div>
+            <div class="gs-problem-picker-text-wrap">
+              <div class="gs-problem-picker-label gs-new-response-review-info-label">Информация из СУПП/ITIL:</div>
+              <div class="gs-problem-picker-text gs-problem-picker-info gs-new-response-review-info"></div>
+            </div>
+          </div>
+          <footer class="gs-new-response-review-footer">
+            <div class="gs-new-response-review-message" aria-live="polite"></div>
+            <div class="gs-new-response-review-buttons">
+              <button type="button" class="gs-new-response-review-close">Закрыть</button>
+              <button type="button" class="gs-new-response-review-next">Дальше</button>
+            </div>
+          </footer>
+        </section>
+      </div>
+    `;
+
+    const close = () => {
+      closeNewResponseReviewModal();
+    };
+
+    modal.addEventListener('click', (event) => {
+      if (event.target === modal) close();
+    }, { capture: true });
+
+    $('.gs-new-response-review-close-x', modal)?.addEventListener('click', close, { capture: true });
+    $('.gs-new-response-review-close', modal)?.addEventListener('click', close, { capture: true });
+    $('.gs-new-response-review-next', modal)?.addEventListener('click', () => {
+      const total = newResponseReviewState.queue.length;
+      if (!total || newResponseReviewState.isProcessing) return;
+
+      if (newResponseReviewState.currentIndex >= total - 1) {
+        close();
+        return;
+      }
+
+      newResponseReviewState = {
+        ...newResponseReviewState,
+        currentIndex: newResponseReviewState.currentIndex + 1
+      };
+      renderNewResponseReviewModal();
+    }, { capture: true });
+
+    (document.body || document.documentElement).appendChild(modal);
+    return modal;
+  }
+
+  function renderNewResponseReviewModal() {
+    const modal = document.getElementById(NEW_RESPONSE_REVIEW_MODAL_ID);
+    if (!(modal instanceof HTMLElement)) return;
+
+    const item = getNewResponseReviewCurrentItem();
+    const meta = $('.gs-new-response-review-meta', modal);
+    const progress = $('.gs-new-response-review-progress', modal);
+    const summary = $('.gs-request-summary', modal);
+    const text = $('.gs-new-response-review-text', modal);
+    const info = $('.gs-new-response-review-info', modal);
+    const message = $('.gs-new-response-review-message', modal);
+    const nextButton = $('.gs-new-response-review-next', modal);
+
+    if (meta instanceof HTMLElement) {
+      meta.textContent = `Лист: ${newResponseState.sheetName || 'не выбран'} · строк найдено: ${newResponseReviewState.totalExpected}`;
+    }
+
+    if (progress instanceof HTMLElement) {
+      if (newResponseReviewState.isProcessing) {
+        const processed = Math.min(
+          newResponseReviewState.totalExpected,
+          newResponseState.successCount + newResponseState.skippedCount + newResponseState.failedCount
+        );
+        progress.textContent = `Обработка: ${processed}/${newResponseReviewState.totalExpected}`;
+      } else if (item) {
+        progress.textContent = `Очередь просмотра: ${newResponseReviewState.currentIndex + 1}/${newResponseReviewState.queue.length}`;
+      } else {
+        progress.textContent = 'Очередь просмотра: 0/0';
+      }
+    }
+
+    renderRequestSummary(summary, item);
+
+    if (text instanceof HTMLElement) {
+      text.textContent = item
+        ? (item.text || '')
+        : (newResponseReviewState.isProcessing ? 'Жду завершения обработки...' : 'Новых сохранённых ответов для просмотра нет.');
+    }
+
+    if (info instanceof HTMLElement) {
+      if (item) renderInfoBlocks(info, item.infoBlocks);
+      else info.textContent = '';
+    }
+
+    if (message instanceof HTMLElement) {
+      message.textContent = newResponseState.lastError
+        || (newResponseReviewState.isProcessing ? (newResponseState.statusText || newResponseReviewState.statusText) : newResponseReviewState.statusText)
+        || '';
+      message.classList.toggle('is-error', !!newResponseState.lastError);
+    }
+
+    if (nextButton instanceof HTMLButtonElement) {
+      nextButton.disabled = newResponseReviewState.isProcessing || !item;
+      nextButton.textContent = item && newResponseReviewState.currentIndex >= newResponseReviewState.queue.length - 1
+        ? 'Закрыть'
+        : 'Дальше';
+    }
+  }
+
+  function openNewResponseReviewModal() {
+    const modal = ensureNewResponseReviewModal();
+    renderNewResponseReviewModal();
+    modal.hidden = false;
   }
 
   async function openPicker() {
@@ -1938,7 +2332,12 @@
     const label = item && item.mode === 'supp'
       ? `строка ${row}, СУПП ${item.suppNumber || ''}`
       : `строка ${row}, ITIL ${item && item.itilNumber ? item.itilNumber : ''}`;
-    const tracked = createBridgeSaveTracker(result && result.bridgePayload, row, label);
+    const reviewItem = buildNewResponseReviewItem(item, result);
+    const tracked = createBridgeSaveTracker(result && result.bridgePayload, row, label)
+      .then((saveResult) => ({
+        ...saveResult,
+        reviewItem
+      }));
     newResponseState = {
       ...newResponseState,
       pendingBridgeSaves: [...(newResponseState.pendingBridgeSaves || []), tracked]
@@ -1971,6 +2370,26 @@
       resetRowsCount: savedRows.length,
       errorText: summarizeBridgeFinalizeErrors(results)
     };
+  }
+
+  function buildNewResponseReviewQueue(results) {
+    return (results || [])
+      .filter((item) => item && item.success === true && item.reviewItem)
+      .map((item) => item.reviewItem);
+  }
+
+  function finishNewResponseReview(results, totalExpected, statusText) {
+    const queue = buildNewResponseReviewQueue(results);
+    newResponseReviewState = {
+      queue,
+      currentIndex: 0,
+      totalExpected: Number(totalExpected || 0),
+      isProcessing: false,
+      statusText: queue.length
+        ? (statusText || 'Показываю только сохранённые изменения.')
+        : 'Сохранённых новых ответов для просмотра нет.'
+    };
+    renderNewResponseReviewModal();
   }
 
   function stopItilFill() {
@@ -2435,6 +2854,7 @@
       renderNewResponseStatus();
       renderItilStatus();
       renderSuppStatus();
+      renderNewResponseReviewModal();
       return;
     }
 
@@ -2447,6 +2867,7 @@
       failedCount: 0,
       currentItem: null,
       sheetName: '',
+      gid: '',
       rowsCount: 0,
       columns: null,
       isRunning: false,
@@ -2458,6 +2879,7 @@
     renderNewResponseStatus();
     renderItilStatus();
     renderSuppStatus();
+    renderNewResponseReviewModal();
   }
 
   function getNewResponseInvalidModeError(item) {
@@ -2482,15 +2904,29 @@
       skippedCount: 0,
       failedCount: 0,
       currentItem: null,
+      sheetName: '',
+      gid: '',
+      rowsCount: 0,
+      columns: null,
       isRunning: true,
       stopRequested: false,
       pendingBridgeSaves: [],
       statusText: 'Собираю строки, где отмечен новый ответ...',
       lastError: ''
     };
+    closeMenu();
+    newResponseReviewState = {
+      queue: [],
+      currentIndex: 0,
+      totalExpected: 0,
+      isProcessing: true,
+      statusText: 'Собираю строки, где отмечен новый ответ...'
+    };
+    openNewResponseReviewModal();
     renderNewResponseStatus();
     renderItilStatus();
     renderSuppStatus();
+    renderNewResponseReviewModal();
 
     try {
       await loadBridgeUrl();
@@ -2498,6 +2934,15 @@
 
       await loadNewResponseQueue();
       if (runId !== newResponseRunId) return;
+
+      newResponseReviewState = {
+        ...newResponseReviewState,
+        totalExpected: newResponseState.queue.length,
+        statusText: newResponseState.queue.length
+          ? 'Обновляю заявки и собираю очередь просмотра.'
+          : 'Строк с новым ответом не найдено.'
+      };
+      renderNewResponseReviewModal();
 
       if (!newResponseState.queue.length) {
         newResponseState = {
@@ -2512,6 +2957,11 @@
         renderNewResponseStatus();
         renderItilStatus();
         renderSuppStatus();
+        newResponseReviewState = {
+          ...newResponseReviewState,
+          isProcessing: false
+        };
+        renderNewResponseReviewModal();
         return;
       }
 
@@ -2522,6 +2972,7 @@
         lastError: ''
       };
       renderNewResponseStatus();
+      renderNewResponseReviewModal();
 
       for (let index = 0; index < newResponseState.queue.length; index++) {
         if (runId !== newResponseRunId) return;
@@ -2545,6 +2996,7 @@
           lastError: ''
         };
         renderNewResponseStatus();
+        renderNewResponseReviewModal();
 
         const response = await sendRuntimeMessage({
           action: item.mode === 'supp' ? SUPP_INFO_REFRESH_ACTION : ITIL_INFO_REFRESH_ACTION,
@@ -2574,6 +3026,11 @@
           renderNewResponseStatus();
           const bridgeFinalize = await waitBridgeSaves(newResponseState.pendingBridgeSaves);
           if (runId !== newResponseRunId) return;
+          finishNewResponseReview(
+            bridgeFinalize.results,
+            newResponseState.queue.length,
+            'Процесс остановлен из-за ошибки. Ниже — уже сохранённые изменения.'
+          );
           const label = item.mode === 'supp'
             ? `Строка ${item.row}, СУПП ${item.suppNumber}`
             : `Строка ${item.row}, ITIL ${item.itilNumber}`;
@@ -2591,6 +3048,7 @@
           renderNewResponseStatus();
           renderItilStatus();
           renderSuppStatus();
+          renderNewResponseReviewModal();
           return;
         }
 
@@ -2605,6 +3063,7 @@
             lastError: ''
           };
           renderNewResponseStatus();
+          renderNewResponseReviewModal();
           continue;
         }
 
@@ -2619,6 +3078,7 @@
           lastError: ''
         };
         renderNewResponseStatus();
+        renderNewResponseReviewModal();
       }
 
       if (runId !== newResponseRunId) return;
@@ -2634,6 +3094,13 @@
 
       const bridgeFinalize = await waitBridgeSaves(newResponseState.pendingBridgeSaves);
       if (runId !== newResponseRunId) return;
+      finishNewResponseReview(
+        bridgeFinalize.results,
+        newResponseState.queue.length,
+        wasStopped
+          ? 'Процесс остановлен. Ниже — сохранённые изменения, которые успели попасть в таблицу.'
+          : 'Показываю только сохранённые изменения.'
+      );
 
       newResponseState = {
         ...newResponseState,
@@ -2648,6 +3115,7 @@
       renderNewResponseStatus();
       renderItilStatus();
       renderSuppStatus();
+      renderNewResponseReviewModal();
     } catch (error) {
       if (runId !== newResponseRunId) return;
       const message = error && error.message ? error.message : 'Не удалось обновить строки с новыми ответами.';
@@ -2663,6 +3131,11 @@
         bridgeFinalize = await waitBridgeSaves(newResponseState.pendingBridgeSaves);
         if (runId !== newResponseRunId) return;
       }
+      finishNewResponseReview(
+        bridgeFinalize.results,
+        newResponseState.queue.length,
+        'Процесс завершился с ошибкой. Ниже — уже сохранённые изменения.'
+      );
       newResponseState = {
         ...newResponseState,
         isRunning: false,
@@ -2674,6 +3147,7 @@
       renderNewResponseStatus();
       renderItilStatus();
       renderSuppStatus();
+      renderNewResponseReviewModal();
     }
   }
 
@@ -2682,6 +3156,7 @@
 
     const root = document.getElementById(ROOT_ID);
     const modal = document.getElementById(MODAL_ID);
+    const newResponseReviewModal = document.getElementById(NEW_RESPONSE_REVIEW_MODAL_ID);
     const chatGptSearchModal = document.getElementById(CHATGPT_SEARCH_MODAL_ID);
     const menu = document.getElementById(MENU_ID);
     const menuOverlay = document.getElementById(MENU_OVERLAY_ID);
@@ -2689,6 +3164,7 @@
     return !!(
       (root && root.contains(target))
       || (modal && modal.contains(target))
+      || (newResponseReviewModal && newResponseReviewModal.contains(target))
       || (chatGptSearchModal && chatGptSearchModal.contains(target))
       || (menu && menu.contains(target))
       || (menuOverlay && menuOverlay.contains(target))
