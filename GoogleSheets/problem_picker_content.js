@@ -1207,6 +1207,8 @@
       element.className = 'gs-info-block';
       if (block && block.isNew) {
         element.classList.add('is-new');
+      } else {
+        element.classList.add('is-old');
       }
       element.textContent = block && block.text ? block.text : '';
       container.appendChild(element);
@@ -1286,6 +1288,7 @@
       #${MODAL_ID} .gs-problem-picker-info{border-left-color:#2e7d32}
       #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-problem-picker-info{border-left-color:#2e7d32}
       #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-info-block + .gs-info-block{margin-top:12px}
+      #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-info-block.is-old{padding:10px 12px;border-radius:12px;background:rgba(148,163,184,.13);box-shadow:inset 0 0 0 1px rgba(148,163,184,.15)}
       #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-info-block.is-new{padding:10px 12px;border-radius:12px;background:rgba(34,197,94,.16);box-shadow:inset 0 0 0 1px rgba(22,163,74,.16)}
       #${MODAL_ID} .gs-problem-picker-footer{align-items:center;border-top:1px solid #e3e8f0;padding-top:14px}
       #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-footer{align-items:center;border-top:1px solid #e3e8f0;padding-top:14px}
