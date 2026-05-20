@@ -684,6 +684,12 @@
         });
       }
     }
+    const initiatorBackgrounds = await loadInitiatorBackgrounds(
+      sheetName,
+      queue.map((item) => item.row),
+      initiatorColumnIndex + 1
+    );
+    applyInitiatorBackgrounds(queue, initiatorBackgrounds);
 
     state = {
       ...state,
@@ -909,6 +915,65 @@
       : null;
   }
 
+  function normalizeSheetBackgroundColor(value) {
+    const color = String(value || '').trim();
+    return /^#[0-9a-f]{6}$/i.test(color) ? color.toLowerCase() : '';
+  }
+
+  async function loadInitiatorBackgrounds(sheetName, rows, initiatorColumn) {
+    const uniqueRows = Array.from(new Set((rows || [])
+      .map((row) => Number(row))
+      .filter((row) => Number.isInteger(row) && row >= 2)))
+      .sort((left, right) => left - right);
+    const column = Number(initiatorColumn);
+
+    if (!state.bridgeUrl || !sheetName || !uniqueRows.length || !Number.isInteger(column) || column <= 0) {
+      return new Map();
+    }
+
+    try {
+      const response = await sendRuntimeMessage({
+        action: SAVE_ACTION,
+        data: {
+          bridgeUrl: state.bridgeUrl,
+          payload: {
+            action: 'getInitiatorBackgrounds',
+            spreadsheetId: CONFIG.spreadsheetId,
+            sheetName,
+            rows: uniqueRows,
+            columns: {
+              initiator: column
+            }
+          }
+        }
+      });
+
+      if (!response || response.success !== true) return new Map();
+      const result = getBridgeActionResult(response);
+      const backgrounds = new Map();
+      (result && Array.isArray(result.rows) ? result.rows : []).forEach((item) => {
+        const row = Number(item && item.row);
+        const backgroundColor = normalizeSheetBackgroundColor(item && item.backgroundColor);
+        if (Number.isInteger(row) && row >= 2 && backgroundColor) {
+          backgrounds.set(row, backgroundColor);
+        }
+      });
+      return backgrounds;
+    } catch (_) {
+      // Форматирование в сводке — удобство, а не причина ломать основной сценарий.
+      return new Map();
+    }
+  }
+
+  function applyInitiatorBackgrounds(queue, backgrounds) {
+    if (!Array.isArray(queue) || !(backgrounds instanceof Map) || !backgrounds.size) return;
+
+    queue.forEach((item) => {
+      if (!item || !Number.isInteger(Number(item.row))) return;
+      item.initiatorBackgroundColor = backgrounds.get(Number(item.row)) || '';
+    });
+  }
+
   async function loadNewResponseQueue() {
     const snapshot = await loadCurrentSheetSnapshot();
     const sheetName = snapshot.sheetName;
@@ -970,6 +1035,12 @@
         ...(snapshotItem || {})
       };
     });
+    const initiatorBackgrounds = await loadInitiatorBackgrounds(
+      sheetName,
+      queue.map((item) => item.row),
+      snapshot.indexes.initiator + 1
+    );
+    applyInitiatorBackgrounds(queue, initiatorBackgrounds);
 
     newResponseState = {
       ...newResponseState,
@@ -1067,6 +1138,7 @@
       row: Number(item && item.row),
       date: String(item && item.date || '').trim(),
       initiator: String(item && item.initiator || '').trim(),
+      initiatorBackgroundColor: normalizeSheetBackgroundColor(item && item.initiatorBackgroundColor),
       itilNumber: String(item && item.itilNumber || '').trim(),
       suppValue: String(item && item.suppValue || '').trim(),
       text: String(item && item.text || '').trim(),
@@ -1080,17 +1152,28 @@
     if (!(container instanceof HTMLElement)) return;
 
     const fields = [
-      ['Номер строки', item && item.row ? String(item.row) : '—'],
-      ['Дата заявки', item && item.date ? item.date : '—'],
-      ['Инициатор', item && item.initiator ? item.initiator : '—'],
-      ['Номер ITIL', item && item.itilNumber ? item.itilNumber : '—'],
-      ['Номер СУПП (последний)', item && item.suppValue ? item.suppValue : '—']
+      { key: 'row', label: 'Номер строки', value: item && item.row ? String(item.row) : '—' },
+      { key: 'date', label: 'Дата заявки', value: item && item.date ? item.date : '—' },
+      {
+        key: 'initiator',
+        label: 'Инициатор',
+        value: item && item.initiator ? item.initiator : '—',
+        backgroundColor: normalizeSheetBackgroundColor(item && item.initiatorBackgroundColor)
+      },
+      { key: 'itil', label: 'Номер ITIL', value: item && item.itilNumber ? item.itilNumber : '—' },
+      { key: 'supp', label: 'Номер СУПП (последний)', value: item && item.suppValue ? item.suppValue : '—' }
     ];
 
     container.replaceChildren();
-    fields.forEach(([labelText, valueText]) => {
+    fields.forEach((fieldData) => {
+      const labelText = fieldData.label;
+      const valueText = fieldData.value;
       const field = document.createElement('div');
       field.className = 'gs-request-summary-item';
+      if (fieldData.key === 'initiator' && fieldData.backgroundColor) {
+        field.classList.add('has-sheet-background');
+        field.style.setProperty('--gs-request-summary-sheet-bg', fieldData.backgroundColor);
+      }
 
       const label = document.createElement('div');
       label.className = 'gs-request-summary-label';
@@ -1268,6 +1351,7 @@
       #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-progress{width:fit-content;padding:5px 10px;border-radius:999px;background:#e8f3ee;color:#14532d;font-size:13px;font-weight:700}
       #${MODAL_ID} .gs-request-summary,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary{display:flex;flex-wrap:wrap;align-items:stretch;justify-content:flex-start;gap:8px}
       #${MODAL_ID} .gs-request-summary-item,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-item{flex:0 1 auto;width:max-content;max-width:min(320px,100%);min-width:0;padding:8px 9px 9px;border:1px solid #dbe2ec;border-radius:10px;background:#f7f9fc}
+      #${MODAL_ID} .gs-request-summary-item.has-sheet-background,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-item.has-sheet-background{background:var(--gs-request-summary-sheet-bg,#f7f9fc);border-color:rgba(15,23,42,.16)}
       #${MODAL_ID} .gs-request-summary-header,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-header{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:4px}
       #${MODAL_ID} .gs-request-summary-label,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-label{min-width:0;color:#64748b;font-size:11px;font-weight:700;letter-spacing:.02em;text-transform:uppercase}
       #${MODAL_ID} .gs-request-summary-value,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-value{min-width:0;overflow-wrap:anywhere;color:#172033;font-size:13px;font-weight:600;line-height:1.35}

@@ -34,6 +34,8 @@ function doPost(e) {
       result = _problemPickerBridgeSaveSuppData_(payload);
     } else if (payload.action === 'getNewResponseRows') {
       result = _problemPickerBridgeGetNewResponseRows_(payload);
+    } else if (payload.action === 'getInitiatorBackgrounds') {
+      result = _problemPickerBridgeGetInitiatorBackgrounds_(payload);
     } else if (payload.action === 'saveItilInfoData') {
       result = _problemPickerBridgeSaveItilInfoData_(payload);
     } else if (payload.action === 'saveSuppInfoData') {
@@ -198,6 +200,119 @@ function _problemPickerBridgeGetNewResponseRows_(payload) {
       response: colResp
     },
     rows: rows
+  };
+}
+
+function _problemPickerBridgeGetInitiatorBackgrounds_(payload) {
+  const spreadsheetId = String(payload.spreadsheetId || '').trim();
+
+  if (spreadsheetId !== PROBLEM_PICKER_BRIDGE_SPREADSHEET_ID) {
+    throw new Error('Некорректная таблица: ' + spreadsheetId);
+  }
+
+  const sheetName = String(payload.sheetName || '').trim();
+
+  if (PROBLEM_PICKER_BRIDGE_ALLOWED_SHEETS.indexOf(sheetName) === -1) {
+    throw new Error('Лист не разрешён для чтения форматирования инициатора: ' + sheetName);
+  }
+
+  const rows = _problemPickerBridgeNormalizeRows_(payload.rows || []);
+
+  if (!rows.length) {
+    return {
+      sheetName: sheetName,
+      rows: []
+    };
+  }
+
+  const ss = SpreadsheetApp.openById(PROBLEM_PICKER_BRIDGE_SPREADSHEET_ID);
+  const sh = ss.getSheetByName(sheetName);
+
+  if (!sh) {
+    throw new Error('Лист не найден: ' + sheetName);
+  }
+
+  const colInitiator = _problemPickerBridgeColumn_(payload, 'initiator', sh, 'Инициатор');
+  if (!colInitiator) {
+    throw new Error('Не найдена колонка «Инициатор».');
+  }
+
+  const lastRow = sh.getLastRow();
+  const validRows = rows.filter(function(row) {
+    return row >= 2 && row <= lastRow;
+  });
+
+  if (!validRows.length) {
+    return {
+      sheetName: sheetName,
+      column: colInitiator,
+      rows: []
+    };
+  }
+
+  const minRow = validRows[0];
+  const maxRow = validRows[validRows.length - 1];
+  const rangeA1 = _problemPickerBridgeSheetRangeA1_(
+    sheetName,
+    colInitiator,
+    minRow,
+    maxRow
+  );
+  const fields = 'sheets(data(startRow,rowData(values(effectiveFormat(backgroundColor,backgroundColorStyle)))))';
+  const url =
+    'https://sheets.googleapis.com/v4/spreadsheets/' + encodeURIComponent(PROBLEM_PICKER_BRIDGE_SPREADSHEET_ID) +
+    '?includeGridData=true' +
+    '&ranges=' + encodeURIComponent(rangeA1) +
+    '&fields=' + encodeURIComponent(fields);
+
+  const response = UrlFetchApp.fetch(url, {
+    method: 'get',
+    headers: {
+      Authorization: 'Bearer ' + ScriptApp.getOAuthToken()
+    },
+    muteHttpExceptions: true
+  });
+  const code = response.getResponseCode();
+  const text = response.getContentText();
+
+  if (code < 200 || code >= 300) {
+    throw new Error('Sheets API не вернул форматирование инициатора: HTTP ' + code + ' ' + text.slice(0, 200));
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    throw new Error('Sheets API вернул некорректный JSON форматирования инициатора.');
+  }
+
+  const gridData = parsed &&
+    parsed.sheets &&
+    parsed.sheets[0] &&
+    parsed.sheets[0].data &&
+    parsed.sheets[0].data[0]
+      ? parsed.sheets[0].data[0]
+      : {};
+  const startRowZeroBased = Number.isInteger(Number(gridData.startRow))
+    ? Number(gridData.startRow)
+    : minRow - 1;
+  const rowData = Array.isArray(gridData.rowData) ? gridData.rowData : [];
+
+  return {
+    sheetName: sheetName,
+    column: colInitiator,
+    rows: validRows.map(function(row) {
+      const offset = row - startRowZeroBased - 1;
+      const value = offset >= 0 && rowData[offset] && rowData[offset].values && rowData[offset].values[0]
+        ? rowData[offset].values[0]
+        : {};
+      return {
+        row: row,
+        backgroundColor: _problemPickerBridgeEffectiveBackgroundToCss_(
+          value && value.effectiveFormat ? value.effectiveFormat : null
+        )
+      };
+    })
   };
 }
 
@@ -856,6 +971,35 @@ function _problemPickerBridgeColumnToA1_(column) {
   }
 
   return result;
+}
+
+function _problemPickerBridgeSheetRangeA1_(sheetName, column, startRow, endRow) {
+  const safeSheetName = String(sheetName || '').replace(/'/g, "''");
+  const col = _problemPickerBridgeColumnToA1_(column);
+  return "'" + safeSheetName + "'!" + col + startRow + ':' + col + endRow;
+}
+
+function _problemPickerBridgeEffectiveBackgroundToCss_(effectiveFormat) {
+  if (!effectiveFormat || typeof effectiveFormat !== 'object') return '';
+
+  const styleColor = effectiveFormat.backgroundColorStyle &&
+    effectiveFormat.backgroundColorStyle.rgbColor
+      ? effectiveFormat.backgroundColorStyle.rgbColor
+      : null;
+  return _problemPickerBridgeRgbColorToCss_(styleColor || effectiveFormat.backgroundColor);
+}
+
+function _problemPickerBridgeRgbColorToCss_(color) {
+  if (!color || typeof color !== 'object') return '';
+
+  function component(value) {
+    const number = typeof value === 'number' ? value : 0;
+    const bounded = Math.max(0, Math.min(1, number));
+    const intValue = Math.round(bounded * 255);
+    return ('0' + intValue.toString(16)).slice(-2);
+  }
+
+  return '#' + component(color.red) + component(color.green) + component(color.blue);
 }
 
 function _problemPickerBridgeJson_(payload) {
