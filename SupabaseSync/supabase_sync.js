@@ -19,7 +19,7 @@
   const SUPPORT_REMINDERS_STORAGE_KEY = 'support_reminders_state_v1';
 
   const SESSION_REFRESH_MARGIN_MS = 60 * 1000;
-  const REQUEST_TIMEOUT_MS = 15000;
+  const REQUEST_TIMEOUT_MS = 30000;
   const RETRY_DELAYS_MS = [600, 1500, 3500];
   const FLUSH_DEBOUNCE_MS = 250;
   const REALTIME_WS_URL = `${SUPABASE_URL.replace(/^http/i, 'ws')}/realtime/v1/websocket?apikey=${encodeURIComponent(SUPABASE_PUBLISHABLE_KEY)}&log_level=warning&vsn=1.0.0`;
@@ -64,6 +64,12 @@
     'support_reminder_archive_set',
     'support_reminder_active_delete',
     'support_reminder_archive_delete'
+  ]);
+
+  const LAST_WRITE_WINS_OUTBOX_KEYS = new Set([
+    'dup_execution_analysis_params_v1',
+    'dup_execution_analysis_state_v1',
+    'dup_id_card_check_state_v1'
   ]);
 
   const STRUCTURED_SYNC_KEYS = new Set([
@@ -783,13 +789,31 @@
       operations: filteredOperations
     };
     const nextOutbox = [...outbox, item];
-    await setOutbox(nextOutbox);
-    await setSyncMeta({
-      outboxSize: nextOutbox.length,
+    const compactResult = flushInProgress
+      ? { outbox: nextOutbox, changed: false, beforeCount: nextOutbox.length, afterCount: nextOutbox.length }
+      : compactOutboxItems(nextOutbox);
+    const finalOutbox = compactResult.outbox;
+    await setOutbox(finalOutbox);
+    const meta = {
+      outboxSize: finalOutbox.length,
       lastQueuedAt: new Date().toISOString(),
       lastError: ''
+    };
+    if (compactResult.changed) {
+      meta.lastOutboxCompactAt = new Date().toISOString();
+      meta.lastOutboxCompactReason = reason;
+      meta.lastOutboxCompactBefore = compactResult.beforeCount;
+      meta.lastOutboxCompactAfter = compactResult.afterCount;
+    }
+    await setSyncMeta({
+      ...meta
     });
-    return { queued: true, item, outboxSize: nextOutbox.length };
+    return {
+      queued: true,
+      item,
+      outboxSize: finalOutbox.length,
+      compacted: compactResult.changed === true
+    };
   }
 
   async function claimNextOutboxItemForAttempt() {
@@ -860,6 +884,189 @@
         updated: true,
         outbox: nextOutbox
       };
+    });
+  }
+
+  function isLastWriteWinsOutboxOperation(operation) {
+    if (!operation || typeof operation !== 'object') return false;
+    const type = String(operation.type || '');
+    const key = String(operation.key || '').trim();
+    return ['kv_set', 'kv_delete'].includes(type) && LAST_WRITE_WINS_OUTBOX_KEYS.has(key);
+  }
+
+  function isProcessedEdocidsAddOperation(operation) {
+    if (!operation || typeof operation !== 'object') return false;
+    if (String(operation.type || '') !== 'processed_edocids_add') return false;
+    const dateIso = String(operation.date_iso || '').trim();
+    return !!dateIso && uniqueStrings(operation.edocids).length > 0;
+  }
+
+  function isCompactableOutboxOperation(operation) {
+    return isLastWriteWinsOutboxOperation(operation) || isProcessedEdocidsAddOperation(operation);
+  }
+
+  function makeCompactOutboxBlockItem(block) {
+    const items = toArray(block).filter((item) => item && typeof item === 'object');
+    if (!items.length) return null;
+
+    const snapshotByKey = new Map();
+    const edocidsByDate = new Map();
+    const originalOperations = [];
+    let operationOrder = 0;
+    let maxAttempts = 0;
+    let baseRevision = 0;
+
+    items.forEach((item) => {
+      maxAttempts = Math.max(maxAttempts, Number(item.attempts || 0));
+      const itemBaseRevision = Number(item.baseRevision || 0);
+      if (Number.isFinite(itemBaseRevision)) {
+        baseRevision = Math.max(baseRevision, Math.max(0, Math.trunc(itemBaseRevision)));
+      }
+
+      toArray(item.operations).forEach((operation) => {
+        if (!isCompactableOutboxOperation(operation)) return;
+        const order = operationOrder;
+        operationOrder += 1;
+        originalOperations.push(operation);
+
+        if (isLastWriteWinsOutboxOperation(operation)) {
+          const key = String(operation.key || '').trim();
+          const type = String(operation.type || '');
+          snapshotByKey.set(key, {
+            order,
+            operation: type === 'kv_delete'
+              ? { type: 'kv_delete', key }
+              : { type: 'kv_set', key, value: cloneJson(operation.value) }
+          });
+          return;
+        }
+
+        const dateIso = String(operation.date_iso || '').trim();
+        const dateKey = String(operation.date_key || '').trim() || isoToRuDateKey(dateIso);
+        const mapKey = `${dateIso}\n${dateKey}`;
+        const existing = edocidsByDate.get(mapKey) || {
+          order,
+          dateIso,
+          dateKey,
+          edocids: []
+        };
+
+        uniqueStrings(operation.edocids).forEach((edocid) => {
+          if (!existing.edocids.includes(edocid)) existing.edocids.push(edocid);
+        });
+        edocidsByDate.set(mapKey, existing);
+      });
+    });
+
+    const entries = [];
+    snapshotByKey.forEach((entry) => entries.push(entry));
+    edocidsByDate.forEach((entry) => {
+      if (!entry.edocids.length) return;
+      entries.push({
+        order: entry.order,
+        operation: {
+          type: 'processed_edocids_add',
+          date_iso: entry.dateIso,
+          date_key: entry.dateKey,
+          edocids: entry.edocids
+        }
+      });
+    });
+
+    const operations = entries
+      .sort((left, right) => left.order - right.order)
+      .map((entry) => entry.operation);
+
+    if (!operations.length) return null;
+
+    const originalSignature = JSON.stringify(originalOperations);
+    const compactedSignature = JSON.stringify(operations);
+    if (items.length === 1 && originalSignature === compactedSignature) {
+      return items[0];
+    }
+
+    const lastItem = items[items.length - 1] || {};
+    const deviceId = String(lastItem.deviceId || items[0].deviceId || '').trim();
+    const reason = items
+      .map((item) => String(item.reason || '').trim())
+      .filter(Boolean)
+      .filter((value, index, array) => array.indexOf(value) === index)
+      .slice(0, 3)
+      .join('+') || 'outbox-compact';
+
+    return {
+      ...lastItem,
+      mutationId: makeMutationId(deviceId || 'device:compact'),
+      deviceId: deviceId || lastItem.deviceId || items[0].deviceId || '',
+      baseRevision,
+      attempts: maxAttempts,
+      lastError: '',
+      reason,
+      compactedAt: new Date().toISOString(),
+      compactedItemsCount: items.length,
+      compactedOperationsCount: originalOperations.length,
+      operations
+    };
+  }
+
+  function compactOutboxItems(outbox) {
+    const source = toArray(outbox).filter((item) => item && typeof item === 'object');
+    const nextOutbox = [];
+    let block = [];
+    let compactedItemsCount = 0;
+    let compactedOperationsCount = 0;
+
+    function flushBlock() {
+      if (!block.length) return;
+      const item = makeCompactOutboxBlockItem(block);
+      if (item) nextOutbox.push(item);
+      if (block.length > 1 || item !== block[0]) {
+        compactedItemsCount += block.length;
+        compactedOperationsCount += block.reduce((sum, blockItem) => sum + toArray(blockItem.operations).length, 0);
+      }
+      block = [];
+    }
+
+    source.forEach((item) => {
+      const operations = toArray(item.operations).filter((operation) => operation && typeof operation === 'object');
+      if (operations.length && operations.every(isCompactableOutboxOperation)) {
+        block.push(item);
+        return;
+      }
+
+      flushBlock();
+      nextOutbox.push(item);
+    });
+
+    flushBlock();
+
+    const changed = nextOutbox.length !== source.length ||
+      nextOutbox.some((item, index) => item !== source[index]);
+
+    return {
+      outbox: changed ? nextOutbox : outbox,
+      changed,
+      beforeCount: source.length,
+      afterCount: nextOutbox.length,
+      compactedItemsCount,
+      compactedOperationsCount
+    };
+  }
+
+  async function compactOutboxLocked(reason = 'manual') {
+    return updateOutboxLocked(async (outbox) => {
+      const result = compactOutboxItems(outbox);
+      if (!result.changed) return { ...result, outbox };
+
+      await setSyncMeta({
+        outboxSize: result.outbox.length,
+        lastOutboxCompactAt: new Date().toISOString(),
+        lastOutboxCompactReason: reason,
+        lastOutboxCompactBefore: result.beforeCount,
+        lastOutboxCompactAfter: result.afterCount
+      });
+
+      return result;
     });
   }
 
@@ -1344,6 +1551,16 @@
       await ensureSession();
       await registerDevice();
       setSyncFlowStep('prepare', 'done');
+
+      const compactResult = await compactOutboxLocked(reason);
+      if (compactResult.changed) {
+        setSyncFlowStep(
+          'request',
+          'active',
+          `Очередь сжата: ${compactResult.beforeCount} -> ${compactResult.afterCount}`
+        );
+        await broadcastStatus(`Очередь изменений сжата: ${compactResult.beforeCount} -> ${compactResult.afterCount}.`);
+      }
 
       while (true) {
         const claim = await claimNextOutboxItemForAttempt();
@@ -2559,7 +2776,13 @@
     try {
       if (action === 'DUP_SUPABASE_GET_STATUS') {
         void ensureBackgroundSyncActive('status');
-        void pullCanonicalState('panel-open');
+        void getOutbox().then((outbox) => {
+          if (outbox.length) {
+            void flushOutbox('panel-open');
+          } else {
+            void pullCanonicalState('panel-open');
+          }
+        });
         return { success: true, status: await getPublicStatus() };
       }
       if (action === 'DUP_SUPABASE_SIGN_IN') return { success: true, status: await signIn(data.email, data.password) };
