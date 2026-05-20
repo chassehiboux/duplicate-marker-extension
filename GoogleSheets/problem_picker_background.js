@@ -758,14 +758,36 @@
     return activateTabForInteractiveAutomation(created, SUPP_URL, 'СУПП');
   }
 
-  async function createChatGptTemporaryTab() {
-    const created = await tabsCreate({ url: CHATGPT_TEMPORARY_URL, active: false });
+  async function createChatGptTemporaryTab(sourceTabId, sourceWindowId) {
+    const sourceTab = Number.isInteger(sourceTabId)
+      ? await tabsGet(sourceTabId).catch(() => null)
+      : null;
+    const createProperties = {
+      url: CHATGPT_TEMPORARY_URL,
+      active: true
+    };
+
+    if (sourceTab && Number.isInteger(sourceTab.windowId)) {
+      createProperties.windowId = sourceTab.windowId;
+    } else if (Number.isInteger(sourceWindowId)) {
+      createProperties.windowId = sourceWindowId;
+    }
+
+    if (sourceTab && Number.isInteger(sourceTab.index)) {
+      createProperties.index = sourceTab.index + 1;
+    }
+
+    if (sourceTab && Number.isInteger(sourceTab.id)) {
+      createProperties.openerTabId = sourceTab.id;
+    }
+
+    const created = await tabsCreate(createProperties);
     if (!created || !Number.isInteger(created.id)) {
       throw new Error('Не удалось открыть временный чат ChatGPT.');
     }
 
-    await waitForTabReady(created.id, CHATGPT_URL_PREFIX);
-    return created;
+    await tabsUpdate(created.id, { autoDiscardable: false }).catch(() => null);
+    return activateTabForInteractiveAutomation(created, CHATGPT_URL_PREFIX, 'ChatGPT');
   }
 
   async function activateChatGptTab(tabId) {
@@ -779,16 +801,46 @@
     return activateTabForInteractiveAutomation(tab, CHATGPT_URL_PREFIX, 'ChatGPT');
   }
 
-  async function closeChatGptTab(tabId) {
-    if (!Number.isInteger(tabId)) throw new Error('Не передан tabId вкладки ChatGPT.');
+  async function restoreSourceTabAfterChatGptSearch(sourceTabId, sourceWindowId) {
+    if (Number.isInteger(sourceTabId)) {
+      const sourceTab = await tabsGet(sourceTabId).catch(() => null);
+      if (sourceTab) {
+        if (Number.isInteger(sourceTab.windowId)) {
+          await windowsUpdate(sourceTab.windowId, { focused: true }).catch(() => null);
+        }
 
-    const tab = await tabsGet(tabId);
-    if (!tab || !String(tab.url || '').startsWith(CHATGPT_URL_PREFIX)) {
-      throw new Error('Вкладка ChatGPT больше недоступна.');
+        const activatedTab = await tabsUpdate(sourceTabId, { active: true }).catch(() => null);
+
+        if (activatedTab && Number.isInteger(activatedTab.windowId)) {
+          await windowsUpdate(activatedTab.windowId, { focused: true }).catch(() => null);
+        }
+        return activatedTab || sourceTab;
+      }
     }
 
-    await tabsRemove(tabId);
-    return { tabId };
+    if (Number.isInteger(sourceWindowId)) {
+      await windowsUpdate(sourceWindowId, { focused: true }).catch(() => null);
+    }
+
+    return null;
+  }
+
+  async function closeChatGptTab(tabId, sourceTabId, sourceWindowId) {
+    if (!Number.isInteger(tabId)) throw new Error('Не передан tabId вкладки ChatGPT.');
+
+    const tab = await tabsGet(tabId).catch(() => null);
+    if (tab && String(tab.url || '').startsWith(CHATGPT_URL_PREFIX)) {
+      await tabsRemove(tabId);
+    } else if (tab) {
+      await tabsRemove(tabId).catch(() => null);
+    }
+
+    await restoreSourceTabAfterChatGptSearch(sourceTabId, sourceWindowId);
+    return {
+      tabId,
+      sourceTabId: Number.isInteger(sourceTabId) ? sourceTabId : null,
+      sourceWindowId: Number.isInteger(sourceWindowId) ? sourceWindowId : null
+    };
   }
 
   function sendChatGptProgress(targetTabId, statusText) {
@@ -806,7 +858,7 @@
     }
   }
 
-  async function runChatGptSearch(data, progressTabId) {
+  async function runChatGptSearch(data, progressTabId, sourceTabId, sourceWindowId) {
     const payload = data && data.payload ? data.payload : {};
     const fileName = String(payload.fileName || '').trim();
     const csvText = String(payload.csvText || '');
@@ -816,30 +868,48 @@
     if (!csvText) throw new Error('CSV-файл для ChatGPT пустой.');
     if (!promptText) throw new Error('Не передан текст запроса для ChatGPT.');
 
-    const tab = await createChatGptTemporaryTab();
-    sendChatGptProgress(progressTabId, 'Временный чат ChatGPT открыт. Прикрепляю CSV и готовлю сообщение...');
+    let tab = null;
 
-    const sendResult = await executeInTab(tab.id, prepareAndSendChatGptSearchInPage, [{
-      fileName,
-      csvText,
-      promptText
-    }]);
+    try {
+      tab = await createChatGptTemporaryTab(sourceTabId, sourceWindowId);
+      sendChatGptProgress(progressTabId, 'Вкладка ChatGPT открыта. Прикрепляю CSV и готовлю сообщение...');
 
-    if (!sendResult || sendResult.success === false) {
-      throw new Error(sendResult && sendResult.error ? sendResult.error : 'Не удалось отправить запрос в ChatGPT.');
+      const sendResult = await executeInTab(tab.id, prepareAndSendChatGptSearchInPage, [{
+        fileName,
+        csvText,
+        promptText
+      }]);
+
+      if (!sendResult || sendResult.success === false) {
+        throw new Error(sendResult && sendResult.error ? sendResult.error : 'Не удалось отправить запрос в ChatGPT.');
+      }
+
+      sendChatGptProgress(progressTabId, 'ChatGPT принял сообщение. Жду завершения ответа...');
+
+      const answerResult = await executeInTab(tab.id, waitForChatGptAnswerInPage, []);
+      if (!answerResult || answerResult.success === false) {
+        throw new Error(answerResult && answerResult.error ? answerResult.error : 'Не удалось получить ответ ChatGPT.');
+      }
+
+      sendChatGptProgress(progressTabId, 'Ответ ChatGPT получен. Закрываю вкладку и возвращаюсь к таблице...');
+
+      if (Number.isInteger(tab && tab.id)) {
+        await closeChatGptTab(tab.id, sourceTabId, sourceWindowId);
+      }
+
+      return answerResult;
+    } catch (error) {
+      if (Number.isInteger(tab && tab.id)) {
+        try {
+          await closeChatGptTab(tab.id, sourceTabId, sourceWindowId);
+        } catch (closeError) {
+          // Ошибка закрытия не должна скрывать первичную причину падения.
+        }
+      } else {
+        await restoreSourceTabAfterChatGptSearch(sourceTabId, sourceWindowId).catch(() => null);
+      }
+      throw error;
     }
-
-    sendChatGptProgress(progressTabId, 'ChatGPT принял сообщение. Жду завершения ответа...');
-
-    const answerResult = await executeInTab(tab.id, waitForChatGptAnswerInPage, []);
-    if (!answerResult || answerResult.success === false) {
-      throw new Error(answerResult && answerResult.error ? answerResult.error : 'Не удалось получить ответ ChatGPT.');
-    }
-
-    return {
-      ...answerResult,
-      tabId: tab.id
-    };
   }
 
   async function runItilFillRow(data) {
@@ -2257,11 +2327,20 @@
           const progressTabId = sender && sender.tab && Number.isInteger(sender.tab.id)
             ? sender.tab.id
             : null;
-          result = await runChatGptSearch(data, progressTabId);
+          result = await runChatGptSearch(
+            data,
+            progressTabId,
+            sender && sender.tab && Number.isInteger(sender.tab.id) ? sender.tab.id : null,
+            sender && sender.tab && Number.isInteger(sender.tab.windowId) ? sender.tab.windowId : null
+          );
         } else if (request.action === CHATGPT_OPEN_TAB_ACTION) {
           result = await activateChatGptTab(Number(data.tabId));
         } else {
-          result = await closeChatGptTab(Number(data.tabId));
+          result = await closeChatGptTab(
+            Number(data.tabId),
+            Number.isInteger(data.sourceTabId) ? data.sourceTabId : null,
+            Number.isInteger(data.sourceWindowId) ? data.sourceWindowId : null
+          );
         }
         sendResponse({ success: true, result });
       } catch (error) {

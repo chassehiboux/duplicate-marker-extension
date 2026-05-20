@@ -1957,7 +1957,7 @@ function handleMenuEscape(event) {
 
       const csv = await loadChatGptSearchCsv();
       chatGptSearchState.compactRowsCount = csv.rowsCount;
-      chatGptSearchState.statusText = 'В фоне открываю временный чат ChatGPT и готовлю отправку...';
+      chatGptSearchState.statusText = 'Открываю вкладку ChatGPT и готовлю отправку...';
       renderChatGptSearchModal();
 
       const response = await sendRuntimeMessage({
@@ -2013,7 +2013,7 @@ function handleMenuEscape(event) {
       chatGptSearchState = {
         ...chatGptSearchState,
         foundCount: resultTable.rows.length,
-        chatTabId: Number.isInteger(result.tabId) ? result.tabId : null,
+        chatTabId: null,
         statusText: resultTable.rows.length
           ? `Найдено заявок: ${resultTable.rows.length}. Результат записан на лист «${CHATGPT_RESULT_SHEET_NAME}».`
           : `Подходящие заявки не найдены. Лист «${CHATGPT_RESULT_SHEET_NAME}» очищен.`,
@@ -2027,15 +2027,6 @@ function handleMenuEscape(event) {
         activateSheetTabByName(CHATGPT_RESULT_SHEET_NAME);
       }
 
-      if (Number.isInteger(chatGptSearchState.chatTabId)) {
-        await sendRuntimeMessage({
-          action: CHATGPT_CLOSE_TAB_ACTION,
-          data: {
-            tabId: chatGptSearchState.chatTabId
-          }
-        });
-        chatGptSearchState.chatTabId = null;
-      }
     } catch (error) {
       chatGptSearchState = {
         ...chatGptSearchState,
