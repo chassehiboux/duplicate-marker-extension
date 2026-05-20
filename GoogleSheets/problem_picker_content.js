@@ -917,7 +917,9 @@
 
   function normalizeSheetBackgroundColor(value) {
     const color = String(value || '').trim();
-    return /^#[0-9a-f]{6}$/i.test(color) ? color.toLowerCase() : '';
+    if (!/^#[0-9a-f]{6}$/i.test(color)) return '';
+    const normalized = color.toLowerCase();
+    return normalized === '#ffffff' ? '' : normalized;
   }
 
   async function loadInitiatorBackgrounds(sheetName, rows, initiatorColumn) {
@@ -1291,11 +1293,18 @@
       if (block && block.isNew) {
         element.classList.add('is-new');
       } else {
-        element.classList.add('is-old');
+        element.classList.add('is-default');
       }
       element.textContent = block && block.text ? block.text : '';
       container.appendChild(element);
     });
+  }
+
+  function buildDefaultInfoBlocks(value) {
+    return splitInfoBlocks(value).map((text) => ({
+      text,
+      isNew: false
+    }));
   }
 
   function ensureStyle() {
@@ -1371,9 +1380,9 @@
       #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-problem-picker-text{height:100%;max-height:100%;min-height:0;box-sizing:border-box;overflow:auto;white-space:pre-wrap;border:1px solid #d7dce6;border-left:6px solid #2d6cdf;border-radius:8px;background:#fff;padding:14px;color:#1f2937;font-size:15px;line-height:1.55}
       #${MODAL_ID} .gs-problem-picker-info{border-left-color:#2e7d32}
       #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-problem-picker-info{border-left-color:#2e7d32}
-      #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-info-block + .gs-info-block{margin-top:12px}
-      #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-info-block.is-old{padding:10px 12px;border-radius:12px;background:rgba(148,163,184,.13);box-shadow:inset 0 0 0 1px rgba(148,163,184,.15)}
-      #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-info-block.is-new{padding:10px 12px;border-radius:12px;background:rgba(34,197,94,.16);box-shadow:inset 0 0 0 1px rgba(22,163,74,.16)}
+      #${MODAL_ID} .gs-info-block + .gs-info-block,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-info-block + .gs-info-block{margin-top:12px}
+      #${MODAL_ID} .gs-info-block.is-default,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-info-block.is-default{padding:10px 12px;border-radius:12px;background:rgba(148,163,184,.13);box-shadow:inset 0 0 0 1px rgba(148,163,184,.15)}
+      #${MODAL_ID} .gs-info-block.is-new,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-info-block.is-new{padding:10px 12px;border-radius:12px;background:rgba(34,197,94,.16);box-shadow:inset 0 0 0 1px rgba(22,163,74,.16)}
       #${MODAL_ID} .gs-problem-picker-footer{align-items:center;border-top:1px solid #e3e8f0;padding-top:14px}
       #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-footer{align-items:center;border-top:1px solid #e3e8f0;padding-top:14px}
       #${MODAL_ID} .gs-problem-picker-buttons{display:flex;flex-shrink:0;gap:10px}
@@ -2180,7 +2189,7 @@ function handleMenuEscape(event) {
       if (textLabel instanceof HTMLElement) textLabel.textContent = `Текст заявки (строка ${item.row}):`;
       if (text instanceof HTMLElement) text.textContent = item.text || '';
       if (infoLabel instanceof HTMLElement) infoLabel.textContent = 'Информация из СУПП/ITIL:';
-      if (info instanceof HTMLElement) info.textContent = item.info || '';
+      if (info instanceof HTMLElement) renderInfoBlocks(info, buildDefaultInfoBlocks(item.info));
       categoryButtons.forEach((button) => {
         button.disabled = !state.bridgeUrl;
         button.title = state.bridgeUrl ? '' : 'Нажми F2, затем «URL bridge» и задай Apps Script bridge.';

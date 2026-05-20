@@ -252,6 +252,31 @@ function _problemPickerBridgeGetInitiatorBackgrounds_(payload) {
 
   const minRow = validRows[0];
   const maxRow = validRows[validRows.length - 1];
+  const fallbackBackgrounds = _problemPickerBridgeReadRangeBackgroundsByRow_(
+    sh,
+    colInitiator,
+    minRow,
+    maxRow
+  );
+  const hasFallbackBackground = validRows.some(function(row) {
+    const color = _problemPickerBridgeNormalizeCssColor_(fallbackBackgrounds[row]);
+    return color && color !== '#ffffff';
+  });
+
+  if (hasFallbackBackground) {
+    return {
+      sheetName: sheetName,
+      column: colInitiator,
+      rows: validRows.map(function(row) {
+        return {
+          row: row,
+          backgroundColor: _problemPickerBridgeChooseBackgroundColor_('', fallbackBackgrounds[row])
+        };
+      }),
+      source: 'rangeBackgrounds'
+    };
+  }
+
   const rangeA1 = _problemPickerBridgeSheetRangeA1_(
     sheetName,
     colInitiator,
@@ -265,55 +290,73 @@ function _problemPickerBridgeGetInitiatorBackgrounds_(payload) {
     '&ranges=' + encodeURIComponent(rangeA1) +
     '&fields=' + encodeURIComponent(fields);
 
-  const response = UrlFetchApp.fetch(url, {
-    method: 'get',
-    headers: {
-      Authorization: 'Bearer ' + ScriptApp.getOAuthToken()
-    },
-    muteHttpExceptions: true
-  });
-  const code = response.getResponseCode();
-  const text = response.getContentText();
-
-  if (code < 200 || code >= 300) {
-    throw new Error('Sheets API не вернул форматирование инициатора: HTTP ' + code + ' ' + text.slice(0, 200));
-  }
-
-  let parsed;
   try {
-    parsed = JSON.parse(text);
-  } catch (error) {
-    throw new Error('Sheets API вернул некорректный JSON форматирования инициатора.');
-  }
+    const response = UrlFetchApp.fetch(url, {
+      method: 'get',
+      headers: {
+        Authorization: 'Bearer ' + ScriptApp.getOAuthToken()
+      },
+      muteHttpExceptions: true
+    });
+    const code = response.getResponseCode();
+    const text = response.getContentText();
 
-  const gridData = parsed &&
-    parsed.sheets &&
-    parsed.sheets[0] &&
-    parsed.sheets[0].data &&
-    parsed.sheets[0].data[0]
-      ? parsed.sheets[0].data[0]
-      : {};
-  const startRowZeroBased = Number.isInteger(Number(gridData.startRow))
-    ? Number(gridData.startRow)
-    : minRow - 1;
-  const rowData = Array.isArray(gridData.rowData) ? gridData.rowData : [];
+    if (code < 200 || code >= 300) {
+      throw new Error('Sheets API не вернул форматирование инициатора: HTTP ' + code + ' ' + text.slice(0, 200));
+    }
 
-  return {
-    sheetName: sheetName,
-    column: colInitiator,
-    rows: validRows.map(function(row) {
-      const offset = row - startRowZeroBased - 1;
-      const value = offset >= 0 && rowData[offset] && rowData[offset].values && rowData[offset].values[0]
-        ? rowData[offset].values[0]
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch (error) {
+      throw new Error('Sheets API вернул некорректный JSON форматирования инициатора.');
+    }
+
+    const gridData = parsed &&
+      parsed.sheets &&
+      parsed.sheets[0] &&
+      parsed.sheets[0].data &&
+      parsed.sheets[0].data[0]
+        ? parsed.sheets[0].data[0]
         : {};
-      return {
-        row: row,
-        backgroundColor: _problemPickerBridgeEffectiveBackgroundToCss_(
+    const startRowZeroBased = Number.isInteger(Number(gridData.startRow))
+      ? Number(gridData.startRow)
+      : minRow - 1;
+    const rowData = Array.isArray(gridData.rowData) ? gridData.rowData : [];
+
+    return {
+      sheetName: sheetName,
+      column: colInitiator,
+      rows: validRows.map(function(row) {
+        const offset = row - startRowZeroBased - 1;
+        const value = offset >= 0 && rowData[offset] && rowData[offset].values && rowData[offset].values[0]
+          ? rowData[offset].values[0]
+          : {};
+        const effectiveBackground = _problemPickerBridgeEffectiveBackgroundToCss_(
           value && value.effectiveFormat ? value.effectiveFormat : null
-        )
-      };
-    })
-  };
+        );
+        return {
+          row: row,
+          backgroundColor: _problemPickerBridgeChooseBackgroundColor_(
+            effectiveBackground,
+            fallbackBackgrounds[row]
+          )
+        };
+      })
+    };
+  } catch (error) {
+    return {
+      sheetName: sheetName,
+      column: colInitiator,
+      rows: validRows.map(function(row) {
+        return {
+          row: row,
+          backgroundColor: _problemPickerBridgeChooseBackgroundColor_('', fallbackBackgrounds[row])
+        };
+      }),
+      fallback: true
+    };
+  }
 }
 
 function _problemPickerBridgeSaveProblem_(payload) {
@@ -977,6 +1020,34 @@ function _problemPickerBridgeSheetRangeA1_(sheetName, column, startRow, endRow) 
   const safeSheetName = String(sheetName || '').replace(/'/g, "''");
   const col = _problemPickerBridgeColumnToA1_(column);
   return "'" + safeSheetName + "'!" + col + startRow + ':' + col + endRow;
+}
+
+function _problemPickerBridgeReadRangeBackgroundsByRow_(sh, column, startRow, endRow) {
+  const rowCount = Math.max(0, Number(endRow) - Number(startRow) + 1);
+  if (!sh || !column || rowCount <= 0) return {};
+
+  const backgrounds = sh.getRange(startRow, column, rowCount, 1).getBackgrounds();
+  const result = {};
+
+  for (let index = 0; index < rowCount; index++) {
+    result[startRow + index] = _problemPickerBridgeNormalizeCssColor_(backgrounds[index] && backgrounds[index][0]);
+  }
+
+  return result;
+}
+
+function _problemPickerBridgeNormalizeCssColor_(value) {
+  const color = String(value || '').trim().toLowerCase();
+  return /^#[0-9a-f]{6}$/.test(color) ? color : '';
+}
+
+function _problemPickerBridgeChooseBackgroundColor_(primary, fallback) {
+  const primaryColor = _problemPickerBridgeNormalizeCssColor_(primary);
+  const fallbackColor = _problemPickerBridgeNormalizeCssColor_(fallback);
+
+  if (primaryColor && primaryColor !== '#ffffff') return primaryColor;
+  if (fallbackColor && fallbackColor !== '#ffffff') return fallbackColor;
+  return primaryColor || fallbackColor || '';
 }
 
 function _problemPickerBridgeEffectiveBackgroundToCss_(effectiveFormat) {
