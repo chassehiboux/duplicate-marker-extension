@@ -743,6 +743,132 @@ function normalizeIncidentType_(rawType) {
   return "GRID";
 }
 
+function cutIncidentTextAtFirstMarker_(text, markers) {
+  var source = String(text || "");
+  var lower = source.toLowerCase();
+  var cutIndex = -1;
+  (markers || []).forEach(function(marker) {
+    var normalizedMarker = String(marker || "").toLowerCase();
+    if (!normalizedMarker) return;
+    var idx = lower.indexOf(normalizedMarker);
+    if (idx >= 0 && (cutIndex < 0 || idx < cutIndex)) {
+      cutIndex = idx;
+    }
+  });
+  return cutIndex >= 0 ? source.slice(0, cutIndex).trim() : source.trim();
+}
+
+function replaceDynamicIncidentFragments_(text) {
+  return normalizeIncidentValue_(text)
+    .replace(/\b(?=[A-Za-z0-9_-]{16,}\b)(?=[A-Za-z0-9_-]*\d)(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]+\b/g, "<token>")
+    .replace(/\b[a-f0-9]{24,}\b/ig, "<hash>")
+    .replace(/(['"])[^'"\s]{16,}\1/g, "$1<token>$1")
+    .replace(/\b\d{8,}\b/g, "<num>")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildGridIncidentErrorInfo_(text) {
+  var normalized = normalizeIncidentValue_(text);
+  if (!normalized) {
+    return { key: "grid|ошибка", title: "Ошибка" };
+  }
+
+  if (/parsererror:\s*syntaxerror:\s*unexpected token/i.test(normalized)) {
+    return {
+      key: "grid|parsererror: syntaxerror: unexpected token",
+      title: "parsererror: SyntaxError: Unexpected token"
+    };
+  }
+
+  if (/out of memory/i.test(normalized)) {
+    return { key: "grid|out of memory", title: "Out of memory" };
+  }
+
+  var sqlStateMatch = normalized.match(/sqlstate\[[^\]]+\]/i);
+  if (sqlStateMatch) {
+    return {
+      key: "grid|" + sqlStateMatch[0].toLowerCase(),
+      title: sqlStateMatch[0]
+    };
+  }
+
+  if (/internal server error/i.test(normalized)) {
+    return { key: "grid|internal server error", title: "Internal Server Error" };
+  }
+
+  var cleaned = cutIncidentTextAtFirstMarker_(normalized, [
+    " <meta ",
+    " <script",
+    " <link ",
+    " <style",
+    " <div ",
+    " <form ",
+    " <title>",
+    " пк пирамида ",
+    " window.laravel",
+    "$(\"#menu-toggle\")",
+    "$(",
+    " trace:",
+    " stack:",
+    " file:",
+    " line:",
+    "[object object]",
+    "<!doctype",
+    "<html",
+    "<script"
+  ]);
+  cleaned = cleaned.replace(/,\s*["'].*$/, "");
+  cleaned = replaceDynamicIncidentFragments_(cleaned || normalized);
+  cleaned = truncateIncidentText_(cleaned, 120) || "Ошибка";
+
+  return {
+    key: "grid|" + cleaned.toLowerCase(),
+    title: cleaned
+  };
+}
+
+function buildEpguIncidentErrorInfo_(text) {
+  var normalized = normalizeIncidentValue_(text);
+  if (!normalized) {
+    return { key: "epgu|ошибка", title: "Ошибка" };
+  }
+
+  var cleaned = normalized.replace(/^Ошибка:\s*/i, "");
+  cleaned = cutIncidentTextAtFirstMarker_(cleaned, [
+    " trace:",
+    " stack:",
+    " window.laravel",
+    "[object object]"
+  ]);
+
+  var codeMatch = cleaned.match(/^([A-Za-z0-9_.-]+)/);
+  if (codeMatch) {
+    return {
+      key: "epgu|" + codeMatch[1].toLowerCase(),
+      title: "Ошибка: " + codeMatch[1]
+    };
+  }
+
+  cleaned = cleaned.split(/[;(]/)[0] || cleaned;
+  cleaned = replaceDynamicIncidentFragments_(cleaned);
+  cleaned = truncateIncidentText_(cleaned, 120) || "Ошибка";
+
+  return {
+    key: "epgu|" + cleaned.toLowerCase(),
+    title: "Ошибка: " + cleaned
+  };
+}
+
+function buildIncidentErrorInfo_(type, fullText, summaryText) {
+  var incidentType = normalizeIncidentType_(type);
+  var sourceText = normalizeIncidentValue_(fullText || summaryText);
+  if (incidentType === "EPGU") {
+    return buildEpguIncidentErrorInfo_(sourceText);
+  }
+  return buildGridIncidentErrorInfo_(sourceText);
+}
+
 function getIncidentIntervalInfo_(eventDate) {
   var date = eventDate instanceof Date && !isNaN(eventDate.getTime()) ? eventDate : new Date();
   var hhmm = Utilities.formatDate(date, INCIDENT_TIMEZONE, "HH:mm");
@@ -778,6 +904,7 @@ function buildIncidentIntervalKey_(intervalInfo) {
 
 function buildIncidentSignature_(incident) {
   var type = normalizeIncidentType_(incident.type);
+  var errorInfo = buildIncidentErrorInfo_(type, incident.fullText, incident.summaryText);
   var parts;
   if (type === "EPGU") {
     parts = [
@@ -786,7 +913,7 @@ function buildIncidentSignature_(incident) {
       incident.user,
       incident.edocId,
       incident.epguSentAt,
-      incident.fullText
+      errorInfo.key
     ];
   } else {
     parts = [
@@ -794,7 +921,7 @@ function buildIncidentSignature_(incident) {
       incident.department,
       incident.user,
       incident.pageUrl,
-      incident.fullText
+      errorInfo.key
     ];
   }
 
@@ -937,7 +1064,7 @@ function handleIncidentRequest(p) {
 }
 
 function getIncidentRowModel_(row, sheetName) {
-  return {
+  var model = {
     firstSeen: parseIncomingTimestamp(row[INCIDENT_IDX_FIRST_SEEN]),
     lastSeen: parseIncomingTimestamp(row[INCIDENT_IDX_LAST_SEEN]),
     intervalKey: String(row[INCIDENT_IDX_INTERVAL_KEY] || ""),
@@ -956,6 +1083,10 @@ function getIncidentRowModel_(row, sheetName) {
     signature: normalizeIncidentValue_(row[INCIDENT_IDX_SIGNATURE]),
     repeatCount: Math.max(1, Number(row[INCIDENT_IDX_REPEAT_COUNT] || 1))
   };
+  var errorInfo = buildIncidentErrorInfo_(model.type, model.fullText, model.summaryText);
+  model.errorKey = errorInfo.key;
+  model.errorTitle = errorInfo.title;
+  return model;
 }
 
 function getActiveIncidentChatIds_(sheet) {
@@ -1031,8 +1162,7 @@ function formatIncidentBaseExampleLine_(baseName, row, type) {
     return safeBase + ": " + safeUser + " • " + safeDepartment + " • " + tgEscape_(edocText);
   }
 
-  var summary = row.summaryText || row.fullText || "Ошибка";
-  return safeBase + ": " + safeUser + " • " + safeDepartment + " • " + tgEscape_(truncateIncidentText_(summary, 90));
+  return safeBase + ": " + safeUser + " • " + safeDepartment;
 }
 
 function buildIncidentSummarySection_(label, type, rows, statsByType) {
@@ -1054,24 +1184,58 @@ function buildIncidentSummarySection_(label, type, rows, statsByType) {
     return lines.join("\n");
   }
 
-  var latestByBase = {};
+  var groupsByError = {};
   typeRows.forEach(function(row) {
-    var key = row.base || "Неизвестная";
-    if (!latestByBase[key]) {
-      latestByBase[key] = row;
-      return;
+    var errorKey = row.errorKey || (type + "|ошибка");
+    if (!groupsByError[errorKey]) {
+      groupsByError[errorKey] = {
+        title: row.errorTitle || "Ошибка",
+        rows: []
+      };
     }
-    var previousTime = latestByBase[key].lastSeen instanceof Date ? latestByBase[key].lastSeen.getTime() : 0;
-    var currentTime = row.lastSeen instanceof Date ? row.lastSeen.getTime() : 0;
-    if (currentTime >= previousTime) {
-      latestByBase[key] = row;
-    }
+    groupsByError[errorKey].rows.push(row);
   });
 
-  Object.keys(latestByBase)
-    .sort(function(a, b) { return String(a).localeCompare(String(b), "ru"); })
-    .forEach(function(baseName) {
-      lines.push(formatIncidentBaseExampleLine_(baseName, latestByBase[baseName], type));
+  Object.keys(groupsByError)
+    .map(function(errorKey) {
+      var group = groupsByError[errorKey];
+      var latestTs = 0;
+      group.rows.forEach(function(row) {
+        var rowTs = row.lastSeen instanceof Date ? row.lastSeen.getTime() : 0;
+        if (rowTs >= latestTs) latestTs = rowTs;
+      });
+      return {
+        key: errorKey,
+        title: group.title,
+        rows: group.rows,
+        latestTs: latestTs
+      };
+    })
+    .sort(function(a, b) {
+      return b.latestTs - a.latestTs || String(a.title).localeCompare(String(b.title), "ru");
+    })
+    .forEach(function(group) {
+      lines.push("• " + tgEscape_(group.title));
+
+      var latestByBase = {};
+      group.rows.forEach(function(row) {
+        var baseKey = row.base || "Неизвестная";
+        if (!latestByBase[baseKey]) {
+          latestByBase[baseKey] = row;
+          return;
+        }
+        var previousTime = latestByBase[baseKey].lastSeen instanceof Date ? latestByBase[baseKey].lastSeen.getTime() : 0;
+        var currentTime = row.lastSeen instanceof Date ? row.lastSeen.getTime() : 0;
+        if (currentTime >= previousTime) {
+          latestByBase[baseKey] = row;
+        }
+      });
+
+      Object.keys(latestByBase)
+        .sort(function(a, b) { return String(a).localeCompare(String(b), "ru"); })
+        .forEach(function(baseName) {
+          lines.push("  " + formatIncidentBaseExampleLine_(baseName, latestByBase[baseName], type));
+        });
     });
 
   return lines.join("\n");
