@@ -9,6 +9,64 @@ const WAITING_ROW_CLEANUP_SEC = 300; // Удаляем "зависшие" ОЖИ
 const MAX_WAITING_DURATION_SEC = 2 * 60 * 60; // Жесткий лимит для ОЖИДАНИЕ: 2 часа
 const ALERT_RECOVERY_HOLD_SEC = 180; // После последнего ALERT держим статус ALERT еще 3 минуты
 const ALERT_OK_CONFIRM_CYCLES = 2; // Дополнительно требуем 2 спокойных цикла monitorPerformance перед OK
+const INCIDENT_TIMEZONE = "Asia/Yekaterinburg";
+const INCIDENT_SHEET_PREFIX = "Ошибки_";
+const INCIDENT_EVENT_LOG_SHEET = "Инциденты_Лог";
+const INCIDENT_DYNAMIC_WINDOW_MINUTES = 30;
+const INCIDENT_CHAT_CONFIG_RANGE = "A4:F100";
+const INCIDENT_SUMMARY_MESSAGE_KEY_PREFIX = "incident_summary_message_id|";
+const INCIDENT_WORK_INTERVALS = [
+  { key: "morning", label: "08:00-12:30", start: "08:00", end: "12:30" },
+  { key: "day", label: "12:30-17:00", start: "12:30", end: "17:00" }
+];
+const INCIDENT_HEADERS = [
+  "Первое появление",
+  "Последнее появление",
+  "Ключ интервала",
+  "Тип",
+  "База",
+  "Департамент",
+  "Пользователь",
+  "EDocID",
+  "DebtID",
+  "URL",
+  "Контекст",
+  "Дата запроса ЕПГУ",
+  "Тип запроса ЕПГУ",
+  "Краткий текст",
+  "Полный текст",
+  "Сигнатура",
+  "Повторы"
+];
+const INCIDENT_IDX_FIRST_SEEN = 0;
+const INCIDENT_IDX_LAST_SEEN = 1;
+const INCIDENT_IDX_INTERVAL_KEY = 2;
+const INCIDENT_IDX_TYPE = 3;
+const INCIDENT_IDX_BASE = 4;
+const INCIDENT_IDX_DEPARTMENT = 5;
+const INCIDENT_IDX_USER = 6;
+const INCIDENT_IDX_EDOCID = 7;
+const INCIDENT_IDX_DEBTID = 8;
+const INCIDENT_IDX_URL = 9;
+const INCIDENT_IDX_CONTEXT = 10;
+const INCIDENT_IDX_EPGU_SENT_AT = 11;
+const INCIDENT_IDX_EPGU_REQUEST_TYPE = 12;
+const INCIDENT_IDX_SUMMARY_TEXT = 13;
+const INCIDENT_IDX_FULL_TEXT = 14;
+const INCIDENT_IDX_SIGNATURE = 15;
+const INCIDENT_IDX_REPEAT_COUNT = 16;
+const INCIDENT_EVENT_HEADERS = [
+  "Дата/время",
+  "Ключ интервала",
+  "Тип",
+  "База",
+  "Департамент",
+  "Пользователь",
+  "Сигнатура"
+];
+const INCIDENT_EVENT_IDX_AT = 0;
+const INCIDENT_EVENT_IDX_INTERVAL_KEY = 1;
+const INCIDENT_EVENT_IDX_TYPE = 2;
 // --- ОКНО УВЕДОМЛЕНИЙ (GMT+5) ---
 const NOTIFY_TIMEZONE = "GMT+5";
 const NOTIFY_WINDOW_START_CELL = "B2"; // HH:MM
@@ -384,6 +442,10 @@ function doPost(e) {
 }
 
 function handleRequest(p) {
+  if (p && p.eventType === "stage_incident") {
+    return handleIncidentRequest(p);
+  }
+
   try {
     var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
     var baseName = normalizeBaseName(p.baseName);
@@ -562,6 +624,521 @@ function getStageRowModel(row) {
   };
 }
 
+function normalizeIncidentValue_(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function truncateIncidentText_(value, limit) {
+  var normalized = normalizeIncidentValue_(value);
+  var safeLimit = Math.max(0, Number(limit) || 0);
+  if (!normalized || !safeLimit || normalized.length <= safeLimit) return normalized;
+  return normalized.slice(0, Math.max(0, safeLimit - 3)).trimEnd() + "...";
+}
+
+function isIncidentSheetName_(name) {
+  return String(name || "").indexOf(INCIDENT_SHEET_PREFIX) === 0;
+}
+
+function isIncidentSystemSheetName_(name) {
+  return isIncidentSheetName_(name) || String(name || "") === INCIDENT_EVENT_LOG_SHEET;
+}
+
+function getIncidentSheetName_(baseName) {
+  return INCIDENT_SHEET_PREFIX + String(baseName || "Неизвестная");
+}
+
+function initializeIncidentSheet_(sheet) {
+  sheet.getRange(1, 1, 1, INCIDENT_HEADERS.length).setValues([INCIDENT_HEADERS]);
+  sheet.getRange(1, 1, 1, INCIDENT_HEADERS.length).setFontWeight("bold").setBackground("#f4cccc");
+  sheet.setFrozenRows(1);
+}
+
+function ensureIncidentSheetHeader_(sheet) {
+  if (sheet.getLastRow() < 1) {
+    initializeIncidentSheet_(sheet);
+    return;
+  }
+
+  var headerRange = sheet.getRange(1, 1, 1, INCIDENT_HEADERS.length);
+  var currentHeaders = headerRange.getValues()[0];
+  var needsUpdate = false;
+  for (var i = 0; i < INCIDENT_HEADERS.length; i++) {
+    if (currentHeaders[i] !== INCIDENT_HEADERS[i]) {
+      needsUpdate = true;
+      break;
+    }
+  }
+
+  if (needsUpdate) {
+    headerRange.setValues([INCIDENT_HEADERS]);
+  }
+
+  headerRange.setFontWeight("bold").setBackground("#f4cccc");
+  sheet.setFrozenRows(1);
+}
+
+function getOrCreateIncidentSheet_(ss, baseName) {
+  var sheetName = getIncidentSheetName_(baseName);
+  var sheet = ss.getSheetByName(sheetName);
+  if (!sheet) {
+    sheet = ss.insertSheet(sheetName);
+    initializeIncidentSheet_(sheet);
+    return sheet;
+  }
+
+  ensureIncidentSheetHeader_(sheet);
+  return sheet;
+}
+
+function initializeIncidentEventLogSheet_(sheet) {
+  sheet.getRange(1, 1, 1, INCIDENT_EVENT_HEADERS.length).setValues([INCIDENT_EVENT_HEADERS]);
+  sheet.getRange(1, 1, 1, INCIDENT_EVENT_HEADERS.length).setFontWeight("bold").setBackground("#fce5cd");
+  sheet.setFrozenRows(1);
+  try {
+    sheet.hideSheet();
+  } catch (error) {
+    // ignore
+  }
+}
+
+function ensureIncidentEventLogSheetHeader_(sheet) {
+  if (sheet.getLastRow() < 1) {
+    initializeIncidentEventLogSheet_(sheet);
+    return;
+  }
+
+  var headerRange = sheet.getRange(1, 1, 1, INCIDENT_EVENT_HEADERS.length);
+  var currentHeaders = headerRange.getValues()[0];
+  var needsUpdate = false;
+  for (var i = 0; i < INCIDENT_EVENT_HEADERS.length; i++) {
+    if (currentHeaders[i] !== INCIDENT_EVENT_HEADERS[i]) {
+      needsUpdate = true;
+      break;
+    }
+  }
+
+  if (needsUpdate) {
+    headerRange.setValues([INCIDENT_EVENT_HEADERS]);
+  }
+
+  headerRange.setFontWeight("bold").setBackground("#fce5cd");
+  sheet.setFrozenRows(1);
+}
+
+function getOrCreateIncidentEventLogSheet_(ss) {
+  var sheet = ss.getSheetByName(INCIDENT_EVENT_LOG_SHEET);
+  if (!sheet) {
+    sheet = ss.insertSheet(INCIDENT_EVENT_LOG_SHEET);
+    initializeIncidentEventLogSheet_(sheet);
+    return sheet;
+  }
+
+  ensureIncidentEventLogSheetHeader_(sheet);
+  return sheet;
+}
+
+function normalizeIncidentType_(rawType) {
+  var normalized = String(rawType || "").toUpperCase();
+  if (normalized === "GRID" || normalized === "EPGU") return normalized;
+  return "GRID";
+}
+
+function getIncidentIntervalInfo_(eventDate) {
+  var date = eventDate instanceof Date && !isNaN(eventDate.getTime()) ? eventDate : new Date();
+  var hhmm = Utilities.formatDate(date, INCIDENT_TIMEZONE, "HH:mm");
+  var parsed = parseHHMM_(hhmm);
+  if (!parsed.ok) {
+    return { active: false, label: "", slotKey: "", dateKey: Utilities.formatDate(date, INCIDENT_TIMEZONE, "yyyy-MM-dd") };
+  }
+
+  var nowMin = parsed.minutes;
+  var dateKey = Utilities.formatDate(date, INCIDENT_TIMEZONE, "yyyy-MM-dd");
+  for (var i = 0; i < INCIDENT_WORK_INTERVALS.length; i++) {
+    var item = INCIDENT_WORK_INTERVALS[i];
+    var start = parseHHMM_(item.start);
+    var end = parseHHMM_(item.end);
+    if (!start.ok || !end.ok) continue;
+    if (nowMin >= start.minutes && nowMin < end.minutes) {
+      return {
+        active: true,
+        label: item.label,
+        slotKey: item.key,
+        dateKey: dateKey
+      };
+    }
+  }
+
+  return { active: false, label: "", slotKey: "", dateKey: dateKey };
+}
+
+function buildIncidentIntervalKey_(intervalInfo) {
+  if (!intervalInfo || !intervalInfo.active) return "";
+  return String(intervalInfo.dateKey) + "|" + String(intervalInfo.label);
+}
+
+function buildIncidentSignature_(incident) {
+  var type = normalizeIncidentType_(incident.type);
+  var parts;
+  if (type === "EPGU") {
+    parts = [
+      incident.base,
+      incident.department,
+      incident.user,
+      incident.edocId,
+      incident.epguSentAt,
+      incident.fullText
+    ];
+  } else {
+    parts = [
+      incident.base,
+      incident.department,
+      incident.user,
+      incident.pageUrl,
+      incident.fullText
+    ];
+  }
+
+  return parts.map(normalizeIncidentValue_).join(" | ");
+}
+
+function buildIncidentPayload_(p, baseName, eventDate, intervalInfo) {
+  var incident = {
+    firstSeen: eventDate,
+    lastSeen: eventDate,
+    intervalKey: buildIncidentIntervalKey_(intervalInfo),
+    type: normalizeIncidentType_(p.incidentType),
+    base: normalizeIncidentValue_(baseName),
+    department: normalizeIncidentValue_(p.departmentName) || "Не определен",
+    user: normalizeIncidentValue_(p.userName) || "Не определен",
+    edocId: normalizeIncidentValue_(p.edocId),
+    debtId: normalizeIncidentValue_(p.debtId),
+    pageUrl: normalizeIncidentValue_(p.pageUrl),
+    context: normalizeIncidentValue_(p.context || p.stageName),
+    epguSentAt: normalizeIncidentValue_(p.epguSentAt),
+    epguRequestType: normalizeIncidentValue_(p.epguRequestType),
+    summaryText: normalizeIncidentValue_(p.summaryText),
+    fullText: normalizeIncidentValue_(p.fullText || p.summaryText),
+    signature: "",
+    repeatCount: 1
+  };
+
+  if (!incident.summaryText) {
+    incident.summaryText = truncateIncidentText_(incident.fullText, 160);
+  }
+  if (!incident.fullText) {
+    incident.fullText = incident.summaryText;
+  }
+  incident.signature = buildIncidentSignature_(incident);
+  return incident;
+}
+
+function buildIncidentRow_(incident) {
+  return [
+    incident.firstSeen,
+    incident.lastSeen,
+    incident.intervalKey,
+    incident.type,
+    incident.base,
+    incident.department,
+    incident.user,
+    incident.edocId,
+    incident.debtId,
+    incident.pageUrl,
+    incident.context,
+    incident.epguSentAt,
+    incident.epguRequestType,
+    incident.summaryText,
+    incident.fullText,
+    incident.signature,
+    incident.repeatCount
+  ];
+}
+
+function appendIncidentEventLogRow_(sheet, incident) {
+  sheet.appendRow([
+    incident.lastSeen,
+    incident.intervalKey,
+    incident.type,
+    incident.base,
+    incident.department,
+    incident.user,
+    incident.signature
+  ]);
+}
+
+function upsertIncidentRow_(sheet, incident) {
+  var lastRow = sheet.getLastRow();
+  var targetRowNumber = 0;
+  var existingRow = null;
+
+  if (lastRow >= 2) {
+    var values = sheet.getRange(2, 1, lastRow - 1, INCIDENT_HEADERS.length).getValues();
+    for (var i = values.length - 1; i >= 0; i--) {
+      var row = values[i];
+      if (String(row[INCIDENT_IDX_INTERVAL_KEY] || "") !== incident.intervalKey) continue;
+      if (String(row[INCIDENT_IDX_TYPE] || "") !== incident.type) continue;
+      if (String(row[INCIDENT_IDX_SIGNATURE] || "") !== incident.signature) continue;
+      targetRowNumber = i + 2;
+      existingRow = row.slice();
+      break;
+    }
+  }
+
+  if (!targetRowNumber) {
+    sheet.appendRow(buildIncidentRow_(incident));
+    return;
+  }
+
+  var updatedRow = existingRow.slice();
+  updatedRow[INCIDENT_IDX_LAST_SEEN] = incident.lastSeen;
+  updatedRow[INCIDENT_IDX_BASE] = incident.base;
+  updatedRow[INCIDENT_IDX_DEPARTMENT] = incident.department;
+  updatedRow[INCIDENT_IDX_USER] = incident.user;
+  updatedRow[INCIDENT_IDX_EDOCID] = incident.edocId;
+  updatedRow[INCIDENT_IDX_DEBTID] = incident.debtId;
+  updatedRow[INCIDENT_IDX_URL] = incident.pageUrl;
+  updatedRow[INCIDENT_IDX_CONTEXT] = incident.context;
+  updatedRow[INCIDENT_IDX_EPGU_SENT_AT] = incident.epguSentAt;
+  updatedRow[INCIDENT_IDX_EPGU_REQUEST_TYPE] = incident.epguRequestType;
+  updatedRow[INCIDENT_IDX_SUMMARY_TEXT] = incident.summaryText;
+  updatedRow[INCIDENT_IDX_FULL_TEXT] = incident.fullText;
+  updatedRow[INCIDENT_IDX_REPEAT_COUNT] = Math.max(1, Number(updatedRow[INCIDENT_IDX_REPEAT_COUNT] || 0)) + 1;
+
+  sheet.getRange(targetRowNumber, 1, 1, INCIDENT_HEADERS.length).setValues([updatedRow]);
+}
+
+function handleIncidentRequest(p) {
+  var eventDate = parseIncomingTimestamp(p.timestamp);
+  var intervalInfo = getIncidentIntervalInfo_(eventDate);
+  if (!intervalInfo.active) {
+    return ContentService.createTextOutput("IGNORED_OUTSIDE_WORK_INTERVAL").setMimeType(ContentService.MimeType.TEXT);
+  }
+
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) {
+    return ContentService.createTextOutput("Busy").setMimeType(ContentService.MimeType.TEXT);
+  }
+
+  try {
+    var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+    var baseName = normalizeBaseName(p.baseName);
+    var sheet = getOrCreateIncidentSheet_(ss, baseName);
+    var eventLogSheet = getOrCreateIncidentEventLogSheet_(ss);
+    var incident = buildIncidentPayload_(p, baseName, eventDate, intervalInfo);
+    upsertIncidentRow_(sheet, incident);
+    appendIncidentEventLogRow_(eventLogSheet, incident);
+    return ContentService.createTextOutput("OK").setMimeType(ContentService.MimeType.TEXT);
+  } catch (error) {
+    console.error("Incident API Error: " + error.toString());
+    return ContentService.createTextOutput("Error: " + error.toString());
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function getIncidentRowModel_(row, sheetName) {
+  return {
+    firstSeen: parseIncomingTimestamp(row[INCIDENT_IDX_FIRST_SEEN]),
+    lastSeen: parseIncomingTimestamp(row[INCIDENT_IDX_LAST_SEEN]),
+    intervalKey: String(row[INCIDENT_IDX_INTERVAL_KEY] || ""),
+    type: normalizeIncidentType_(row[INCIDENT_IDX_TYPE]),
+    base: normalizeIncidentValue_(row[INCIDENT_IDX_BASE] || sheetName.replace(INCIDENT_SHEET_PREFIX, "")),
+    department: normalizeIncidentValue_(row[INCIDENT_IDX_DEPARTMENT]) || "Не определен",
+    user: normalizeIncidentValue_(row[INCIDENT_IDX_USER]) || "Не определен",
+    edocId: normalizeIncidentValue_(row[INCIDENT_IDX_EDOCID]),
+    debtId: normalizeIncidentValue_(row[INCIDENT_IDX_DEBTID]),
+    pageUrl: normalizeIncidentValue_(row[INCIDENT_IDX_URL]),
+    context: normalizeIncidentValue_(row[INCIDENT_IDX_CONTEXT]),
+    epguSentAt: normalizeIncidentValue_(row[INCIDENT_IDX_EPGU_SENT_AT]),
+    epguRequestType: normalizeIncidentValue_(row[INCIDENT_IDX_EPGU_REQUEST_TYPE]),
+    summaryText: normalizeIncidentValue_(row[INCIDENT_IDX_SUMMARY_TEXT]),
+    fullText: normalizeIncidentValue_(row[INCIDENT_IDX_FULL_TEXT]),
+    signature: normalizeIncidentValue_(row[INCIDENT_IDX_SIGNATURE]),
+    repeatCount: Math.max(1, Number(row[INCIDENT_IDX_REPEAT_COUNT] || 1))
+  };
+}
+
+function getActiveIncidentChatIds_(sheet) {
+  var values = sheet.getRange(INCIDENT_CHAT_CONFIG_RANGE).getValues();
+  var unique = {};
+  var result = [];
+  values.forEach(function(row) {
+    var chatId = normalizeIncidentValue_(row[2]);
+    if (!chatId || row[3] !== true || unique[chatId]) return;
+    unique[chatId] = true;
+    result.push(chatId);
+  });
+  return result;
+}
+
+function getIncidentSummaryMessageKey_(chatId) {
+  return INCIDENT_SUMMARY_MESSAGE_KEY_PREFIX + String(chatId || "");
+}
+
+function getIncidentRowsForInterval_(ss, intervalKey) {
+  var rows = [];
+  ss.getSheets().forEach(function(sheet) {
+    var name = sheet.getName();
+    if (!isIncidentSheetName_(name)) return;
+    var lastRow = sheet.getLastRow();
+    if (lastRow < 2) return;
+    var values = sheet.getRange(2, 1, lastRow - 1, INCIDENT_HEADERS.length).getValues();
+    values.forEach(function(row) {
+      if (String(row[INCIDENT_IDX_INTERVAL_KEY] || "") !== intervalKey) return;
+      rows.push(getIncidentRowModel_(row, name));
+    });
+  });
+  return rows;
+}
+
+function getIncidentEventStatsForInterval_(ss, intervalKey, now) {
+  var stats = {
+    GRID: { total: 0, recent: 0 },
+    EPGU: { total: 0, recent: 0 }
+  };
+  var sheet = ss.getSheetByName(INCIDENT_EVENT_LOG_SHEET);
+  if (!sheet) return stats;
+
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return stats;
+
+  var cutoff = now.getTime() - INCIDENT_DYNAMIC_WINDOW_MINUTES * 60 * 1000;
+  var values = sheet.getRange(2, 1, lastRow - 1, INCIDENT_EVENT_HEADERS.length).getValues();
+  values.forEach(function(row) {
+    if (String(row[INCIDENT_EVENT_IDX_INTERVAL_KEY] || "") !== intervalKey) return;
+    var type = normalizeIncidentType_(row[INCIDENT_EVENT_IDX_TYPE]);
+    if (!stats[type]) {
+      stats[type] = { total: 0, recent: 0 };
+    }
+
+    stats[type].total += 1;
+
+    var eventAt = parseIncomingTimestamp(row[INCIDENT_EVENT_IDX_AT]);
+    if (eventAt instanceof Date && !isNaN(eventAt.getTime()) && eventAt.getTime() >= cutoff) {
+      stats[type].recent += 1;
+    }
+  });
+
+  return stats;
+}
+
+function formatIncidentBaseExampleLine_(baseName, row, type) {
+  var safeBase = tgEscape_(baseName);
+  var safeUser = tgEscape_(row.user || "Не определен");
+  var safeDepartment = tgEscape_(row.department || "Не определен");
+  if (type === "EPGU") {
+    var edocText = row.edocId ? ("EDocID " + row.edocId) : (row.summaryText || row.fullText || "Ошибка");
+    return safeBase + ": " + safeUser + " • " + safeDepartment + " • " + tgEscape_(edocText);
+  }
+
+  var summary = row.summaryText || row.fullText || "Ошибка";
+  return safeBase + ": " + safeUser + " • " + safeDepartment + " • " + tgEscape_(truncateIncidentText_(summary, 90));
+}
+
+function buildIncidentSummarySection_(label, type, rows, statsByType) {
+  var typeRows = rows.filter(function(row) {
+    return row.type === type;
+  });
+  var typeStats = statsByType && statsByType[type]
+    ? statsByType[type]
+    : { total: 0, recent: 0 };
+  var totalCount = Math.max(0, Number(typeStats.total) || 0);
+  var recentCount = Math.max(0, Number(typeStats.recent) || 0);
+  var trend = recentCount > 0
+    ? "🟢⬆ +" + recentCount + "/30м"
+    : "🔴⬇ 0/30м";
+
+  var lines = [label + ": " + totalCount + "  " + trend];
+  if (typeRows.length === 0) {
+    lines.push("—");
+    return lines.join("\n");
+  }
+
+  var latestByBase = {};
+  typeRows.forEach(function(row) {
+    var key = row.base || "Неизвестная";
+    if (!latestByBase[key]) {
+      latestByBase[key] = row;
+      return;
+    }
+    var previousTime = latestByBase[key].lastSeen instanceof Date ? latestByBase[key].lastSeen.getTime() : 0;
+    var currentTime = row.lastSeen instanceof Date ? row.lastSeen.getTime() : 0;
+    if (currentTime >= previousTime) {
+      latestByBase[key] = row;
+    }
+  });
+
+  Object.keys(latestByBase)
+    .sort(function(a, b) { return String(a).localeCompare(String(b), "ru"); })
+    .forEach(function(baseName) {
+      lines.push(formatIncidentBaseExampleLine_(baseName, latestByBase[baseName], type));
+    });
+
+  return lines.join("\n");
+}
+
+function buildIncidentSummaryText_(rows, intervalInfo, statsByType) {
+  var lines = [
+    "<b>StageTimer • Инциденты</b>",
+    "Интервал: " + tgEscape_(intervalInfo.label) + " YEKT",
+    "",
+    buildIncidentSummarySection_("Grid", "GRID", rows, statsByType),
+    "",
+    buildIncidentSummarySection_("ЕПГУ", "EPGU", rows, statsByType)
+  ];
+  return lines.join("\n");
+}
+
+function upsertIncidentSummaryMessage_(chatId, text) {
+  var props = PropertiesService.getScriptProperties();
+  var key = getIncidentSummaryMessageKey_(chatId);
+  var messageId = props.getProperty(key);
+  var finalMessageId = messageId;
+
+  if (messageId) {
+    var editResult = editTelegramMessage(chatId, messageId, text);
+    if (editResult === "NOT_FOUND") {
+      finalMessageId = sendTelegram(chatId, text, true);
+    } else if (editResult !== "SUCCESS") {
+      finalMessageId = messageId;
+    }
+  } else {
+    finalMessageId = sendTelegram(chatId, text, true);
+  }
+
+  if (finalMessageId) {
+    props.setProperty(key, String(finalMessageId));
+  }
+}
+
+function updateIncidentTelegramSummaries_(ss, settingsSheet) {
+  var now = new Date();
+  var intervalInfo = getIncidentIntervalInfo_(now);
+  if (!intervalInfo.active) return;
+
+  var chatIds = getActiveIncidentChatIds_(settingsSheet);
+  if (chatIds.length === 0) return;
+
+  var intervalKey = buildIncidentIntervalKey_(intervalInfo);
+  var rows = getIncidentRowsForInterval_(ss, intervalKey);
+  var eventStats = getIncidentEventStatsForInterval_(ss, intervalKey, now);
+  var text = buildIncidentSummaryText_(rows, intervalInfo, eventStats);
+
+  chatIds.forEach(function(chatId) {
+    upsertIncidentSummaryMessage_(chatId, text);
+  });
+}
+
+function clearIncidentSummaryMessageCache_() {
+  var props = PropertiesService.getScriptProperties();
+  var all = props.getProperties();
+  for (var key in all) {
+    if (key.indexOf(INCIDENT_SUMMARY_MESSAGE_KEY_PREFIX) === 0) {
+      props.deleteProperty(key);
+    }
+  }
+}
+
 // ================= 2. МОНИТОРИНГ И ДАШБОРД =================
 
 function monitorPerformance() {
@@ -595,6 +1172,7 @@ function monitorPerformance() {
   updateDayAnalysisDashboard(settingsSheet, dayStats, Utilities.formatDate(now, timeZone, "dd.MM.yyyy"));
   
   checkAlerts(settingsSheet, data.mainStats, timeZone);
+  updateIncidentTelegramSummaries_(ss, settingsSheet);
 
   lastUpdateCell.setValue(now).setNumberFormat("dd.MM.yyyy HH:mm:ss");
   console.log("=== ЗАВЕРШЕНО ===");
@@ -608,7 +1186,7 @@ function calculateStatsAndUsers(ss, scanStartDate, filterNewDate, now) {
 
   sheets.forEach(function(sheet) {
     var name = sheet.getName();
-    if (name === SHEET_SETTINGS || name.startsWith("Архив_")) return;
+    if (name === SHEET_SETTINGS || name.startsWith("Архив_") || isIncidentSystemSheetName_(name)) return;
 
     var lastRow = sheet.getLastRow();
     if (lastRow < 2) return;
@@ -737,7 +1315,7 @@ function calculateDayAnalysis(ss, startOfDay) {
 
   sheets.forEach(function(sheet) {
     var name = sheet.getName();
-    if (name === SHEET_SETTINGS || name.startsWith("Архив_")) return;
+    if (name === SHEET_SETTINGS || name.startsWith("Архив_") || isIncidentSystemSheetName_(name)) return;
 
     var lastRow = sheet.getLastRow();
     if (lastRow < 2) return;
@@ -1278,7 +1856,7 @@ function cleanupStaleWaitingRows(ss) {
 
   sheets.forEach(function(sheet) {
     var name = sheet.getName();
-    if (name === SHEET_SETTINGS || name.startsWith("Архив_")) return;
+    if (name === SHEET_SETTINGS || name.startsWith("Архив_") || isIncidentSystemSheetName_(name)) return;
 
     var lastRow = sheet.getLastRow();
     if (lastRow < 2) return;
@@ -1324,7 +1902,7 @@ function performCleanup() {
 
       sheets.forEach(function(sheet) {
         var name = sheet.getName();
-        if (name === SHEET_SETTINGS || name.startsWith("Архив_")) return;
+        if (name === SHEET_SETTINGS || name.startsWith("Архив_") || isIncidentSystemSheetName_(name)) return;
         compactSheet(sheet, todayInt, timeZone);
       });
       console.log("=== ГОТОВО ===");
@@ -1415,6 +1993,7 @@ function setupDashboard() {
   var sheet = ss.getSheetByName(SHEET_SETTINGS);
   if (!sheet) sheet = ss.insertSheet(SHEET_SETTINGS);
   clearAlertStateCache();
+  clearIncidentSummaryMessageCache_();
   
   sheet.clear();
   sheet.getRange("A1").setValue("НАСТРОЙКИ МОНИТОРИНГА").setFontSize(14).setFontWeight("bold");

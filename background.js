@@ -648,6 +648,31 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             return false;
         }
 
+        case 'LOG_STAGE_INCIDENT': {
+            const d = request.data || {};
+            const payload = {
+                eventType: d.eventType || "stage_incident",
+                incidentType: d.incidentType || "",
+                baseName: d.baseName || "Основная",
+                stageName: d.stageName || "ПК Пирамида",
+                userName: d.userName || "Не определен",
+                departmentName: d.departmentName || "Не определен",
+                timestamp: d.timestamp || new Date().toISOString(),
+                pageUrl: d.pageUrl || "",
+                context: d.context || "",
+                summaryText: d.summaryText || "",
+                fullText: d.fullText || "",
+                signature: d.signature || "",
+                edocId: d.edocId || "",
+                debtId: d.debtId || "",
+                epguSentAt: d.epguSentAt || "",
+                epguRequestType: d.epguRequestType || "",
+                version: d.version || ""
+            };
+            enqueueTelemetry(payload);
+            return true;
+        }
+
         case 'EXECUTION_ANALYSIS_GET_TAB_ID': {
             const tabId = sender && sender.tab ? sender.tab.id : null;
             if (!Number.isInteger(tabId)) {

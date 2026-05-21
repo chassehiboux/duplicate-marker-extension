@@ -42,6 +42,10 @@
     let currentTimerHost = null;
     const TIMER_HOST_SYNC_INTERVAL_MS = 250;
     let lastTimerHostSyncMs = 0;
+    let incidentScanTimeout = null;
+    let lastGridAbortSignalAtMs = 0;
+    let lastVisibleGridIncidentSignature = "";
+    const epguIncidentSignatureBySource = new Map();
     const TIMER_BUTTON_SYNC_INTERVAL_MS = 1000;
     const LEGACY_TIMER_VISIBILITY_STORAGE_KEY = "pyramid_stage_timer_ui_visible";
     const TIMER_VISIBILITY_STORAGE_KEY = "dup_ui_show_stage_timer";
@@ -55,6 +59,13 @@
     const SCREENSHOT_HIDE_PRINT_SCREEN_DURATION_MS = 5000;
     const SCREENSHOT_HIDE_PRINT_SCREEN_ON_BLUR_DURATION_MS = 5000;
     const SCREENSHOT_THROTTLE_MS = 150;
+    const INCIDENT_SCAN_INTERVAL_MS = 2000;
+    const INCIDENT_SCAN_DEBOUNCE_MS = 150;
+    const GRID_ABORT_SUPPRESSION_WINDOW_MS = 6000;
+    const INCIDENT_SUMMARY_TEXT_LIMIT = 160;
+    const GRID_INCIDENT_TYPE = "GRID";
+    const EPGU_INCIDENT_TYPE = "EPGU";
+    const EPGU_PATH_REGEX = /\/ovzid\/fullcard\/(\d+)\/epgu(?:[/?#]|$)/i;
     const KEY_CODE_F1 = 112;
     const KEY_CODE_F2 = 113;
     const KEY_CODE_PRINT_SCREEN = 44;
@@ -877,6 +888,295 @@
         }
     }
 
+    function normalizeIncidentText(value) {
+        return String(value || "").replace(/\s+/g, " ").trim();
+    }
+
+    function truncateIncidentText(value, limit = INCIDENT_SUMMARY_TEXT_LIMIT) {
+        const normalized = normalizeIncidentText(value);
+        if (!normalized || normalized.length <= limit) return normalized;
+        return `${normalized.slice(0, Math.max(0, limit - 1)).trimEnd()}…`;
+    }
+
+    function noteGridAbortSignal(messageText) {
+        lastGridAbortSignalAtMs = Date.now();
+        const normalizedMessage = normalizeIncidentText(messageText || GRID_ABORT_REWRITE_TEXT);
+        lastVisibleGridIncidentSignature = normalizedMessage ? `abort:${normalizedMessage}` : "abort:";
+    }
+
+    function isGridAbortSuppressed() {
+        return lastGridAbortSignalAtMs > 0
+            && (Date.now() - lastGridAbortSignalAtMs) <= GRID_ABORT_SUPPRESSION_WINDOW_MS;
+    }
+
+    function isElementVisible(element) {
+        if (!(element instanceof HTMLElement)) return false;
+        const style = window.getComputedStyle(element);
+        if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
+        const rect = element.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+    }
+
+    function getVisibleGridErrorDetails() {
+        const errorBars = Array.from(document.querySelectorAll(".alert.alert-danger.ui-jqgrid-errorbar, .ui-jqgrid-errorbar"));
+        for (const bar of errorBars) {
+            if (!(bar instanceof HTMLElement) || !isElementVisible(bar)) continue;
+            const srOnly = bar.querySelector("span.sr-only.ui-jqgrid-error");
+            const text = normalizeIncidentText(
+                (srOnly && srOnly.textContent)
+                || bar.getAttribute("aria-label")
+                || bar.textContent
+            );
+            if (!text) continue;
+            return {
+                text,
+                fullText: text,
+                pageUrl: window.location.href
+            };
+        }
+        return null;
+    }
+
+    function buildStageIncidentCommonData() {
+        const sessionData = normalizeSessionData(scrapeData());
+        return {
+            baseName: baseName,
+            departmentName: sessionData.departmentName || "Не определен",
+            userName: sessionData.userName || "Не определен",
+            stageName: sessionData.stageName || "ПК Пирамида"
+        };
+    }
+
+    function reportStageIncident(data) {
+        if (!(chrome && chrome.runtime && typeof chrome.runtime.sendMessage === "function")) return;
+        try {
+            chrome.runtime.sendMessage({
+                action: "LOG_STAGE_INCIDENT",
+                data: {
+                    eventType: "stage_incident",
+                    version: extVersion,
+                    timestamp: new Date().toISOString(),
+                    ...data
+                }
+            });
+        } catch (error) {
+            console.warn("[StageTimer] Не удалось отправить инцидент.", error);
+        }
+    }
+
+    function scanVisibleGridIncident() {
+        const details = getVisibleGridErrorDetails();
+        if (!details) {
+            lastVisibleGridIncidentSignature = "";
+            return;
+        }
+
+        const normalizedText = normalizeIncidentText(details.text);
+        if (!normalizedText) {
+            lastVisibleGridIncidentSignature = "";
+            return;
+        }
+
+        const normalizedAbortText = normalizeIncidentText(GRID_ABORT_REWRITE_TEXT);
+        if (normalizedText === normalizedAbortText || isGridAbortSuppressed()) {
+            lastVisibleGridIncidentSignature = `ignored:${normalizedText}`;
+            return;
+        }
+
+        const common = buildStageIncidentCommonData();
+        const pageUrl = String(details.pageUrl || window.location.href || "").trim();
+        const signature = [
+            common.baseName,
+            common.departmentName,
+            common.userName,
+            pageUrl,
+            normalizedText
+        ].map(normalizeIncidentText).join(" | ");
+
+        if (signature === lastVisibleGridIncidentSignature) return;
+        lastVisibleGridIncidentSignature = signature;
+
+        reportStageIncident({
+            incidentType: GRID_INCIDENT_TYPE,
+            baseName: common.baseName,
+            departmentName: common.departmentName,
+            userName: common.userName,
+            stageName: common.stageName,
+            pageUrl: pageUrl,
+            context: normalizeIncidentText(activeLoadType || common.stageName || window.location.pathname || "GRID"),
+            summaryText: truncateIncidentText(normalizedText),
+            fullText: normalizedText,
+            signature: signature,
+            edocId: "",
+            debtId: "",
+            epguSentAt: "",
+            epguRequestType: ""
+        });
+    }
+
+    function getEpguMatch(rawUrl) {
+        if (!rawUrl) return null;
+        try {
+            const url = new URL(String(rawUrl), window.location.href);
+            const match = url.pathname.match(EPGU_PATH_REGEX);
+            if (!match) return null;
+            return {
+                href: url.href,
+                pathname: url.pathname,
+                edocId: match[1] || ""
+            };
+        } catch (error) {
+            return null;
+        }
+    }
+
+    function getEpguDocumentSources() {
+        const sources = [];
+        const currentMatch = getEpguMatch(window.location.href);
+        if (currentMatch) {
+            sources.push({
+                key: `top:${currentMatch.href}`,
+                doc: document,
+                href: currentMatch.href,
+                edocId: currentMatch.edocId
+            });
+        }
+
+        const frames = Array.from(document.querySelectorAll("iframe"));
+        frames.forEach((frame, index) => {
+            if (!(frame instanceof HTMLIFrameElement)) return;
+            let doc = null;
+            let href = "";
+            try {
+                doc = frame.contentDocument;
+                href = frame.contentWindow && frame.contentWindow.location
+                    ? frame.contentWindow.location.href
+                    : (frame.getAttribute("src") || "");
+            } catch (error) {
+                return;
+            }
+            if (!(doc instanceof Document)) return;
+            const match = getEpguMatch(href || frame.getAttribute("src") || "");
+            if (!match) return;
+            sources.push({
+                key: `iframe:${index}:${match.href}`,
+                doc,
+                href: match.href,
+                edocId: match.edocId
+            });
+        });
+
+        return sources;
+    }
+
+    function findEpguRequestsTable(doc) {
+        const tables = Array.from(doc.querySelectorAll("table"));
+        for (const table of tables) {
+            const headerTexts = Array.from(table.querySelectorAll("thead th, tr:first-child th, tr:first-child td"))
+                .map((cell) => normalizeIncidentText(cell.textContent).toLowerCase())
+                .filter(Boolean);
+            if (headerTexts.some((text) => text.includes("статус отправки"))) {
+                return table;
+            }
+        }
+        return null;
+    }
+
+    function extractLatestEpguError(source) {
+        if (!source || !(source.doc instanceof Document)) return null;
+        const table = findEpguRequestsTable(source.doc);
+        if (!table) return null;
+
+        let rows = Array.from(table.querySelectorAll("tbody tr"))
+            .filter((row) => row.querySelectorAll("td").length >= 5);
+        if (!rows.length) {
+            rows = Array.from(table.querySelectorAll("tr"))
+                .slice(1)
+                .filter((row) => row.querySelectorAll("td").length >= 5);
+        }
+        if (!rows.length) return null;
+
+        const latestRow = rows[0];
+        const cells = Array.from(latestRow.querySelectorAll("td")).map((cell) => normalizeIncidentText(cell.textContent));
+        const sentAt = cells[1] || "";
+        const requestType = cells[2] || "";
+        const statusText = cells[4] || "";
+        if (!/^ошибка:/i.test(statusText)) return null;
+
+        return {
+            edocId: source.edocId || "",
+            sourceUrl: source.href,
+            sentAt,
+            requestType,
+            statusText
+        };
+    }
+
+    function scanEpguIncidents() {
+        const common = buildStageIncidentCommonData();
+        const activeSourceKeys = new Set();
+        const sources = getEpguDocumentSources();
+
+        sources.forEach((source) => {
+            activeSourceKeys.add(source.key);
+            const latestError = extractLatestEpguError(source);
+            if (!latestError) {
+                epguIncidentSignatureBySource.delete(source.key);
+                return;
+            }
+
+            const signature = [
+                common.baseName,
+                common.departmentName,
+                common.userName,
+                latestError.edocId,
+                latestError.sentAt,
+                latestError.statusText
+            ].map(normalizeIncidentText).join(" | ");
+
+            if (epguIncidentSignatureBySource.get(source.key) === signature) return;
+            epguIncidentSignatureBySource.set(source.key, signature);
+
+            reportStageIncident({
+                incidentType: EPGU_INCIDENT_TYPE,
+                baseName: common.baseName,
+                departmentName: common.departmentName,
+                userName: common.userName,
+                stageName: common.stageName,
+                pageUrl: latestError.sourceUrl,
+                context: "ЕПГУ",
+                summaryText: truncateIncidentText(latestError.statusText),
+                fullText: latestError.statusText,
+                signature: signature,
+                edocId: latestError.edocId || "",
+                debtId: "",
+                epguSentAt: latestError.sentAt,
+                epguRequestType: latestError.requestType
+            });
+        });
+
+        Array.from(epguIncidentSignatureBySource.keys()).forEach((key) => {
+            if (!activeSourceKeys.has(key)) {
+                epguIncidentSignatureBySource.delete(key);
+            }
+        });
+    }
+
+    function performIncidentScan() {
+        incidentScanTimeout = null;
+        scanVisibleGridIncident();
+        scanEpguIncidents();
+    }
+
+    function scheduleIncidentScan(delayMs = INCIDENT_SCAN_DEBOUNCE_MS) {
+        if (incidentScanTimeout) {
+            clearTimeout(incidentScanTimeout);
+        }
+        incidentScanTimeout = setTimeout(() => {
+            performIncidentScan();
+        }, Math.max(0, Number(delayMs) || 0));
+    }
+
     timerToggleButton.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -903,8 +1203,28 @@
         const message = detail && typeof detail.message === "string"
             ? detail.message
             : GRID_ABORT_REWRITE_TEXT;
+        noteGridAbortSignal(message);
         scheduleGridAbortErrorMessageRewrite(message);
+        scheduleIncidentScan(0);
     }, { capture: true });
+
+    if (document.documentElement) {
+        const incidentObserver = new MutationObserver(() => {
+            scheduleIncidentScan();
+        });
+        incidentObserver.observe(document.documentElement, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: ["style", "class", "aria-label", "src"]
+        });
+    }
+
+    setInterval(() => {
+        scheduleIncidentScan();
+    }, INCIDENT_SCAN_INTERVAL_MS);
+
+    scheduleIncidentScan(INCIDENT_SCAN_INTERVAL_MS);
 
     window.addEventListener(SCREENSHOT_HIDE_EVENT, (event) => {
         if (event && event.detail && typeof event.detail.hidden === "boolean") {
@@ -1367,6 +1687,7 @@
     }
 
     function cancelByPageError() {
+        scheduleIncidentScan(0);
         finalizeCanceledSession("Отмена: ошибка", 4000);
     }
 
