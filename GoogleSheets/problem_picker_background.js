@@ -131,20 +131,6 @@
       .trim();
   }
 
-  function encodeDiscussionPlainTextLine(line) {
-    const value = String(line || '').replace(/\u00a0/g, ' ');
-    if (!value) return '';
-    if (/^\\/.test(value) || /^\[\[Q\d+\]\](?:\s|$)/i.test(value)) return '\\' + value;
-    return value;
-  }
-
-  function encodeDiscussionQuoteTextLine(line, depth) {
-    const normalizedDepth = Math.max(1, Number(depth) || 1);
-    const normalizedLine = String(line || '').replace(/\u00a0/g, ' ');
-    const prefix = `[[Q${normalizedDepth}]]`;
-    return normalizedLine ? `${prefix} ${normalizedLine}` : prefix;
-  }
-
   function processSuppRequestText(text) {
     if (!text) return '';
 
@@ -1450,6 +1436,18 @@
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     const normalizeText = (value) => String(value || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
     const normalizeMultiline = (value) => String(value || '').replace(/\r\n?/g, '\n').replace(/\u00a0/g, ' ').replace(/[ \t]+\n/g, '\n').trim();
+    const encodeDiscussionPlainTextLine = (line) => {
+      const value = String(line || '').replace(/\u00a0/g, ' ');
+      if (!value) return '';
+      if (/^\\/.test(value) || /^\[\[Q\d+\]\](?:\s|$)/i.test(value)) return '\\' + value;
+      return value;
+    };
+    const encodeDiscussionQuoteTextLine = (line, depth) => {
+      const normalizedDepth = Math.max(1, Number(depth) || 1);
+      const normalizedLine = String(line || '').replace(/\u00a0/g, ' ');
+      const prefix = `[[Q${normalizedDepth}]]`;
+      return normalizedLine ? `${prefix} ${normalizedLine}` : prefix;
+    };
     const extractSuppRequestItilNumber = (text) => {
       if (!text) return '';
 
