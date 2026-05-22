@@ -1102,19 +1102,104 @@
       .trim();
   }
 
-  function splitInfoBlocks(value) {
+  function normalizeInfoLine(value) {
+    return String(value || '').replace(/[ \t]+$/g, '');
+  }
+
+  function trimInfoBlockLines(lines) {
+    const prepared = Array.isArray(lines)
+      ? lines.map((line) => normalizeInfoLine(line))
+      : [];
+
+    while (prepared.length && !String(prepared[0] || '').trim()) prepared.shift();
+    while (prepared.length && !String(prepared[prepared.length - 1] || '').trim()) prepared.pop();
+
+    return prepared.join('\n').trim();
+  }
+
+  function isInfoSourceLine(value) {
+    const text = String(value || '').trim();
+    return text === 'ИТИЛ' || /^ЗНР-[A-Za-zА-Яа-яЁё0-9-]+$/.test(text);
+  }
+
+  function isInfoLogHeaderLine(value) {
+    return /^\d{2}\.\d{2}\.\d{4}\s+\d{1,2}:\d{2}:\d{2}\s+\/.*$/.test(String(value || '').trim());
+  }
+
+  function buildParsedInfoBlock(text) {
+    const normalized = normalizeInfoText(text);
+    if (!normalized) return null;
+
+    const lines = normalized.split('\n');
+    const firstLine = String(lines[0] || '').trim();
+    const hasLogHeader = isInfoLogHeaderLine(firstLine);
+    const bodyText = hasLogHeader
+      ? trimInfoBlockLines(lines.slice(1))
+      : normalized;
+
+    return {
+      text: normalized,
+      headerText: hasLogHeader ? firstLine : '',
+      bodyText
+    };
+  }
+
+  function parseInfoPresentation(value) {
     const text = normalizeInfoText(value);
-    if (!text) return [];
-    return text
-      .split(/\n{2,}/)
-      .map((block) => block.trim())
-      .filter(Boolean);
+    if (!text) {
+      return {
+        sourceLabel: '',
+        blocks: []
+      };
+    }
+
+    const lines = text.split('\n').map((line) => normalizeInfoLine(line));
+    let index = 0;
+    while (index < lines.length && !String(lines[index] || '').trim()) index += 1;
+
+    let sourceLabel = '';
+    if (index < lines.length && isInfoSourceLine(lines[index])) {
+      sourceLabel = String(lines[index] || '').trim();
+      index += 1;
+      while (index < lines.length && !String(lines[index] || '').trim()) index += 1;
+    }
+
+    const blocks = [];
+    let currentLines = [];
+    const pushCurrentBlock = () => {
+      const block = buildParsedInfoBlock(trimInfoBlockLines(currentLines));
+      if (block) blocks.push(block);
+      currentLines = [];
+    };
+
+    for (; index < lines.length; index += 1) {
+      const line = lines[index];
+      const trimmed = String(line || '').trim();
+
+      if (isInfoLogHeaderLine(trimmed)) {
+        pushCurrentBlock();
+        currentLines = [trimmed];
+        continue;
+      }
+
+      if (!currentLines.length && !trimmed) continue;
+      currentLines.push(line);
+    }
+
+    pushCurrentBlock();
+
+    return {
+      sourceLabel,
+      blocks
+    };
   }
 
   function buildInfoBlockCounts(blocks) {
     const counts = new Map();
     blocks.forEach((block) => {
-      counts.set(block, (counts.get(block) || 0) + 1);
+      const key = block && block.text ? block.text : '';
+      if (!key) return;
+      counts.set(key, (counts.get(key) || 0) + 1);
     });
     return counts;
   }
@@ -1133,20 +1218,102 @@
     return normalizeInfoText(fullText);
   }
 
-  function isInfoHeaderBlock(block, item) {
-    const normalized = String(block || '').trim();
-    return normalized === 'ИТИЛ' || (!!item && normalized === String(item.suppNumber || '').trim());
+  function buildInfoBlockDiff(beforeInfo, afterInfo) {
+    const previousPresentation = parseInfoPresentation(beforeInfo);
+    const nextPresentation = parseInfoPresentation(afterInfo);
+    const previousCounts = buildInfoBlockCounts(previousPresentation.blocks);
+
+    return {
+      sourceLabel: nextPresentation.sourceLabel,
+      blocks: nextPresentation.blocks.map((block) => {
+        const key = block && block.text ? block.text : '';
+        const previousCount = previousCounts.get(key) || 0;
+        if (previousCount > 0) {
+          previousCounts.set(key, previousCount - 1);
+          return {
+            ...block,
+            isNew: false
+          };
+        }
+        return {
+          ...block,
+          isNew: true
+        };
+      })
+    };
   }
 
-  function buildInfoBlockDiff(beforeInfo, afterInfo, item) {
-    const previousCounts = buildInfoBlockCounts(splitInfoBlocks(beforeInfo));
-    return splitInfoBlocks(afterInfo).map((block) => {
-      const previousCount = previousCounts.get(block) || 0;
-      if (previousCount > 0) {
-        previousCounts.set(block, previousCount - 1);
-        return { text: block, isNew: false };
+  function buildDefaultInfoBlocks(value) {
+    const presentation = parseInfoPresentation(value);
+    return {
+      sourceLabel: presentation.sourceLabel,
+      blocks: presentation.blocks.map((block) => ({
+        ...block,
+        isNew: false
+      }))
+    };
+  }
+
+  function renderInfoBlocks(container, presentation) {
+    if (!(container instanceof HTMLElement)) return;
+    container.replaceChildren();
+
+    const data = presentation && typeof presentation === 'object'
+      ? presentation
+      : { sourceLabel: '', blocks: [] };
+    const sourceLabel = String(data.sourceLabel || '').trim();
+    const blocks = Array.isArray(data.blocks) ? data.blocks : [];
+
+    if (!sourceLabel && !blocks.length) {
+      container.textContent = '';
+      return;
+    }
+
+    if (sourceLabel) {
+      const source = document.createElement('div');
+      source.className = 'gs-info-source';
+
+      const sourceCaption = document.createElement('div');
+      sourceCaption.className = 'gs-info-source-caption';
+      sourceCaption.textContent = 'Источник';
+
+      const sourceValue = document.createElement('div');
+      sourceValue.className = 'gs-info-source-value';
+      sourceValue.textContent = sourceLabel;
+
+      source.append(sourceCaption, sourceValue);
+      container.appendChild(source);
+    }
+
+    blocks.forEach((block) => {
+      const element = document.createElement('div');
+      element.className = 'gs-info-block';
+      if (block && block.isNew) {
+        element.classList.add('is-new');
+      } else {
+        element.classList.add('is-default');
       }
-      return { text: block, isNew: !isInfoHeaderBlock(block, item) };
+
+      const headerText = block && block.headerText ? String(block.headerText).trim() : '';
+      const bodyText = block && typeof block.bodyText === 'string'
+        ? block.bodyText
+        : (block && block.text ? block.text : '');
+
+      if (headerText) {
+        const header = document.createElement('div');
+        header.className = 'gs-info-block-header';
+        header.textContent = headerText;
+        element.appendChild(header);
+      }
+
+      if (bodyText) {
+        const body = document.createElement('div');
+        body.className = 'gs-info-block-body';
+        body.textContent = bodyText;
+        element.appendChild(body);
+      }
+
+      container.appendChild(element);
     });
   }
 
@@ -1170,7 +1337,7 @@
       text: String(item && item.text || '').trim(),
       beforeInfo: String(item && item.info || '').trim(),
       afterInfo,
-      infoBlocks: buildInfoBlockDiff(item && item.info, afterInfo, item)
+      infoBlocks: buildInfoBlockDiff(item && item.info, afterInfo)
     };
   }
 
@@ -1308,35 +1475,6 @@
     }, 1200);
   }
 
-  function renderInfoBlocks(container, blocks) {
-    if (!(container instanceof HTMLElement)) return;
-    container.replaceChildren();
-
-    if (!Array.isArray(blocks) || !blocks.length) {
-      container.textContent = '';
-      return;
-    }
-
-    blocks.forEach((block) => {
-      const element = document.createElement('div');
-      element.className = 'gs-info-block';
-      if (block && block.isNew) {
-        element.classList.add('is-new');
-      } else {
-        element.classList.add('is-default');
-      }
-      element.textContent = block && block.text ? block.text : '';
-      container.appendChild(element);
-    });
-  }
-
-  function buildDefaultInfoBlocks(value) {
-    return splitInfoBlocks(value).map((text) => ({
-      text,
-      isNew: false
-    }));
-  }
-
   function ensureStyle() {
     if (document.getElementById(STYLE_ID)) return;
 
@@ -1408,11 +1546,14 @@
       #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-problem-picker-label{color:#4b5563;font-size:13px;font-weight:700}
       #${MODAL_ID} .gs-problem-picker-text{height:100%;max-height:100%;min-height:0;box-sizing:border-box;overflow:auto;white-space:pre-wrap;border:1px solid #d7dce6;border-left:6px solid #2d6cdf;border-radius:8px;background:#fff;padding:14px;color:#1f2937;font-size:15px;line-height:1.55}
       #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-problem-picker-text{height:100%;max-height:100%;min-height:0;box-sizing:border-box;overflow:auto;white-space:pre-wrap;border:1px solid #d7dce6;border-left:6px solid #2d6cdf;border-radius:8px;background:#fff;padding:14px;color:#1f2937;font-size:15px;line-height:1.55}
-      #${MODAL_ID} .gs-problem-picker-info{border-left-color:#2e7d32}
-      #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-problem-picker-info{border-left-color:#2e7d32}
-      #${MODAL_ID} .gs-info-block + .gs-info-block,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-info-block + .gs-info-block{margin-top:12px}
-      #${MODAL_ID} .gs-info-block.is-default,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-info-block.is-default{padding:10px 12px;border-radius:12px;background:rgba(148,163,184,.13);box-shadow:inset 0 0 0 1px rgba(148,163,184,.15)}
-      #${MODAL_ID} .gs-info-block.is-new,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-info-block.is-new{padding:10px 12px;border-radius:12px;background:rgba(34,197,94,.16);box-shadow:inset 0 0 0 1px rgba(22,163,74,.16)}
+      #${MODAL_ID} .gs-problem-picker-info,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-problem-picker-info{display:flex;flex-direction:column;gap:12px;border-left-color:#2e7d32;white-space:normal}
+      #${MODAL_ID} .gs-info-source,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-info-source{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;padding:10px 12px;border-radius:12px;background:linear-gradient(135deg,rgba(46,125,50,.12),rgba(46,125,50,.05));box-shadow:inset 0 0 0 1px rgba(46,125,50,.18)}
+      #${MODAL_ID} .gs-info-source-caption,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-info-source-caption{color:#2f5d3b;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
+      #${MODAL_ID} .gs-info-source-value,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-info-source-value{color:#153821;font-size:15px;font-weight:800;line-height:1.35;white-space:pre-wrap;overflow-wrap:anywhere}
+      #${MODAL_ID} .gs-info-block,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-info-block{padding:12px 14px;border-radius:12px;background:rgba(255,255,255,.92);box-shadow:inset 0 0 0 1px rgba(148,163,184,.18)}
+      #${MODAL_ID} .gs-info-block.is-new,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-info-block.is-new{background:rgba(34,197,94,.12);box-shadow:inset 0 0 0 1px rgba(22,163,74,.18)}
+      #${MODAL_ID} .gs-info-block-header,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-info-block-header{margin-bottom:6px;color:#172033;font-size:13px;font-weight:800;line-height:1.45;white-space:pre-wrap;overflow-wrap:anywhere}
+      #${MODAL_ID} .gs-info-block-body,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-info-block-body{color:#1f2937;font-size:14px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere}
       #${MODAL_ID} .gs-problem-picker-footer{align-items:center;border-top:1px solid #e3e8f0;padding-top:14px}
       #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-footer{align-items:center;border-top:1px solid #e3e8f0;padding-top:14px}
       #${MODAL_ID} .gs-problem-picker-buttons{display:flex;flex-shrink:0;gap:10px}
