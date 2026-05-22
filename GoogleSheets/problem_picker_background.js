@@ -145,6 +145,23 @@
     return normalizeMultilineText(result);
   }
 
+  function extractSuppRequestItilNumber(text) {
+    if (!text) return '';
+
+    let result = sliceTextSection(text, 'Детальное описание:', [
+      'Причина возникновения инцидента:',
+      '\nКомментарии\n',
+      '\nФайлы\n'
+    ]);
+
+    result = extractFirstItilMessageBody(result);
+    const match = String(result || '')
+      .replace(/\r\n?/g, '\n')
+      .trimStart()
+      .match(/^ЗНО\s+([0-9-]+)(?::|\s|$)/i);
+    return match ? String(match[1] || '').trim() : '';
+  }
+
   function parseLogDate(value) {
     const match = String(value || '').match(/^(\d{2})\.(\d{2})\.(\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?/);
     if (!match) return new Date(0);
@@ -1000,14 +1017,21 @@
       };
     }
 
-    const itilData = useItilRequestText ? await collectItilFillData(itilNumber) : null;
-    const requestText = useItilRequestText
+    const suppRequestItilNumber = String(result.requestItilNumber || '').trim();
+    const useItilBySuppMismatch = !!suppRequestItilNumber && suppRequestItilNumber !== itilNumber;
+    if (useItilBySuppMismatch && !itilNumber) {
+      throw new Error(`Строка ${row}, СУПП ${suppNumber}: в описании СУПП найден ITIL ${suppRequestItilNumber}, но в строке не заполнен «Номер ITIL».`);
+    }
+
+    const shouldUseItilRequestText = useItilRequestText || useItilBySuppMismatch;
+    const itilData = shouldUseItilRequestText ? await collectItilFillData(itilNumber) : null;
+    const requestText = shouldUseItilRequestText
       ? (itilData ? itilData.requestText : '')
       : processSuppRequestText(result.requestText || '');
     const infoText = processSuppInfoText(suppNumber, result.commentsText || '', result.discussionText || '');
-    const requestTextSource = useItilRequestText ? 'ITIL' : 'SUPP';
+    const requestTextSource = shouldUseItilRequestText ? 'ITIL' : 'SUPP';
     if (!requestText) {
-      throw new Error(useItilRequestText
+      throw new Error(shouldUseItilRequestText
         ? `ITIL ${itilNumber}: текст заявки пустой.`
         : `СУПП ${suppNumber}: текст заявки пустой.`);
     }
@@ -2151,6 +2175,7 @@
       return {
         success: true,
         requestText,
+        requestItilNumber: extractSuppRequestItilNumber(requestText),
         commentsText,
         discussionText
       };
