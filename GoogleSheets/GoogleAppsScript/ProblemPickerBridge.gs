@@ -982,9 +982,12 @@ function _problemPickerBridgePrepareAiSearchResultSheet_(ss, sheetName, headersC
   }
 
   const lastColumn = sh.getLastColumn();
-  const requiredRow = PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW + Math.max(rowsCount, 1) - 1;
-  if (sh.getMaxRows() < requiredRow) {
-    sh.insertRowsAfter(sh.getMaxRows(), requiredRow - sh.getMaxRows());
+  if (rowsCount > 1) {
+    sh.insertRowsAfter(PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW, rowsCount - 1);
+    sh.getRange(PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW, 1, 1, lastColumn)
+      .copyTo(
+        sh.getRange(PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW + 1, 1, rowsCount - 1, lastColumn)
+      );
   }
 
   sh.getRange(
@@ -993,14 +996,6 @@ function _problemPickerBridgePrepareAiSearchResultSheet_(ss, sheetName, headersC
     sh.getMaxRows() - PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW + 1,
     lastColumn
   ).clearContent();
-
-  if (rowsCount > 1) {
-    sh.getRange(PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW, 1, 1, lastColumn)
-      .copyTo(sh.getRange(PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW + 1, 1, rowsCount - 1, lastColumn));
-  }
-
-  const templateRowHeight = sh.getRowHeight(PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW);
-  sh.setRowHeights(PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW, Math.max(rowsCount, 1), templateRowHeight);
 
   return sh;
 }
