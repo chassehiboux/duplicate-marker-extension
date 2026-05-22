@@ -145,23 +145,6 @@
     return normalizeMultilineText(result);
   }
 
-  function extractSuppRequestItilNumber(text) {
-    if (!text) return '';
-
-    let result = sliceTextSection(text, 'Детальное описание:', [
-      'Причина возникновения инцидента:',
-      '\nКомментарии\n',
-      '\nФайлы\n'
-    ]);
-
-    result = extractFirstItilMessageBody(result);
-    const match = String(result || '')
-      .replace(/\r\n?/g, '\n')
-      .trimStart()
-      .match(/^ЗНО\s+([0-9-]+)(?::|\s|$)/i);
-    return match ? String(match[1] || '').trim() : '';
-  }
-
   function parseLogDate(value) {
     const match = String(value || '').match(/^(\d{2})\.(\d{2})\.(\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?/);
     if (!match) return new Date(0);
@@ -1453,6 +1436,39 @@
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     const normalizeText = (value) => String(value || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
     const normalizeMultiline = (value) => String(value || '').replace(/\r\n?/g, '\n').replace(/\u00a0/g, ' ').replace(/[ \t]+\n/g, '\n').trim();
+    const extractSuppRequestItilNumber = (text) => {
+      if (!text) return '';
+
+      let result = String(text || '').replace(/\r\n?/g, '\n');
+      const startMarker = 'Детальное описание:';
+      const startIdx = result.toLowerCase().indexOf(startMarker.toLowerCase());
+      if (startIdx !== -1) result = result.substring(startIdx + startMarker.length);
+
+      const lower = result.toLowerCase();
+      let endIdx = -1;
+      ['Причина возникновения инцидента:', '\nКомментарии\n', '\nФайлы\n'].forEach((marker) => {
+        const idx = lower.indexOf(String(marker).toLowerCase());
+        if (idx !== -1 && (endIdx === -1 || idx < endIdx)) endIdx = idx;
+      });
+      if (endIdx !== -1) result = result.substring(0, endIdx);
+
+      const lines = result.replace(/\r\n?/g, '\n').split('\n');
+      const authorLineRe = /^\s*[^\r\n()]+?\s+\(\d{2}\.\d{2}\.\d{4}\s+\d{2}:\d{2}:\d{2}\):\s*$/;
+      const markers = [];
+      for (let index = 0; index < lines.length; index++) {
+        if (authorLineRe.test(lines[index])) {
+          markers.push(index);
+          if (markers.length >= 2) break;
+        }
+      }
+      if (markers.length) {
+        const endIndex = markers.length >= 2 ? markers[1] : lines.length;
+        result = lines.slice(markers[0] + 1, endIndex).join('\n');
+      }
+
+      const match = result.replace(/^\s+/, '').match(/^ЗНО\s+([0-9-]+)(?::|\s|$)/i);
+      return match ? String(match[1] || '').trim() : '';
+    };
 
     function isVisible(element) {
       if (!(element instanceof Element)) return false;
