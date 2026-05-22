@@ -131,6 +131,20 @@
       .trim();
   }
 
+  function encodeDiscussionPlainTextLine(line) {
+    const value = String(line || '').replace(/\u00a0/g, ' ');
+    if (!value) return '';
+    if (/^\\/.test(value) || /^\[\[Q\d+\]\](?:\s|$)/i.test(value)) return '\\' + value;
+    return value;
+  }
+
+  function encodeDiscussionQuoteTextLine(line, depth) {
+    const normalizedDepth = Math.max(1, Number(depth) || 1);
+    const normalizedLine = String(line || '').replace(/\u00a0/g, ' ');
+    const prefix = `[[Q${normalizedDepth}]]`;
+    return normalizedLine ? `${prefix} ${normalizedLine}` : prefix;
+  }
+
   function processSuppRequestText(text) {
     if (!text) return '';
 
@@ -1993,9 +2007,57 @@
       || null;
   }
 
-  function getDiscussionText() {
-    const root = getDiscussionRoot();
-    if (!root) return '';
+    function getDiscussionText() {
+      const root = getDiscussionRoot();
+      if (!root) return '';
+
+      function serializeDiscussionBody(bodyElement) {
+        if (!(bodyElement instanceof HTMLElement)) return '';
+
+        const children = Array.from(bodyElement.children || []);
+        const lines = [];
+        let usedStructuredMarkup = false;
+
+        children.forEach((node) => {
+          if (!(node instanceof HTMLElement)) return;
+          if (node.classList.contains('ecsChatBR')) return;
+
+          if (node.matches('span[data-depth]')) {
+            usedStructuredMarkup = true;
+
+            const depth = Math.max(0, Number(node.getAttribute('data-depth') || 0));
+            const rawText = String(node.innerText || node.textContent || '')
+              .replace(/\u00a0/g, ' ')
+              .replace(/\r\n?/g, '\n');
+            const parts = rawText.split('\n');
+            if (!parts.length) parts.push('');
+
+            parts.forEach((part) => {
+              const line = part.replace(/[ \t]+$/g, '');
+              if (depth > 0) {
+                lines.push(encodeDiscussionQuoteTextLine(line, depth));
+              } else {
+                lines.push(encodeDiscussionPlainTextLine(line));
+              }
+            });
+            return;
+          }
+
+          String(node.innerText || node.textContent || '')
+            .replace(/\u00a0/g, ' ')
+            .replace(/\r\n?/g, '\n')
+            .split('\n')
+            .forEach((part) => {
+              lines.push(encodeDiscussionPlainTextLine(part.replace(/[ \t]+$/g, '')));
+            });
+        });
+
+        if (!usedStructuredMarkup) {
+          return normalizeMultiline(bodyElement.innerText || bodyElement.textContent || '');
+        }
+
+        return normalizeMultilineText(lines.join('\n'));
+      }
 
       const items = Array.from(root.querySelectorAll('.ecsChatItem')).map((item) => {
         let date = '';
@@ -2012,7 +2074,7 @@
           date,
           sender: normalizeMultiline((item.querySelector('.ecsChatName.bold') || {}).innerText || ''),
           recipient: normalizeMultiline((item.querySelector('.ecsChatWhom .ecsChatName') || {}).innerText || ''),
-          body: normalizeMultiline((item.querySelector('.ecsChatText') || {}).innerText || ''),
+          body: serializeDiscussionBody(item.querySelector('.ecsChatText')),
           time: normalizeMultiline((item.querySelector('[data-info-text]') || {}).innerText || '')
         };
       }).filter((item) => item.sender || item.body);
@@ -2031,7 +2093,12 @@
           lines.push('→');
         }
         if (item.body) {
-          item.body.split('\n').map((line) => line.trim()).filter(Boolean).forEach((line) => lines.push(line));
+          item.body.split('\n').forEach((line) => {
+            const normalizedLine = line.replace(/[ \t]+$/g, '');
+            if (normalizedLine || (lines.length && lines[lines.length - 1] !== '')) {
+              lines.push(normalizedLine);
+            }
+          });
         }
         if (item.time) lines.push(item.time);
       });

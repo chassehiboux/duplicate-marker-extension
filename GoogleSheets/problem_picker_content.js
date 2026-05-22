@@ -1144,6 +1144,98 @@
     };
   }
 
+  function decodeSerializedInfoPlainLine(line) {
+    const value = String(line || '');
+    if (/^\\\\/.test(value) || /^\\\[\[Q\d+\]\](?:\s|$)/i.test(value)) return value.slice(1);
+    return value;
+  }
+
+  function parseSerializedInfoQuoteLine(line) {
+    const value = String(line || '');
+    if (!value || /^\\\\/.test(value) || /^\\\[\[Q\d+\]\](?:\s|$)/i.test(value)) return null;
+
+    const match = value.match(/^\[\[Q(\d+)\]\](?:\s(.*))?$/i);
+    if (!match) return null;
+
+    return {
+      depth: Math.max(1, Number(match[1]) || 1),
+      text: String(match[2] || '')
+    };
+  }
+
+  function trimFragmentLines(lines) {
+    const prepared = Array.isArray(lines)
+      ? lines.map((line) => String(line || ''))
+      : [];
+
+    while (prepared.length && !prepared[0].trim()) prepared.shift();
+    while (prepared.length && !prepared[prepared.length - 1].trim()) prepared.pop();
+
+    return prepared;
+  }
+
+  function trimQuoteFragmentLines(lines) {
+    const prepared = Array.isArray(lines)
+      ? lines.map((line) => ({
+        depth: Math.max(1, Number(line && line.depth) || 1),
+        text: String(line && typeof line.text === 'string' ? line.text : '')
+      }))
+      : [];
+
+    while (prepared.length && !prepared[0].text.trim()) prepared.shift();
+    while (prepared.length && !prepared[prepared.length - 1].text.trim()) prepared.pop();
+
+    return prepared;
+  }
+
+  function parseInfoBodyFragments(value) {
+    const text = String(value || '').replace(/\r\n?/g, '\n');
+    if (!text) return [];
+
+    const lines = text.split('\n');
+    const fragments = [];
+    let textLines = [];
+    let quoteLines = [];
+
+    const flushText = () => {
+      const prepared = trimFragmentLines(textLines)
+        .map((line) => decodeSerializedInfoPlainLine(line));
+      textLines = [];
+      if (!prepared.length) return;
+      fragments.push({
+        type: 'text',
+        text: prepared.join('\n')
+      });
+    };
+
+    const flushQuote = () => {
+      const prepared = trimQuoteFragmentLines(quoteLines);
+      quoteLines = [];
+      if (!prepared.length) return;
+      fragments.push({
+        type: 'quote',
+        lines: prepared
+      });
+    };
+
+    lines.forEach((line) => {
+      const quoteLine = parseSerializedInfoQuoteLine(line);
+      if (quoteLine) {
+        flushText();
+        quoteLines.push(quoteLine);
+        return;
+      }
+
+      flushQuote();
+      textLines.push(line);
+    });
+
+    flushQuote();
+    flushText();
+
+    return fragments;
+  }
+
   function parseInfoPresentation(value) {
     const text = normalizeInfoText(value);
     if (!text) {
@@ -1309,7 +1401,35 @@
       if (bodyText) {
         const body = document.createElement('div');
         body.className = 'gs-info-block-body';
-        body.textContent = bodyText;
+        const fragments = parseInfoBodyFragments(bodyText);
+        if (!fragments.length) {
+          body.textContent = bodyText;
+        } else {
+          fragments.forEach((fragment) => {
+            if (fragment.type === 'quote') {
+              const quote = document.createElement('div');
+              quote.className = 'gs-info-quote';
+
+              (Array.isArray(fragment.lines) ? fragment.lines : []).forEach((quoteLine) => {
+                const line = document.createElement('div');
+                line.className = 'gs-info-quote-line';
+                line.style.setProperty('--gs-info-quote-depth', String(Math.max(1, Number(quoteLine && quoteLine.depth) || 1)));
+                line.textContent = quoteLine && typeof quoteLine.text === 'string' && quoteLine.text
+                  ? quoteLine.text
+                  : ' ';
+                quote.appendChild(line);
+              });
+
+              body.appendChild(quote);
+              return;
+            }
+
+            const textFragment = document.createElement('div');
+            textFragment.className = 'gs-info-block-body-text';
+            textFragment.textContent = fragment && fragment.text ? fragment.text : '';
+            body.appendChild(textFragment);
+          });
+        }
         element.appendChild(body);
       }
 
@@ -1553,7 +1673,10 @@
       #${MODAL_ID} .gs-info-block,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-info-block{padding:12px 14px;border-radius:12px;background:rgba(148,163,184,.13);box-shadow:inset 0 0 0 1px rgba(148,163,184,.18)}
       #${MODAL_ID} .gs-info-block.is-new,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-info-block.is-new{background:rgba(34,197,94,.12);box-shadow:inset 0 0 0 1px rgba(22,163,74,.18)}
       #${MODAL_ID} .gs-info-block-header,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-info-block-header{margin-bottom:6px;color:#263244;font-size:13px;font-weight:700;line-height:1.45;white-space:pre-wrap;overflow-wrap:anywhere}
-      #${MODAL_ID} .gs-info-block-body,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-info-block-body{color:#1f2937;font-size:14px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere}
+      #${MODAL_ID} .gs-info-block-body,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-info-block-body{display:flex;flex-direction:column;gap:8px;color:#1f2937;font-size:14px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere}
+      #${MODAL_ID} .gs-info-block-body-text,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-info-block-body-text{white-space:pre-wrap;overflow-wrap:anywhere}
+      #${MODAL_ID} .gs-info-quote,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-info-quote{display:flex;flex-direction:column;gap:4px;padding:10px 12px;border-left:3px solid rgba(59,130,246,.55);border-radius:10px;background:rgba(59,130,246,.08)}
+      #${MODAL_ID} .gs-info-quote-line,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-info-quote-line{padding-left:calc((var(--gs-info-quote-depth, 1) - 1) * 12px);color:#45556f;font-size:13px;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere}
       #${MODAL_ID} .gs-problem-picker-footer{align-items:center;border-top:1px solid #e3e8f0;padding-top:14px}
       #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-footer{align-items:center;border-top:1px solid #e3e8f0;padding-top:14px}
       #${MODAL_ID} .gs-problem-picker-buttons{display:flex;flex-shrink:0;gap:10px}
