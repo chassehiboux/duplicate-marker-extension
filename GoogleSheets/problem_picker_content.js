@@ -28,6 +28,7 @@
   const ITIL_INFO_HEADER = 'Информация из СУПП/ITIL';
   const NEW_RESPONSE_HEADER = 'Пришел новый ответ';
   const REQUEST_DATE_HEADER = 'Дата заявки';
+  const REQUEST_STATUS_HEADER = 'Статус заявки';
   const INITIATOR_HEADER = 'Инициатор';
   const CHATGPT_SEARCH_SHEET_NAME = 'Заявки';
   const CHATGPT_RESULT_SHEET_NAME = 'Поиск заявок (ИИ)';
@@ -650,6 +651,7 @@
     const infoColumnIndex = headers.indexOf(ITIL_INFO_HEADER);
     const problemColumnIndex = headers.indexOf(PROBLEM_HEADER);
     const dateColumnIndex = headers.indexOf(REQUEST_DATE_HEADER);
+    const statusColumnIndex = headers.indexOf(REQUEST_STATUS_HEADER);
     const initiatorColumnIndex = headers.indexOf(INITIATOR_HEADER);
     const itilColumnIndex = headers.indexOf(ITIL_NUMBER_HEADER);
     const suppColumnIndex = headers.indexOf(SUPP_NUMBER_HEADER);
@@ -658,11 +660,12 @@
       infoColumnIndex < 0 ||
       problemColumnIndex < 0 ||
       dateColumnIndex < 0 ||
+      statusColumnIndex < 0 ||
       initiatorColumnIndex < 0 ||
       itilColumnIndex < 0 ||
       suppColumnIndex < 0
     ) {
-      throw new Error('Не найдены колонки «Дата заявки», «Инициатор», «Номер ITIL», «Номер СУПП (последний)», «Текст заявки», «Информация из СУПП/ITIL» или «Проблемы».');
+      throw new Error('Не найдены колонки «Дата заявки», «Статус заявки», «Инициатор», «Номер ITIL», «Номер СУПП (последний)», «Текст заявки», «Информация из СУПП/ITIL» или «Проблемы».');
     }
 
     const queue = [];
@@ -678,18 +681,26 @@
           text,
           info,
           date: String(row[dateColumnIndex] || '').trim(),
+          status: String(row[statusColumnIndex] || '').trim(),
           initiator: String(row[initiatorColumnIndex] || '').trim(),
           itilNumber: String(row[itilColumnIndex] || '').trim(),
           suppValue: String(row[suppColumnIndex] || '').trim()
         });
       }
     }
-    const initiatorBackgrounds = await loadInitiatorBackgrounds(
+    const summaryRows = queue.map((item) => item.row);
+    const statusBackgrounds = await loadColumnBackgrounds(
       sheetName,
-      queue.map((item) => item.row),
+      summaryRows,
+      statusColumnIndex + 1
+    );
+    const initiatorBackgrounds = await loadColumnBackgrounds(
+      sheetName,
+      summaryRows,
       initiatorColumnIndex + 1
     );
-    applyInitiatorBackgrounds(queue, initiatorBackgrounds);
+    applyColumnBackgrounds(queue, 'statusBackgroundColor', statusBackgrounds);
+    applyColumnBackgrounds(queue, 'initiatorBackgroundColor', initiatorBackgrounds);
 
     state = {
       ...state,
@@ -707,6 +718,7 @@
         info: infoColumnIndex + 1,
         problem: problemColumnIndex + 1,
         date: dateColumnIndex + 1,
+        status: statusColumnIndex + 1,
         initiator: initiatorColumnIndex + 1,
         itil: itilColumnIndex + 1,
         supp: suppColumnIndex + 1
@@ -800,6 +812,7 @@
     const headers = rows[0] || [];
     const indexes = {
       date: headers.indexOf(REQUEST_DATE_HEADER),
+      status: headers.indexOf(REQUEST_STATUS_HEADER),
       initiator: headers.indexOf(INITIATOR_HEADER),
       itil: headers.indexOf(ITIL_NUMBER_HEADER),
       supp: headers.indexOf(SUPP_NUMBER_HEADER),
@@ -808,7 +821,7 @@
     };
 
     if (Object.values(indexes).some((index) => index < 0)) {
-      throw new Error('Не найдены колонки «Дата заявки», «Инициатор», «Номер ITIL», «Номер СУПП (последний)», «Текст заявки» или «Информация из СУПП/ITIL».');
+      throw new Error('Не найдены колонки «Дата заявки», «Статус заявки», «Инициатор», «Номер ITIL», «Номер СУПП (последний)», «Текст заявки» или «Информация из СУПП/ITIL».');
     }
 
     const byRow = new Map();
@@ -818,6 +831,7 @@
       byRow.set(rowNumber, {
         row: rowNumber,
         date: String(row[indexes.date] || '').trim(),
+        status: String(row[indexes.status] || '').trim(),
         initiator: String(row[indexes.initiator] || '').trim(),
         itilNumber: String(row[indexes.itil] || '').trim(),
         suppValue: String(row[indexes.supp] || '').trim(),
@@ -922,14 +936,14 @@
     return normalized === '#ffffff' ? '' : normalized;
   }
 
-  async function loadInitiatorBackgrounds(sheetName, rows, initiatorColumn) {
+  async function loadColumnBackgrounds(sheetName, rows, column) {
     const uniqueRows = Array.from(new Set((rows || [])
       .map((row) => Number(row))
       .filter((row) => Number.isInteger(row) && row >= 2)))
       .sort((left, right) => left - right);
-    const column = Number(initiatorColumn);
+    const normalizedColumn = Number(column);
 
-    if (!state.bridgeUrl || !sheetName || !uniqueRows.length || !Number.isInteger(column) || column <= 0) {
+    if (!state.bridgeUrl || !sheetName || !uniqueRows.length || !Number.isInteger(normalizedColumn) || normalizedColumn <= 0) {
       return new Map();
     }
 
@@ -944,7 +958,7 @@
             sheetName,
             rows: uniqueRows,
             columns: {
-              initiator: column
+              initiator: normalizedColumn
             }
           }
         }
@@ -967,12 +981,12 @@
     }
   }
 
-  function applyInitiatorBackgrounds(queue, backgrounds) {
+  function applyColumnBackgrounds(queue, colorKey, backgrounds) {
     if (!Array.isArray(queue) || !(backgrounds instanceof Map) || !backgrounds.size) return;
 
     queue.forEach((item) => {
       if (!item || !Number.isInteger(Number(item.row))) return;
-      item.initiatorBackgroundColor = backgrounds.get(Number(item.row)) || '';
+      item[colorKey] = backgrounds.get(Number(item.row)) || '';
     });
   }
 
@@ -1037,12 +1051,19 @@
         ...(snapshotItem || {})
       };
     });
-    const initiatorBackgrounds = await loadInitiatorBackgrounds(
+    const summaryRows = queue.map((item) => item.row);
+    const statusBackgrounds = await loadColumnBackgrounds(
       sheetName,
-      queue.map((item) => item.row),
+      summaryRows,
+      snapshot.indexes.status + 1
+    );
+    const initiatorBackgrounds = await loadColumnBackgrounds(
+      sheetName,
+      summaryRows,
       snapshot.indexes.initiator + 1
     );
-    applyInitiatorBackgrounds(queue, initiatorBackgrounds);
+    applyColumnBackgrounds(queue, 'statusBackgroundColor', statusBackgrounds);
+    applyColumnBackgrounds(queue, 'initiatorBackgroundColor', initiatorBackgrounds);
 
     newResponseState = {
       ...newResponseState,
@@ -1057,6 +1078,7 @@
       columns: {
         ...(bridgeResult.columns && typeof bridgeResult.columns === 'object' ? bridgeResult.columns : {}),
         date: snapshot.indexes.date + 1,
+        status: snapshot.indexes.status + 1,
         initiator: snapshot.indexes.initiator + 1,
         text: snapshot.indexes.text + 1,
         info: snapshot.indexes.info + 1
@@ -1139,6 +1161,8 @@
     return {
       row: Number(item && item.row),
       date: String(item && item.date || '').trim(),
+      status: String(item && item.status || '').trim(),
+      statusBackgroundColor: normalizeSheetBackgroundColor(item && item.statusBackgroundColor),
       initiator: String(item && item.initiator || '').trim(),
       initiatorBackgroundColor: normalizeSheetBackgroundColor(item && item.initiatorBackgroundColor),
       itilNumber: String(item && item.itilNumber || '').trim(),
@@ -1157,6 +1181,12 @@
       { key: 'row', label: 'Номер строки', value: item && item.row ? String(item.row) : '—' },
       { key: 'date', label: 'Дата заявки', value: item && item.date ? item.date : '—' },
       {
+        key: 'status',
+        label: 'Статус заявки',
+        value: item && item.status ? item.status : '—',
+        backgroundColor: normalizeSheetBackgroundColor(item && item.statusBackgroundColor)
+      },
+      {
         key: 'initiator',
         label: 'Инициатор',
         value: item && item.initiator ? item.initiator : '—',
@@ -1172,7 +1202,7 @@
       const valueText = fieldData.value;
       const field = document.createElement('div');
       field.className = 'gs-request-summary-item';
-      if (fieldData.key === 'initiator' && fieldData.backgroundColor) {
+      if (fieldData.backgroundColor) {
         field.classList.add('has-sheet-background');
         field.style.setProperty('--gs-request-summary-sheet-bg', fieldData.backgroundColor);
       }
