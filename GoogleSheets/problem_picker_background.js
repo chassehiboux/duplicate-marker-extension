@@ -13,6 +13,10 @@
   const CHATGPT_CLOSE_TAB_ACTION = 'GOOGLE_SHEETS_CHATGPT_CLOSE_TAB';
   const ITIL_URL = 'http://tmn-vpitil1c01/ITIL/ru_RU/';
   const SUPP_URL = 'http://tmn-vpsupp1c01.corp.vostok-electra.ru/PMS/ru_RU/';
+  const ITIL_BASE_URL = 'http://tmn-vpitil1c01/ITIL/';
+  const SUPP_BASE_URL = 'http://tmn-vpsupp1c01.corp.vostok-electra.ru/PMS/';
+  const ONE_C_USERNAME = 'ЗуйкевичДИ';
+  const ONE_C_PASSWORD = 'Nu3ho5ja';
   const CHATGPT_TEMPORARY_URL = 'https://chatgpt.com/?temporary-chat=true';
   const CHATGPT_URL_PREFIX = 'https://chatgpt.com/';
 
@@ -612,6 +616,10 @@
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
+  function isSystemTabUrl(url, baseUrl) {
+    return String(url || '').startsWith(String(baseUrl || ''));
+  }
+
   async function activateTabForInteractiveAutomation(tab, urlPrefix, label) {
     const tabId = tab && Number.isInteger(tab.id) ? tab.id : null;
     if (!Number.isInteger(tabId)) {
@@ -703,6 +711,191 @@
     });
   }
 
+  async function ensureOneCSessionInPage(options) {
+    const settings = options && typeof options === 'object' ? options : {};
+    const systemLabel = String(settings.systemLabel || '1С').trim();
+    const readyState = String(settings.readyState || '').trim().toLowerCase();
+    const username = String(settings.username || '').trim();
+    const password = String(settings.password || '');
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const normalizeText = (value) => String(value || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+
+    function isVisible(element) {
+      if (!(element instanceof Element)) return false;
+      const style = window.getComputedStyle(element);
+      if (!style || style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return false;
+      const rect = element.getBoundingClientRect();
+      return rect.width > 0
+        && rect.height > 0
+        && rect.bottom >= 0
+        && rect.right >= 0
+        && rect.top <= window.innerHeight
+        && rect.left <= window.innerWidth;
+    }
+
+    function setInputValue(input, value) {
+      if (!(input instanceof HTMLInputElement)) return;
+      const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+      if (descriptor && typeof descriptor.set === 'function') {
+        descriptor.set.call(input, value);
+      } else {
+        input.value = value;
+      }
+    }
+
+    function dispatchInputEvent(input, eventName, detail) {
+      try {
+        input.dispatchEvent(new InputEvent(eventName, detail));
+      } catch (error) {
+        input.dispatchEvent(new Event(eventName, {
+          bubbles: !!(detail && detail.bubbles),
+          cancelable: !!(detail && detail.cancelable)
+        }));
+      }
+    }
+
+    async function fillInputLikeUser(input, value) {
+      if (!(input instanceof HTMLInputElement)) return;
+      input.focus();
+      if (typeof input.select === 'function') input.select();
+      setInputValue(input, value);
+      dispatchInputEvent(input, 'input', {
+        bubbles: true,
+        cancelable: true,
+        inputType: 'insertText',
+        data: value
+      });
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      await sleep(80);
+    }
+
+    async function clickLikeUser(element) {
+      if (!(element instanceof Element)) return;
+      element.scrollIntoView({ block: 'center', inline: 'center' });
+      if (typeof element.focus === 'function') element.focus();
+      ['mousedown', 'mouseup', 'click'].forEach((type) => {
+        element.dispatchEvent(new MouseEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          view: window,
+          button: 0,
+          buttons: type === 'mousedown' ? 1 : 0
+        }));
+      });
+      if (typeof element.click === 'function') {
+        try {
+          element.click();
+        } catch (error) {
+          // Не все элементы 1С безопасно вызываются через click().
+        }
+      }
+      await sleep(160);
+    }
+
+    function findLoginUserInput() {
+      const inputs = Array.from(document.querySelectorAll('input[type="text"],input:not([type])'))
+        .filter((input) => isVisible(input));
+      return inputs.find((input) => /пользователь/i.test(normalizeText(
+        input.getAttribute('placeholder')
+        || input.getAttribute('aria-label')
+        || input.getAttribute('title')
+        || input.name
+      ))) || inputs[0] || null;
+    }
+
+    function findLoginPasswordInput() {
+      return Array.from(document.querySelectorAll('input[type="password"]'))
+        .find((input) => isVisible(input)) || null;
+    }
+
+    function findLoginButton() {
+      return Array.from(document.querySelectorAll('button,input[type="button"],input[type="submit"],div,span,a'))
+        .find((element) => isVisible(element) && normalizeText(
+          element.value
+          || element.textContent
+          || element.getAttribute('title')
+          || element.getAttribute('aria-label')
+        ) === 'Войти') || null;
+    }
+
+    function isItilReady() {
+      return !!(
+        document.querySelector('.toplineBox')
+        || document.querySelector('#form2_ДополнениеСтрокаПоиска_i0')
+        || document.querySelector('#captionbarField_i0')
+      );
+    }
+
+    function isSuppReady() {
+      if (document.querySelector('#captionbarField_i0')) return true;
+      return Array.from(document.querySelectorAll('input[type="text"],input:not([type])'))
+        .some((input) => isVisible(input) && normalizeText(
+          input.getAttribute('placeholder')
+          || input.getAttribute('aria-label')
+          || input.getAttribute('title')
+        ).includes('Поиск Ctrl+Shift+F'));
+    }
+
+    function isReady() {
+      return readyState === 'itil' ? isItilReady() : isSuppReady();
+    }
+
+    let lastLoginAttemptAt = 0;
+    let attempts = 0;
+    const startedAt = Date.now();
+
+    while ((Date.now() - startedAt) < 90000) {
+      if (isReady()) {
+        return {
+          success: true,
+          url: location.href,
+          attempts
+        };
+      }
+
+      const userInput = findLoginUserInput();
+      const passwordInput = findLoginPasswordInput();
+      const loginButton = findLoginButton();
+
+      if (userInput && passwordInput && loginButton) {
+        if (!lastLoginAttemptAt || (Date.now() - lastLoginAttemptAt) >= 4000) {
+          attempts += 1;
+          lastLoginAttemptAt = Date.now();
+          await fillInputLikeUser(userInput, username);
+          await fillInputLikeUser(passwordInput, password);
+          await clickLikeUser(loginButton);
+          await sleep(600);
+          continue;
+        }
+      }
+
+      await sleep(250);
+    }
+
+    return {
+      success: false,
+      error: `Не дождался рабочей страницы ${systemLabel}.`
+    };
+  }
+
+  async function ensureSuppAuthenticated(tabId) {
+    const result = await executeInTab(tabId, ensureOneCSessionInPage, [{
+      systemLabel: 'СУПП',
+      readyState: 'supp',
+      username: ONE_C_USERNAME,
+      password: ONE_C_PASSWORD
+    }]);
+
+    if (!result || result.success !== true) {
+      throw new Error(result && result.error ? result.error : 'Не удалось подготовить страницу СУПП.');
+    }
+
+    const refreshedTab = await tabsGet(tabId).catch(() => null);
+    if (refreshedTab && refreshedTab.status !== 'complete') {
+      await waitForTabReady(tabId, SUPP_BASE_URL);
+    }
+  }
+
   function executeInTab(tabId, func, args) {
     return new Promise((resolve, reject) => {
       chrome.scripting.executeScript({
@@ -724,11 +917,11 @@
 
   async function getOrCreateItilTab() {
     const tabs = await tabsQuery({});
-    const existing = tabs.find((tab) => String(tab.url || '').startsWith(ITIL_URL));
+    const existing = tabs.find((tab) => isSystemTabUrl(tab.url, ITIL_BASE_URL));
 
     if (existing && Number.isInteger(existing.id)) {
-      if (existing.status !== 'complete') await waitForTabReady(existing.id, ITIL_URL);
-      return activateTabForInteractiveAutomation(existing, ITIL_URL, 'ITIL');
+      if (existing.status !== 'complete') await waitForTabReady(existing.id, ITIL_BASE_URL);
+      return activateTabForInteractiveAutomation(existing, ITIL_BASE_URL, 'ITIL');
     }
 
     const created = await tabsCreate({ url: ITIL_URL, active: true });
@@ -736,26 +929,29 @@
       throw new Error('Не удалось открыть вкладку ITIL.');
     }
 
-    await waitForTabReady(created.id, ITIL_URL);
-    return activateTabForInteractiveAutomation(created, ITIL_URL, 'ITIL');
+    await waitForTabReady(created.id, ITIL_BASE_URL);
+    return activateTabForInteractiveAutomation(created, ITIL_BASE_URL, 'ITIL');
   }
 
   async function getOrCreateSuppTab() {
     const tabs = await tabsQuery({});
-    const existing = tabs.find((tab) => String(tab.url || '').startsWith(SUPP_URL));
+    const existing = tabs.find((tab) => isSystemTabUrl(tab.url, SUPP_BASE_URL));
+    const targetTab = existing && Number.isInteger(existing.id)
+      ? existing
+      : await tabsCreate({ url: SUPP_URL, active: true });
 
-    if (existing && Number.isInteger(existing.id)) {
-      if (existing.status !== 'complete') await waitForTabReady(existing.id, SUPP_URL);
-      return activateTabForInteractiveAutomation(existing, SUPP_URL, 'СУПП');
-    }
-
-    const created = await tabsCreate({ url: SUPP_URL, active: true });
-    if (!created || !Number.isInteger(created.id)) {
+    if (!targetTab || !Number.isInteger(targetTab.id)) {
       throw new Error('Не удалось открыть вкладку СУПП.');
     }
 
-    await waitForTabReady(created.id, SUPP_URL);
-    return activateTabForInteractiveAutomation(created, SUPP_URL, 'СУПП');
+    if (targetTab.status !== 'complete') {
+      await waitForTabReady(targetTab.id, SUPP_BASE_URL);
+    }
+
+    const activatedTab = await activateTabForInteractiveAutomation(targetTab, SUPP_BASE_URL, 'СУПП');
+    await ensureSuppAuthenticated(activatedTab.id);
+    const refreshedTab = await tabsGet(activatedTab.id).catch(() => activatedTab);
+    return activateTabForInteractiveAutomation(refreshedTab || activatedTab, SUPP_BASE_URL, 'СУПП');
   }
 
   async function createChatGptTemporaryTab(sourceTabId, sourceWindowId) {
