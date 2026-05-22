@@ -2054,7 +2054,7 @@
           return normalizeMultiline(bodyElement.innerText || bodyElement.textContent || '');
         }
 
-        return normalizeMultilineText(lines.join('\n'));
+        return normalizeMultiline(lines.join('\n'));
       }
 
       const items = Array.from(root.querySelectorAll('.ecsChatItem')).map((item) => {
