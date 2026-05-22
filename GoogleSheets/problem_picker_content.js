@@ -422,6 +422,7 @@
 - row_id бери только из столбца «${CHATGPT_ROW_ID_HEADER}» приложенного CSV;
 - добавляй строку только если она действительно соответствует смыслу запроса;
 - reason можешь оставить пустой строкой, если пояснение не нужно;
+- внутри reason не используй двойные кавычки; если они нужны, замени их на одинарные или оставь reason пустым;
 - JSON должен быть валидным: используй двойные кавычки и не ставь завершающие запятые перед } или ];
 - не возвращай исходные данные строк и не переписывай значения других столбцов;
 - если совпадений нет, верни ровно {"matches":[]}.`;
@@ -508,6 +509,11 @@
       }
     }
 
+    for (const candidate of candidates) {
+      const loose = parseChatGptSearchJsonLoosely(candidate);
+      if (loose) return loose;
+    }
+
     throw new Error(lastError && lastError.message
       ? `ChatGPT вернул некорректный JSON: ${lastError.message}`
       : 'ChatGPT вернул ответ не в JSON-формате.');
@@ -523,6 +529,90 @@
 
   function repairChatGptSearchJson(value) {
     return String(value || '').replace(/,\s*([}\]])/g, '$1');
+  }
+
+  function parseChatGptSearchJsonLoosely(value) {
+    const text = String(value || '');
+    const rowIdMatches = Array.from(text.matchAll(/["']row_id["']\s*:\s*(-?\d+)/gi));
+    if (!rowIdMatches.length) return null;
+
+    const matches = rowIdMatches.map((match, index) => {
+      const rowId = Number(match[1]);
+      if (!Number.isInteger(rowId)) return null;
+
+      const nextMatch = rowIdMatches[index + 1];
+      const startIndex = match.index + match[0].length;
+      const endIndex = nextMatch ? nextMatch.index : text.length;
+      return {
+        row_id: rowId,
+        reason: extractLooseChatGptSearchReason_(text.slice(startIndex, endIndex))
+      };
+    }).filter(Boolean);
+
+    return matches.length ? { matches } : null;
+  }
+
+  function extractLooseChatGptSearchReason_(value) {
+    const text = String(value || '');
+    const reasonMatch = text.match(/["']reason["']\s*:\s*/i);
+    if (!reasonMatch) return '';
+
+    let index = reasonMatch.index + reasonMatch[0].length;
+    while (index < text.length && /\s/.test(text[index])) index++;
+    if (index >= text.length) return '';
+
+    const quote = text[index];
+    if (quote !== '"' && quote !== '\'') {
+      const endIndex = text.slice(index).search(/\s*[,}\]]/);
+      return String(endIndex === -1 ? text.slice(index) : text.slice(index, index + endIndex)).trim();
+    }
+
+    let result = '';
+    let isEscaped = false;
+    for (let cursor = index + 1; cursor < text.length; cursor++) {
+      const ch = text[cursor];
+
+      if (isEscaped) {
+        result += decodeLooseChatGptSearchEscape_(ch);
+        isEscaped = false;
+        continue;
+      }
+
+      if (ch === '\\') {
+        isEscaped = true;
+        continue;
+      }
+
+      if (ch === quote) {
+        const tail = text.slice(cursor + 1);
+        if (/^\s*(?:[,}\]])/.test(tail)) {
+          return result.trim();
+        }
+      }
+
+      result += ch;
+    }
+
+    return result.trim();
+  }
+
+  function decodeLooseChatGptSearchEscape_(value) {
+    switch (value) {
+      case 'n':
+        return '\n';
+      case 'r':
+        return '\r';
+      case 't':
+        return '\t';
+      case '"':
+        return '"';
+      case '\'':
+        return '\'';
+      case '\\':
+        return '\\';
+      default:
+        return String(value || '');
+    }
   }
 
   function extractFirstJsonObjectText(value) {
