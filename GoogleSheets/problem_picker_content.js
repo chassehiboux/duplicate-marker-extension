@@ -36,6 +36,7 @@
   const CHATGPT_SEARCH_FILE_NAME = 'zayavki-search.csv';
   const CHATGPT_SEARCH_VISIBLE_HEADERS = Object.freeze([
     'Дата заявки',
+    REQUEST_STATUS_HEADER,
     'Проблемы',
     'Инициатор',
     ITIL_NUMBER_HEADER,

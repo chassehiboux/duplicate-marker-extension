@@ -1,6 +1,9 @@
 const PROBLEM_PICKER_BRIDGE_SPREADSHEET_ID = '1A7bsMpcMegLvTIpdRBa06TD5RxGi64Cw3goYydbujNo';
 const PROBLEM_PICKER_BRIDGE_ALLOWED_SHEETS = ['Заявки', 'Заявки (наши)'];
 const PROBLEM_PICKER_BRIDGE_NEW_RESPONSE_GREEN = '#00ff00';
+const PROBLEM_PICKER_BRIDGE_AI_SEARCH_RESULT_SHEET = 'Поиск заявок (ИИ)';
+const PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_SHEET = 'Шаблон (Поиск заявок (ИИ))';
+const PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW = 2;
 
 // Bridge больше не зависит от PROBLEM_OPTIONS из Code.gs.
 // Так меньше риск, что /exec работает с другим набором глобальных переменных.
@@ -903,7 +906,7 @@ function _problemPickerBridgeSaveAiSearchResults_(payload) {
   }
 
   const sheetName = String(payload.sheetName || '').trim();
-  if (sheetName !== 'Поиск заявок (ИИ)') {
+  if (sheetName !== PROBLEM_PICKER_BRIDGE_AI_SEARCH_RESULT_SHEET) {
     throw new Error('Некорректный лист результатов ИИ-поиска: ' + sheetName);
   }
 
@@ -927,26 +930,23 @@ function _problemPickerBridgeSaveAiSearchResults_(payload) {
   });
 
   const ss = SpreadsheetApp.openById(PROBLEM_PICKER_BRIDGE_SPREADSHEET_ID);
-  const sh = ss.getSheetByName(sheetName) || ss.insertSheet(sheetName);
-  sh.clear();
+  const sh = _problemPickerBridgePrepareAiSearchResultSheet_(ss, sheetName, headers.length, rows.length);
+  const totalColumns = Math.max(sh.getLastColumn(), headers.length);
+  const rowCount = Math.max(rows.length, 1);
 
-  const values = [headers].concat(rows);
-  const range = sh.getRange(1, 1, values.length, headers.length);
-  range.setNumberFormat('@');
-  range.setValues(values);
-  range.setVerticalAlignment('top');
-  range.setWrap(true);
+  sh.getRange(1, 1, 1, headers.length).setNumberFormat('@').setValues([headers]);
+  if (totalColumns > headers.length) {
+    sh.getRange(1, headers.length + 1, 1, totalColumns - headers.length).clearContent();
+  }
 
-  sh.setFrozenRows(1);
+  if (rows.length) {
+    sh.getRange(PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW, 1, rows.length, headers.length)
+      .setNumberFormat('@')
+      .setValues(rows);
+  }
+
   if (sh.getFilter()) sh.getFilter().remove();
-  range.createFilter();
-  headers.forEach(function(header, index) {
-    const width = header === 'Текст заявки' || header === 'Информация из СУПП/ITIL'
-      ? 913
-      : 171;
-    sh.setColumnWidth(index + 1, width);
-  });
-  sh.setRowHeights(1, values.length, 55);
+  sh.getRange(1, 1, rowCount + 1, headers.length).createFilter();
 
   return {
     sheetName: sheetName,
@@ -954,6 +954,54 @@ function _problemPickerBridgeSaveAiSearchResults_(payload) {
     rowsCount: rows.length,
     columnsCount: headers.length
   };
+}
+
+function _problemPickerBridgePrepareAiSearchResultSheet_(ss, sheetName, headersCount, rowsCount) {
+  const template = ss.getSheetByName(PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_SHEET);
+  if (!template) {
+    throw new Error('Не найден шаблон листа результатов ИИ-поиска: ' + PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_SHEET);
+  }
+
+  const existing = ss.getSheetByName(sheetName);
+  if (existing) {
+    ss.deleteSheet(existing);
+  }
+
+  const sh = template.copyTo(ss).setName(sheetName);
+  if (sh.isSheetHidden()) sh.showSheet();
+
+  const targetColumns = Math.max(Number(headersCount) || 0, sh.getMaxColumns());
+  if (sh.getMaxColumns() < targetColumns) {
+    sh.insertColumnsAfter(sh.getMaxColumns(), targetColumns - sh.getMaxColumns());
+  }
+
+  if (sh.getMaxRows() < PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW) {
+    sh.insertRowsAfter(sh.getMaxRows(), PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW - sh.getMaxRows());
+  }
+
+  const templateWidth = Math.max(headersCount, sh.getLastColumn());
+  if (sh.getMaxRows() >= PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW) {
+    sh.getRange(
+      PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW,
+      1,
+      sh.getMaxRows() - PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW + 1,
+      templateWidth
+    ).clearContent();
+  }
+
+  if (rowsCount > 1) {
+    sh.insertRowsAfter(PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW, rowsCount - 1);
+    sh.getRange(PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW, 1, 1, templateWidth)
+      .copyTo(
+        sh.getRange(PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW + 1, 1, rowsCount - 1, templateWidth),
+        { formatOnly: true }
+      );
+  }
+
+  const templateRowHeight = sh.getRowHeight(PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW);
+  sh.setRowHeights(PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW, Math.max(rowsCount, 1), templateRowHeight);
+
+  return sh;
 }
 
 function _problemPickerBridgeNormalizeRows_(rows) {
