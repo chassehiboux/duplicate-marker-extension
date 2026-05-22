@@ -610,8 +610,48 @@
     return true;
   }
 
+  function buildHeaderIndexMap(headers) {
+    const map = Object.create(null);
+    (headers || []).forEach((header, index) => {
+      const normalized = String(header == null ? '' : header).trim();
+      if (normalized && !Object.prototype.hasOwnProperty.call(map, normalized)) {
+        map[normalized] = index;
+      }
+    });
+    return map;
+  }
+
+  function getNonEmptyCsvRows(rows) {
+    return normalizeCsvTable(rows).filter((row) => row.some((value) => String(value || '').trim()));
+  }
+
+  function buildRowsByHeaders(headers, rows) {
+    const normalizedHeaders = (headers || []).map((header) => String(header == null ? '' : header).trim());
+    return getNonEmptyCsvRows(rows).map((row) => normalizedHeaders.map((header, index) => {
+      if (!header) return '';
+      return String(row[index] == null ? '' : row[index]);
+    }));
+  }
+
+  function extractRowsFromActualSheet(actualRows, expectedHeaders) {
+    const normalizedExpectedHeaders = (expectedHeaders || []).map((header) => String(header == null ? '' : header).trim());
+    const actualTable = normalizeCsvTable(actualRows);
+    const actualHeaders = actualTable[0] || [];
+    const actualHeaderIndexMap = buildHeaderIndexMap(actualHeaders);
+
+    const missingHeaders = normalizedExpectedHeaders.filter((header) => header && !Object.prototype.hasOwnProperty.call(actualHeaderIndexMap, header));
+    if (missingHeaders.length) return null;
+
+    return getNonEmptyCsvRows(actualTable.slice(1)).map((row) => normalizedExpectedHeaders.map((header) => {
+      if (!header) return '';
+      const sourceIndex = actualHeaderIndexMap[header];
+      return String(row[sourceIndex] == null ? '' : row[sourceIndex]);
+    }));
+  }
+
   async function verifyChatGptResultSheetWrite(resultTable) {
-    const expectedRows = [resultTable.headers].concat(resultTable.rows);
+    const expectedHeaders = (resultTable.headers || []).map((header) => String(header == null ? '' : header).trim());
+    const expectedRows = buildRowsByHeaders(expectedHeaders, resultTable.rows || []);
 
     for (let attempt = 0; attempt < 8; attempt++) {
       if (attempt) await wait(1000);
@@ -624,7 +664,9 @@
         if (!response.ok) continue;
 
         const actualRows = parseCsv(await response.text());
-        if (areCsvTablesEqual(expectedRows, actualRows)) return true;
+        const actualMappedRows = extractRowsFromActualSheet(actualRows, expectedHeaders);
+        if (!actualMappedRows) continue;
+        if (areCsvTablesEqual([expectedHeaders].concat(expectedRows), [expectedHeaders].concat(actualMappedRows))) return true;
       } catch (error) {
         // После сетевой ошибки bridge повторная проверка листа — best effort.
       }

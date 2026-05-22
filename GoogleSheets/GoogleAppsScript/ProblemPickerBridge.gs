@@ -931,22 +931,29 @@ function _problemPickerBridgeSaveAiSearchResults_(payload) {
 
   const ss = SpreadsheetApp.openById(PROBLEM_PICKER_BRIDGE_SPREADSHEET_ID);
   const sh = _problemPickerBridgePrepareAiSearchResultSheet_(ss, sheetName, headers.length, rows.length);
-  const totalColumns = Math.max(sh.getLastColumn(), headers.length);
-  const rowCount = Math.max(rows.length, 1);
+  const headerMap = _problemPickerBridgeBuildAiSearchHeaderMap_(sh, headers, rows);
+  const writableRowCount = Math.max(rows.length, 1);
 
-  sh.getRange(1, 1, 1, headers.length).setNumberFormat('@').setValues([headers]);
-  if (totalColumns > headers.length) {
-    sh.getRange(1, headers.length + 1, 1, totalColumns - headers.length).clearContent();
-  }
+  sh.getRange(
+    PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW,
+    1,
+    writableRowCount,
+    headerMap.lastColumn
+  ).clearContent();
 
   if (rows.length) {
-    sh.getRange(PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW, 1, rows.length, headers.length)
-      .setNumberFormat('@')
-      .setValues(rows);
+    const values = rows.map(function(sourceRow) {
+      const targetRow = Array(headerMap.lastColumn).fill('');
+      sourceRow.forEach(function(value, index) {
+        const targetColumn = headerMap.sourceIndexToTargetColumn[index];
+        if (!targetColumn) return;
+        targetRow[targetColumn - 1] = String(value == null ? '' : value);
+      });
+      return targetRow;
+    });
+    sh.getRange(PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW, 1, values.length, headerMap.lastColumn)
+      .setValues(values);
   }
-
-  if (sh.getFilter()) sh.getFilter().remove();
-  sh.getRange(1, 1, rowCount + 1, headers.length).createFilter();
 
   return {
     sheetName: sheetName,
@@ -970,38 +977,71 @@ function _problemPickerBridgePrepareAiSearchResultSheet_(ss, sheetName, headersC
   const sh = template.copyTo(ss).setName(sheetName);
   if (sh.isSheetHidden()) sh.showSheet();
 
-  const targetColumns = Math.max(Number(headersCount) || 0, sh.getMaxColumns());
-  if (sh.getMaxColumns() < targetColumns) {
-    sh.insertColumnsAfter(sh.getMaxColumns(), targetColumns - sh.getMaxColumns());
-  }
-
   if (sh.getMaxRows() < PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW) {
     sh.insertRowsAfter(sh.getMaxRows(), PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW - sh.getMaxRows());
   }
 
-  const templateWidth = Math.max(headersCount, sh.getLastColumn());
-  if (sh.getMaxRows() >= PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW) {
-    sh.getRange(
-      PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW,
-      1,
-      sh.getMaxRows() - PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW + 1,
-      templateWidth
-    ).clearContent();
+  const lastColumn = sh.getLastColumn();
+  const requiredRow = PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW + Math.max(rowsCount, 1) - 1;
+  if (sh.getMaxRows() < requiredRow) {
+    sh.insertRowsAfter(sh.getMaxRows(), requiredRow - sh.getMaxRows());
   }
 
+  sh.getRange(
+    PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW,
+    1,
+    sh.getMaxRows() - PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW + 1,
+    lastColumn
+  ).clearContent();
+
   if (rowsCount > 1) {
-    sh.insertRowsAfter(PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW, rowsCount - 1);
-    sh.getRange(PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW, 1, 1, templateWidth)
-      .copyTo(
-        sh.getRange(PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW + 1, 1, rowsCount - 1, templateWidth),
-        { formatOnly: true }
-      );
+    sh.getRange(PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW, 1, 1, lastColumn)
+      .copyTo(sh.getRange(PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW + 1, 1, rowsCount - 1, lastColumn));
   }
 
   const templateRowHeight = sh.getRowHeight(PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW);
   sh.setRowHeights(PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW, Math.max(rowsCount, 1), templateRowHeight);
 
   return sh;
+}
+
+function _problemPickerBridgeBuildAiSearchHeaderMap_(sh, sourceHeaders, rows) {
+  const templateHeaders = sh.getRange(1, 1, 1, sh.getLastColumn()).getDisplayValues()[0].map(function(value) {
+    return String(value == null ? '' : value).trim();
+  });
+  const templateHeaderToColumn = {};
+
+  templateHeaders.forEach(function(header, index) {
+    if (header && !templateHeaderToColumn[header]) {
+      templateHeaderToColumn[header] = index + 1;
+    }
+  });
+
+  const sourceIndexToTargetColumn = [];
+  const missingHeaders = [];
+
+  sourceHeaders.forEach(function(header, index) {
+    const normalizedHeader = String(header == null ? '' : header).trim();
+    const targetColumn = templateHeaderToColumn[normalizedHeader] || 0;
+    sourceIndexToTargetColumn[index] = targetColumn;
+    if (targetColumn) return;
+
+    const hasNonEmptyValues = rows.some(function(row) {
+      return String(row && row[index] != null ? row[index] : '').trim() !== '';
+    });
+    if (hasNonEmptyValues || normalizedHeader) {
+      missingHeaders.push(normalizedHeader || ('Колонка #' + (index + 1)));
+    }
+  });
+
+  if (missingHeaders.length) {
+    throw new Error('В шаблоне не найдены колонки для результатов ИИ-поиска: ' + missingHeaders.join(', '));
+  }
+
+  return {
+    lastColumn: templateHeaders.length,
+    sourceIndexToTargetColumn: sourceIndexToTargetColumn
+  };
 }
 
 function _problemPickerBridgeNormalizeRows_(rows) {
