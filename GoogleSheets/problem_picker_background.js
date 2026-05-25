@@ -1699,6 +1699,54 @@
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     const normalizeText = (value) => String(value || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
     const normalizeMultiline = (value) => String(value || '').replace(/\r\n?/g, '\n').replace(/\u00a0/g, ' ').replace(/[ \t]+\n/g, '\n').trim();
+    const normalizeSuppSectionTextLocal = (value) => normalizeMultiline(String(value || '').replace(/\u00b6/g, '\n'));
+    const normalizeSectionLabelLineLocal = (value) => String(value || '')
+      .replace(/\u00a0/g, ' ')
+      .replace(/[ \t]+$/g, '')
+      .trim()
+      .toLocaleLowerCase('ru-RU');
+    const extractLabeledMultilineSectionLocal = (text, startLabel, endLabels) => {
+      const lines = String(text || '')
+        .replace(/\r\n?/g, '\n')
+        .replace(/\u00a0/g, ' ')
+        .split('\n')
+        .map((line) => line.replace(/[ \t]+$/g, ''));
+      const startKey = normalizeSectionLabelLineLocal(startLabel);
+      const endKeys = new Set((endLabels || []).map((label) => normalizeSectionLabelLineLocal(label)));
+      const startIndex = lines.findIndex((line) => normalizeSectionLabelLineLocal(line) === startKey);
+      if (startIndex === -1) return '';
+
+      const collected = [];
+      for (let index = startIndex + 1; index < lines.length; index++) {
+        const line = lines[index];
+        if (endKeys.has(normalizeSectionLabelLineLocal(line))) break;
+        collected.push(line);
+      }
+
+      return normalizeSuppSectionTextLocal(collected.join('\n'));
+    };
+    const extractSuppIncidentReasonTextLocal = (text) => {
+      const extracted = extractLabeledMultilineSectionLocal(text, 'Причина возникновения инцидента:', [
+        'Комментарии',
+        'Файлы',
+        'Дополнительно'
+      ]);
+      if (extracted) return extracted;
+
+      const source = String(text || '').replace(/\r\n?/g, '\n');
+      const startMarker = 'Причина возникновения инцидента:';
+      const startIdx = source.toLowerCase().indexOf(startMarker.toLowerCase());
+      if (startIdx === -1) return '';
+
+      let result = source.substring(startIdx + startMarker.length);
+      let endIdx = -1;
+      ['\nКомментарии\n', '\nФайлы\n', '\nДополнительно\n'].forEach((marker) => {
+        const idx = result.toLowerCase().indexOf(marker.toLowerCase());
+        if (idx !== -1 && (endIdx === -1 || idx < endIdx)) endIdx = idx;
+      });
+      if (endIdx !== -1) result = result.substring(0, endIdx);
+      return normalizeSuppSectionTextLocal(result);
+    };
     const encodeDiscussionPlainTextLine = (line) => {
       const value = String(line || '').replace(/\u00a0/g, ' ');
       if (!value) return '';
@@ -2208,7 +2256,7 @@
         let text = '';
         try {
           const body = iframe.contentDocument && iframe.contentDocument.body;
-          text = normalizeSuppSectionText(body ? body.innerText || body.textContent || '' : '');
+          text = normalizeSuppSectionTextLocal(body ? body.innerText || body.textContent || '' : '');
         } catch (error) {
           // Нужный iframe СУПП доступен как same-origin; прочие можно пропустить.
         }
@@ -2242,7 +2290,7 @@
     }
 
     function extractCommentsText(infoText) {
-      const extracted = extractLabeledMultilineSection(infoText, 'Комментарии', [
+      const extracted = extractLabeledMultilineSectionLocal(infoText, 'Комментарии', [
         'Файлы',
         'Дополнительно'
       ]);
@@ -2259,7 +2307,7 @@
         if (idx !== -1 && (endIdx === -1 || idx < endIdx)) endIdx = idx;
       });
       if (endIdx !== -1) result = result.substring(0, endIdx);
-      return normalizeSuppSectionText(result);
+      return normalizeSuppSectionTextLocal(result);
     }
 
   async function openDiscussionPanel() {
@@ -2556,7 +2604,7 @@
       }
 
       const requestText = await waitFor(getInfoIframeText, 60000, `текст заявки СУПП ${number}`);
-      const incidentReasonText = extractSuppIncidentReasonText(requestText);
+      const incidentReasonText = extractSuppIncidentReasonTextLocal(requestText);
       const commentsText = extractCommentsText(requestText);
 
       await openDiscussionPanel();
