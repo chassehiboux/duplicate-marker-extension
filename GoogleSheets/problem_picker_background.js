@@ -125,6 +125,10 @@
     return sections.map((section) => `${section.label}\n${section.text}`).join('\n\n');
   }
 
+  function buildItilNoInfoFallbackText() {
+    return 'Решение обращения:\nИнформации по решению заявки нет';
+  }
+
   function sliceTextSection(text, startMarker, endMarkers) {
     let result = String(text || '').replace(/\r\n?/g, '\n');
     const startIdx = result.toLowerCase().indexOf(String(startMarker || '').toLowerCase());
@@ -1325,6 +1329,7 @@
     const sheetName = String(payload.sheetName || '').trim();
     const spreadsheetId = String(payload.spreadsheetId || '').trim();
     const columns = payload.columns && typeof payload.columns === 'object' ? payload.columns : null;
+    const forceEmptyInfoPlaceholder = !!payload.forceEmptyInfoPlaceholder;
 
     if (spreadsheetId !== SPREADSHEET_ID) throw new Error('Некорректная таблица для обновления INFO из ITIL.');
     if (!sheetName) throw new Error('Не передан лист для обновления INFO из ITIL.');
@@ -1333,7 +1338,10 @@
     normalizeBridgeUrl(data.bridgeUrl);
 
     const itilData = await collectItilFillData(itilNumber);
-    const solutionText = String(itilData.solutionText || '').trim();
+    let solutionText = String(itilData.solutionText || '').trim();
+    if (!solutionText && forceEmptyInfoPlaceholder) {
+      solutionText = buildItilNoInfoFallbackText();
+    }
 
     const bridgePayload = {
       action: 'saveItilInfoData',
@@ -1360,6 +1368,7 @@
     const sheetName = String(payload.sheetName || '').trim();
     const spreadsheetId = String(payload.spreadsheetId || '').trim();
     const columns = payload.columns && typeof payload.columns === 'object' ? payload.columns : null;
+    const forceEmptyInfoPlaceholder = !!payload.forceEmptyInfoPlaceholder;
 
     if (spreadsheetId !== SPREADSHEET_ID) throw new Error('Некорректная таблица для обновления INFO из СУПП.');
     if (!sheetName) throw new Error('Не передан лист для обновления INFO из СУПП.');
@@ -1382,12 +1391,20 @@
       };
     }
 
-    const infoText = processSuppInfoText(
+    let infoText = processSuppInfoText(
       suppNumber,
       result.incidentReasonText || '',
       result.commentsText || '',
       result.discussionText || ''
     );
+    if (forceEmptyInfoPlaceholder && infoText === suppNumber) {
+      infoText = processSuppInfoText(
+        suppNumber,
+        'Информации по решению заявки нет',
+        '',
+        ''
+      );
+    }
 
     const bridgePayload = {
       action: 'saveSuppInfoData',

@@ -121,6 +121,12 @@ function _problemPickerBridgeReadRowDisplayValues_(sh, row, columns) {
   return result;
 }
 
+function _problemPickerBridgeExtractSuppNumber_(value) {
+  const text = String(value || '').replace(/\r\n?/g, '\n');
+  const matches = text.match(/ЗНР-[A-Za-zА-Яа-яЁё0-9-]+/g);
+  return matches && matches.length ? String(matches[matches.length - 1] || '').trim() : '';
+}
+
 function _problemPickerBridgeResetRowColors_(sh, row, colResp, colSupp) {
   const ranges = [];
 
@@ -151,11 +157,13 @@ function _problemPickerBridgeGetNewResponseRows_(payload) {
 
   const colItil = getColByHeader(sh, 'Номер ITIL');
   const colSupp = getColByHeader(sh, 'Номер СУПП (последний)');
+  const colText = getColByHeader(sh, TEXT_HEADER);
   const colInfo = getColByHeader(sh, INFO_HEADER);
   const colResp = getColByHeader(sh, 'Пришел новый ответ');
+  const colStatus = getColByHeader(sh, 'Статус заявки');
 
-  if (!colItil || !colSupp || !colInfo || !colResp) {
-    throw new Error('Не найдены колонки «Номер ITIL», «Номер СУПП (последний)», «Информация из СУПП/ITIL» или «Пришел новый ответ».');
+  if (!colItil || !colSupp || !colText || !colInfo || !colResp || !colStatus) {
+    throw new Error('Не найдены колонки «Номер ITIL», «Номер СУПП (последний)», «Текст заявки», «Информация из СУПП/ITIL», «Пришел новый ответ» или «Статус заявки».');
   }
 
   const lastRow = sh.getLastRow();
@@ -166,8 +174,10 @@ function _problemPickerBridgeGetNewResponseRows_(payload) {
       columns: {
         itil: colItil,
         supp: colSupp,
+        text: colText,
         info: colInfo,
-        response: colResp
+        response: colResp,
+        status: colStatus
       },
       rows: []
     };
@@ -175,21 +185,39 @@ function _problemPickerBridgeGetNewResponseRows_(payload) {
 
   const rowCount = lastRow - 1;
   const responseColors = sh.getRange(2, colResp, rowCount, 1).getBackgrounds();
-  const minColumn = Math.min(colItil, colSupp);
-  const maxColumn = Math.max(colItil, colSupp);
+  const minColumn = Math.min(colItil, colSupp, colText, colInfo, colStatus);
+  const maxColumn = Math.max(colItil, colSupp, colText, colInfo, colStatus);
   const rowValues = sh.getRange(2, minColumn, rowCount, maxColumn - minColumn + 1).getDisplayValues();
   const targetColor = String(PROBLEM_PICKER_BRIDGE_NEW_RESPONSE_GREEN).toLowerCase();
   const rows = [];
 
   for (let index = 0; index < rowCount; index++) {
     const background = String(responseColors[index] && responseColors[index][0] || '').toLowerCase();
-    if (background !== targetColor) continue;
-
     const values = rowValues[index] || [];
+    const itilNumber = String(values[colItil - minColumn] || '').trim();
+    const suppValue = String(values[colSupp - minColumn] || '').trim();
+    const suppNumber = _problemPickerBridgeExtractSuppNumber_(suppValue);
+    const requestText = String(values[colText - minColumn] || '').trim();
+    const infoText = String(values[colInfo - minColumn] || '').trim();
+    const statusText = String(values[colStatus - minColumn] || '').trim();
+    const forceEmptyItilInfoPlaceholder = suppValue === '–'
+      && !!itilNumber
+      && !!requestText
+      && infoText === 'ИТИЛ'
+      && statusText === 'Выполнено';
+    const forceEmptySuppInfoPlaceholder = !!suppNumber
+      && !!requestText
+      && infoText === suppNumber
+      && statusText === 'Выполнено';
+    const forceEmptyInfoPlaceholder = forceEmptyItilInfoPlaceholder || forceEmptySuppInfoPlaceholder;
+
+    if (background !== targetColor && !forceEmptyInfoPlaceholder) continue;
+
     rows.push({
       row: index + 2,
-      itilNumber: String(values[colItil - minColumn] || '').trim(),
-      suppValue: String(values[colSupp - minColumn] || '').trim()
+      itilNumber: itilNumber,
+      suppValue: suppValue,
+      forceEmptyInfoPlaceholder: forceEmptyInfoPlaceholder
     });
   }
 
@@ -199,8 +227,10 @@ function _problemPickerBridgeGetNewResponseRows_(payload) {
     columns: {
       itil: colItil,
       supp: colSupp,
+      text: colText,
       info: colInfo,
-      response: colResp
+      response: colResp,
+      status: colStatus
     },
     rows: rows
   };

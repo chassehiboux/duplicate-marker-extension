@@ -1267,6 +1267,7 @@
       const suppValue = String(rowData && rowData.suppValue || '').trim();
       const suppNumber = extractSuppNumber(suppValue);
       const snapshotItem = snapshot.byRow.get(row) || null;
+      const forceEmptyInfoPlaceholder = !!(rowData && rowData.forceEmptyInfoPlaceholder);
 
       if (suppNumber) {
         return {
@@ -1275,6 +1276,7 @@
           suppNumber,
           suppValue,
           itilNumber,
+          forceEmptyInfoPlaceholder,
           ...(snapshotItem || {})
         };
       }
@@ -1285,6 +1287,7 @@
           mode: 'itil',
           itilNumber,
           suppValue,
+          forceEmptyInfoPlaceholder,
           ...(snapshotItem || {})
         };
       }
@@ -1330,7 +1333,7 @@
         info: snapshot.indexes.info + 1
       },
       lastError: '',
-      statusText: queue.length ? 'Очередь новых ответов собрана.' : 'Строк с новым ответом не найдено.'
+      statusText: queue.length ? 'Очередь новых ответов собрана.' : 'Строк для проверки новых ответов не найдено.'
     };
   }
 
@@ -4147,7 +4150,7 @@ function handleMenuEscape(event) {
       isRunning: true,
       stopRequested: false,
       pendingBridgeSaves: [],
-      statusText: 'Собираю строки, где отмечен новый ответ...',
+      statusText: 'Собираю строки для проверки новых ответов...',
       lastError: ''
     };
     newResponseReviewState = {
@@ -4155,7 +4158,7 @@ function handleMenuEscape(event) {
       currentIndex: 0,
       totalExpected: 0,
       isProcessing: true,
-      statusText: 'Собираю строки, где отмечен новый ответ...'
+      statusText: 'Собираю строки для проверки новых ответов...'
     };
     if (closeMenuOnStart) closeMenu();
     if (openReviewOnStart) openNewResponseReviewModal();
@@ -4176,7 +4179,7 @@ function handleMenuEscape(event) {
         totalExpected: newResponseState.queue.length,
         statusText: newResponseState.queue.length
           ? 'Обновляю заявки и собираю очередь просмотра.'
-          : 'Строк с новым ответом не найдено.'
+          : 'Строк для проверки новых ответов не найдено.'
       };
       renderNewResponseReviewModal();
 
@@ -4187,7 +4190,7 @@ function handleMenuEscape(event) {
           stopRequested: false,
           pendingBridgeSaves: [],
           currentItem: null,
-          statusText: 'Строк с новым ответом не найдено.',
+          statusText: 'Строк для проверки новых ответов не найдено.',
           lastError: ''
         };
         renderNewResponseStatus();
@@ -4244,6 +4247,7 @@ function handleMenuEscape(event) {
               row: item.row,
               suppNumber: item.suppNumber,
               itilNumber: item.itilNumber,
+              forceEmptyInfoPlaceholder: !!item.forceEmptyInfoPlaceholder,
               columns: newResponseState.columns
             }
           }
