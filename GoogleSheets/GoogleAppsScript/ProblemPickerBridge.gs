@@ -603,7 +603,12 @@ function _problemPickerBridgeBuildItilInfoRichText_(solutionText) {
     .setFontSize(11)
     .build();
 
-  // Стиль для обычного текста решения
+  const sectionStyle = SpreadsheetApp.newTextStyle()
+    .setBold(true)
+    .setFontSize(10)
+    .build();
+
+  // Стиль для обычного текста информации
   const normalStyle = SpreadsheetApp.newTextStyle()
     .setBold(false)
     .build();
@@ -616,7 +621,32 @@ function _problemPickerBridgeBuildItilInfoRichText_(solutionText) {
     builder.setTextStyle(title.length, fullText.length, normalStyle);
   }
 
+  _problemPickerBridgeApplyItilInfoStyles_(builder, fullText, title, titleStyle, sectionStyle);
+
   return builder.build();
+}
+
+function _problemPickerBridgeApplyItilInfoStyles_(builder, text, title, titleStyle, sectionStyle) {
+  const sectionHeaders = {
+    'Решение обращения:': true,
+    'Дополнительная информация:': true
+  };
+  let pos = 0;
+
+  while (pos < text.length) {
+    const nextNewline = text.indexOf('\n', pos);
+    const end = nextNewline === -1 ? text.length : nextNewline;
+    const line = text.substring(pos, end);
+    const trimmed = line.trim();
+
+    if (trimmed === title) {
+      builder.setTextStyle(pos, end, titleStyle);
+    } else if (sectionHeaders[trimmed]) {
+      builder.setTextStyle(pos, end, sectionStyle);
+    }
+
+    pos = end + 1;
+  }
 }
 
 function _problemPickerBridgeSaveSuppData_(payload) {

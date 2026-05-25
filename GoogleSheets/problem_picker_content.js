@@ -1373,7 +1373,10 @@
   }
 
   function isInfoSectionHeaderLine(value) {
-    return String(value || '').trim() === 'Причина возникновения инцидента:';
+    const text = String(value || '').trim();
+    return text === 'Причина возникновения инцидента:'
+      || text === 'Решение обращения:'
+      || text === 'Дополнительная информация:';
   }
 
   function buildParsedInfoBlock(text) {
@@ -3518,7 +3521,7 @@ function handleMenuEscape(event) {
           currentItem: null,
           statusText: item.mode === 'supp'
             ? `Строка ${item.row} подготовлена. Сохранение в bridge поставлено в очередь. Текст: ${Number(result.requestTextLength || 0)} симв., информация: ${Number(result.infoTextLength || 0)} симв.`
-            : `Строка ${item.row} подготовлена. Сохранение в bridge поставлено в очередь. Текст: ${Number(result.requestTextLength || 0)} симв., решение: ${Number(result.solutionTextLength || 0)} симв.`,
+            : `Строка ${item.row} подготовлена. Сохранение в bridge поставлено в очередь. Текст: ${Number(result.requestTextLength || 0)} симв., информация: ${Number(result.solutionTextLength || 0)} симв.`,
           lastError: ''
         };
         renderCombinedFlowStatus();
@@ -3773,7 +3776,7 @@ function handleMenuEscape(event) {
           currentIndex: index + 1,
           successCount: itilState.successCount + 1,
           currentItem: null,
-          statusText: `Строка ${item.row} подготовлена. Сохранение в bridge поставлено в очередь. Текст: ${textLength} симв., решение: ${solutionLength} симв.`,
+          statusText: `Строка ${item.row} подготовлена. Сохранение в bridge поставлено в очередь. Текст: ${textLength} симв., информация: ${solutionLength} симв.`,
           lastError: ''
         };
         renderItilStatus();

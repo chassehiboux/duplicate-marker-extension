@@ -110,6 +110,21 @@
     return result.trim();
   }
 
+  function buildItilInfoSectionsText(solutionText, additionalInfoText) {
+    const sections = [
+      {
+        label: 'Решение обращения:',
+        text: normalizeMultilineText(solutionText)
+      },
+      {
+        label: 'Дополнительная информация:',
+        text: normalizeMultilineText(additionalInfoText)
+      }
+    ].filter((section) => section.text);
+
+    return sections.map((section) => `${section.label}\n${section.text}`).join('\n\n');
+  }
+
   function sliceTextSection(text, startMarker, endMarkers) {
     let result = String(text || '').replace(/\r\n?/g, '\n');
     const startIdx = result.toLowerCase().indexOf(String(startMarker || '').toLowerCase());
@@ -1217,7 +1232,10 @@
 
     return {
       requestText: processRequestText(result.requestText || ''),
-      solutionText: String(result.solutionText || '').trim()
+      solutionText: buildItilInfoSectionsText(
+        result.solutionText || '',
+        result.additionalInfoText || ''
+      )
     };
   }
 
@@ -1621,26 +1639,49 @@
       return bestText;
     }
 
-    function getSolutionText() {
-      const explicit = document.querySelector('#form3_Плюс_РешениеОбращения_i0')
-        || Array.from(document.querySelectorAll('textarea'))
-          .find((textarea) => isVisible(textarea) && String(textarea.id || '').includes('РешениеОбращения'));
-
-      if (explicit) return normalizeMultiline(explicit.value || explicit.textContent || '');
+    function findLabeledField(labelText, idPart) {
+      const explicit = idPart
+        ? (
+          document.querySelector(`#form3_Плюс_${idPart}_i0`)
+          || Array.from(document.querySelectorAll('textarea,input'))
+            .find((field) => isVisible(field) && String(field.id || '').includes(idPart))
+        )
+        : null;
+      if (explicit) return explicit;
 
       const label = Array.from(document.querySelectorAll('div,span,label'))
-        .find((element) => isVisible(element) && normalizeText(element.textContent) === 'Решение обращения:');
-      if (!label) return '';
+        .find((element) => isVisible(element) && normalizeText(element.textContent) === labelText);
+      if (!label) return null;
 
       const labelRect = label.getBoundingClientRect();
       const candidates = Array.from(document.querySelectorAll('textarea,input'))
         .filter((element) => {
           if (!isVisible(element)) return false;
           const rect = element.getBoundingClientRect();
-          return rect.top >= labelRect.top && Math.abs(rect.left - labelRect.left) < 40;
+          return rect.top >= labelRect.top - 8
+            && rect.top <= labelRect.bottom + 80
+            && Math.abs(rect.left - labelRect.left) < 40;
+        })
+        .sort((left, right) => {
+          const leftRect = left.getBoundingClientRect();
+          const rightRect = right.getBoundingClientRect();
+          return Math.abs(leftRect.top - labelRect.bottom) - Math.abs(rightRect.top - labelRect.bottom);
         });
-      const field = candidates[0] || null;
+
+      return candidates[0] || null;
+    }
+
+    function getLabeledFieldText(labelText, idPart) {
+      const field = findLabeledField(labelText, idPart);
       return field ? normalizeMultiline(field.value || field.textContent || '') : '';
+    }
+
+    function getSolutionText() {
+      return getLabeledFieldText('Решение обращения:', 'РешениеОбращения');
+    }
+
+    function getAdditionalInfoText() {
+      return getLabeledFieldText('Дополнительная информация:', 'ДополнительнаяИнформация');
     }
 
     function closeRequestTab() {
@@ -1673,6 +1714,7 @@
 
       const requestText = getIframeText();
       const solutionText = getSolutionText();
+      const additionalInfoText = getAdditionalInfoText();
       const closeButton = closeRequestTab();
       if (closeButton) {
         await clickLikeUser(closeButton);
@@ -1682,7 +1724,8 @@
       return {
         success: true,
         requestText,
-        solutionText
+        solutionText,
+        additionalInfoText
       };
     } catch (error) {
       return {
