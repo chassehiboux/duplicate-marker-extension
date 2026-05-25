@@ -135,18 +135,73 @@
       .trim();
   }
 
+  function normalizeSuppSectionText(value) {
+    return normalizeMultilineText(String(value || '').replace(/\u00b6/g, '\n'));
+  }
+
+  function normalizeSectionLabelLine(value) {
+    return String(value || '')
+      .replace(/\u00a0/g, ' ')
+      .replace(/[ \t]+$/g, '')
+      .trim()
+      .toLocaleLowerCase('ru-RU');
+  }
+
+  function extractLabeledMultilineSection(text, startLabel, endLabels) {
+    const lines = String(text || '')
+      .replace(/\r\n?/g, '\n')
+      .replace(/\u00a0/g, ' ')
+      .split('\n')
+      .map((line) => line.replace(/[ \t]+$/g, ''));
+    const startKey = normalizeSectionLabelLine(startLabel);
+    const endKeys = new Set((endLabels || []).map((label) => normalizeSectionLabelLine(label)));
+    const startIndex = lines.findIndex((line) => normalizeSectionLabelLine(line) === startKey);
+    if (startIndex === -1) return '';
+
+    const collected = [];
+    for (let index = startIndex + 1; index < lines.length; index++) {
+      const line = lines[index];
+      if (endKeys.has(normalizeSectionLabelLine(line))) break;
+      collected.push(line);
+    }
+
+    return normalizeSuppSectionText(collected.join('\n'));
+  }
+
   function processSuppRequestText(text) {
     if (!text) return '';
 
-    let result = sliceTextSection(text, 'Детальное описание:', [
+    let result = extractLabeledMultilineSection(text, 'Детальное описание:', [
       'Причина возникновения инцидента:',
-      '\nКомментарии\n',
-      '\nФайлы\n'
+      'Комментарии',
+      'Файлы'
     ]);
+    if (!result) {
+      result = sliceTextSection(text, 'Детальное описание:', [
+        'Причина возникновения инцидента:',
+        '\nКомментарии\n',
+        '\nФайлы\n'
+      ]);
+    }
 
     result = extractFirstItilMessageBody(result);
     result = result.replace(/ЗНО\s+[\d-]+:(?:\s+.*?\(\d{2}\.\d{2}\.\d{4}.*?\))?\s*:?\s*/gi, '');
-    return normalizeMultilineText(result);
+    return normalizeSuppSectionText(result);
+  }
+
+  function extractSuppIncidentReasonText(text) {
+    const extracted = extractLabeledMultilineSection(text, 'Причина возникновения инцидента:', [
+      'Комментарии',
+      'Файлы',
+      'Дополнительно'
+    ]);
+    if (extracted) return extracted;
+
+    return normalizeSuppSectionText(sliceTextSection(text, 'Причина возникновения инцидента:', [
+      '\nКомментарии\n',
+      '\nФайлы\n',
+      '\nДополнительно\n'
+    ]));
   }
 
   function parseLogDate(value) {
@@ -425,10 +480,12 @@
     return finalResult.join('\n\n').replace(/\n{3,}/g, '\n\n').trim();
   }
 
-  function processSuppInfoText(suppNumber, commentsText, discussionText) {
+  function processSuppInfoText(suppNumber, incidentReasonText, commentsText, discussionText) {
     const header = String(suppNumber || '').trim();
+    const reasonText = normalizeSuppSectionText(incidentReasonText);
     const rawText = [
       header,
+      reasonText ? `Причина возникновения инцидента:\n${reasonText}` : '',
       normalizeMultilineText(commentsText),
       normalizeMultilineText(discussionText)
     ].filter(Boolean).join('\n\n');
@@ -1207,7 +1264,12 @@
     const requestText = shouldUseItilRequestText
       ? (itilData ? itilData.requestText : '')
       : processSuppRequestText(result.requestText || '');
-    const infoText = processSuppInfoText(suppNumber, result.commentsText || '', result.discussionText || '');
+    const infoText = processSuppInfoText(
+      suppNumber,
+      result.incidentReasonText || '',
+      result.commentsText || '',
+      result.discussionText || ''
+    );
     const requestTextSource = shouldUseItilRequestText ? 'ITIL' : 'SUPP';
     if (!requestText) {
       throw new Error(shouldUseItilRequestText
@@ -1302,7 +1364,12 @@
       };
     }
 
-    const infoText = processSuppInfoText(suppNumber, result.commentsText || '', result.discussionText || '');
+    const infoText = processSuppInfoText(
+      suppNumber,
+      result.incidentReasonText || '',
+      result.commentsText || '',
+      result.discussionText || ''
+    );
 
     const bridgePayload = {
       action: 'saveSuppInfoData',
@@ -2128,25 +2195,59 @@
     }
 
     function getInfoIframeText() {
-      const explicit = document.querySelector('[id*="ИнформацияПоЗаявке"] iframe');
-      const frames = explicit
-        ? [explicit]
-        : Array.from(document.querySelectorAll('iframe')).filter((iframe) => isVisible(iframe));
+      const prefix = getActiveSuppPagePrefix();
+      const pageMatch = String(prefix || '').match(/^VW_page(\d+)/);
+      const activeFormId = pageMatch ? `form${pageMatch[1]}_ИнформацияПоЗаявке` : '';
+      const candidates = [];
+      const seen = new Set();
 
-      let bestText = '';
-      frames.forEach((iframe) => {
+      const pushCandidate = (iframe, ownerId) => {
+        if (!(iframe instanceof HTMLIFrameElement) || seen.has(iframe)) return;
+        seen.add(iframe);
+
+        let text = '';
         try {
           const body = iframe.contentDocument && iframe.contentDocument.body;
-          const text = normalizeMultiline(body ? body.innerText || body.textContent || '' : '');
-          if (text.length > bestText.length) bestText = text;
+          text = normalizeSuppSectionText(body ? body.innerText || body.textContent || '' : '');
         } catch (error) {
           // Нужный iframe СУПП доступен как same-origin; прочие можно пропустить.
         }
+        const ownerVisible = ownerId ? isVisible(document.getElementById(ownerId)) : false;
+        const frameVisible = isVisible(iframe);
+        let score = text.length;
+        if (ownerId && ownerId === activeFormId) score += 1000000;
+        if (ownerVisible) score += 100000;
+        if (frameVisible) score += 10000;
+        candidates.push({ text, score });
+      };
+
+      if (activeFormId) {
+        const activeContainer = document.getElementById(activeFormId);
+        if (activeContainer) {
+          activeContainer.querySelectorAll('iframe').forEach((iframe) => pushCandidate(iframe, activeFormId));
+        }
+      }
+
+      Array.from(document.querySelectorAll('[id*="ИнформацияПоЗаявке"]')).forEach((container) => {
+        const ownerId = container && container.id ? container.id : '';
+        container.querySelectorAll('iframe').forEach((iframe) => pushCandidate(iframe, ownerId));
       });
-      return bestText;
+
+      Array.from(document.querySelectorAll('iframe'))
+        .filter((iframe) => isVisible(iframe))
+        .forEach((iframe) => pushCandidate(iframe, ''));
+
+      candidates.sort((left, right) => right.score - left.score);
+      return candidates.length ? candidates[0].text : '';
     }
 
     function extractCommentsText(infoText) {
+      const extracted = extractLabeledMultilineSection(infoText, 'Комментарии', [
+        'Файлы',
+        'Дополнительно'
+      ]);
+      if (extracted) return extracted;
+
       const source = String(infoText || '').replace(/\r\n?/g, '\n');
       const start = source.indexOf('\nКомментарии\n');
       if (start === -1) return '';
@@ -2158,7 +2259,7 @@
         if (idx !== -1 && (endIdx === -1 || idx < endIdx)) endIdx = idx;
       });
       if (endIdx !== -1) result = result.substring(0, endIdx);
-      return normalizeMultiline(result);
+      return normalizeSuppSectionText(result);
     }
 
   async function openDiscussionPanel() {
@@ -2304,10 +2405,23 @@
     const startedAt = Date.now();
     let lastText = '';
     let stableSince = 0;
+    let emptySince = 0;
 
     while (Date.now() - startedAt < timeoutMs) {
       const root = getDiscussionRoot();
       const text = root ? getDiscussionText() : '';
+      const chatBlock = root
+        ? (root.querySelector('[id$="messages_list_chat_block"]') || root.querySelector('.ecsChatBlock'))
+        : null;
+      const hasChatItems = !!(root && root.querySelector('.ecsChatItem'));
+      const rawChatText = normalizeMultiline((chatBlock && (chatBlock.innerText || chatBlock.textContent)) || '');
+
+      if (!text && root && !hasChatItems && !rawChatText) {
+        if (!emptySince) emptySince = Date.now();
+        if (Date.now() - emptySince >= 1200) return '';
+      } else {
+        emptySince = 0;
+      }
 
       if (text && text === lastText) {
         if (!stableSince) stableSince = Date.now();
@@ -2442,10 +2556,11 @@
       }
 
       const requestText = await waitFor(getInfoIframeText, 60000, `текст заявки СУПП ${number}`);
+      const incidentReasonText = extractSuppIncidentReasonText(requestText);
       const commentsText = extractCommentsText(requestText);
 
       await openDiscussionPanel();
-      const discussionText = await waitForDiscussionTextStabilized(2000);
+      const discussionText = await waitForDiscussionTextStabilized(8000);
 
       await closeOpenedRequestCard();
 
@@ -2453,6 +2568,7 @@
         success: true,
         requestText,
         requestItilNumber: extractSuppRequestItilNumber(requestText),
+        incidentReasonText,
         commentsText,
         discussionText
       };

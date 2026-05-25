@@ -1372,6 +1372,10 @@
     return /^\d{2}\.\d{2}\.\d{4}\s+\d{1,2}:\d{2}:\d{2}\s+\/.*$/.test(String(value || '').trim());
   }
 
+  function isInfoSectionHeaderLine(value) {
+    return String(value || '').trim() === 'Причина возникновения инцидента:';
+  }
+
   function buildParsedInfoBlock(text) {
     const normalized = normalizeInfoText(text);
     if (!normalized) return null;
@@ -1379,13 +1383,16 @@
     const lines = normalized.split('\n');
     const firstLine = String(lines[0] || '').trim();
     const hasLogHeader = isInfoLogHeaderLine(firstLine);
+    const hasSectionHeader = isInfoSectionHeaderLine(firstLine);
     const bodyText = hasLogHeader
       ? trimInfoBlockLines(lines.slice(1))
+      : hasSectionHeader
+        ? trimInfoBlockLines(lines.slice(1))
       : normalized;
 
     return {
       text: normalized,
-      headerText: hasLogHeader ? firstLine : '',
+      headerText: (hasLogHeader || hasSectionHeader) ? firstLine : '',
       bodyText
     };
   }
@@ -1514,7 +1521,7 @@
       const line = lines[index];
       const trimmed = String(line || '').trim();
 
-      if (isInfoLogHeaderLine(trimmed)) {
+      if (isInfoLogHeaderLine(trimmed) || isInfoSectionHeaderLine(trimmed)) {
         pushCurrentBlock();
         currentLines = [trimmed];
         continue;
