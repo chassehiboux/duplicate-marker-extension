@@ -99,6 +99,7 @@
   let itilRunId = 0;
   let suppRunId = 0;
   let newResponseRunId = 0;
+  let combinedFlowRunId = 0;
 
   let chatGptSearchState = {
     isRunning: false,
@@ -170,6 +171,26 @@
     totalExpected: 0,
     isProcessing: false,
     statusText: 'Ожидание запуска.'
+  };
+  let combinedFlowState = {
+    queue: [],
+    currentIndex: 0,
+    successCount: 0,
+    skippedCount: 0,
+    failedCount: 0,
+    currentItem: null,
+    sheetName: '',
+    gid: '',
+    rowsCount: 0,
+    columns: null,
+    isRunning: false,
+    stopRequested: false,
+    pendingBridgeSaves: [],
+    stage: 'idle',
+    statusText: 'Ожидание запуска.',
+    lastError: '',
+    manualDropdownOpen: false,
+    classificationQueueCount: 0
   };
 
   const $ = (selector, root = document) => root.querySelector(selector);
@@ -1056,6 +1077,95 @@
     };
   }
 
+  async function loadCombinedSearchQueue() {
+    const sheetName = getActiveSheetName();
+    const allowedSheets = Array.isArray(CONFIG.allowedSheetNames) ? CONFIG.allowedSheetNames : [];
+    if (!allowedSheets.includes(sheetName)) {
+      throw new Error('Открой лист «Заявки» или «Заявки (наши)».');
+    }
+
+    const gid = getActiveGid();
+    if (!gid) throw new Error('Не удалось определить gid активного листа.');
+
+    const response = await fetch(getCsvUrl(gid), { credentials: 'omit' });
+    if (!response.ok) throw new Error(`CSV-экспорт вернул HTTP ${response.status}.`);
+
+    const rows = parseCsv(await response.text());
+    const headers = rows[0] || [];
+    const itilColumnIndex = headers.indexOf(ITIL_NUMBER_HEADER);
+    const suppColumnIndex = headers.indexOf(SUPP_NUMBER_HEADER);
+    const textColumnIndex = headers.indexOf(TEXT_HEADER);
+    const infoColumnIndex = headers.indexOf(ITIL_INFO_HEADER);
+    const responseColumnIndex = headers.indexOf(NEW_RESPONSE_HEADER);
+
+    if (itilColumnIndex < 0 || suppColumnIndex < 0 || textColumnIndex < 0 || infoColumnIndex < 0) {
+      throw new Error('Не найдены колонки «Номер ITIL», «Номер СУПП (последний)», «Текст заявки» или «Информация из СУПП/ITIL».');
+    }
+
+    const suppCounts = {};
+    for (let index = 1; index < rows.length; index++) {
+      const row = rows[index] || [];
+      const suppNumber = extractSuppNumber(row[suppColumnIndex]);
+      if (suppNumber) suppCounts[suppNumber] = (suppCounts[suppNumber] || 0) + 1;
+    }
+
+    const queue = [];
+    for (let index = 1; index < rows.length; index++) {
+      const row = rows[index] || [];
+      const rowNumber = index + 1;
+      const text = String(row[textColumnIndex] || '').trim();
+      if (text) continue;
+
+      const suppValue = String(row[suppColumnIndex] || '').trim();
+      const suppNumber = extractSuppNumber(suppValue);
+      const itilNumber = String(row[itilColumnIndex] || '').trim();
+
+      if (suppNumber) {
+        queue.push({
+          mode: 'supp',
+          row: rowNumber,
+          suppNumber,
+          itilNumber,
+          useItilRequestText: suppCounts[suppNumber] > 1
+        });
+        continue;
+      }
+
+      if (itilNumber && suppValue === '–') {
+        queue.push({
+          mode: 'itil',
+          row: rowNumber,
+          itilNumber
+        });
+      }
+    }
+
+    combinedFlowState = {
+      ...combinedFlowState,
+      queue,
+      currentIndex: 0,
+      successCount: 0,
+      skippedCount: 0,
+      failedCount: 0,
+      currentItem: null,
+      sheetName,
+      gid,
+      rowsCount: rows.length,
+      columns: {
+        itil: itilColumnIndex + 1,
+        supp: suppColumnIndex + 1,
+        text: textColumnIndex + 1,
+        info: infoColumnIndex + 1,
+        response: responseColumnIndex >= 0 ? responseColumnIndex + 1 : 0
+      },
+      pendingBridgeSaves: [],
+      lastError: '',
+      statusText: queue.length
+        ? `Общая очередь поиска собрана: ${queue.length} строк.`
+        : 'Строк для поиска текста заявок не найдено.'
+    };
+  }
+
   function getBridgeActionResult(response) {
     return response && response.result && response.result.result
       ? response.result.result
@@ -1752,17 +1862,25 @@
       #${MENU_ID} .gs-problem-picker-menu-section:first-of-type{border-top:0;padding-top:0;margin-top:0}
       #${MENU_ID} .gs-problem-picker-menu-section-title{font-size:14px;font-weight:700;color:#253044}
       #${MENU_ID} .gs-problem-picker-menu-actions{display:flex;flex-wrap:wrap;gap:8px}
-      #${MENU_ID} .gs-problem-picker-itil-grid,#${MENU_ID} .gs-problem-picker-supp-grid,#${MENU_ID} .gs-problem-picker-new-response-grid{display:grid;grid-template-columns:150px 1fr;gap:6px 12px;font-size:13px;color:#39465c}
-      #${MENU_ID} .gs-problem-picker-itil-grid dt,#${MENU_ID} .gs-problem-picker-supp-grid dt,#${MENU_ID} .gs-problem-picker-new-response-grid dt{font-weight:700;color:#5d6678}
-      #${MENU_ID} .gs-problem-picker-itil-grid dd,#${MENU_ID} .gs-problem-picker-supp-grid dd,#${MENU_ID} .gs-problem-picker-new-response-grid dd{margin:0;min-width:0;overflow-wrap:anywhere}
+      #${MENU_ID} .gs-problem-picker-combined-grid,#${MENU_ID} .gs-problem-picker-itil-grid,#${MENU_ID} .gs-problem-picker-supp-grid,#${MENU_ID} .gs-problem-picker-new-response-grid{display:grid;grid-template-columns:150px 1fr;gap:6px 12px;font-size:13px;color:#39465c}
+      #${MENU_ID} .gs-problem-picker-combined-grid dt,#${MENU_ID} .gs-problem-picker-itil-grid dt,#${MENU_ID} .gs-problem-picker-supp-grid dt,#${MENU_ID} .gs-problem-picker-new-response-grid dt{font-weight:700;color:#5d6678}
+      #${MENU_ID} .gs-problem-picker-combined-grid dd,#${MENU_ID} .gs-problem-picker-itil-grid dd,#${MENU_ID} .gs-problem-picker-supp-grid dd,#${MENU_ID} .gs-problem-picker-new-response-grid dd{margin:0;min-width:0;overflow-wrap:anywhere}
+      #${MENU_ID} .gs-problem-picker-combined-status{min-height:18px;color:#24513a;font-size:13px;overflow-wrap:anywhere}
+      #${MENU_ID} .gs-problem-picker-combined-status.is-error{color:#b3261e}
+      #${MENU_ID} .gs-problem-picker-manual-toggle{min-width:46px;padding-inline:0}
+      #${MENU_ID} .gs-problem-picker-manual-panel{display:grid;gap:12px;padding:14px;border:1px solid #dbe2ec;border-radius:12px;background:rgba(148,163,184,.08)}
+      #${MENU_ID} .gs-problem-picker-manual-title{font-size:13px;font-weight:700;color:#314157}
+      #${MENU_ID} .gs-problem-picker-manual-section{display:grid;gap:8px;padding-top:12px;border-top:1px solid rgba(148,163,184,.22)}
+      #${MENU_ID} .gs-problem-picker-manual-section:first-of-type{padding-top:0;border-top:0}
+      #${MENU_ID} .gs-problem-picker-manual-section-title{font-size:13px;font-weight:700;color:#253044}
       #${MENU_ID} .gs-problem-picker-status{min-height:18px;color:#24513a;font-size:13px}
       #${MENU_ID} .gs-problem-picker-status.is-error,#${MENU_ID} .gs-problem-picker-itil-status.is-error,#${MENU_ID} .gs-problem-picker-supp-status.is-error,#${MENU_ID} .gs-problem-picker-new-response-status.is-error{color:#b3261e}
       #${MENU_ID} .gs-problem-picker-itil-status,#${MENU_ID} .gs-problem-picker-supp-status,#${MENU_ID} .gs-problem-picker-new-response-status{min-height:18px;color:#24513a;font-size:13px;overflow-wrap:anywhere}
       #${MENU_ID} .gs-problem-picker-chatgpt-note{color:#566176;font-size:13px;line-height:1.45}
       #${ROOT_ID} button,#${MODAL_ID} button,#${NEW_RESPONSE_REVIEW_MODAL_ID} button,#${CHATGPT_SEARCH_MODAL_ID} button,#${MENU_ID} button{border:1px solid #b7c2d3;border-radius:7px;background:#fff;color:#162033;cursor:pointer;font:600 13px/1.2 "Segoe UI",Tahoma,sans-serif;padding:8px 12px}
       #${MENU_ID} button:disabled{opacity:.58;cursor:default}
-      #${MENU_ID} .gs-problem-picker-open,#${MENU_ID} .gs-problem-picker-chatgpt-search-open,#${MENU_ID} .gs-problem-picker-itil-start,#${MENU_ID} .gs-problem-picker-supp-start,#${MENU_ID} .gs-problem-picker-supp-test,#${MENU_ID} .gs-problem-picker-new-response-start{border-color:#1155cc;background:#1155cc;color:#fff;box-shadow:0 8px 22px rgba(17,85,204,.2)}
-      #${MENU_ID} .gs-problem-picker-itil-stop,#${MENU_ID} .gs-problem-picker-supp-stop,#${MENU_ID} .gs-problem-picker-new-response-stop{border-color:#b3261e;color:#b3261e}
+      #${MENU_ID} .gs-problem-picker-open,#${MENU_ID} .gs-problem-picker-chatgpt-search-open,#${MENU_ID} .gs-problem-picker-combined-start,#${MENU_ID} .gs-problem-picker-itil-start,#${MENU_ID} .gs-problem-picker-supp-start,#${MENU_ID} .gs-problem-picker-supp-test,#${MENU_ID} .gs-problem-picker-new-response-start{border-color:#1155cc;background:#1155cc;color:#fff;box-shadow:0 8px 22px rgba(17,85,204,.2)}
+      #${MENU_ID} .gs-problem-picker-combined-stop,#${MENU_ID} .gs-problem-picker-itil-stop,#${MENU_ID} .gs-problem-picker-supp-stop,#${MENU_ID} .gs-problem-picker-new-response-stop{border-color:#b3261e;color:#b3261e}
       #${MODAL_ID},#${NEW_RESPONSE_REVIEW_MODAL_ID}{position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;box-sizing:border-box;padding:16px;overflow:hidden;background:rgba(17,24,39,.42);font-family:"Segoe UI",Tahoma,sans-serif}
       #${CHATGPT_SEARCH_MODAL_ID}{position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;background:rgba(15,23,42,.48);font-family:"Segoe UI",Tahoma,sans-serif}
       #${MODAL_ID}[hidden],#${NEW_RESPONSE_REVIEW_MODAL_ID}[hidden],#${CHATGPT_SEARCH_MODAL_ID}[hidden],html.dup-ext-screenshot-mode #${ROOT_ID},html.dup-ext-screenshot-mode #${MODAL_ID},html.dup-ext-screenshot-mode #${NEW_RESPONSE_REVIEW_MODAL_ID},html.dup-ext-screenshot-mode #${CHATGPT_SEARCH_MODAL_ID},html.dup-ext-screenshot-mode #${MENU_ID},html.dup-ext-screenshot-mode #${MENU_OVERLAY_ID}{display:none!important}
@@ -1908,6 +2026,110 @@
     return `строка ${item.row}, неизвестная ветка`;
   }
 
+  function isCombinedFlowClassificationStage() {
+    return combinedFlowState.isRunning && combinedFlowState.stage === 'classification';
+  }
+
+  function getCombinedCurrentText() {
+    if (combinedFlowState.stage === 'classification') {
+      if (state.isLoading) return 'подготавливаю очередь классификации';
+      const item = getCurrentItem();
+      return item ? `классификация: строка ${item.row}` : 'классификация завершена';
+    }
+
+    const queuedItem = combinedFlowState.isRunning && !combinedFlowState.stopRequested
+      ? combinedFlowState.queue[combinedFlowState.currentIndex]
+      : null;
+    const item = combinedFlowState.currentItem || queuedItem || null;
+    if (!item) return 'нет';
+
+    if (item.mode === 'supp') {
+      return item.useItilRequestText
+        ? `строка ${item.row}, СУПП ${item.suppNumber}, текст через ITIL ${item.itilNumber || 'не задан'}`
+        : `строка ${item.row}, СУПП ${item.suppNumber}`;
+    }
+
+    if (item.mode === 'itil') return `строка ${item.row}, ITIL ${item.itilNumber || 'не задан'}`;
+    return `строка ${item.row}, неизвестная ветка`;
+  }
+
+  function getCombinedStageNote() {
+    if (combinedFlowState.lastError) return combinedFlowState.lastError;
+    if (combinedFlowState.stage === 'classification') {
+      const baseText = state.isLoading
+        ? 'Поиск завершён. Загружаю очередь классификации.'
+        : (combinedFlowState.statusText || 'Классификация открыта.');
+      if (newResponseState.lastError) return `${baseText} Новые ответы завершились с ошибкой: ${newResponseState.lastError}`;
+      if (newResponseState.isRunning) return `${baseText} Новые ответы обрабатываются в фоне.`;
+      if (newResponseReviewState.totalExpected > 0 || newResponseReviewState.queue.length > 0) {
+        return `${baseText} Новые ответы уже подготовлены и ждут перехода.`;
+      }
+      return baseText;
+    }
+    return combinedFlowState.statusText || 'Ожидание запуска.';
+  }
+
+  function renderCombinedFlowStatus() {
+    const menu = document.getElementById(MENU_ID);
+    if (!(menu instanceof HTMLElement)) return;
+
+    const total = combinedFlowState.queue.length;
+    const processed = Math.min(total, combinedFlowState.successCount + combinedFlowState.skippedCount + combinedFlowState.failedCount);
+    const collected = $('.gs-problem-picker-combined-collected', menu);
+    const progress = $('.gs-problem-picker-combined-progress', menu);
+    const current = $('.gs-problem-picker-combined-current', menu);
+    const status = $('.gs-problem-picker-combined-status', menu);
+    const startButton = $('.gs-problem-picker-combined-start', menu);
+    const stopButton = $('.gs-problem-picker-combined-stop', menu);
+    const manualToggle = $('.gs-problem-picker-manual-toggle', menu);
+    const manualPanel = $('.gs-problem-picker-manual-panel', menu);
+    const manualClassificationButton = $('.gs-problem-picker-open', menu);
+    const isClassificationStage = combinedFlowState.isRunning && combinedFlowState.stage === 'classification';
+    const classificationReady = isClassificationStage && !state.isLoading;
+
+    if (collected instanceof HTMLElement) collected.textContent = String(total);
+    if (progress instanceof HTMLElement) {
+      if (isClassificationStage) {
+        if (state.isLoading) {
+          progress.textContent = `поиск ${processed}/${total} · классификация загружается`;
+        } else {
+          const queueTotal = combinedFlowState.classificationQueueCount || state.queue.length;
+          const queueDone = Math.min(queueTotal, state.currentIndex);
+          progress.textContent = `поиск ${processed}/${total} · классификация ${queueDone}/${queueTotal}`;
+        }
+      } else {
+        progress.textContent = `${processed}/${total}`;
+      }
+    }
+    if (current instanceof HTMLElement) current.textContent = getCombinedCurrentText();
+    if (status instanceof HTMLElement) {
+      status.textContent = getCombinedStageNote();
+      status.classList.toggle('is-error', !!(combinedFlowState.lastError || (isClassificationStage && newResponseState.lastError)));
+    }
+
+    const hasExternalBlockingRun = itilState.isRunning || suppState.isRunning || newResponseState.isRunning || state.isLoading;
+    if (startButton instanceof HTMLButtonElement) {
+      startButton.textContent = isClassificationStage ? 'К классификации' : 'Старт';
+      startButton.disabled = isClassificationStage ? !classificationReady : (combinedFlowState.isRunning || hasExternalBlockingRun);
+    }
+    if (stopButton instanceof HTMLButtonElement) {
+      stopButton.disabled = !(combinedFlowState.isRunning && combinedFlowState.stage === 'search');
+    }
+    if (manualClassificationButton instanceof HTMLButtonElement) {
+      const canOpenClassification = isClassificationStage
+        ? classificationReady
+        : !(state.isLoading || itilState.isRunning || suppState.isRunning || (combinedFlowState.isRunning && combinedFlowState.stage === 'search'));
+      manualClassificationButton.disabled = !canOpenClassification;
+    }
+    if (manualToggle instanceof HTMLButtonElement) {
+      manualToggle.textContent = combinedFlowState.manualDropdownOpen ? '▲' : '▼';
+      manualToggle.setAttribute('aria-expanded', combinedFlowState.manualDropdownOpen ? 'true' : 'false');
+    }
+    if (manualPanel instanceof HTMLElement) {
+      manualPanel.hidden = !combinedFlowState.manualDropdownOpen;
+    }
+  }
+
   function renderItilStatus() {
     const menu = document.getElementById(MENU_ID);
     if (!(menu instanceof HTMLElement)) return;
@@ -1930,9 +2152,9 @@
       status.textContent = itilState.lastError || itilState.statusText || '';
       status.classList.toggle('is-error', !!itilState.lastError);
     }
-    if (startButton instanceof HTMLButtonElement) startButton.disabled = itilState.isRunning || suppState.isRunning || newResponseState.isRunning;
+    if (startButton instanceof HTMLButtonElement) startButton.disabled = itilState.isRunning || suppState.isRunning || newResponseState.isRunning || combinedFlowState.isRunning;
     if (stopButton instanceof HTMLButtonElement) stopButton.disabled = !itilState.isRunning || !!itilState.stopRequested;
-    if (newResponseStartButton instanceof HTMLButtonElement) newResponseStartButton.disabled = newResponseState.isRunning || itilState.isRunning || suppState.isRunning;
+    if (newResponseStartButton instanceof HTMLButtonElement) newResponseStartButton.disabled = newResponseState.isRunning || itilState.isRunning || suppState.isRunning || combinedFlowState.isRunning;
   }
 
   function renderSuppStatus() {
@@ -1958,10 +2180,10 @@
       status.textContent = suppState.lastError || suppState.statusText || '';
       status.classList.toggle('is-error', !!suppState.lastError);
     }
-    if (startButton instanceof HTMLButtonElement) startButton.disabled = suppState.isRunning || itilState.isRunning || newResponseState.isRunning;
-    if (testButton instanceof HTMLButtonElement) testButton.disabled = suppState.isRunning || itilState.isRunning || newResponseState.isRunning;
+    if (startButton instanceof HTMLButtonElement) startButton.disabled = suppState.isRunning || itilState.isRunning || newResponseState.isRunning || combinedFlowState.isRunning;
+    if (testButton instanceof HTMLButtonElement) testButton.disabled = suppState.isRunning || itilState.isRunning || newResponseState.isRunning || combinedFlowState.isRunning;
     if (stopButton instanceof HTMLButtonElement) stopButton.disabled = !suppState.isRunning || !!suppState.stopRequested;
-    if (newResponseStartButton instanceof HTMLButtonElement) newResponseStartButton.disabled = newResponseState.isRunning || itilState.isRunning || suppState.isRunning;
+    if (newResponseStartButton instanceof HTMLButtonElement) newResponseStartButton.disabled = newResponseState.isRunning || itilState.isRunning || suppState.isRunning || combinedFlowState.isRunning;
   }
 
   function renderNewResponseStatus() {
@@ -1985,9 +2207,10 @@
       status.textContent = newResponseState.lastError || newResponseState.statusText || '';
       status.classList.toggle('is-error', !!newResponseState.lastError);
     }
-    if (startButton instanceof HTMLButtonElement) startButton.disabled = newResponseState.isRunning || itilState.isRunning || suppState.isRunning;
+    if (startButton instanceof HTMLButtonElement) startButton.disabled = newResponseState.isRunning || itilState.isRunning || suppState.isRunning || combinedFlowState.isRunning;
     if (stopButton instanceof HTMLButtonElement) stopButton.disabled = !newResponseState.isRunning || !!newResponseState.stopRequested;
     renderNewResponseReviewModal();
+    renderCombinedFlowStatus();
   }
 
   function setChatGptSearchStatus(text, isError) {
@@ -2140,6 +2363,7 @@
     if (!(host instanceof HTMLElement)) return null;
 
     if (overlay instanceof HTMLElement && menu instanceof HTMLElement) {
+      renderCombinedFlowStatus();
       renderItilStatus();
       renderSuppStatus();
       renderNewResponseStatus();
@@ -2168,12 +2392,89 @@
       </header>
 
       <section class="gs-problem-picker-menu-section">
-        <div class="gs-problem-picker-menu-section-title">Классификация</div>
+        <div class="gs-problem-picker-menu-section-title">Поиск новых заявок, классификация, новые ответы</div>
         <div class="gs-problem-picker-menu-actions">
-          <button type="button" class="gs-problem-picker-open">Классификация</button>
+          <button type="button" class="gs-problem-picker-combined-start">Старт</button>
+          <button type="button" class="gs-problem-picker-combined-stop" disabled>Стоп</button>
+          <button type="button" class="gs-problem-picker-manual-toggle" aria-expanded="false" aria-label="Показать ручные действия">▼</button>
           <button type="button" class="gs-problem-picker-url">URL bridge</button>
         </div>
+        <dl class="gs-problem-picker-combined-grid">
+          <dt>Собрано строк</dt>
+          <dd class="gs-problem-picker-combined-collected">0</dd>
+          <dt>Обработано</dt>
+          <dd class="gs-problem-picker-combined-progress">0/0</dd>
+          <dt>Сейчас</dt>
+          <dd class="gs-problem-picker-combined-current">нет</dd>
+          <dt>Статус</dt>
+          <dd class="gs-problem-picker-combined-status" aria-live="polite">Ожидание запуска.</dd>
+        </dl>
         <div class="gs-problem-picker-status" aria-live="polite"></div>
+        <div class="gs-problem-picker-manual-panel" hidden>
+          <div class="gs-problem-picker-manual-title">Ручные действия</div>
+
+          <div class="gs-problem-picker-manual-section">
+            <div class="gs-problem-picker-manual-section-title">Классификация</div>
+            <div class="gs-problem-picker-menu-actions">
+              <button type="button" class="gs-problem-picker-open">Классификация</button>
+            </div>
+          </div>
+
+          <div class="gs-problem-picker-manual-section">
+            <div class="gs-problem-picker-manual-section-title">ITIL: заполнить текст заявок</div>
+            <div class="gs-problem-picker-menu-actions">
+              <button type="button" class="gs-problem-picker-itil-start">Старт</button>
+              <button type="button" class="gs-problem-picker-itil-stop" disabled>Стоп</button>
+            </div>
+            <dl class="gs-problem-picker-itil-grid">
+              <dt>Собрано строк</dt>
+              <dd class="gs-problem-picker-itil-collected">0</dd>
+              <dt>Обработано</dt>
+              <dd class="gs-problem-picker-itil-progress">0/0</dd>
+              <dt>Сейчас</dt>
+              <dd class="gs-problem-picker-itil-current">нет</dd>
+              <dt>Статус</dt>
+              <dd class="gs-problem-picker-itil-status" aria-live="polite">Ожидание запуска.</dd>
+            </dl>
+          </div>
+
+          <div class="gs-problem-picker-manual-section">
+            <div class="gs-problem-picker-manual-section-title">СУПП: заполнить текст заявок</div>
+            <div class="gs-problem-picker-menu-actions">
+              <button type="button" class="gs-problem-picker-supp-start">Старт</button>
+              <button type="button" class="gs-problem-picker-supp-test">Тест 1 заявка</button>
+              <button type="button" class="gs-problem-picker-supp-stop" disabled>Стоп</button>
+            </div>
+            <dl class="gs-problem-picker-supp-grid">
+              <dt>Собрано строк</dt>
+              <dd class="gs-problem-picker-supp-collected">0</dd>
+              <dt>Обработано</dt>
+              <dd class="gs-problem-picker-supp-progress">0/0</dd>
+              <dt>Сейчас</dt>
+              <dd class="gs-problem-picker-supp-current">нет</dd>
+              <dt>Статус</dt>
+              <dd class="gs-problem-picker-supp-status" aria-live="polite">Ожидание запуска.</dd>
+            </dl>
+          </div>
+
+          <div class="gs-problem-picker-manual-section">
+            <div class="gs-problem-picker-manual-section-title">Пришел новый ответ</div>
+            <div class="gs-problem-picker-menu-actions">
+              <button type="button" class="gs-problem-picker-new-response-start">Старт</button>
+              <button type="button" class="gs-problem-picker-new-response-stop" disabled>Стоп</button>
+            </div>
+            <dl class="gs-problem-picker-new-response-grid">
+              <dt>Собрано строк</dt>
+              <dd class="gs-problem-picker-new-response-collected">0</dd>
+              <dt>Обработано</dt>
+              <dd class="gs-problem-picker-new-response-progress">0/0</dd>
+              <dt>Сейчас</dt>
+              <dd class="gs-problem-picker-new-response-current">нет</dd>
+              <dt>Статус</dt>
+              <dd class="gs-problem-picker-new-response-status" aria-live="polite">Ожидание запуска.</dd>
+            </dl>
+          </div>
+        </div>
       </section>
 
       <section class="gs-problem-picker-menu-section">
@@ -2183,66 +2484,24 @@
         </div>
         <div class="gs-problem-picker-chatgpt-note">В фоне откроется временный чат, а найденные заявки будут записаны на лист «${CHATGPT_RESULT_SHEET_NAME}».</div>
       </section>
-
-      <section class="gs-problem-picker-menu-section">
-        <div class="gs-problem-picker-menu-section-title">ITIL: заполнить текст заявок</div>
-        <div class="gs-problem-picker-menu-actions">
-          <button type="button" class="gs-problem-picker-itil-start">Старт</button>
-          <button type="button" class="gs-problem-picker-itil-stop" disabled>Стоп</button>
-        </div>
-        <dl class="gs-problem-picker-itil-grid">
-          <dt>Собрано строк</dt>
-          <dd class="gs-problem-picker-itil-collected">0</dd>
-          <dt>Обработано</dt>
-          <dd class="gs-problem-picker-itil-progress">0/0</dd>
-          <dt>Сейчас</dt>
-          <dd class="gs-problem-picker-itil-current">нет</dd>
-          <dt>Статус</dt>
-          <dd class="gs-problem-picker-itil-status" aria-live="polite">Ожидание запуска.</dd>
-        </dl>
-      </section>
-
-      <section class="gs-problem-picker-menu-section">
-        <div class="gs-problem-picker-menu-section-title">СУПП: заполнить текст заявок</div>
-        <div class="gs-problem-picker-menu-actions">
-          <button type="button" class="gs-problem-picker-supp-start">Старт</button>
-          <button type="button" class="gs-problem-picker-supp-test">Тест 1 заявка</button>
-          <button type="button" class="gs-problem-picker-supp-stop" disabled>Стоп</button>
-        </div>
-        <dl class="gs-problem-picker-supp-grid">
-          <dt>Собрано строк</dt>
-          <dd class="gs-problem-picker-supp-collected">0</dd>
-          <dt>Обработано</dt>
-          <dd class="gs-problem-picker-supp-progress">0/0</dd>
-          <dt>Сейчас</dt>
-          <dd class="gs-problem-picker-supp-current">нет</dd>
-          <dt>Статус</dt>
-          <dd class="gs-problem-picker-supp-status" aria-live="polite">Ожидание запуска.</dd>
-        </dl>
-      </section>
-
-      <section class="gs-problem-picker-menu-section">
-        <div class="gs-problem-picker-menu-section-title">Пришел новый ответ</div>
-        <div class="gs-problem-picker-menu-actions">
-          <button type="button" class="gs-problem-picker-new-response-start">Старт</button>
-          <button type="button" class="gs-problem-picker-new-response-stop" disabled>Стоп</button>
-        </div>
-        <dl class="gs-problem-picker-new-response-grid">
-          <dt>Собрано строк</dt>
-          <dd class="gs-problem-picker-new-response-collected">0</dd>
-          <dt>Обработано</dt>
-          <dd class="gs-problem-picker-new-response-progress">0/0</dd>
-          <dt>Сейчас</dt>
-          <dd class="gs-problem-picker-new-response-current">нет</dd>
-          <dt>Статус</dt>
-          <dd class="gs-problem-picker-new-response-status" aria-live="polite">Ожидание запуска.</dd>
-        </dl>
-      </section>
     `;
 
     $('.gs-problem-picker-menu-close', menu)?.addEventListener('click', closeMenu, { capture: true });
+    $('.gs-problem-picker-combined-start', menu)?.addEventListener('click', () => {
+      void startCombinedFlow();
+    }, { capture: true });
+    $('.gs-problem-picker-combined-stop', menu)?.addEventListener('click', () => {
+      stopCombinedFlow();
+    }, { capture: true });
+    $('.gs-problem-picker-manual-toggle', menu)?.addEventListener('click', () => {
+      combinedFlowState = {
+        ...combinedFlowState,
+        manualDropdownOpen: !combinedFlowState.manualDropdownOpen
+      };
+      renderCombinedFlowStatus();
+    }, { capture: true });
     $('.gs-problem-picker-open', menu)?.addEventListener('click', () => {
-      void openPicker();
+      void openClassificationPicker({ useExistingQueue: isCombinedFlowClassificationStage() });
     }, { capture: true });
     $('.gs-problem-picker-url', menu)?.addEventListener('click', () => {
       void promptBridgeUrl();
@@ -2272,6 +2531,7 @@
 
     host.append(overlay, menu);
     updateLauncherStatus(menuStatusText, menuStatusIsError);
+    renderCombinedFlowStatus();
     renderItilStatus();
     renderSuppStatus();
     renderNewResponseStatus();
@@ -2769,7 +3029,21 @@ function handleMenuEscape(event) {
     modal.hidden = false;
   }
 
-  async function openPicker() {
+  function showClassificationModal() {
+    closeMenu();
+    const modal = ensureModal();
+    renderModal();
+    modal.hidden = false;
+    focusDefaultCategoryButton(modal);
+  }
+
+  async function openClassificationPicker(options) {
+    const settings = options && typeof options === 'object' ? options : {};
+    if (settings.useExistingQueue) {
+      showClassificationModal();
+      return;
+    }
+
     if (state.isLoading) return;
 
     state.isLoading = true;
@@ -2778,17 +3052,14 @@ function handleMenuEscape(event) {
     try {
       await loadBridgeUrl();
       await loadQueue();
-      const modal = ensureModal();
-      renderModal();
-      modal.hidden = false;
-
-      focusDefaultCategoryButton(modal);
+      showClassificationModal();
 
       updateLauncherStatus(`В очереди строк: ${state.queue.length}.`, false);
     } catch (error) {
       updateLauncherStatus(error && error.message ? error.message : 'Не удалось загрузить очередь.', true);
     } finally {
       state.isLoading = false;
+      renderCombinedFlowStatus();
     }
   }
 
@@ -2860,7 +3131,13 @@ function handleMenuEscape(event) {
     state.currentIndex += 1;
 
     enqueueBackgroundSave({ ...item }, selectedValue, state.bridgeUrl, state.sheetName);
+    renderCombinedFlowStatus();
     renderModal();
+
+    if (!getCurrentItem()) {
+      transitionCombinedFlowToNewResponseReview();
+      return;
+    }
 
     focusDefaultCategoryButton(modal);
   }
@@ -2951,6 +3228,18 @@ function handleMenuEscape(event) {
     };
   }
 
+  function queueCombinedBridgeSave(result, item) {
+    const row = Number(item && item.row);
+    const label = item && item.mode === 'supp'
+      ? `строка ${row}, СУПП ${item.suppNumber || ''}`
+      : `строка ${row}, ITIL ${item && item.itilNumber ? item.itilNumber : ''}`;
+    const tracked = createBridgeSaveTracker(result && result.bridgePayload, row, label);
+    combinedFlowState = {
+      ...combinedFlowState,
+      pendingBridgeSaves: [...(combinedFlowState.pendingBridgeSaves || []), tracked]
+    };
+  }
+
   function summarizeBridgeFinalizeErrors(results) {
     const errors = (results || [])
       .filter((item) => item && item.success !== true)
@@ -2997,6 +3286,284 @@ function handleMenuEscape(event) {
         : 'Сохранённых новых ответов для просмотра нет.'
     };
     renderNewResponseReviewModal();
+  }
+
+  function shouldAutoOpenNewResponseReview() {
+    return !!(
+      newResponseState.isRunning
+      || newResponseState.lastError
+      || newResponseReviewState.totalExpected > 0
+      || newResponseReviewState.queue.length > 0
+    );
+  }
+
+  function finishCombinedFlow(statusText, lastError) {
+    combinedFlowState = {
+      ...combinedFlowState,
+      isRunning: false,
+      stopRequested: false,
+      stage: 'idle',
+      currentItem: null,
+      statusText: String(statusText || ''),
+      lastError: String(lastError || '')
+    };
+    renderCombinedFlowStatus();
+  }
+
+  function transitionCombinedFlowToNewResponseReview() {
+    if (!isCombinedFlowClassificationStage()) return;
+
+    const modal = document.getElementById(MODAL_ID);
+    if (modal instanceof HTMLElement) modal.hidden = true;
+
+    const shouldOpenReview = shouldAutoOpenNewResponseReview();
+    if (shouldOpenReview) openNewResponseReviewModal();
+
+    finishCombinedFlow(
+      shouldOpenReview
+        ? 'Классификация завершена. Переход к новым ответам.'
+        : 'Классификация завершена. Новых ответов не найдено.',
+      ''
+    );
+  }
+
+  function stopCombinedFlow() {
+    if (!combinedFlowState.isRunning || combinedFlowState.stage !== 'search') return;
+
+    combinedFlowState = {
+      ...combinedFlowState,
+      stopRequested: true,
+      statusText: 'Останавливаю общий поиск после текущей строки...',
+      lastError: ''
+    };
+    renderCombinedFlowStatus();
+  }
+
+  async function startCombinedFlow() {
+    if (isCombinedFlowClassificationStage()) {
+      showClassificationModal();
+      return;
+    }
+    if (combinedFlowState.isRunning || itilState.isRunning || suppState.isRunning || newResponseState.isRunning || state.isLoading) return;
+
+    const runId = combinedFlowRunId + 1;
+    combinedFlowRunId = runId;
+
+    combinedFlowState = {
+      ...combinedFlowState,
+      queue: [],
+      currentIndex: 0,
+      successCount: 0,
+      skippedCount: 0,
+      failedCount: 0,
+      currentItem: null,
+      sheetName: '',
+      gid: '',
+      rowsCount: 0,
+      columns: null,
+      pendingBridgeSaves: [],
+      isRunning: true,
+      stopRequested: false,
+      stage: 'search',
+      statusText: 'Собираю общую очередь новых заявок...',
+      lastError: '',
+      classificationQueueCount: 0
+    };
+    renderCombinedFlowStatus();
+
+    try {
+      await loadBridgeUrl();
+      if (!state.bridgeUrl) throw new Error('URL bridge не задан. Нажми «URL bridge» и задай Apps Script bridge.');
+
+      await loadCombinedSearchQueue();
+      if (runId !== combinedFlowRunId) return;
+      renderCombinedFlowStatus();
+
+      for (let index = 0; index < combinedFlowState.queue.length; index++) {
+        if (runId !== combinedFlowRunId) return;
+        if (combinedFlowState.stopRequested) break;
+
+        const item = combinedFlowState.queue[index];
+        combinedFlowState = {
+          ...combinedFlowState,
+          currentIndex: index,
+          currentItem: item,
+          statusText: item.mode === 'supp'
+            ? (item.useItilRequestText
+              ? `Ищу СУПП ${item.suppNumber} для INFO и ITIL ${item.itilNumber || 'не задан'} для текста строки ${item.row}...`
+              : `Ищу СУПП ${item.suppNumber} для строки ${item.row}...`)
+            : `Ищу ITIL ${item.itilNumber} для строки ${item.row}...`,
+          lastError: ''
+        };
+        renderCombinedFlowStatus();
+
+        const response = await sendRuntimeMessage({
+          action: item.mode === 'supp' ? SUPP_FILL_ACTION : ITIL_FILL_ACTION,
+          data: {
+            bridgeUrl: state.bridgeUrl,
+            payload: item.mode === 'supp'
+              ? {
+                spreadsheetId: CONFIG.spreadsheetId,
+                sheetName: combinedFlowState.sheetName,
+                row: item.row,
+                suppNumber: item.suppNumber,
+                itilNumber: item.itilNumber,
+                useItilRequestText: !!item.useItilRequestText,
+                columns: combinedFlowState.columns
+              }
+              : {
+                spreadsheetId: CONFIG.spreadsheetId,
+                sheetName: combinedFlowState.sheetName,
+                row: item.row,
+                itilNumber: item.itilNumber,
+                columns: combinedFlowState.columns
+              }
+          }
+        });
+
+        if (runId !== combinedFlowRunId) return;
+
+        if (!response || response.success !== true) {
+          const errorText = response && response.error ? response.error : 'неизвестная ошибка';
+          combinedFlowState = {
+            ...combinedFlowState,
+            currentItem: null,
+            statusText: 'Дожидаюсь уже поставленных отправок в bridge...',
+            lastError: ''
+          };
+          renderCombinedFlowStatus();
+          const bridgeFinalize = await waitBridgeSaves(combinedFlowState.pendingBridgeSaves);
+          if (runId !== combinedFlowRunId) return;
+          finishCombinedFlow(
+            '',
+            [bridgeFinalize.errorText, `Строка ${item.row}: ${errorText}`].filter(Boolean).join(' ')
+          );
+          return;
+        }
+
+        const result = response.result || {};
+        if (result.skipped === true) {
+          combinedFlowState = {
+            ...combinedFlowState,
+            currentIndex: index + 1,
+            skippedCount: combinedFlowState.skippedCount + 1,
+            currentItem: null,
+            statusText: `Строка ${item.row} пропущена: ${result.skipMessage || 'не дождался результата поиска.'}`,
+            lastError: ''
+          };
+          renderCombinedFlowStatus();
+          continue;
+        }
+
+        queueCombinedBridgeSave(result, item);
+        combinedFlowState = {
+          ...combinedFlowState,
+          currentIndex: index + 1,
+          successCount: combinedFlowState.successCount + 1,
+          currentItem: null,
+          statusText: item.mode === 'supp'
+            ? `Строка ${item.row} подготовлена. Сохранение в bridge поставлено в очередь. Текст: ${Number(result.requestTextLength || 0)} симв., информация: ${Number(result.infoTextLength || 0)} симв.`
+            : `Строка ${item.row} подготовлена. Сохранение в bridge поставлено в очередь. Текст: ${Number(result.requestTextLength || 0)} симв., решение: ${Number(result.solutionTextLength || 0)} симв.`,
+          lastError: ''
+        };
+        renderCombinedFlowStatus();
+      }
+
+      if (runId !== combinedFlowRunId) return;
+      const wasStopped = !!combinedFlowState.stopRequested;
+
+      combinedFlowState = {
+        ...combinedFlowState,
+        currentItem: null,
+        statusText: 'Дожидаюсь отправки найденных заявок в bridge...',
+        lastError: ''
+      };
+      renderCombinedFlowStatus();
+
+      const bridgeFinalize = await waitBridgeSaves(combinedFlowState.pendingBridgeSaves);
+      if (runId !== combinedFlowRunId) return;
+
+      if (wasStopped) {
+        finishCombinedFlow(
+          `Общий поиск остановлен. Подготовлено строк: ${combinedFlowState.successCount}/${combinedFlowState.queue.length}. Пропущено: ${combinedFlowState.skippedCount}.`,
+          bridgeFinalize.errorText
+        );
+        return;
+      }
+
+      combinedFlowState = {
+        ...combinedFlowState,
+        currentItem: null,
+        stage: 'classification',
+        classificationQueueCount: 0,
+        statusText: 'Поиск новых заявок завершён. Открываю классификацию и запускаю обработку новых ответов...',
+        lastError: bridgeFinalize.errorText || ''
+      };
+      renderCombinedFlowStatus();
+
+      void startNewResponseRefresh({ openReviewOnStart: false, closeMenuOnStart: false });
+
+      state = {
+        ...state,
+        queue: [],
+        currentIndex: 0,
+        sentCount: 0,
+        pendingSaveCount: 0,
+        failedSaveCount: 0,
+        lastBackgroundError: '',
+        isLoading: true
+      };
+      renderCombinedFlowStatus();
+
+      await loadQueue();
+      if (runId !== combinedFlowRunId) return;
+
+      combinedFlowState = {
+        ...combinedFlowState,
+        classificationQueueCount: state.queue.length,
+        statusText: state.queue.length
+          ? `Поиск завершён. В классификации строк: ${state.queue.length}.`
+          : 'Новых заявок для классификации нет. Перехожу к новым ответам.'
+      };
+
+      if (state.queue.length) {
+        closeMenu();
+        showClassificationModal();
+        renderCombinedFlowStatus();
+        return;
+      }
+
+      closeMenu();
+      if (shouldAutoOpenNewResponseReview()) openNewResponseReviewModal();
+      finishCombinedFlow(
+        shouldAutoOpenNewResponseReview()
+          ? 'Новых заявок для классификации нет. Открыты новые ответы.'
+          : 'Новых заявок для классификации и новых ответов нет.',
+        combinedFlowState.lastError
+      );
+    } catch (error) {
+      if (runId !== combinedFlowRunId) return;
+      const message = error && error.message ? error.message : 'Не удалось запустить единый сценарий.';
+      if (state.isLoading) {
+        state = {
+          ...state,
+          isLoading: false
+        };
+      }
+      let bridgeFinalize = { errorText: '' };
+      if (combinedFlowState.pendingBridgeSaves && combinedFlowState.pendingBridgeSaves.length) {
+        combinedFlowState = {
+          ...combinedFlowState,
+          currentItem: null,
+          statusText: 'Дожидаюсь уже поставленных отправок в bridge...',
+          lastError: ''
+        };
+        renderCombinedFlowStatus();
+        bridgeFinalize = await waitBridgeSaves(combinedFlowState.pendingBridgeSaves);
+        if (runId !== combinedFlowRunId) return;
+      }
+      finishCombinedFlow('', [message, bridgeFinalize.errorText].filter(Boolean).join(' '));
+    }
   }
 
   function stopItilFill() {
@@ -3497,7 +4064,11 @@ function handleMenuEscape(event) {
     return `Строка ${item.row}: не удалось определить ветку по «Номер СУПП (последний)» = ${suppValue}.`;
   }
 
-  async function startNewResponseRefresh() {
+  async function startNewResponseRefresh(options) {
+    const settings = options && typeof options === 'object' ? options : {};
+    const openReviewOnStart = settings.openReviewOnStart !== false;
+    const closeMenuOnStart = settings.closeMenuOnStart !== false;
+
     if (newResponseState.isRunning || itilState.isRunning || suppState.isRunning) return;
 
     const runId = newResponseRunId + 1;
@@ -3521,7 +4092,6 @@ function handleMenuEscape(event) {
       statusText: 'Собираю строки, где отмечен новый ответ...',
       lastError: ''
     };
-    closeMenu();
     newResponseReviewState = {
       queue: [],
       currentIndex: 0,
@@ -3529,11 +4099,12 @@ function handleMenuEscape(event) {
       isProcessing: true,
       statusText: 'Собираю строки, где отмечен новый ответ...'
     };
-    openNewResponseReviewModal();
+    if (closeMenuOnStart) closeMenu();
+    if (openReviewOnStart) openNewResponseReviewModal();
     renderNewResponseStatus();
     renderItilStatus();
     renderSuppStatus();
-    renderNewResponseReviewModal();
+    if (openReviewOnStart) renderNewResponseReviewModal();
 
     try {
       await loadBridgeUrl();
@@ -3568,7 +4139,7 @@ function handleMenuEscape(event) {
           ...newResponseReviewState,
           isProcessing: false
         };
-        renderNewResponseReviewModal();
+        if (openReviewOnStart) renderNewResponseReviewModal();
         return;
       }
 
@@ -3579,7 +4150,7 @@ function handleMenuEscape(event) {
         lastError: ''
       };
       renderNewResponseStatus();
-      renderNewResponseReviewModal();
+      if (openReviewOnStart) renderNewResponseReviewModal();
 
       for (let index = 0; index < newResponseState.queue.length; index++) {
         if (runId !== newResponseRunId) return;
@@ -3603,7 +4174,7 @@ function handleMenuEscape(event) {
           lastError: ''
         };
         renderNewResponseStatus();
-        renderNewResponseReviewModal();
+        if (openReviewOnStart) renderNewResponseReviewModal();
 
         const response = await sendRuntimeMessage({
           action: item.mode === 'supp' ? SUPP_INFO_REFRESH_ACTION : ITIL_INFO_REFRESH_ACTION,
@@ -3655,7 +4226,7 @@ function handleMenuEscape(event) {
           renderNewResponseStatus();
           renderItilStatus();
           renderSuppStatus();
-          renderNewResponseReviewModal();
+          if (openReviewOnStart) renderNewResponseReviewModal();
           return;
         }
 
@@ -3670,7 +4241,7 @@ function handleMenuEscape(event) {
             lastError: ''
           };
           renderNewResponseStatus();
-          renderNewResponseReviewModal();
+          if (openReviewOnStart) renderNewResponseReviewModal();
           continue;
         }
 
@@ -3685,7 +4256,7 @@ function handleMenuEscape(event) {
           lastError: ''
         };
         renderNewResponseStatus();
-        renderNewResponseReviewModal();
+        if (openReviewOnStart) renderNewResponseReviewModal();
       }
 
       if (runId !== newResponseRunId) return;
@@ -3722,7 +4293,7 @@ function handleMenuEscape(event) {
       renderNewResponseStatus();
       renderItilStatus();
       renderSuppStatus();
-      renderNewResponseReviewModal();
+      if (openReviewOnStart) renderNewResponseReviewModal();
     } catch (error) {
       if (runId !== newResponseRunId) return;
       const message = error && error.message ? error.message : 'Не удалось обновить строки с новыми ответами.';
@@ -3754,7 +4325,7 @@ function handleMenuEscape(event) {
       renderNewResponseStatus();
       renderItilStatus();
       renderSuppStatus();
-      renderNewResponseReviewModal();
+      if (openReviewOnStart) renderNewResponseReviewModal();
     }
   }
 
