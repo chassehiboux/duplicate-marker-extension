@@ -54,6 +54,9 @@
   const CHATGPT_SEARCH_MODAL_ID = 'dup-google-sheets-chatgpt-search-modal';
   const MENU_ID = 'dup-google-sheets-problem-picker-menu';
   const MENU_OVERLAY_ID = 'dup-google-sheets-problem-picker-menu-overlay';
+  const MENU_LAYOUT_VERSION = '2026-05-25-1';
+  const MENU_BOUND_FLAG = '__dupGoogleSheetsMenuBound';
+  const MENU_OVERLAY_BOUND_FLAG = '__dupGoogleSheetsMenuOverlayBound';
   const STYLE_ID = 'dup-google-sheets-problem-picker-style';
   const AUTO_OPEN_AFTER_EDIT_DELAY_MS = 1500;
   const AUTO_OPEN_AFTER_EDIT_COOLDOWN_MS = 2500;
@@ -2354,35 +2357,8 @@
     if (menu instanceof HTMLElement) menu.hidden = true;
   }
 
-  function ensureMenu() {
-    ensureStyle();
-
-    let overlay = document.getElementById(MENU_OVERLAY_ID);
-    let menu = document.getElementById(MENU_ID);
-    const host = document.body || document.documentElement;
-    if (!(host instanceof HTMLElement)) return null;
-
-    if (overlay instanceof HTMLElement && menu instanceof HTMLElement) {
-      renderCombinedFlowStatus();
-      renderItilStatus();
-      renderSuppStatus();
-      renderNewResponseStatus();
-      updateLauncherStatus(menuStatusText, menuStatusIsError);
-      return menu;
-    }
-
-    overlay = document.createElement('div');
-    overlay.id = MENU_OVERLAY_ID;
-    overlay.hidden = true;
-    overlay.addEventListener('click', closeMenu, { capture: true });
-
-    menu = document.createElement('section');
-    menu.id = MENU_ID;
-    menu.hidden = true;
-    menu.setAttribute('role', 'dialog');
-    menu.setAttribute('aria-modal', 'true');
-    menu.setAttribute('aria-label', 'Меню Google Sheets');
-    menu.innerHTML = `
+  function getMenuMarkup() {
+    return `
       <header class="gs-problem-picker-menu-header">
         <div>
           <div class="gs-problem-picker-menu-title">Меню Google Sheets</div>
@@ -2485,51 +2461,122 @@
         <div class="gs-problem-picker-chatgpt-note">В фоне откроется временный чат, а найденные заявки будут записаны на лист «${CHATGPT_RESULT_SHEET_NAME}».</div>
       </section>
     `;
+  }
 
-    $('.gs-problem-picker-menu-close', menu)?.addEventListener('click', closeMenu, { capture: true });
-    $('.gs-problem-picker-combined-start', menu)?.addEventListener('click', () => {
-      void startCombinedFlow();
-    }, { capture: true });
-    $('.gs-problem-picker-combined-stop', menu)?.addEventListener('click', () => {
-      stopCombinedFlow();
-    }, { capture: true });
-    $('.gs-problem-picker-manual-toggle', menu)?.addEventListener('click', () => {
-      combinedFlowState = {
-        ...combinedFlowState,
-        manualDropdownOpen: !combinedFlowState.manualDropdownOpen
-      };
-      renderCombinedFlowStatus();
-    }, { capture: true });
-    $('.gs-problem-picker-open', menu)?.addEventListener('click', () => {
-      void openClassificationPicker({ useExistingQueue: isCombinedFlowClassificationStage() });
-    }, { capture: true });
-    $('.gs-problem-picker-url', menu)?.addEventListener('click', () => {
-      void promptBridgeUrl();
-    }, { capture: true });
-    $('.gs-problem-picker-chatgpt-search-open', menu)?.addEventListener('click', openChatGptSearchModal, { capture: true });
-    $('.gs-problem-picker-itil-start', menu)?.addEventListener('click', () => {
-      void startItilFill();
-    }, { capture: true });
-    $('.gs-problem-picker-itil-stop', menu)?.addEventListener('click', () => {
-      stopItilFill();
-    }, { capture: true });
-    $('.gs-problem-picker-supp-start', menu)?.addEventListener('click', () => {
-      void startSuppFill(0);
-    }, { capture: true });
-    $('.gs-problem-picker-supp-test', menu)?.addEventListener('click', () => {
-      void startSuppFill(1);
-    }, { capture: true });
-    $('.gs-problem-picker-supp-stop', menu)?.addEventListener('click', () => {
-      stopSuppFill();
-    }, { capture: true });
-    $('.gs-problem-picker-new-response-start', menu)?.addEventListener('click', () => {
-      void startNewResponseRefresh();
-    }, { capture: true });
-    $('.gs-problem-picker-new-response-stop', menu)?.addEventListener('click', () => {
-      stopNewResponseRefresh();
+  function bindMenuInteractions(menu, overlay) {
+    if (overlay instanceof HTMLElement && !overlay[MENU_OVERLAY_BOUND_FLAG]) {
+      overlay.addEventListener('click', closeMenu, { capture: true });
+      overlay[MENU_OVERLAY_BOUND_FLAG] = true;
+    }
+
+    if (!(menu instanceof HTMLElement) || menu[MENU_BOUND_FLAG]) return;
+
+    menu.addEventListener('click', (event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+
+      const button = target.closest('button');
+      if (!(button instanceof HTMLButtonElement) || !menu.contains(button)) return;
+
+      if (button.classList.contains('gs-problem-picker-menu-close')) {
+        closeMenu();
+        return;
+      }
+      if (button.classList.contains('gs-problem-picker-combined-start')) {
+        void startCombinedFlow();
+        return;
+      }
+      if (button.classList.contains('gs-problem-picker-combined-stop')) {
+        stopCombinedFlow();
+        return;
+      }
+      if (button.classList.contains('gs-problem-picker-manual-toggle')) {
+        combinedFlowState = {
+          ...combinedFlowState,
+          manualDropdownOpen: !combinedFlowState.manualDropdownOpen
+        };
+        renderCombinedFlowStatus();
+        return;
+      }
+      if (button.classList.contains('gs-problem-picker-open')) {
+        void openClassificationPicker({ useExistingQueue: isCombinedFlowClassificationStage() });
+        return;
+      }
+      if (button.classList.contains('gs-problem-picker-url')) {
+        void promptBridgeUrl();
+        return;
+      }
+      if (button.classList.contains('gs-problem-picker-chatgpt-search-open')) {
+        openChatGptSearchModal();
+        return;
+      }
+      if (button.classList.contains('gs-problem-picker-itil-start')) {
+        void startItilFill();
+        return;
+      }
+      if (button.classList.contains('gs-problem-picker-itil-stop')) {
+        stopItilFill();
+        return;
+      }
+      if (button.classList.contains('gs-problem-picker-supp-start')) {
+        void startSuppFill(0);
+        return;
+      }
+      if (button.classList.contains('gs-problem-picker-supp-test')) {
+        void startSuppFill(1);
+        return;
+      }
+      if (button.classList.contains('gs-problem-picker-supp-stop')) {
+        stopSuppFill();
+        return;
+      }
+      if (button.classList.contains('gs-problem-picker-new-response-start')) {
+        void startNewResponseRefresh();
+        return;
+      }
+      if (button.classList.contains('gs-problem-picker-new-response-stop')) {
+        stopNewResponseRefresh();
+      }
     }, { capture: true });
 
-    host.append(overlay, menu);
+    menu[MENU_BOUND_FLAG] = true;
+  }
+
+  function ensureMenu() {
+    ensureStyle();
+
+    let overlay = document.getElementById(MENU_OVERLAY_ID);
+    let menu = document.getElementById(MENU_ID);
+    const host = document.body || document.documentElement;
+    if (!(host instanceof HTMLElement)) return null;
+
+    if (!(overlay instanceof HTMLElement)) {
+      overlay = document.createElement('div');
+      overlay.id = MENU_OVERLAY_ID;
+      overlay.hidden = true;
+    }
+    if (!(menu instanceof HTMLElement)) {
+      menu = document.createElement('section');
+      menu.id = MENU_ID;
+      menu.hidden = true;
+    }
+
+    menu.setAttribute('role', 'dialog');
+    menu.setAttribute('aria-modal', 'true');
+    menu.setAttribute('aria-label', 'Меню Google Sheets');
+
+    const needsMenuRefresh = menu.dataset.layoutVersion !== MENU_LAYOUT_VERSION
+      || !$('.gs-problem-picker-manual-toggle', menu)
+      || !$('.gs-problem-picker-manual-panel', menu);
+    if (needsMenuRefresh) {
+      menu.innerHTML = getMenuMarkup();
+      menu.dataset.layoutVersion = MENU_LAYOUT_VERSION;
+    }
+
+    if (!overlay.isConnected) host.appendChild(overlay);
+    if (!menu.isConnected) host.appendChild(menu);
+
+    bindMenuInteractions(menu, overlay);
     updateLauncherStatus(menuStatusText, menuStatusIsError);
     renderCombinedFlowStatus();
     renderItilStatus();
