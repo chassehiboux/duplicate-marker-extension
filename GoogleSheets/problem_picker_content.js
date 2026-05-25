@@ -1872,6 +1872,7 @@
       #${MENU_ID} .gs-problem-picker-combined-status.is-error{color:#b3261e}
       #${MENU_ID} .gs-problem-picker-manual-toggle{min-width:46px;padding-inline:0}
       #${MENU_ID} .gs-problem-picker-manual-panel{display:grid;gap:12px;padding:14px;border:1px solid #dbe2ec;border-radius:12px;background:rgba(148,163,184,.08)}
+      #${MENU_ID} .gs-problem-picker-manual-panel[hidden]{display:none!important}
       #${MENU_ID} .gs-problem-picker-manual-title{font-size:13px;font-weight:700;color:#314157}
       #${MENU_ID} .gs-problem-picker-manual-section{display:grid;gap:8px;padding-top:12px;border-top:1px solid rgba(148,163,184,.22)}
       #${MENU_ID} .gs-problem-picker-manual-section:first-of-type{padding-top:0;border-top:0}
