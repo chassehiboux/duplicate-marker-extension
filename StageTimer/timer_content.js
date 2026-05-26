@@ -1030,6 +1030,12 @@
         }
     }
 
+    function isDocumentLike(value) {
+        return !!value
+            && value.nodeType === 9
+            && typeof value.querySelectorAll === "function";
+    }
+
     function getEpguDocumentSources() {
         const sources = [];
         const currentMatch = getEpguMatch(window.location.href);
@@ -1055,7 +1061,7 @@
             } catch (error) {
                 return;
             }
-            if (!(doc instanceof Document)) return;
+            if (!isDocumentLike(doc)) return;
             const match = getEpguMatch(href || frame.getAttribute("src") || "");
             if (!match) return;
             sources.push({
@@ -1083,7 +1089,7 @@
     }
 
     function extractLatestEpguError(source) {
-        if (!source || !(source.doc instanceof Document)) return null;
+        if (!source || !isDocumentLike(source.doc)) return null;
         const table = findEpguRequestsTable(source.doc);
         if (!table) return null;
 
