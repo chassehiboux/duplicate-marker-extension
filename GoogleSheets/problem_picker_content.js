@@ -29,6 +29,7 @@
   const NEW_RESPONSE_HEADER = 'Пришел новый ответ';
   const REQUEST_DATE_HEADER = 'Дата заявки';
   const REQUEST_STATUS_HEADER = 'Статус заявки';
+  const CURRENT_STAGE_HEADER = 'Текущий этап';
   const INITIATOR_HEADER = 'Инициатор';
   const CHATGPT_SEARCH_SHEET_NAME = 'Заявки';
   const CHATGPT_RESULT_SHEET_NAME = 'Поиск заявок (ИИ)';
@@ -809,6 +810,7 @@
     const problemColumnIndex = headers.indexOf(PROBLEM_HEADER);
     const dateColumnIndex = headers.indexOf(REQUEST_DATE_HEADER);
     const statusColumnIndex = headers.indexOf(REQUEST_STATUS_HEADER);
+    const currentStageColumnIndex = headers.indexOf(CURRENT_STAGE_HEADER);
     const initiatorColumnIndex = headers.indexOf(INITIATOR_HEADER);
     const itilColumnIndex = headers.indexOf(ITIL_NUMBER_HEADER);
     const suppColumnIndex = headers.indexOf(SUPP_NUMBER_HEADER);
@@ -839,6 +841,7 @@
           info,
           date: String(row[dateColumnIndex] || '').trim(),
           status: String(row[statusColumnIndex] || '').trim(),
+          currentStage: currentStageColumnIndex >= 0 ? String(row[currentStageColumnIndex] || '').trim() : '',
           initiator: String(row[initiatorColumnIndex] || '').trim(),
           itilNumber: String(row[itilColumnIndex] || '').trim(),
           suppValue: String(row[suppColumnIndex] || '').trim()
@@ -846,17 +849,13 @@
       }
     }
     const summaryRows = queue.map((item) => item.row);
-    const statusBackgrounds = await loadColumnBackgrounds(
-      sheetName,
-      summaryRows,
-      statusColumnIndex + 1
-    );
-    const initiatorBackgrounds = await loadColumnBackgrounds(
-      sheetName,
-      summaryRows,
-      initiatorColumnIndex + 1
-    );
+    const [statusBackgrounds, currentStageBackgrounds, initiatorBackgrounds] = await Promise.all([
+      loadSummaryColumnBackgrounds(sheetName, summaryRows, statusColumnIndex),
+      loadSummaryColumnBackgrounds(sheetName, summaryRows, currentStageColumnIndex),
+      loadSummaryColumnBackgrounds(sheetName, summaryRows, initiatorColumnIndex)
+    ]);
     applyColumnBackgrounds(queue, 'statusBackgroundColor', statusBackgrounds);
+    applyColumnBackgrounds(queue, 'currentStageBackgroundColor', currentStageBackgrounds);
     applyColumnBackgrounds(queue, 'initiatorBackgroundColor', initiatorBackgrounds);
 
     state = {
@@ -970,6 +969,7 @@
     const indexes = {
       date: headers.indexOf(REQUEST_DATE_HEADER),
       status: headers.indexOf(REQUEST_STATUS_HEADER),
+      currentStage: headers.indexOf(CURRENT_STAGE_HEADER),
       initiator: headers.indexOf(INITIATOR_HEADER),
       itil: headers.indexOf(ITIL_NUMBER_HEADER),
       supp: headers.indexOf(SUPP_NUMBER_HEADER),
@@ -977,7 +977,7 @@
       info: headers.indexOf(ITIL_INFO_HEADER)
     };
 
-    if (Object.values(indexes).some((index) => index < 0)) {
+    if ([indexes.date, indexes.status, indexes.initiator, indexes.itil, indexes.supp, indexes.text, indexes.info].some((index) => index < 0)) {
       throw new Error('Не найдены колонки «Дата заявки», «Статус заявки», «Инициатор», «Номер ITIL», «Номер СУПП (последний)», «Текст заявки» или «Информация из СУПП/ITIL».');
     }
 
@@ -989,6 +989,7 @@
         row: rowNumber,
         date: String(row[indexes.date] || '').trim(),
         status: String(row[indexes.status] || '').trim(),
+        currentStage: indexes.currentStage >= 0 ? String(row[indexes.currentStage] || '').trim() : '',
         initiator: String(row[indexes.initiator] || '').trim(),
         itilNumber: String(row[indexes.itil] || '').trim(),
         suppValue: String(row[indexes.supp] || '').trim(),
@@ -1227,6 +1228,14 @@
     }
   }
 
+  function loadSummaryColumnBackgrounds(sheetName, rows, columnIndex) {
+    const normalizedIndex = Number(columnIndex);
+    if (!Number.isInteger(normalizedIndex) || normalizedIndex < 0) {
+      return Promise.resolve(new Map());
+    }
+    return loadColumnBackgrounds(sheetName, rows, normalizedIndex + 1);
+  }
+
   function applyColumnBackgrounds(queue, colorKey, backgrounds) {
     if (!Array.isArray(queue) || !(backgrounds instanceof Map) || !backgrounds.size) return;
 
@@ -1301,17 +1310,13 @@
       };
     });
     const summaryRows = queue.map((item) => item.row);
-    const statusBackgrounds = await loadColumnBackgrounds(
-      sheetName,
-      summaryRows,
-      snapshot.indexes.status + 1
-    );
-    const initiatorBackgrounds = await loadColumnBackgrounds(
-      sheetName,
-      summaryRows,
-      snapshot.indexes.initiator + 1
-    );
+    const [statusBackgrounds, currentStageBackgrounds, initiatorBackgrounds] = await Promise.all([
+      loadSummaryColumnBackgrounds(sheetName, summaryRows, snapshot.indexes.status),
+      loadSummaryColumnBackgrounds(sheetName, summaryRows, snapshot.indexes.currentStage),
+      loadSummaryColumnBackgrounds(sheetName, summaryRows, snapshot.indexes.initiator)
+    ]);
     applyColumnBackgrounds(queue, 'statusBackgroundColor', statusBackgrounds);
+    applyColumnBackgrounds(queue, 'currentStageBackgroundColor', currentStageBackgrounds);
     applyColumnBackgrounds(queue, 'initiatorBackgroundColor', initiatorBackgrounds);
 
     newResponseState = {
@@ -1709,6 +1714,8 @@
       date: String(item && item.date || '').trim(),
       status: String(item && item.status || '').trim(),
       statusBackgroundColor: normalizeSheetBackgroundColor(item && item.statusBackgroundColor),
+      currentStage: String(item && item.currentStage || '').trim(),
+      currentStageBackgroundColor: normalizeSheetBackgroundColor(item && item.currentStageBackgroundColor),
       initiator: String(item && item.initiator || '').trim(),
       initiatorBackgroundColor: normalizeSheetBackgroundColor(item && item.initiatorBackgroundColor),
       itilNumber: String(item && item.itilNumber || '').trim(),
@@ -1731,6 +1738,12 @@
         label: 'Статус заявки',
         value: item && item.status ? item.status : '—',
         backgroundColor: normalizeSheetBackgroundColor(item && item.statusBackgroundColor)
+      },
+      {
+        key: 'currentStage',
+        label: 'Текущий этап',
+        value: item && item.currentStage ? item.currentStage : '—',
+        backgroundColor: normalizeSheetBackgroundColor(item && item.currentStageBackgroundColor)
       },
       {
         key: 'initiator',
