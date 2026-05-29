@@ -673,6 +673,37 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             return true;
         }
 
+        case 'LOG_ROWS10000_INCIDENT': {
+            const d = request.data || {};
+            const payload = {
+                eventType: d.eventType || "rows10000_incident",
+                incidentType: d.incidentType || "ROWS10000",
+                traceId: d.traceId || "",
+                baseName: d.baseName || "Основная",
+                stageName: d.stageName || "ПК Пирамида",
+                userName: d.userName || "Не определен",
+                departmentName: d.departmentName || "Не определен",
+                timestamp: d.timestamp || new Date().toISOString(),
+                pageUrl: d.pageUrl || "",
+                requestUrl: d.requestUrl || "",
+                requestMethod: d.requestMethod || "GET",
+                rows: d.rows || "",
+                buttonCounter: d.buttonCounter || "",
+                buttonCounterNumber: d.buttonCounterNumber || "",
+                selarrrowLen: d.selarrrowLen || "",
+                visibleCheckedCount: d.visibleCheckedCount || "",
+                summaryText: d.summaryText || "",
+                fullText: d.fullText || "",
+                triggerReason: d.triggerReason || "",
+                requestData: d.requestData || {},
+                stateSnapshot: d.stateSnapshot || {},
+                trace: Array.isArray(d.trace) ? d.trace : [],
+                version: d.version || ""
+            };
+            enqueueTelemetry(payload);
+            return true;
+        }
+
         case 'EXECUTION_ANALYSIS_GET_TAB_ID': {
             const tabId = sender && sender.tab ? sender.tab.id : null;
             if (!Number.isInteger(tabId)) {

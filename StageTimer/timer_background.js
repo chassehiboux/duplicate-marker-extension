@@ -390,6 +390,37 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
 
+    if (request.action === 'LOG_ROWS10000_INCIDENT') {
+        const d = request.data || {};
+        const payload = {
+            eventType: d.eventType || "rows10000_incident",
+            incidentType: d.incidentType || "ROWS10000",
+            traceId: d.traceId || "",
+            baseName: d.baseName || "Основная",
+            stageName: d.stageName || "ПК Пирамида",
+            userName: d.userName || "Не определен",
+            departmentName: d.departmentName || "Не определен",
+            timestamp: d.timestamp || new Date().toISOString(),
+            pageUrl: d.pageUrl || "",
+            requestUrl: d.requestUrl || "",
+            requestMethod: d.requestMethod || "GET",
+            rows: d.rows || "",
+            buttonCounter: d.buttonCounter || "",
+            buttonCounterNumber: d.buttonCounterNumber || "",
+            selarrrowLen: d.selarrrowLen || "",
+            visibleCheckedCount: d.visibleCheckedCount || "",
+            summaryText: d.summaryText || "",
+            fullText: d.fullText || "",
+            triggerReason: d.triggerReason || "",
+            requestData: d.requestData || {},
+            stateSnapshot: d.stateSnapshot || {},
+            trace: Array.isArray(d.trace) ? d.trace : [],
+            version: d.version || ""
+        };
+        enqueueTelemetry(payload);
+        return true;
+    }
+
     if (request.action === 'LOG_STAGE_TIME') {
         const d = request.data || {};
         const incomingDurationSec = parseStageDurationSec(d.duration);

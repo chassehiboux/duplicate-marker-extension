@@ -73,6 +73,18 @@
     const SCREENSHOT_MANUAL_KEY = "S";
     const GRID_ABORT_REWRITE_EVENT = "dup-grid-abort-message";
     const GRID_ABORT_REWRITE_TEXT = "Загрузка/Фильтрация была прервана пользователем вручную. Повторите действие заново.";
+    const ROWS10000_INCIDENT_EVENT_TYPE = "rows10000_incident";
+    const ROWS10000_INCIDENT_TYPE = "ROWS10000";
+    const ROWS10000_TRACE_EVENT = "dup-rows10000-trace-event";
+    const ROWS10000_TRACE_REQUEST_SNAPSHOT_EVENT = "dup-rows10000-request-snapshot";
+    const ROWS10000_TRACE_RETENTION_MS = 60 * 60 * 1000;
+    const ROWS10000_TRACE_MAX_EVENTS = 4000;
+    const ROWS10000_INCIDENT_COOLDOWN_MS = 15000;
+    const ROWS10000_SHOW_SELECTED_WINDOW_MS = 5000;
+    const ROWS10000_STACK_TEXT_LIMIT = 3000;
+    const ROWS10000_TEXT_LIMIT = 2000;
+    const ROWS10000_TRACE_SUMMARY_LIMIT = 220;
+    const ROWS10000_PATH_REGEX = /^\/ovzid\/status\/[^/?#]+/i;
     const EXTENSION_UI_SETTINGS_OVERLAY_ID = "dup-extension-ui-settings-overlay";
     const EXTENSION_UI_SETTINGS_PANEL_ID = "dup-extension-ui-settings-panel";
     const EXTENSION_UI_SETTINGS_OVERLAY_CLASS = "dup-extension-ui-settings-overlay";
@@ -168,6 +180,15 @@
     let timerUiElementSettings = { ...TIMER_UI_SETTINGS_DEFAULTS };
     let timerUiSettingsOverlayEl = null;
     let timerUiSettingsPanelEl = null;
+    const rows10000TraceEnabled = (
+        window.location.hostname.indexOf("pyramid.vostok-electra.ru") !== -1
+        && ROWS10000_PATH_REGEX.test(window.location.pathname)
+    );
+    let rows10000TraceSeq = 0;
+    let rows10000LastIncidentAtMs = 0;
+    let rows10000LastIncidentSignature = "";
+    let rows10000LastShowSelectedClickAtMs = 0;
+    let rows10000TraceBuffer = [];
 
     function isElementVisible(element) {
         if (!element) return false;
@@ -175,6 +196,815 @@
         if (style.display === "none" || style.visibility === "hidden") return false;
         const rect = element.getBoundingClientRect();
         return rect.width > 0 && rect.height > 0;
+    }
+
+    function trimRows10000Text(value, limit = ROWS10000_TEXT_LIMIT) {
+        const text = String(value == null ? "" : value).replace(/\s+/g, " ").trim();
+        if (!text) return "";
+        return text.length > limit ? `${text.slice(0, Math.max(0, limit - 1))}…` : text;
+    }
+
+    function safeRows10000Number(value) {
+        const num = Number(value);
+        return Number.isFinite(num) ? num : null;
+    }
+
+    function safeRows10000Integer(value) {
+        const num = parseInt(String(value == null ? "" : value).trim(), 10);
+        return Number.isFinite(num) ? num : null;
+    }
+
+    function cloneRows10000Payload(payload) {
+        if (payload == null) return {};
+        try {
+            return JSON.parse(JSON.stringify(payload));
+        } catch (error) {
+            return { value: trimRows10000Text(payload) };
+        }
+    }
+
+    function pruneRows10000TraceBuffer(nowMs = Date.now()) {
+        const minAtMs = nowMs - ROWS10000_TRACE_RETENTION_MS;
+        rows10000TraceBuffer = rows10000TraceBuffer.filter((entry) => (
+            entry && Number.isFinite(entry.atMs) && entry.atMs >= minAtMs
+        ));
+        if (rows10000TraceBuffer.length > ROWS10000_TRACE_MAX_EVENTS) {
+            rows10000TraceBuffer = rows10000TraceBuffer.slice(rows10000TraceBuffer.length - ROWS10000_TRACE_MAX_EVENTS);
+        }
+    }
+
+    function pushRows10000TraceEvent(kind, payload, options = {}) {
+        if (!rows10000TraceEnabled) return null;
+        const atMs = Number.isFinite(options.atMs) ? options.atMs : Date.now();
+        pruneRows10000TraceBuffer(atMs);
+        const entry = {
+            seq: ++rows10000TraceSeq,
+            at: new Date(atMs).toISOString(),
+            atMs,
+            kind: String(kind || "trace"),
+            source: String(options.source || "content"),
+            pageUrl: window.location.href,
+            payload: cloneRows10000Payload(payload)
+        };
+        rows10000TraceBuffer.push(entry);
+        if (rows10000TraceBuffer.length > ROWS10000_TRACE_MAX_EVENTS) {
+            rows10000TraceBuffer.shift();
+        }
+        return entry;
+    }
+
+    function buildRows10000ElementLabel(element) {
+        if (!(element instanceof Element)) return "";
+        const parts = [element.tagName.toLowerCase()];
+        if (element.id) parts.push(`#${element.id}`);
+        if (element.classList && element.classList.length) {
+            parts.push(`.${Array.from(element.classList).slice(0, 4).join(".")}`);
+        }
+        return parts.join("");
+    }
+
+    function buildRows10000ElementSnapshot(element) {
+        if (!(element instanceof Element)) return {};
+        return {
+            label: buildRows10000ElementLabel(element),
+            text: trimRows10000Text(
+                element.getAttribute("aria-label")
+                || element.innerText
+                || element.textContent
+                || element.value
+                || "",
+                180
+            ),
+            name: trimRows10000Text(element.getAttribute("name") || "", 80),
+            value: trimRows10000Text(
+                element.value != null ? element.value : element.getAttribute("value") || "",
+                180
+            )
+        };
+    }
+
+    function buildRows10000DomSnapshot(reason = "") {
+        const counterEl = document.querySelector("#selected_rows .rows-counter");
+        const selectedRowsEl = document.getElementById("selected_rows");
+        const rowsSelect = document.querySelector(".ui-pg-selbox");
+        const checkedBoxes = document.querySelectorAll("#list tr.jqgrow input.cbox:checked").length;
+        const highlightedRows = document.querySelectorAll("#list tr.jqgrow.ui-state-highlight").length;
+        const counterText = trimRows10000Text(counterEl ? counterEl.textContent : "", 40);
+        return {
+            reason: trimRows10000Text(reason, 80),
+            href: window.location.href,
+            buttonCounterText: counterText,
+            buttonCounterNumber: safeRows10000Integer(counterText),
+            buttonVisible: !!(selectedRowsEl && isElementVisible(selectedRowsEl)),
+            rowsSelectValue: rowsSelect ? trimRows10000Text(rowsSelect.value, 20) : "",
+            visibleCheckedCount: checkedBoxes,
+            highlightedRowCount: highlightedRows,
+            activeElement: buildRows10000ElementSnapshot(document.activeElement)
+        };
+    }
+
+    function buildRows10000TraceId() {
+        if (window.crypto && typeof window.crypto.randomUUID === "function") {
+            return window.crypto.randomUUID();
+        }
+        return `rows10000_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+    }
+
+    function buildRows10000Summary(candidateRequest, stateSnapshot) {
+        const parts = ["Пойман запрос rows=10000"];
+        if (candidateRequest && candidateRequest.filtersSummary && candidateRequest.filtersSummary.hasEmptyEdocInRule) {
+            parts.push("пустой фильтр EDocID in");
+        }
+        if (stateSnapshot) {
+            const counterNumber = safeRows10000Number(stateSnapshot.buttonCounterNumber);
+            const selarrrowLen = safeRows10000Number(stateSnapshot.selarrrowLen);
+            if (counterNumber !== null) {
+                parts.push(`counter=${counterNumber}`);
+            }
+            if (selarrrowLen !== null) {
+                parts.push(`selarrrow=${selarrrowLen}`);
+            }
+        }
+        return trimRows10000Text(parts.join("; "), ROWS10000_TRACE_SUMMARY_LIMIT);
+    }
+
+    function sendRows10000Incident(payload) {
+        if (!(chrome && chrome.runtime && typeof chrome.runtime.sendMessage === "function")) return;
+        try {
+            chrome.runtime.sendMessage({
+                action: "LOG_ROWS10000_INCIDENT",
+                data: payload
+            });
+        } catch (error) {
+            console.warn("[StageTimer] Не удалось отправить rows=10000 инцидент.", error);
+        }
+    }
+
+    function freezeRows10000Incident(candidatePayload, atMs = Date.now()) {
+        if (!rows10000TraceEnabled) return;
+        const requestInfo = candidatePayload && candidatePayload.request ? candidatePayload.request : {};
+        const stateSnapshot = candidatePayload && candidatePayload.state ? candidatePayload.state : {};
+        const requestUrl = trimRows10000Text(requestInfo.href || requestInfo.url || "", ROWS10000_TEXT_LIMIT);
+        const incidentSignature = [
+            requestUrl,
+            String(requestInfo.requestId || ""),
+            String(stateSnapshot.buttonCounterNumber || ""),
+            String(stateSnapshot.selarrrowLen || "")
+        ].join("|");
+        if (
+            incidentSignature
+            && incidentSignature === rows10000LastIncidentSignature
+            && (atMs - rows10000LastIncidentAtMs) < ROWS10000_INCIDENT_COOLDOWN_MS
+        ) {
+            return;
+        }
+
+        rows10000LastIncidentAtMs = atMs;
+        rows10000LastIncidentSignature = incidentSignature;
+
+        const traceId = buildRows10000TraceId();
+        const sessionData = normalizeSessionData(scrapeData());
+        const summaryText = buildRows10000Summary(requestInfo, stateSnapshot);
+        const localSnapshot = buildRows10000DomSnapshot("incident-freeze");
+        pushRows10000TraceEvent("incident-freeze", {
+            traceId,
+            summaryText,
+            localSnapshot,
+            candidate: candidatePayload || {}
+        }, { source: "content", atMs });
+        pruneRows10000TraceBuffer(atMs);
+
+        sendRows10000Incident({
+            eventType: ROWS10000_INCIDENT_EVENT_TYPE,
+            incidentType: ROWS10000_INCIDENT_TYPE,
+            traceId,
+            timestamp: new Date(atMs).toISOString(),
+            baseName: baseName,
+            stageName: sessionData.stageName,
+            userName: sessionData.userName,
+            departmentName: sessionData.departmentName,
+            pageUrl: window.location.href,
+            requestUrl,
+            requestMethod: trimRows10000Text(requestInfo.method || "GET", 16),
+            rows: safeRows10000Integer(requestInfo.rowsNumber != null ? requestInfo.rowsNumber : requestInfo.rowsRaw),
+            buttonCounter: trimRows10000Text(stateSnapshot.buttonCounterText || localSnapshot.buttonCounterText || "", 40),
+            buttonCounterNumber: safeRows10000Integer(
+                stateSnapshot.buttonCounterNumber != null ? stateSnapshot.buttonCounterNumber : localSnapshot.buttonCounterNumber
+            ),
+            selarrrowLen: safeRows10000Integer(stateSnapshot.selarrrowLen),
+            visibleCheckedCount: safeRows10000Integer(
+                stateSnapshot.visibleCheckedCount != null ? stateSnapshot.visibleCheckedCount : localSnapshot.visibleCheckedCount
+            ),
+            summaryText,
+            fullText: trimRows10000Text(JSON.stringify({
+                triggerReason: candidatePayload && candidatePayload.triggerReason ? candidatePayload.triggerReason : "",
+                request: requestInfo,
+                state: stateSnapshot
+            }), ROWS10000_TEXT_LIMIT),
+            triggerReason: trimRows10000Text(candidatePayload && candidatePayload.triggerReason ? candidatePayload.triggerReason : "", 120),
+            requestData: cloneRows10000Payload(requestInfo),
+            stateSnapshot: cloneRows10000Payload(stateSnapshot),
+            trace: cloneRows10000Payload(rows10000TraceBuffer),
+            version: extVersion
+        });
+    }
+
+    function requestRows10000MainWorldSnapshot(reason) {
+        if (!rows10000TraceEnabled) return;
+        try {
+            window.dispatchEvent(new CustomEvent(ROWS10000_TRACE_REQUEST_SNAPSHOT_EVENT, {
+                detail: { reason: trimRows10000Text(reason, 80) }
+            }));
+        } catch (error) {
+            // ignore
+        }
+    }
+
+    function handleRows10000MainWorldEvent(event) {
+        if (!rows10000TraceEnabled) return;
+        const detail = event && event.detail ? event.detail : {};
+        const type = trimRows10000Text(detail.type || "main-world", 80);
+        const atMs = Number.isFinite(detail.atMs) ? detail.atMs : Date.now();
+        const payload = cloneRows10000Payload(detail.payload || {});
+        pushRows10000TraceEvent(type, payload, { source: "main-world", atMs });
+        if (type === "ui-show-selected-click") {
+            rows10000LastShowSelectedClickAtMs = atMs;
+        }
+        if (type === "rows10000-candidate") {
+            freezeRows10000Incident(payload, atMs);
+        }
+    }
+
+    function buildRows10000ControlInfo(target) {
+        const control = target.closest('button, a, [role="button"], input[type="button"], input[type="submit"], input[type="reset"], .ui-pg-button');
+        if (!control) return null;
+        const title = trimRows10000Text(
+            control.getAttribute("title")
+            || control.getAttribute("aria-label")
+            || control.textContent
+            || control.value
+            || "",
+            160
+        );
+        if (!title) return null;
+        return {
+            title,
+            label: buildRows10000ElementLabel(control),
+            href: trimRows10000Text(control.getAttribute("href") || "", 300)
+        };
+    }
+
+    function handleRows10000UiClick(event) {
+        if (!rows10000TraceEnabled) return;
+        const target = event.target instanceof Element ? event.target : null;
+        if (!target) return;
+
+        const showSelectedButton = target.closest("#selected_rows .showSelectedRow");
+        if (showSelectedButton) {
+            rows10000LastShowSelectedClickAtMs = Date.now();
+            pushRows10000TraceEvent("ui-click-show-selected", {
+                target: buildRows10000ElementSnapshot(showSelectedButton),
+                domSnapshot: buildRows10000DomSnapshot("ui-click-show-selected")
+            }, { source: "ui" });
+            requestRows10000MainWorldSnapshot("ui-click-show-selected");
+            return;
+        }
+
+        const resetButton = target.closest("#selected_rows .resetFilter");
+        if (resetButton) {
+            pushRows10000TraceEvent("ui-click-reset-selected-filter", {
+                target: buildRows10000ElementSnapshot(resetButton),
+                domSnapshot: buildRows10000DomSnapshot("ui-click-reset-selected-filter")
+            }, { source: "ui" });
+            requestRows10000MainWorldSnapshot("ui-click-reset-selected-filter");
+            return;
+        }
+
+        const checkbox = target.closest("#list input.cbox");
+        if (checkbox) {
+            const row = checkbox.closest("tr");
+            pushRows10000TraceEvent("ui-click-grid-checkbox", {
+                checked: !!checkbox.checked,
+                rowId: trimRows10000Text(row ? (row.id || row.getAttribute("id") || "") : "", 80),
+                isHeaderCheckbox: checkbox.id === "cb_list",
+                domSnapshot: buildRows10000DomSnapshot("ui-click-grid-checkbox")
+            }, { source: "ui" });
+            return;
+        }
+
+        const header = target.closest('th[id^="jqgh_list_"], th[id^="list_"]');
+        if (header) {
+            pushRows10000TraceEvent("ui-click-grid-header", {
+                headerId: trimRows10000Text(header.id || "", 120),
+                text: trimRows10000Text(header.textContent || "", 160),
+                domSnapshot: buildRows10000DomSnapshot("ui-click-grid-header")
+            }, { source: "ui" });
+            requestRows10000MainWorldSnapshot("ui-click-grid-header");
+            return;
+        }
+
+        const controlInfo = buildRows10000ControlInfo(target);
+        if (controlInfo) {
+            pushRows10000TraceEvent("ui-click-control", {
+                control: controlInfo,
+                domSnapshot: buildRows10000DomSnapshot("ui-click-control")
+            }, { source: "ui" });
+            requestRows10000MainWorldSnapshot("ui-click-control");
+        }
+    }
+
+    function handleRows10000UiChange(event) {
+        if (!rows10000TraceEnabled) return;
+        const target = event.target instanceof Element ? event.target : null;
+        if (!target) return;
+
+        if (target.matches(".ui-pg-selbox")) {
+            pushRows10000TraceEvent("ui-change-rownum", {
+                value: trimRows10000Text(target.value || "", 20),
+                domSnapshot: buildRows10000DomSnapshot("ui-change-rownum")
+            }, { source: "ui" });
+            requestRows10000MainWorldSnapshot("ui-change-rownum");
+            return;
+        }
+
+        if (target.closest(".ui-search-toolbar")) {
+            pushRows10000TraceEvent("ui-change-filter", {
+                target: buildRows10000ElementSnapshot(target),
+                domSnapshot: buildRows10000DomSnapshot("ui-change-filter")
+            }, { source: "ui" });
+            return;
+        }
+
+        if (target.matches('select, input[type="checkbox"], input[type="radio"]')) {
+            pushRows10000TraceEvent("ui-change-control", {
+                target: buildRows10000ElementSnapshot(target),
+                checked: typeof target.checked === "boolean" ? target.checked : undefined,
+                domSnapshot: buildRows10000DomSnapshot("ui-change-control")
+            }, { source: "ui" });
+        }
+    }
+
+    function handleRows10000UiKeydown(event) {
+        if (!rows10000TraceEnabled || event.key !== "Enter") return;
+        const target = event.target instanceof Element ? event.target : null;
+        if (!target || !target.closest(".ui-search-toolbar")) return;
+        pushRows10000TraceEvent("ui-enter-filter", {
+            target: buildRows10000ElementSnapshot(target),
+            domSnapshot: buildRows10000DomSnapshot("ui-enter-filter")
+        }, { source: "ui" });
+        requestRows10000MainWorldSnapshot("ui-enter-filter");
+    }
+
+    function installRows10000MainWorldHooks() {
+        if (!rows10000TraceEnabled) return;
+        const script = document.createElement("script");
+        script.type = "text/javascript";
+        script.textContent = `;(${function rows10000MainWorldBootstrap(config) {
+            if (window.__dupRows10000TraceInstalled) return;
+            window.__dupRows10000TraceInstalled = true;
+
+            const EVENT_NAME = config.eventName;
+            const SNAPSHOT_EVENT = config.snapshotEventName;
+            const SHOW_SELECTED_WINDOW_MS = config.showSelectedWindowMs;
+            const STACK_LIMIT = config.stackLimit;
+            let lastShowSelectedAtMs = 0;
+            let tracerDepth = 0;
+            let jqGridInstalled = false;
+            let xhrInstalled = false;
+
+            function withGuard(fn) {
+                tracerDepth += 1;
+                try {
+                    return fn();
+                } finally {
+                    tracerDepth = Math.max(0, tracerDepth - 1);
+                }
+            }
+
+            function trimText(value, limit) {
+                const text = String(value == null ? "" : value).replace(/\\s+/g, " ").trim();
+                if (!text) return "";
+                const max = Number.isFinite(limit) && limit > 0 ? limit : 2000;
+                return text.length > max ? text.slice(0, Math.max(0, max - 1)) + "…" : text;
+            }
+
+            function safeInteger(value) {
+                const num = parseInt(String(value == null ? "" : value).trim(), 10);
+                return Number.isFinite(num) ? num : null;
+            }
+
+            function normalizeFilters(filtersRaw) {
+                const raw = String(filtersRaw || "").trim();
+                if (!raw) {
+                    return {
+                        raw: "",
+                        parsed: null,
+                        ruleCount: 0,
+                        hasEmptyEdocInRule: false,
+                        firstRules: []
+                    };
+                }
+
+                let parsed = null;
+                const candidates = [raw];
+                try {
+                    const decoded = decodeURIComponent(raw);
+                    if (decoded !== raw) {
+                        candidates.push(decoded);
+                    }
+                } catch (error) {
+                    // ignore
+                }
+
+                for (let i = 0; i < candidates.length; i += 1) {
+                    try {
+                        parsed = JSON.parse(candidates[i]);
+                        break;
+                    } catch (error) {
+                        // ignore
+                    }
+                }
+
+                const rules = parsed && Array.isArray(parsed.rules) ? parsed.rules : [];
+                const firstRules = rules.slice(0, 5).map((rule) => ({
+                    field: trimText(rule && rule.field ? rule.field : "", 120),
+                    op: trimText(rule && rule.op ? rule.op : "", 40),
+                    data: trimText(rule && rule.data ? rule.data : "", 300)
+                }));
+                const hasEmptyEdocInRule = rules.some((rule) => (
+                    trimText(rule && rule.field ? rule.field : "", 120) === "V_OVZID.EDocID"
+                    && trimText(rule && rule.op ? rule.op : "", 40) === "in"
+                    && trimText(rule && rule.data ? rule.data : "", 10) === ""
+                ));
+
+                return {
+                    raw: trimText(raw, 2000),
+                    parsed: parsed ? { groupOp: trimText(parsed.groupOp || "", 30) } : null,
+                    ruleCount: rules.length,
+                    hasEmptyEdocInRule: hasEmptyEdocInRule,
+                    firstRules: firstRules
+                };
+            }
+
+            function buildStack() {
+                try {
+                    throw new Error();
+                } catch (error) {
+                    const stack = String(error && error.stack ? error.stack : "");
+                    if (!stack) return "";
+                    const lines = stack.split("\\n").slice(2, 10);
+                    return trimText(lines.join("\\n"), STACK_LIMIT);
+                }
+            }
+
+            function getSelectedRowsCounterState() {
+                const selectedRowsEl = document.getElementById("selected_rows");
+                const counterEl = selectedRowsEl ? selectedRowsEl.querySelector(".rows-counter") : null;
+                const text = trimText(counterEl ? counterEl.textContent : "", 40);
+                return {
+                    buttonCounterText: text,
+                    buttonCounterNumber: safeInteger(text),
+                    buttonVisible: !!(selectedRowsEl && selectedRowsEl.offsetParent !== null)
+                };
+            }
+
+            function buildActiveElementState() {
+                const el = document.activeElement;
+                if (!(el instanceof Element)) return {};
+                return {
+                    label: trimText(el.tagName.toLowerCase() + (el.id ? "#" + el.id : ""), 120),
+                    text: trimText(el.getAttribute("aria-label") || el.value || el.textContent || "", 160)
+                };
+            }
+
+            function getGridState() {
+                return withGuard(function() {
+                    const state = Object.assign({
+                        href: window.location.href,
+                        title: trimText(document.title, 160),
+                        visibleCheckedCount: document.querySelectorAll("#list tr.jqgrow input.cbox:checked").length,
+                        highlightedRowCount: document.querySelectorAll("#list tr.jqgrow.ui-state-highlight").length,
+                        activeElement: buildActiveElementState()
+                    }, getSelectedRowsCounterState());
+
+                    const $ = window.jQuery;
+                    const gridEl = document.getElementById("list");
+                    if (!($ && $.fn && $.fn.jqGrid && gridEl)) {
+                        return state;
+                    }
+
+                    try {
+                        const grid = $("#list");
+                        const selarrrow = grid.jqGrid("getGridParam", "selarrrow") || [];
+                        const postData = grid.jqGrid("getGridParam", "postData") || {};
+                        state.selarrrowLen = Array.isArray(selarrrow) ? selarrrow.length : 0;
+                        state.selarrrowPreview = Array.isArray(selarrrow) ? selarrrow.slice(0, 10) : [];
+                        state.rowNum = safeInteger(grid.jqGrid("getGridParam", "rowNum"));
+                        state.page = safeInteger(grid.jqGrid("getGridParam", "page"));
+                        state.sortname = trimText(grid.jqGrid("getGridParam", "sortname") || "", 160);
+                        state.sortorder = trimText(grid.jqGrid("getGridParam", "sortorder") || "", 40);
+                        state.records = safeInteger(grid.jqGrid("getGridParam", "records"));
+                        state.reccount = safeInteger(grid.jqGrid("getGridParam", "reccount"));
+                        state.postDataRows = safeInteger(postData.rows);
+                        state.postDataSearch = trimText(postData._search || "", 16);
+                        state.postDataFilters = trimText(postData.filters || "", 2000);
+                        state.filtersSummary = normalizeFilters(postData.filters || "");
+                    } catch (error) {
+                        state.stateReadError = trimText(error && error.message ? error.message : error, 200);
+                    }
+
+                    return state;
+                });
+            }
+
+            function dispatch(type, payload) {
+                try {
+                    window.dispatchEvent(new CustomEvent(EVENT_NAME, {
+                        detail: {
+                            type: type,
+                            atMs: Date.now(),
+                            payload: payload || {}
+                        }
+                    }));
+                } catch (error) {
+                    // ignore
+                }
+            }
+
+            function summarizeArg(value) {
+                if (value == null) return value;
+                if (Array.isArray(value)) {
+                    return value.slice(0, 10).map(summarizeArg);
+                }
+                if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+                    return trimText(value, 400);
+                }
+                if (value instanceof Element) {
+                    return trimText(value.tagName.toLowerCase() + (value.id ? "#" + value.id : ""), 120);
+                }
+                if (typeof value === "object") {
+                    const result = {};
+                    Object.keys(value).slice(0, 12).forEach(function(key) {
+                        const current = value[key];
+                        if (current == null || typeof current === "string" || typeof current === "number" || typeof current === "boolean") {
+                            result[key] = trimText(current, 400);
+                        } else if (Array.isArray(current)) {
+                            result[key] = current.slice(0, 10).map(function(item) {
+                                return trimText(item, 120);
+                            });
+                        }
+                    });
+                    return result;
+                }
+                return trimText(String(value), 200);
+            }
+
+            function installJqGridHooks($) {
+                if (jqGridInstalled || !($ && $.fn && $.fn.jqGrid)) return;
+                jqGridInstalled = true;
+                const originalJqGrid = $.fn.jqGrid;
+                const originalTrigger = $.fn.trigger;
+
+                $.fn.jqGrid = function() {
+                    if (tracerDepth > 0) {
+                        return originalJqGrid.apply(this, arguments);
+                    }
+                    const args = Array.prototype.slice.call(arguments);
+                    const method = typeof args[0] === "string" ? args[0] : "";
+                    const isGrid = !!(this && this[0] && this[0].id === "list");
+                    const shouldTrace = isGrid && (method === "resetSelection" || method === "setGridParam");
+                    const before = shouldTrace ? getGridState() : null;
+                    const stack = shouldTrace ? buildStack() : "";
+                    try {
+                        return originalJqGrid.apply(this, arguments);
+                    } finally {
+                        if (shouldTrace) {
+                            dispatch("jqgrid-call", {
+                                method: method,
+                                args: args.slice(1).map(summarizeArg),
+                                before: before,
+                                after: getGridState(),
+                                stack: stack
+                            });
+                        }
+                    }
+                };
+
+                $.fn.trigger = function() {
+                    if (tracerDepth > 0) {
+                        return originalTrigger.apply(this, arguments);
+                    }
+                    const args = Array.prototype.slice.call(arguments);
+                    const firstArg = args[0];
+                    const eventName = typeof firstArg === "string"
+                        ? firstArg
+                        : (firstArg && firstArg.type ? firstArg.type : "");
+                    const isGrid = !!(this && this[0] && this[0].id === "list");
+                    const shouldTrace = isGrid && eventName === "reloadGrid";
+                    const before = shouldTrace ? getGridState() : null;
+                    const stack = shouldTrace ? buildStack() : "";
+                    try {
+                        return originalTrigger.apply(this, arguments);
+                    } finally {
+                        if (shouldTrace) {
+                            dispatch("jqgrid-trigger", {
+                                eventName: eventName,
+                                args: args.slice(1).map(summarizeArg),
+                                before: before,
+                                after: getGridState(),
+                                stack: stack
+                            });
+                        }
+                    }
+                };
+
+                $(document).on("jqGridSelectRow dupRows10000Trace jqGridSelectAll jqGridLoadComplete", "#list", function(event, rowId) {
+                    dispatch("jqgrid-event", {
+                        eventName: trimText(event && event.type ? event.type : "", 60),
+                        rowId: trimText(rowId || "", 80),
+                        state: getGridState()
+                    });
+                });
+            }
+
+            function parseGridRequest(rawUrl, method) {
+                let url = null;
+                try {
+                    url = new URL(String(rawUrl || ""), window.location.href);
+                } catch (error) {
+                    return { isRelevant: false, parseError: trimText(error && error.message ? error.message : error, 160) };
+                }
+                const pathname = String(url.pathname || "");
+                if (!new RegExp("^/ovzid/status/[^/]+/data$", "i").test(pathname)) {
+                    return { isRelevant: false, href: url.href, pathname: pathname };
+                }
+
+                const rowsRaw = trimText(url.searchParams.get("rows") || "", 20);
+                const rowsNumber = safeInteger(rowsRaw);
+                const filtersRaw = url.searchParams.get("filters") || "";
+                const filtersSummary = normalizeFilters(filtersRaw);
+                const searchFlag = trimText(url.searchParams.get("_search") || "", 16);
+                const recentShowSelectedDeltaMs = Date.now() - lastShowSelectedAtMs;
+                const state = getGridState();
+                const hasStateMismatch = (
+                    safeInteger(state.buttonCounterNumber) !== null
+                    && safeInteger(state.buttonCounterNumber) > 0
+                    && safeInteger(state.selarrrowLen) === 0
+                );
+
+                return {
+                    isRelevant: true,
+                    href: url.href,
+                    pathname: pathname,
+                    method: trimText(method || "GET", 16),
+                    rowsRaw: rowsRaw,
+                    rowsNumber: rowsNumber,
+                    page: safeInteger(url.searchParams.get("page")),
+                    searchFlag: searchFlag,
+                    sidx: trimText(url.searchParams.get("sidx") || "", 160),
+                    sord: trimText(url.searchParams.get("sord") || "", 40),
+                    filtersRaw: trimText(filtersRaw, 2000),
+                    filtersSummary: filtersSummary,
+                    recentShowSelectedDeltaMs: recentShowSelectedDeltaMs,
+                    hasStateMismatch: hasStateMismatch,
+                    isSuspicious: (
+                        searchFlag === "true"
+                        && rowsNumber === 10000
+                        && (
+                            filtersSummary.hasEmptyEdocInRule
+                            || recentShowSelectedDeltaMs <= SHOW_SELECTED_WINDOW_MS
+                            || hasStateMismatch
+                        )
+                    )
+                };
+            }
+
+            function installXhrHooks() {
+                if (xhrInstalled || !window.XMLHttpRequest) return;
+                xhrInstalled = true;
+                const originalOpen = XMLHttpRequest.prototype.open;
+                const originalSend = XMLHttpRequest.prototype.send;
+
+                XMLHttpRequest.prototype.open = function(method, url) {
+                    this.__dupRows10000Meta = {
+                        method: trimText(method || "GET", 16),
+                        url: trimText(url || "", 2000)
+                    };
+                    return originalOpen.apply(this, arguments);
+                };
+
+                XMLHttpRequest.prototype.send = function(body) {
+                    const meta = this.__dupRows10000Meta || {
+                        method: "GET",
+                        url: ""
+                    };
+                    meta.requestId = meta.requestId || (Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 8));
+                    meta.sendAtMs = Date.now();
+                    const requestInfo = parseGridRequest(meta.url, meta.method);
+                    if (requestInfo.isRelevant) {
+                        dispatch("network-request", {
+                            phase: "send",
+                            requestId: meta.requestId,
+                            request: requestInfo,
+                            state: getGridState(),
+                            stack: buildStack()
+                        });
+                        if (requestInfo.isSuspicious) {
+                            dispatch("rows10000-candidate", {
+                                requestId: meta.requestId,
+                                triggerReason: requestInfo.filtersSummary.hasEmptyEdocInRule
+                                    ? "empty_edocid_in_filter"
+                                    : (requestInfo.hasStateMismatch ? "ui_counter_selarrrow_mismatch" : "rows10000_after_show_selected"),
+                                request: requestInfo,
+                                state: getGridState()
+                            });
+                        }
+                    }
+
+                    this.addEventListener("loadend", function onLoadEnd() {
+                        if (!requestInfo.isRelevant) return;
+                        dispatch("network-request", {
+                            phase: "complete",
+                            requestId: meta.requestId,
+                            request: requestInfo,
+                            response: {
+                                status: this.status,
+                                durationMs: Math.max(0, Date.now() - meta.sendAtMs)
+                            },
+                            state: getGridState()
+                        });
+                    }, { once: true });
+
+                    return originalSend.apply(this, arguments);
+                };
+            }
+
+            function installShowSelectedHooks() {
+                document.addEventListener("click", function(event) {
+                    const target = event.target instanceof Element ? event.target : null;
+                    const button = target && target.closest ? target.closest("#selected_rows .showSelectedRow") : null;
+                    if (!button) return;
+                    lastShowSelectedAtMs = Date.now();
+                    dispatch("ui-show-selected-click", {
+                        buttonText: trimText(button.textContent || "", 160),
+                        state: getGridState(),
+                        stack: buildStack()
+                    });
+                }, true);
+            }
+
+            function installSnapshotBridge() {
+                window.addEventListener(SNAPSHOT_EVENT, function(event) {
+                    const detail = event && event.detail ? event.detail : {};
+                    dispatch("grid-snapshot", {
+                        reason: trimText(detail.reason || "", 80),
+                        state: getGridState()
+                    });
+                });
+            }
+
+            function tryInstall() {
+                const $ = window.jQuery;
+                if ($ && $.fn && $.fn.jqGrid) {
+                    installJqGridHooks($);
+                }
+                installXhrHooks();
+                installShowSelectedHooks();
+                installSnapshotBridge();
+            }
+
+            tryInstall();
+            let attempts = 0;
+            const timer = window.setInterval(function() {
+                attempts += 1;
+                tryInstall();
+                if ((jqGridInstalled && xhrInstalled) || attempts >= 60) {
+                    window.clearInterval(timer);
+                }
+            }, 500);
+        }})(${JSON.stringify({
+            eventName: ROWS10000_TRACE_EVENT,
+            snapshotEventName: ROWS10000_TRACE_REQUEST_SNAPSHOT_EVENT,
+            showSelectedWindowMs: ROWS10000_SHOW_SELECTED_WINDOW_MS,
+            stackLimit: ROWS10000_STACK_TEXT_LIMIT
+        })});`;
+        (document.documentElement || document.head || document.body).appendChild(script);
+        script.remove();
+    }
+
+    function initRows10000Trace() {
+        if (!rows10000TraceEnabled) return;
+        pushRows10000TraceEvent("trace-init", {
+            baseName: baseName,
+            stageName: trimRows10000Text(document.title, 160),
+            domSnapshot: buildRows10000DomSnapshot("trace-init")
+        }, { source: "content" });
+        window.addEventListener(ROWS10000_TRACE_EVENT, handleRows10000MainWorldEvent, { capture: true });
+        document.addEventListener("click", handleRows10000UiClick, { capture: true });
+        document.addEventListener("change", handleRows10000UiChange, { capture: true });
+        document.addEventListener("keydown", handleRows10000UiKeydown, { capture: true });
+        installRows10000MainWorldHooks();
+        requestRows10000MainWorldSnapshot("trace-init");
     }
 
     function readLegacyTimerUiVisibilityPreference() {
@@ -1231,6 +2061,7 @@
     }, INCIDENT_SCAN_INTERVAL_MS);
 
     scheduleIncidentScan(INCIDENT_SCAN_INTERVAL_MS);
+    initRows10000Trace();
 
     window.addEventListener(SCREENSHOT_HIDE_EVENT, (event) => {
         if (event && event.detail && typeof event.detail.hidden === "boolean") {

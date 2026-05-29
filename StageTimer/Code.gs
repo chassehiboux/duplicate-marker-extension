@@ -15,6 +15,29 @@ const INCIDENT_EVENT_LOG_SHEET = "Инциденты_Лог";
 const INCIDENT_DYNAMIC_WINDOW_MINUTES = 30;
 const INCIDENT_CHAT_CONFIG_RANGE = "A4:F100";
 const INCIDENT_SUMMARY_MESSAGE_KEY_PREFIX = "incident_summary_message_id|";
+const ROWS10000_EVENT_TYPE = "rows10000_incident";
+const ROWS10000_SHEET = "Rows10000_Incidents";
+const ROWS10000_TRACE_FOLDER_NAME = "StageTimer_Rows10000_Traces";
+const ROWS10000_ALERT_SENT_PREFIX = "rows10000_alert_sent|";
+const ROWS10000_HEADERS = [
+  "Дата/время",
+  "TraceID",
+  "База",
+  "Департамент",
+  "Пользователь",
+  "Стадия",
+  "Page URL",
+  "Request URL",
+  "Method",
+  "Rows",
+  "Counter",
+  "SelarrrowLen",
+  "VisibleChecked",
+  "Причина",
+  "Краткий текст",
+  "Trace File URL",
+  "Версия"
+];
 const INCIDENT_WORK_INTERVALS = [
   { key: "morning", label: "08:00-12:30", start: "08:00", end: "12:30" },
   { key: "day", label: "12:30-17:00", start: "12:30", end: "17:00" }
@@ -444,6 +467,9 @@ function doPost(e) {
 function handleRequest(p) {
   if (p && p.eventType === "stage_incident") {
     return handleIncidentRequest(p);
+  }
+  if (p && p.eventType === ROWS10000_EVENT_TYPE) {
+    return handleRows10000IncidentRequest(p);
   }
 
   try {
@@ -1057,6 +1083,240 @@ function handleIncidentRequest(p) {
     return ContentService.createTextOutput("OK").setMimeType(ContentService.MimeType.TEXT);
   } catch (error) {
     console.error("Incident API Error: " + error.toString());
+    return ContentService.createTextOutput("Error: " + error.toString());
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function normalizeRows10000Value_(value) {
+  if (value === undefined || value === null) return "";
+  return String(value).trim();
+}
+
+function normalizeRows10000Number_(value) {
+  var raw = normalizeRows10000Value_(value);
+  if (!raw) return "";
+  var num = parseInt(raw, 10);
+  return isNaN(num) ? raw : num;
+}
+
+function initializeRows10000Sheet_(sheet) {
+  sheet.getRange(1, 1, 1, ROWS10000_HEADERS.length).setValues([ROWS10000_HEADERS]);
+  sheet.getRange(1, 1, 1, ROWS10000_HEADERS.length).setFontWeight("bold").setBackground("#d9e2f3");
+  sheet.setFrozenRows(1);
+}
+
+function ensureRows10000SheetHeader_(sheet) {
+  if (sheet.getLastRow() < 1) {
+    initializeRows10000Sheet_(sheet);
+    return;
+  }
+  var headerRange = sheet.getRange(1, 1, 1, ROWS10000_HEADERS.length);
+  var current = headerRange.getValues()[0];
+  var mismatch = false;
+  for (var i = 0; i < ROWS10000_HEADERS.length; i++) {
+    if (String(current[i] || "") !== ROWS10000_HEADERS[i]) {
+      mismatch = true;
+      break;
+    }
+  }
+  if (mismatch) {
+    headerRange.setValues([ROWS10000_HEADERS]).setFontWeight("bold").setBackground("#d9e2f3");
+  }
+  sheet.setFrozenRows(1);
+}
+
+function getOrCreateRows10000Sheet_(ss) {
+  var sheet = ss.getSheetByName(ROWS10000_SHEET);
+  if (!sheet) {
+    sheet = ss.insertSheet(ROWS10000_SHEET);
+    initializeRows10000Sheet_(sheet);
+    return sheet;
+  }
+  ensureRows10000SheetHeader_(sheet);
+  return sheet;
+}
+
+function findRows10000RowByTraceId_(sheet, traceId) {
+  var normalizedTraceId = normalizeRows10000Value_(traceId);
+  if (!normalizedTraceId) return { rowNumber: 0, row: null };
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return { rowNumber: 0, row: null };
+  var values = sheet.getRange(2, 1, lastRow - 1, ROWS10000_HEADERS.length).getValues();
+  for (var i = values.length - 1; i >= 0; i--) {
+    if (String(values[i][1] || "") === normalizedTraceId) {
+      return { rowNumber: i + 2, row: values[i].slice() };
+    }
+  }
+  return { rowNumber: 0, row: null };
+}
+
+function buildRows10000Row_(payload, eventDate, traceFileUrl) {
+  return [
+    eventDate,
+    normalizeRows10000Value_(payload.traceId),
+    normalizeBaseName(payload.baseName),
+    normalizeRows10000Value_(payload.departmentName) || "Не определен",
+    normalizeRows10000Value_(payload.userName) || "Не определен",
+    normalizeRows10000Value_(payload.stageName) || "ПК Пирамида",
+    normalizeRows10000Value_(payload.pageUrl),
+    normalizeRows10000Value_(payload.requestUrl),
+    normalizeRows10000Value_(payload.requestMethod || "GET"),
+    normalizeRows10000Number_(payload.rows),
+    normalizeRows10000Value_(payload.buttonCounter),
+    normalizeRows10000Number_(payload.selarrrowLen),
+    normalizeRows10000Number_(payload.visibleCheckedCount),
+    normalizeRows10000Value_(payload.triggerReason),
+    normalizeRows10000Value_(payload.summaryText),
+    normalizeRows10000Value_(traceFileUrl),
+    "'" + normalizeRows10000Value_(payload.version)
+  ];
+}
+
+function upsertRows10000Row_(sheet, payload, eventDate, traceFileUrl) {
+  var match = findRows10000RowByTraceId_(sheet, payload.traceId);
+  var rowValues = buildRows10000Row_(payload, eventDate, traceFileUrl);
+  if (!match.rowNumber) {
+    sheet.appendRow(rowValues);
+    return {
+      rowNumber: sheet.getLastRow(),
+      row: rowValues,
+      isNew: true
+    };
+  }
+  sheet.getRange(match.rowNumber, 1, 1, ROWS10000_HEADERS.length).setValues([rowValues]);
+  return {
+    rowNumber: match.rowNumber,
+    row: rowValues,
+    isNew: false
+  };
+}
+
+function getOrCreateRows10000TraceFolder_() {
+  var folders = DriveApp.getFoldersByName(ROWS10000_TRACE_FOLDER_NAME);
+  if (folders.hasNext()) {
+    return folders.next();
+  }
+  return DriveApp.createFolder(ROWS10000_TRACE_FOLDER_NAME);
+}
+
+function buildRows10000TraceFileName_(payload, eventDate) {
+  var ts = Utilities.formatDate(eventDate, INCIDENT_TIMEZONE, "yyyy-MM-dd_HH-mm-ss");
+  var user = normalizeRows10000Value_(payload.userName).replace(/[\\\\/:*?\"<>|\\s]+/g, "_") || "unknown";
+  var traceId = normalizeRows10000Value_(payload.traceId).replace(/[\\\\/:*?\"<>|\\s]+/g, "_") || "trace";
+  return "rows10000_" + ts + "_" + user + "_" + traceId + ".json";
+}
+
+function buildRows10000TraceDocument_(payload, eventDate, traceFileUrl) {
+  return {
+    traceId: normalizeRows10000Value_(payload.traceId),
+    eventType: ROWS10000_EVENT_TYPE,
+    incidentType: normalizeRows10000Value_(payload.incidentType) || "ROWS10000",
+    receivedAt: eventDate.toISOString(),
+    baseName: normalizeBaseName(payload.baseName),
+    departmentName: normalizeRows10000Value_(payload.departmentName),
+    userName: normalizeRows10000Value_(payload.userName),
+    stageName: normalizeRows10000Value_(payload.stageName),
+    pageUrl: normalizeRows10000Value_(payload.pageUrl),
+    requestUrl: normalizeRows10000Value_(payload.requestUrl),
+    requestMethod: normalizeRows10000Value_(payload.requestMethod || "GET"),
+    rows: normalizeRows10000Number_(payload.rows),
+    buttonCounter: normalizeRows10000Value_(payload.buttonCounter),
+    buttonCounterNumber: normalizeRows10000Number_(payload.buttonCounterNumber),
+    selarrrowLen: normalizeRows10000Number_(payload.selarrrowLen),
+    visibleCheckedCount: normalizeRows10000Number_(payload.visibleCheckedCount),
+    triggerReason: normalizeRows10000Value_(payload.triggerReason),
+    summaryText: normalizeRows10000Value_(payload.summaryText),
+    version: normalizeRows10000Value_(payload.version),
+    traceFileUrl: normalizeRows10000Value_(traceFileUrl),
+    requestData: payload.requestData || {},
+    stateSnapshot: payload.stateSnapshot || {},
+    trace: Array.isArray(payload.trace) ? payload.trace : []
+  };
+}
+
+function saveRows10000TraceFile_(payload, eventDate, existingTraceFileUrl) {
+  if (existingTraceFileUrl) {
+    return existingTraceFileUrl;
+  }
+  var folder = getOrCreateRows10000TraceFolder_();
+  var filename = buildRows10000TraceFileName_(payload, eventDate);
+  var doc = buildRows10000TraceDocument_(payload, eventDate, "");
+  var blob = Utilities.newBlob(JSON.stringify(doc, null, 2), "application/json", filename);
+  var file = folder.createFile(blob);
+  return file.getUrl();
+}
+
+function wasRows10000AlertSent_(traceId, chatId) {
+  var key = ROWS10000_ALERT_SENT_PREFIX + normalizeRows10000Value_(traceId) + "|" + normalizeRows10000Value_(chatId);
+  return PropertiesService.getScriptProperties().getProperty(key) === "1";
+}
+
+function markRows10000AlertSent_(traceId, chatId) {
+  var key = ROWS10000_ALERT_SENT_PREFIX + normalizeRows10000Value_(traceId) + "|" + normalizeRows10000Value_(chatId);
+  PropertiesService.getScriptProperties().setProperty(key, "1");
+}
+
+function buildRows10000TelegramText_(payload, traceFileUrl, eventDate) {
+  var whenText = Utilities.formatDate(eventDate, INCIDENT_TIMEZONE, "dd.MM.yyyy HH:mm:ss");
+  var rowsText = normalizeRows10000Value_(payload.rows) || "10000";
+  var counterText = normalizeRows10000Value_(payload.buttonCounter) || "\u2014";
+  var selarrrowText = normalizeRows10000Value_(payload.selarrrowLen) || "\u2014";
+  var checkedText = normalizeRows10000Value_(payload.visibleCheckedCount) || "\u2014";
+  var reasonText = normalizeRows10000Value_(payload.triggerReason) || "\u2014";
+  var summaryText = normalizeRows10000Value_(payload.summaryText) || "\u2014";
+
+  return [
+    "<b>StageTimer • ROWS10000</b>",
+    "<b>\u0412\u0440\u0435\u043c\u044f:</b> " + escapeHtml(whenText),
+    "<b>\u0411\u0430\u0437\u0430:</b> " + escapeHtml(normalizeBaseName(payload.baseName)),
+    "<b>\u0414\u0435\u043f\u0430\u0440\u0442\u0430\u043c\u0435\u043d\u0442:</b> " + escapeHtml(normalizeRows10000Value_(payload.departmentName) || "Не определен"),
+    "<b>\u041f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u044c:</b> " + escapeHtml(normalizeRows10000Value_(payload.userName) || "Не определен"),
+    "<b>TraceID:</b> <code>" + escapeHtml(normalizeRows10000Value_(payload.traceId)) + "</code>",
+    "<b>Rows:</b> " + escapeHtml(rowsText),
+    "<b>Counter / Selarrrow / Checked:</b> " + escapeHtml(counterText + " / " + selarrrowText + " / " + checkedText),
+    "<b>\u041f\u0440\u0438\u0447\u0438\u043d\u0430:</b> " + escapeHtml(reasonText),
+    "<b>\u041a\u0440\u0430\u0442\u043a\u043e:</b> " + escapeHtml(summaryText),
+    "<b>URL:</b> " + escapeHtml(normalizeRows10000Value_(payload.requestUrl) || normalizeRows10000Value_(payload.pageUrl)),
+    "<b>Trace:</b> " + escapeHtml(traceFileUrl || "\u2014")
+  ].join("\n");
+}
+
+function sendRows10000Alerts_(payload, traceFileUrl, eventDate) {
+  var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  var settingsSheet = ss.getSheetByName(SHEET_SETTINGS);
+  if (!settingsSheet) return;
+  var chatIds = getActiveIncidentChatIds_(settingsSheet);
+  if (!chatIds.length) return;
+  var text = buildRows10000TelegramText_(payload, traceFileUrl, eventDate);
+  chatIds.forEach(function(chatId) {
+    if (wasRows10000AlertSent_(payload.traceId, chatId)) return;
+    var msgId = sendTelegram(chatId, text, false);
+    if (msgId) {
+      markRows10000AlertSent_(payload.traceId, chatId);
+    }
+  });
+}
+
+function handleRows10000IncidentRequest(p) {
+  var eventDate = parseIncomingTimestamp(p.timestamp);
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) {
+    return ContentService.createTextOutput("Busy").setMimeType(ContentService.MimeType.TEXT);
+  }
+
+  try {
+    var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+    var sheet = getOrCreateRows10000Sheet_(ss);
+    var match = findRows10000RowByTraceId_(sheet, p.traceId);
+    var existingTraceFileUrl = match.row ? normalizeRows10000Value_(match.row[15]) : "";
+    var traceFileUrl = saveRows10000TraceFile_(p, eventDate, existingTraceFileUrl);
+    upsertRows10000Row_(sheet, p, eventDate, traceFileUrl);
+    sendRows10000Alerts_(p, traceFileUrl, eventDate);
+    return ContentService.createTextOutput("OK").setMimeType(ContentService.MimeType.TEXT);
+  } catch (error) {
+    console.error("Rows10000 API Error: " + error.toString());
     return ContentService.createTextOutput("Error: " + error.toString());
   } finally {
     lock.releaseLock();
