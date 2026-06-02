@@ -413,7 +413,7 @@
         if (!rows10000TraceEnabled) return;
         try {
             window.dispatchEvent(new CustomEvent(ROWS10000_TRACE_REQUEST_SNAPSHOT_EVENT, {
-                detail: { reason: trimRows10000Text(reason, 80) }
+                detail: trimRows10000Text(reason, 80)
             }));
         } catch (error) {
             // ignore
@@ -765,7 +765,40 @@
                 const originalJqGrid = $.fn.jqGrid;
                 const originalTrigger = $.fn.trigger;
 
-                $.fn.jqGrid = function() {
+                function copyFunctionProperties(sourceFn, targetFn) {
+                    if (
+                        typeof sourceFn !== "function"
+                        || typeof targetFn !== "function"
+                        || sourceFn === targetFn
+                    ) {
+                        return targetFn;
+                    }
+
+                    const skipKeys = new Set(["length", "name", "prototype", "arguments", "caller"]);
+                    const sourcePrototype = Object.getPrototypeOf(sourceFn);
+                    if (sourcePrototype && Object.getPrototypeOf(targetFn) !== sourcePrototype) {
+                        try {
+                            Object.setPrototypeOf(targetFn, sourcePrototype);
+                        } catch (error) {
+                            // ignore
+                        }
+                    }
+
+                    Reflect.ownKeys(sourceFn).forEach(function(key) {
+                        if (skipKeys.has(String(key))) return;
+                        try {
+                            const descriptor = Object.getOwnPropertyDescriptor(sourceFn, key);
+                            if (!descriptor) return;
+                            Object.defineProperty(targetFn, key, descriptor);
+                        } catch (error) {
+                            // ignore
+                        }
+                    });
+
+                    return targetFn;
+                }
+
+                const wrappedJqGrid = function() {
                     if (tracerDepth > 0) {
                         return originalJqGrid.apply(this, arguments);
                     }
@@ -789,6 +822,7 @@
                         }
                     }
                 };
+                $.fn.jqGrid = copyFunctionProperties(originalJqGrid, wrappedJqGrid);
 
                 $.fn.trigger = function() {
                     if (tracerDepth > 0) {
@@ -955,9 +989,11 @@
 
             function installSnapshotBridge() {
                 window.addEventListener(SNAPSHOT_EVENT, function(event) {
-                    const detail = event && event.detail ? event.detail : {};
+                    const rawReason = typeof (event && event.detail) === "string"
+                        ? event.detail
+                        : "";
                     dispatch("grid-snapshot", {
-                        reason: trimText(detail.reason || "", 80),
+                        reason: trimText(rawReason, 80),
                         state: getGridState()
                     });
                 });
