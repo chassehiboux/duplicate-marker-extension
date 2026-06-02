@@ -16,7 +16,6 @@
   const ACTION_MENU_ID = 'support-reminder-action-menu';
   const DIALOG_OVERLAY_ID = 'support-reminder-dialog-overlay';
   const COPY_FEEDBACK_ID = 'support-reminder-copy-feedback';
-  const MAX_MSG_FILE_BYTES = 3 * 1024 * 1024;
   const SNAPSHOT_READY_DELAY_MS = 20000;
   const RATING_ARCHIVE_POLL_MS = 500;
   const RATING_ARCHIVE_TIMEOUT_MS = 30000;
@@ -86,27 +85,7 @@
       };
     }
 
-    if (rawKind !== 'msg_file' && rawKind !== 'msg-file' && rawKind !== 'msg') {
-      return null;
-    }
-
-    const dataBase64 = String(rawTarget.dataBase64 || rawTarget.base64 || '').trim();
-    if (!dataBase64) return null;
-
-    const fileName = String(rawTarget.fileName || '').trim() || 'support-message.msg';
-    const mimeType = String(rawTarget.mimeType || '').trim() || 'application/vnd.ms-outlook';
-    const sizeBytesRaw = Number(rawTarget.sizeBytes);
-    const sizeBytes = Number.isFinite(sizeBytesRaw) && sizeBytesRaw > 0
-      ? Math.floor(sizeBytesRaw)
-      : Math.floor((dataBase64.length * 3) / 4);
-
-    return {
-      kind: 'msg_file',
-      fileName,
-      mimeType,
-      sizeBytes,
-      dataBase64
-    };
+    return null;
   }
 
   function cloneMessageTarget(target) {
@@ -123,18 +102,7 @@
   function buildMessageTargetCaption(target) {
     const normalized = normalizeReminderMessageTarget(target);
     if (!normalized) return '';
-    if (normalized.kind === 'url') {
-      return `Ссылка: ${shortenText(normalized.url, 80)}`;
-    }
-    const sizeKb = normalized.sizeBytes > 0 ? `, ${Math.max(1, Math.round(normalized.sizeBytes / 1024))} КБ` : '';
-    return `Файл .msg: ${normalized.fileName}${sizeKb}`;
-  }
-
-  function buildMsgFileName(request) {
-    const requestNumber = normalizeSupportRequestNumber(
-      request && (request.requestNumber || request.requestId)
-    ).replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').trim() || 'support-message';
-    return `${requestNumber}.msg`;
+    return `Ссылка: ${shortenText(normalized.url, 80)}`;
   }
 
   function isLikelyUrl(value) {
@@ -154,86 +122,8 @@
     try {
       return new URL(text).toString();
     } catch (error) {
-      throw new Error('Введите корректный URL сообщения или вставьте .msg из буфера обмена.');
+      throw new Error('Введите корректный URL сообщения.');
     }
-  }
-
-  function blobToBase64(blob) {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const result = String(reader.result || '');
-        const commaIndex = result.indexOf(',');
-        resolve(commaIndex >= 0 ? result.slice(commaIndex + 1) : result);
-      };
-      reader.onerror = () => {
-        reject(new Error('Не удалось подготовить файл .msg для сохранения.'));
-      };
-      reader.readAsDataURL(blob);
-    });
-  }
-
-  async function readMsgFileFromClipboard(request) {
-    if (!navigator.clipboard || typeof navigator.clipboard.read !== 'function') {
-      throw new Error('Браузер не позволяет читать файлы из буфера обмена.');
-    }
-
-    const items = await navigator.clipboard.read();
-    const hasOnlyTextTypes = items.length > 0 && items.every((item) => (
-      Array.from(item.types || []).every((type) => (
-        type === 'text/plain' || type === 'text/html' || type === 'text/uri-list'
-      ))
-    ));
-
-    for (const item of items) {
-      const types = Array.from(item.types || []);
-      for (const type of types) {
-        if (type === 'text/plain' || type === 'text/html' || type === 'text/uri-list') continue;
-
-        let blob = null;
-        try {
-          blob = await item.getType(type);
-        } catch (error) {
-          blob = null;
-        }
-        if (!blob || !blob.size) continue;
-
-        if (blob.size > MAX_MSG_FILE_BYTES) {
-          throw new Error('Файл .msg слишком большой. Разрешено не более 3 МБ.');
-        }
-
-        return {
-          kind: 'msg_file',
-          fileName: buildMsgFileName(request),
-          mimeType: String(blob.type || type || 'application/vnd.ms-outlook').trim() || 'application/vnd.ms-outlook',
-          sizeBytes: blob.size,
-          dataBase64: await blobToBase64(blob)
-        };
-      }
-    }
-
-    if (hasOnlyTextTypes) {
-      throw new Error('Chrome получает из буфера Outlook только текст, а не сам .msg. Вставьте URL или выберите сохраненный .msg файлом.');
-    }
-
-    throw new Error('В буфере обмена не найден файл .msg.');
-  }
-
-  async function buildMessageTargetFromFile(file, request) {
-    if (!file) {
-      throw new Error('Файл .msg не выбран.');
-    }
-    if (file.size > MAX_MSG_FILE_BYTES) {
-      throw new Error('Файл .msg слишком большой. Разрешено не более 3 МБ.');
-    }
-
-    return {
-      kind: 'msg_file',
-      fileName: String(file.name || '').trim() || buildMsgFileName(request),
-      mimeType: String(file.type || 'application/vnd.ms-outlook').trim() || 'application/vnd.ms-outlook',
-      sizeBytes: file.size,
-      dataBase64: await blobToBase64(file)
-    };
   }
 
   function getCurrentRequestDialogId() {
@@ -277,8 +167,8 @@
       }
 
       .${ACTION_HEADER_CLASS} {
-        width: 42px;
-        min-width: 42px;
+        width: 56px;
+        min-width: 56px;
       }
 
       .${NOTE_HEADER_CLASS} {
@@ -288,8 +178,8 @@
       }
 
       td.${ACTION_CELL_CLASS} {
-        width: 42px;
-        min-width: 42px;
+        width: 56px;
+        min-width: 56px;
         text-align: center;
         vertical-align: top;
         padding-top: 2px;
@@ -342,13 +232,14 @@
       }
 
       .${ACTION_BUTTON_CLASS} {
-        width: 26px;
+        min-width: 38px;
+        width: auto;
         height: 22px;
         display: inline-flex;
         align-items: center;
         justify-content: center;
         box-sizing: border-box;
-        padding: 0;
+        padding: 0 4px;
         border: 1px solid #c5d0db;
         border-radius: 6px;
         background: #f4f7fa;
@@ -918,17 +809,20 @@
     }
 
     const note = reminder && reminder.note ? String(reminder.note).trim() : '';
+    const hasMessageTarget = !!(reminder && normalizeReminderMessageTarget(reminder.messageTarget));
     button.dataset.requestId = request.requestId;
     button.classList.toggle('has-reminder', !!reminder);
     button.classList.toggle('is-archived-reminder', archivedReminder);
-    button.textContent = reminder ? (archivedReminder ? '🗂' : '🔔') : '➕';
+    button.textContent = reminder
+      ? (archivedReminder ? (hasMessageTarget ? '🗂📎' : '🗂') : (hasMessageTarget ? '🔔📎' : '🔔'))
+      : '➕';
     button.title = reminder
       ? (
         note
-          ? `${archivedReminder ? 'Архивное напоминание' : 'Напоминание'}: ${note}`
+          ? `${archivedReminder ? 'Архивное напоминание' : 'Напоминание'}${hasMessageTarget ? ' со связанным сообщением' : ''}: ${note}`
           : archivedReminder
-            ? 'Архивное напоминание без текста'
-            : 'Напоминание без текста'
+            ? `Архивное напоминание${hasMessageTarget ? ' со связанным сообщением' : ''} без текста`
+            : `Напоминание${hasMessageTarget ? ' со связанным сообщением' : ''} без текста`
       )
       : 'Создать напоминание';
 
@@ -1072,7 +966,7 @@
         'Ответить на сообщение',
         false,
         !hasMessageTarget,
-        hasMessageTarget ? '' : 'Сначала сохраните URL или .msg для этого напоминания.'
+        hasMessageTarget ? '' : 'Сначала сохраните URL для этого напоминания.'
       );
       appendMenuButton(menu, 'delete-archive', 'Удалить из архива', true);
     } else {
@@ -1082,7 +976,7 @@
         'Ответить на сообщение',
         false,
         !hasMessageTarget,
-        hasMessageTarget ? '' : 'Сначала сохраните URL или .msg для этого напоминания.'
+        hasMessageTarget ? '' : 'Сначала сохраните URL для этого напоминания.'
       );
       appendMenuButton(menu, 'edit', 'Редактировать', false);
       appendMenuButton(menu, 'delete', 'Удалить', true);
@@ -1093,11 +987,7 @@
   }
 
   async function openReminderMessage(requestId) {
-    const response = await sendRuntimeMessage('SUPPORT_OPEN_REMINDER_MESSAGE', { requestId });
-    if (response.kind === 'msg_file' && !response.opened) {
-      const extra = response.error ? ` ${response.error}` : '';
-      alert(`Файл .msg сохранен в загрузки. Если Outlook не открыл его автоматически, откройте файл вручную из списка загрузок.${extra}`);
-    }
+    await sendRuntimeMessage('SUPPORT_OPEN_REMINDER_MESSAGE', { requestId });
   }
 
   function showReminderDialog(request, existingReminder) {
@@ -1115,17 +1005,13 @@
         </div>
         <div class="support-reminder-dialog-step support-reminder-dialog-step-2" hidden>
           <div class="support-reminder-dialog-step-title">Шаг 2. Связанное сообщение</div>
-          <p class="support-reminder-dialog-hint">Можно оставить поле пустым, вставить URL на сообщение или сохранить .msg из буфера обмена.</p>
-          <p class="support-reminder-dialog-hint">Если сообщение скопировано прямо из Outlook, Chrome часто получает только текст. В таком случае сохраните письмо в файл .msg и выберите его вручную.</p>
+          <p class="support-reminder-dialog-hint">Можно оставить поле пустым или указать URL на связанное сообщение.</p>
           <input class="support-reminder-dialog-url-input" type="url" placeholder="https://...">
           <div class="support-reminder-dialog-actions">
             <button type="button" data-dialog-action="paste-url">Вставить URL из буфера</button>
-            <button type="button" data-dialog-action="paste-msg">Вставить .msg из буфера</button>
-            <button type="button" data-dialog-action="pick-msg">Выбрать .msg файл</button>
             <button type="button" data-dialog-action="clear-target">Очистить</button>
           </div>
           <div class="support-reminder-dialog-target is-empty">Связанное сообщение не выбрано.</div>
-          <input class="support-reminder-dialog-file-input" type="file" accept=".msg,application/vnd.ms-outlook,application/octet-stream" hidden>
         </div>
         <div class="support-reminder-dialog-error" hidden></div>
         <div class="support-reminder-dialog-footer">
@@ -1150,10 +1036,7 @@
     const nextButton = overlay.querySelector('[data-dialog-action="next"]');
     const saveButton = overlay.querySelector('[data-dialog-action="save"]');
     const pasteUrlButton = overlay.querySelector('[data-dialog-action="paste-url"]');
-    const pasteMsgButton = overlay.querySelector('[data-dialog-action="paste-msg"]');
-    const pickMsgButton = overlay.querySelector('[data-dialog-action="pick-msg"]');
     const clearTargetButton = overlay.querySelector('[data-dialog-action="clear-target"]');
-    const fileInput = overlay.querySelector('.support-reminder-dialog-file-input');
 
     requestNode.textContent = request && request.requestNumber
       ? `Заявка № ${request.requestNumber}`
@@ -1172,8 +1055,6 @@
       nextButton,
       saveButton,
       pasteUrlButton,
-      pasteMsgButton,
-      pickMsgButton,
       clearTargetButton
     ];
 
@@ -1270,6 +1151,14 @@
         });
       };
 
+      const activatePrimaryAction = () => {
+        if (currentStep === 1) {
+          nextButton.click();
+          return;
+        }
+        saveButton.click();
+      };
+
       document.addEventListener('keydown', handleKeyDown, true);
       overlay.addEventListener('click', (event) => {
         if (event.target === overlay) {
@@ -1279,6 +1168,18 @@
       urlInput.addEventListener('input', () => {
         setError('');
         syncTargetFromUrl();
+      });
+      noteInput.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' || event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return;
+        event.preventDefault();
+        event.stopPropagation();
+        activatePrimaryAction();
+      });
+      urlInput.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' || event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return;
+        event.preventDefault();
+        event.stopPropagation();
+        activatePrimaryAction();
       });
       cancelButton.addEventListener('click', () => cleanup(null));
       backButton.addEventListener('click', () => {
@@ -1320,38 +1221,6 @@
         } catch (error) {
           setError(error.message);
         } finally {
-          setBusy(false);
-        }
-      });
-      pasteMsgButton.addEventListener('click', async () => {
-        try {
-          setBusy(true);
-          setError('');
-          currentMessageTarget = await readMsgFileFromClipboard(request);
-          urlInput.value = '';
-          updateTargetView();
-        } catch (error) {
-          setError(error.message);
-        } finally {
-          setBusy(false);
-        }
-      });
-      pickMsgButton.addEventListener('click', () => {
-        fileInput.click();
-      });
-      fileInput.addEventListener('change', async () => {
-        const [file] = Array.from(fileInput.files || []);
-        if (!file) return;
-        try {
-          setBusy(true);
-          setError('');
-          currentMessageTarget = await buildMessageTargetFromFile(file, request);
-          urlInput.value = '';
-          updateTargetView();
-        } catch (error) {
-          setError(error.message);
-        } finally {
-          fileInput.value = '';
           setBusy(false);
         }
       });

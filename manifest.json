@@ -13,7 +13,6 @@
     "webRequest",
     "declarativeNetRequest",
     "notifications",
-    "downloads",
     "tabs",
     "alarms"
   ],

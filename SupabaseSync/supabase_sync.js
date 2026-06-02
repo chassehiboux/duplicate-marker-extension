@@ -338,28 +338,7 @@
         url
       };
     }
-
-    if (rawKind !== 'msg_file' && rawKind !== 'msg-file' && rawKind !== 'msg') {
-      return null;
-    }
-
-    const dataBase64 = String(rawTarget.dataBase64 || rawTarget.base64 || '').trim();
-    if (!dataBase64) return null;
-
-    const fileName = String(rawTarget.fileName || '').trim() || 'support-message.msg';
-    const mimeType = String(rawTarget.mimeType || '').trim() || 'application/vnd.ms-outlook';
-    const sizeBytesRaw = Number(rawTarget.sizeBytes);
-    const sizeBytes = Number.isFinite(sizeBytesRaw) && sizeBytesRaw > 0
-      ? Math.floor(sizeBytesRaw)
-      : Math.floor((dataBase64.length * 3) / 4);
-
-    return {
-      kind: 'msg_file',
-      fileName,
-      mimeType,
-      sizeBytes,
-      dataBase64
-    };
+    return null;
   }
 
   function normalizeSupportReminder(rawReminder) {
