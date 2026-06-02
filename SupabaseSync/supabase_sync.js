@@ -326,6 +326,42 @@
     };
   }
 
+  function normalizeSupportMessageTarget(rawTarget) {
+    if (!rawTarget || typeof rawTarget !== 'object') return null;
+
+    const rawKind = String(rawTarget.kind || rawTarget.type || '').trim().toLowerCase();
+    if (rawKind === 'url') {
+      const url = String(rawTarget.url || '').trim();
+      if (!url) return null;
+      return {
+        kind: 'url',
+        url
+      };
+    }
+
+    if (rawKind !== 'msg_file' && rawKind !== 'msg-file' && rawKind !== 'msg') {
+      return null;
+    }
+
+    const dataBase64 = String(rawTarget.dataBase64 || rawTarget.base64 || '').trim();
+    if (!dataBase64) return null;
+
+    const fileName = String(rawTarget.fileName || '').trim() || 'support-message.msg';
+    const mimeType = String(rawTarget.mimeType || '').trim() || 'application/vnd.ms-outlook';
+    const sizeBytesRaw = Number(rawTarget.sizeBytes);
+    const sizeBytes = Number.isFinite(sizeBytesRaw) && sizeBytesRaw > 0
+      ? Math.floor(sizeBytesRaw)
+      : Math.floor((dataBase64.length * 3) / 4);
+
+    return {
+      kind: 'msg_file',
+      fileName,
+      mimeType,
+      sizeBytes,
+      dataBase64
+    };
+  }
+
   function normalizeSupportReminder(rawReminder) {
     if (!rawReminder || typeof rawReminder !== 'object') return null;
 
@@ -340,6 +376,7 @@
       lastSeenAt: String(rawReminder.lastSeenAt || ''),
       lastNotifiedStage: String(rawReminder.lastNotifiedStage || ''),
       skipAutoArchive: !!rawReminder.skipAutoArchive,
+      messageTarget: normalizeSupportMessageTarget(rawReminder.messageTarget),
       lastKnown: normalizeSupportRequest(rawReminder.lastKnown) || null
     };
   }
@@ -357,6 +394,7 @@
       updatedAt: String(rawEntry.updatedAt || ''),
       archivedAt: String(rawEntry.archivedAt || ''),
       archivedReason: String(rawEntry.archivedReason || ''),
+      messageTarget: normalizeSupportMessageTarget(rawEntry.messageTarget),
       lastKnown: normalizeSupportRequest(rawEntry.lastKnown) || null
     };
   }
