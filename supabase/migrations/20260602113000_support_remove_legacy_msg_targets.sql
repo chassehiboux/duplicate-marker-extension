@@ -55,7 +55,7 @@ as $$
           )
           else entry.value
         end
-      ),
+      ) filter (where entry.key is not null),
       '{}'::jsonb
     ) as value
     from base
@@ -79,7 +79,7 @@ as $$
           )
           else entry.value
         end
-      ),
+      ) filter (where entry.key is not null),
       '{}'::jsonb
     ) as value
     from base
