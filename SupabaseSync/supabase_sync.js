@@ -30,6 +30,7 @@
   const REALTIME_RECONNECT_DELAYS_MS = [1000, 2000, 5000, 10000, 30000];
   const FALLBACK_PULL_ALARM_NAME = 'dup_supabase_pull_fallback_v2';
   const FALLBACK_PULL_MINUTES = 1;
+  const SESSION_REAUTH_REQUIRED_MESSAGE = 'Сессия Supabase истекла или была отозвана. Войди снова, чтобы продолжить синхронизацию.';
 
   const KV_SYNC_KEYS = new Set([
     'setting_copy_mode',
@@ -143,6 +144,7 @@
   let realtimeReconnectAttempt = 0;
   let realtimePullTimer = 0;
   let outboxLock = Promise.resolve();
+  let refreshSessionPromise = null;
   let syncFlowState = {
     kind: '',
     title: '',
@@ -497,23 +499,33 @@
     return snapshot;
   }
 
-  function normalizeSession(rawSession) {
+  function normalizeSession(rawSession, fallbackSession = null) {
     const source = rawSession && rawSession.session ? rawSession.session : rawSession;
     if (!source || typeof source !== 'object') return null;
     const accessToken = String(source.access_token || '').trim();
-    const refreshToken = String(source.refresh_token || '').trim();
+    const refreshToken = String(
+      source.refresh_token
+      || (fallbackSession && fallbackSession.refresh_token)
+      || ''
+    ).trim();
     if (!accessToken || !refreshToken) return null;
     const expiresInMs = Number(source.expires_in || 3600) * 1000;
-    const expiresAt = Number(source.expires_at || 0) > 10000000000
-      ? Number(source.expires_at)
+    const rawExpiresAt = Number(source.expires_at || 0);
+    const expiresAt = Number.isFinite(rawExpiresAt) && rawExpiresAt > 0
+      ? (rawExpiresAt > 10000000000 ? rawExpiresAt : rawExpiresAt * 1000)
       : Date.now() + expiresInMs;
+    const user = source.user && typeof source.user === 'object'
+      ? source.user
+      : (fallbackSession && fallbackSession.user && typeof fallbackSession.user === 'object'
+        ? fallbackSession.user
+        : null);
 
     return {
       access_token: accessToken,
       refresh_token: refreshToken,
       token_type: String(source.token_type || 'bearer'),
       expires_at: expiresAt,
-      user: source.user && typeof source.user === 'object' ? source.user : null
+      user
     };
   }
 
@@ -569,7 +581,28 @@
     if (lower.includes('signup_disabled')) return 'Регистрация отключена в настройках Supabase Auth.';
     if (lower.includes('failed to fetch')) return 'NetworkError: не удалось подключиться к Supabase.';
     if (lower.includes('timeout')) return 'timeout: Supabase не ответил вовремя.';
+    if (
+      lower.includes('invalid refresh token')
+      || lower.includes('refresh token not found')
+      || lower.includes('refresh token has been revoked')
+      || lower.includes('session not found')
+      || lower.includes('invalid grant')
+    ) {
+      return SESSION_REAUTH_REQUIRED_MESSAGE;
+    }
     return message;
+  }
+
+  function isRevokedSessionError(error) {
+    const message = extractSupabaseErrorMessage(error).toLowerCase();
+    if (!message) return false;
+    return (
+      message.includes('invalid refresh token')
+      || message.includes('refresh token not found')
+      || message.includes('refresh token has been revoked')
+      || message.includes('session not found')
+      || message.includes('invalid grant')
+    );
   }
 
   async function parseSupabaseResponse(response) {
@@ -615,7 +648,7 @@
   }
 
   async function persistSession(session) {
-    const normalized = normalizeSession(session);
+    const normalized = normalizeSession(session, currentSession);
     if (!normalized) {
       throw new Error('Supabase не вернул корректную сессию.');
     }
@@ -630,25 +663,57 @@
     await storageRemove(AUTH_SESSION_KEY);
   }
 
-  async function refreshSession() {
-    if (!currentSession) await loadStoredSession();
-    if (!currentSession || !currentSession.refresh_token) {
-      throw new Error('Нет активной Supabase-сессии.');
-    }
-
-    const response = await fetchWithTimeout(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
-      method: 'POST',
-      headers: authHeaders(null),
-      body: JSON.stringify({ refresh_token: currentSession.refresh_token })
+  async function invalidateSession(message = SESSION_REAUTH_REQUIRED_MESSAGE) {
+    stopRealtimeSubscription();
+    clearFallbackPullAlarm();
+    await clearStoredSession();
+    lastRuntimeError = message;
+    lastRuntimeMessage = message;
+    await setSyncMeta({
+      lastError: message,
+      realtimeStatus: '',
+      realtimeLastError: ''
     });
-    const data = await parseSupabaseResponse(response);
-    if (!response.ok) {
-      throw new Error(localizeSupabaseError(data || response.statusText));
+    await broadcastStatus(message);
+  }
+
+  async function refreshSession() {
+    if (refreshSessionPromise) return refreshSessionPromise;
+
+    refreshSessionPromise = (async () => {
+      if (!currentSession) await loadStoredSession();
+      if (!currentSession || !currentSession.refresh_token) {
+        throw new Error('Нет активной Supabase-сессии.');
+      }
+
+      const previousSession = currentSession;
+      const response = await fetchWithTimeout(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+        method: 'POST',
+        headers: authHeaders(null),
+        body: JSON.stringify({ refresh_token: previousSession.refresh_token })
+      });
+      const data = await parseSupabaseResponse(response);
+      if (!response.ok) {
+        const localizedMessage = localizeSupabaseError(data || response.statusText);
+        const error = new Error(localizedMessage);
+        error.status = response.status;
+        error.payload = data;
+        if (isRevokedSessionError(data || response.statusText)) {
+          await invalidateSession(localizedMessage);
+        }
+        throw error;
+      }
+      const session = normalizeSession(data, previousSession);
+      if (!session) throw new Error('Supabase не вернул новую сессию.');
+      await persistSession(session);
+      return currentSession;
+    })();
+
+    try {
+      return await refreshSessionPromise;
+    } finally {
+      refreshSessionPromise = null;
     }
-    const session = normalizeSession(data);
-    if (!session) throw new Error('Supabase не вернул новую сессию.');
-    await persistSession(session);
-    return currentSession;
   }
 
   async function ensureSession() {
@@ -1753,6 +1818,7 @@
   async function initializeAuthenticatedSession(reason) {
     if (!currentSession) await loadStoredSession();
     if (!currentSession) return;
+    lastRuntimeError = '';
     try {
       await ensureSession();
       if (!currentUser) await fetchCurrentUser();

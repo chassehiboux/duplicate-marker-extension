@@ -229,7 +229,14 @@
         );
       } else {
         renderSyncFlow(null, false);
-        setStatusText('Без входа все данные остаются только в этом браузере.');
+        const lines = [];
+        if (errorText) {
+          lines.push(errorText);
+        } else if (messageText) {
+          lines.push(messageText);
+        }
+        lines.push('Без входа все данные остаются только в этом браузере.');
+        setStatusText(lines.join('\n\n'), !!errorText);
       }
     }
 
