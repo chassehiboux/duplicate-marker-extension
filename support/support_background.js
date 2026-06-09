@@ -432,6 +432,271 @@
     });
   }
 
+  function wait(delayMs) {
+    return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(delayMs) || 0)));
+  }
+
+  function closeTab(tabId) {
+    return new Promise((resolve) => {
+      if (!Number.isInteger(tabId) || tabId <= 0) {
+        resolve(false);
+        return;
+      }
+
+      chrome.tabs.remove(tabId, () => {
+        if (chrome.runtime.lastError) {
+          resolve(false);
+          return;
+        }
+        resolve(true);
+      });
+    });
+  }
+
+  function getTab(tabId) {
+    return new Promise((resolve, reject) => {
+      if (!Number.isInteger(tabId) || tabId <= 0) {
+        reject(new Error('Некорректный tabId.'));
+        return;
+      }
+
+      chrome.tabs.get(tabId, (tab) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message || 'Не удалось получить вкладку.'));
+          return;
+        }
+        resolve(tab || null);
+      });
+    });
+  }
+
+  function waitForTabComplete(tabId, timeoutMs) {
+    return new Promise((resolve, reject) => {
+      let finished = false;
+      const safeTimeoutMs = Math.max(1000, Number(timeoutMs) || 0);
+
+      const cleanup = () => {
+        chrome.tabs.onUpdated.removeListener(handleUpdated);
+        chrome.tabs.onRemoved.removeListener(handleRemoved);
+        clearTimeout(timerId);
+      };
+
+      const finish = (error, tab) => {
+        if (finished) return;
+        finished = true;
+        cleanup();
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(tab || null);
+      };
+
+      const handleUpdated = (updatedTabId, changeInfo, tab) => {
+        if (updatedTabId !== tabId) return;
+        if (changeInfo && changeInfo.status === 'complete') {
+          finish(null, tab || null);
+        }
+      };
+
+      const handleRemoved = (removedTabId) => {
+        if (removedTabId === tabId) {
+          finish(new Error('Вкладка была закрыта до завершения загрузки.'));
+        }
+      };
+
+      const timerId = setTimeout(() => {
+        finish(new Error('Превышено время ожидания загрузки вкладки.'));
+      }, safeTimeoutMs);
+
+      chrome.tabs.onUpdated.addListener(handleUpdated);
+      chrome.tabs.onRemoved.addListener(handleRemoved);
+
+      getTab(tabId)
+        .then((tab) => {
+          if (tab && tab.status === 'complete') {
+            finish(null, tab);
+          }
+        })
+        .catch((error) => {
+          finish(error);
+        });
+    });
+  }
+
+  function executeScriptInTab(tabId, func, args) {
+    return new Promise((resolve, reject) => {
+      chrome.scripting.executeScript(
+        {
+          target: { tabId },
+          func,
+          args: Array.isArray(args) ? args : []
+        },
+        (results) => {
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message || 'Не удалось выполнить скрипт во вкладке.'));
+            return;
+          }
+          resolve(results && results[0] ? results[0].result : undefined);
+        }
+      );
+    });
+  }
+
+  function isMaxWebMessageUrl(parsedUrl) {
+    if (!(parsedUrl instanceof URL)) return false;
+    const protocol = String(parsedUrl.protocol || '').toLowerCase();
+    if (protocol !== 'https:' && protocol !== 'http:') return false;
+    const hostname = String(parsedUrl.hostname || '').toLowerCase();
+    return hostname === 'max.ru' || hostname.endsWith('.max.ru');
+  }
+
+  function isOutlookMapiUrl(parsedUrl, rawUrl) {
+    const protocol = parsedUrl instanceof URL ? String(parsedUrl.protocol || '').toLowerCase() : '';
+    if (protocol === 'outlookmapi:') return true;
+    return String(rawUrl || '').toLowerCase().includes('outlookmapi');
+  }
+
+  async function openMaxMessageTarget(url) {
+    const openedTab = await createTab(url);
+    const tabId = openedTab && Number.isInteger(openedTab.id) ? openedTab.id : 0;
+    if (!tabId) {
+      return {
+        kind: 'url',
+        mode: 'max-web',
+        opened: true,
+        clicked: false,
+        closed: false
+      };
+    }
+
+    try {
+      await waitForTabComplete(tabId, 15000);
+    } catch (error) {
+      console.warn('MAX: вкладка не успела полностью загрузиться, продолжаем best effort:', error);
+    }
+
+    let clickResult = null;
+    try {
+      clickResult = await executeScriptInTab(
+        tabId,
+        async (buttonText, timeoutMs) => {
+          const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+          const targetText = normalize(buttonText);
+          const safeTimeoutMs = Math.max(1000, Number(timeoutMs) || 0);
+
+          function findTargetButton() {
+            const hrefCandidates = Array.from(document.querySelectorAll('a[href^="max://"]'));
+            for (const link of hrefCandidates) {
+              const text = normalize(link.textContent);
+              if (text === targetText || text.includes(targetText)) {
+                return link;
+              }
+            }
+
+            const genericCandidates = Array.from(document.querySelectorAll('a[href], button, [role="button"]'));
+            return genericCandidates.find((element) => {
+              const text = normalize(element.textContent);
+              const href = normalize(element.getAttribute && element.getAttribute('href'));
+              return (text === targetText || text.includes(targetText)) && href.startsWith('max://');
+            }) || null;
+          }
+
+          return await new Promise((resolve) => {
+            let settled = false;
+            let intervalId = 0;
+            let timeoutId = 0;
+            let observer = null;
+
+            const cleanup = () => {
+              if (observer) observer.disconnect();
+              if (intervalId) clearInterval(intervalId);
+              if (timeoutId) clearTimeout(timeoutId);
+            };
+
+            const finish = (result) => {
+              if (settled) return;
+              settled = true;
+              cleanup();
+              resolve(result);
+            };
+
+            const tryClick = () => {
+              const target = findTargetButton();
+              if (!target) return false;
+              const href = String(target.getAttribute('href') || target.href || '').trim();
+              target.click();
+              finish({
+                clicked: true,
+                href
+              });
+              return true;
+            };
+
+            if (tryClick()) return;
+
+            observer = new MutationObserver(() => {
+              tryClick();
+            });
+            observer.observe(document.documentElement || document.body, {
+              subtree: true,
+              childList: true,
+              attributes: true
+            });
+
+            intervalId = window.setInterval(() => {
+              tryClick();
+            }, 300);
+
+            timeoutId = window.setTimeout(() => {
+              finish({
+                clicked: false,
+                reason: 'BUTTON_NOT_FOUND'
+              });
+            }, safeTimeoutMs);
+          });
+        },
+        ['Перейти к сообщению', 12000]
+      );
+    } catch (error) {
+      console.warn('MAX: не удалось нажать кнопку перехода к сообщению:', error);
+    }
+
+    let closed = false;
+    if (clickResult && clickResult.clicked) {
+      // Нативный диалог внешнего приложения не доступен DOM/API расширения,
+      // поэтому оставляем короткое окно на авторазрешенный или ручной запуск.
+      await wait(5000);
+      closed = await closeTab(tabId);
+    }
+
+    return {
+      kind: 'url',
+      mode: 'max-web',
+      opened: true,
+      clicked: !!(clickResult && clickResult.clicked),
+      closed
+    };
+  }
+
+  async function openOutlookMapiTarget(url) {
+    const openedTab = await createTab(url);
+    const tabId = openedTab && Number.isInteger(openedTab.id) ? openedTab.id : 0;
+    let closed = false;
+    if (tabId) {
+      // Для внешнего протокола можем только дождаться запуска и закрыть вкладку best effort.
+      await wait(5000);
+      closed = await closeTab(tabId);
+    }
+
+    return {
+      kind: 'url',
+      mode: 'outlookmapi',
+      opened: true,
+      closed
+    };
+  }
+
   async function openReminderMessage(data) {
     const requestId = String((data && data.requestId) || '').trim();
     if (!requestId) throw new Error('requestId is required.');
@@ -453,10 +718,20 @@
     } catch (error) {
       throw new Error('Сохраненная ссылка на сообщение имеет неверный формат.');
     }
+
+    if (isMaxWebMessageUrl(parsedUrl)) {
+      return openMaxMessageTarget(parsedUrl.toString());
+    }
+
+    if (isOutlookMapiUrl(parsedUrl, messageTarget.url)) {
+      return openOutlookMapiTarget(parsedUrl.toString());
+    }
+
     await createTab(parsedUrl.toString());
 
     return {
       kind: 'url',
+      mode: 'default',
       opened: true
     };
   }

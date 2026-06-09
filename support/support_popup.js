@@ -593,7 +593,7 @@
             <div class="support-item-note">${escapeHtml(reminder.note || '')}</div>
             ${messageCaption ? `<div class="support-message-meta">${escapeHtml(messageCaption)}</div>` : ''}
             <div class="support-actions">
-              <button class="support-btn" data-action="open-message" data-request-id="${escapeHtml(reminder.requestId)}"${messageCaption ? '' : ' disabled title="Сначала сохраните URL для этого напоминания."'}>Ответить на сообщение</button>
+              <button class="support-btn" data-action="open-message" data-request-id="${escapeHtml(reminder.requestId)}"${messageCaption ? '' : ' disabled title="Сначала сохраните URL для этого напоминания."'}>Перейти к сообщению</button>
               <button class="support-btn" data-action="edit-active" data-request-id="${escapeHtml(reminder.requestId)}">Изменить</button>
               <button class="support-btn danger" data-action="delete-active" data-request-id="${escapeHtml(reminder.requestId)}">Удалить</button>
             </div>
@@ -619,7 +619,7 @@
             <div class="support-item-note">${escapeHtml(archive.note || '')}</div>
             ${messageCaption ? `<div class="support-message-meta">${escapeHtml(messageCaption)}</div>` : ''}
             <div class="support-actions">
-              <button class="support-btn" data-action="open-message" data-request-id="${escapeHtml(archive.requestId)}"${messageCaption ? '' : ' disabled title="Сначала сохраните URL для этого напоминания."'}>Ответить на сообщение</button>
+              <button class="support-btn" data-action="open-message" data-request-id="${escapeHtml(archive.requestId)}"${messageCaption ? '' : ' disabled title="Сначала сохраните URL для этого напоминания."'}>Перейти к сообщению</button>
               <button class="support-btn" data-action="restore-archive" data-request-id="${escapeHtml(archive.requestId)}">Вернуть</button>
               <button class="support-btn danger" data-action="delete-archive" data-request-id="${escapeHtml(archive.requestId)}">Удалить</button>
             </div>

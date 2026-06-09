@@ -963,7 +963,7 @@
       appendMenuButton(
         menu,
         'open-message',
-        'Ответить на сообщение',
+        'Перейти к сообщению',
         false,
         !hasMessageTarget,
         hasMessageTarget ? '' : 'Сначала сохраните URL для этого напоминания.'
@@ -973,7 +973,7 @@
       appendMenuButton(
         menu,
         'open-message',
-        'Ответить на сообщение',
+        'Перейти к сообщению',
         false,
         !hasMessageTarget,
         hasMessageTarget ? '' : 'Сначала сохраните URL для этого напоминания.'
