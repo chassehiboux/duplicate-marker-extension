@@ -20,6 +20,7 @@
   const ITIL_INFO_REFRESH_ACTION = 'GOOGLE_SHEETS_ITIL_REFRESH_INFO_ROW';
   const SUPP_INFO_REFRESH_ACTION = 'GOOGLE_SHEETS_SUPP_REFRESH_INFO_ROW';
   const CHATGPT_SEARCH_ACTION = 'GOOGLE_SHEETS_CHATGPT_SEARCH';
+  const CHATGPT_QUESTION_ACTION = 'GOOGLE_SHEETS_CHATGPT_QUESTION';
   const CHATGPT_OPEN_TAB_ACTION = 'GOOGLE_SHEETS_CHATGPT_OPEN_TAB';
   const CHATGPT_PROGRESS_ACTION = 'GOOGLE_SHEETS_CHATGPT_PROGRESS';
   const CHATGPT_CLOSE_TAB_ACTION = 'GOOGLE_SHEETS_CHATGPT_CLOSE_TAB';
@@ -33,8 +34,11 @@
   const INITIATOR_HEADER = 'Инициатор';
   const CHATGPT_SEARCH_SHEET_NAME = 'Заявки';
   const CHATGPT_RESULT_SHEET_NAME = 'Поиск заявок (ИИ)';
+  const CHATGPT_MODE_SEARCH = 'search';
+  const CHATGPT_MODE_QUESTION = 'question';
   const CHATGPT_ROW_ID_HEADER = '__row_id';
   const CHATGPT_SEARCH_FILE_NAME = 'zayavki-search.csv';
+  const CHATGPT_QUESTION_FILE_NAME = 'zayavki-question.csv';
   const CHATGPT_SEARCH_VISIBLE_HEADERS = Object.freeze([
     'Дата заявки',
     REQUEST_STATUS_HEADER,
@@ -107,7 +111,9 @@
 
   let chatGptSearchState = {
     isRunning: false,
-    query: '',
+    mode: CHATGPT_MODE_SEARCH,
+    searchQuery: '',
+    questionQuery: '',
     statusText: 'Введите запрос и запустите поиск.',
     lastError: '',
     compactRowsCount: 0,
@@ -427,6 +433,25 @@
       .join('\r\n');
   }
 
+  function normalizeChatGptMode(mode) {
+    return mode === CHATGPT_MODE_QUESTION ? CHATGPT_MODE_QUESTION : CHATGPT_MODE_SEARCH;
+  }
+
+  function getChatGptModeDraft(mode) {
+    return normalizeChatGptMode(mode) === CHATGPT_MODE_QUESTION
+      ? String(chatGptSearchState.questionQuery || '')
+      : String(chatGptSearchState.searchQuery || '');
+  }
+
+  function setChatGptModeDraft(mode, value) {
+    const text = String(value || '');
+    if (normalizeChatGptMode(mode) === CHATGPT_MODE_QUESTION) {
+      chatGptSearchState.questionQuery = text;
+      return;
+    }
+    chatGptSearchState.searchQuery = text;
+  }
+
   function buildChatGptSearchPrompt(query) {
     return `${String(query || '').trim()}
 
@@ -451,6 +476,82 @@
 - JSON должен быть валидным: используй двойные кавычки и не ставь завершающие запятые перед } или ];
 - не возвращай исходные данные строк и не переписывай значения других столбцов;
 - если совпадений нет, верни ровно {"matches":[]}.`;
+  }
+
+  function buildChatGptQuestionPrompt(query) {
+    return `${String(query || '').trim()}
+
+Используй только данные из приложенного CSV-файла. Не используй внешние знания, интернет, догадки или сведения, которых нет в CSV.
+
+Работай как исследователь по внутреннему архиву заявок. Нужен развернутый аналитический ответ по существующим заявкам, а не общий совет.
+
+Приоритет анализа:
+1. Главный источник смысла — столбец «${TEXT_HEADER}».
+2. Второй по важности — столбец «${ITIL_INFO_HEADER}».
+3. Остальные столбцы используй как контекст: дата, статус, инициатор, проблема и номера заявок.
+
+Обязательные правила:
+- отвечай только на основе CSV;
+- не додумывай причины, факты или выводы, которых нет в заявках;
+- если данных недостаточно для уверенного ответа, прямо так и напиши;
+- если в заявках есть разные версии или противоречия, вынеси их отдельным блоком;
+- каждый существенный вывод подтверждай ссылками на конкретные заявки и точными короткими цитатами;
+- если в строке есть «${SUPP_NUMBER_HEADER}» и оно не пустое и не равно «-» или «–», ссылайся на заявку по номеру СУПП;
+- если «${SUPP_NUMBER_HEADER}» пустое или равно «-» или «–», ссылайся на «${ITIL_NUMBER_HEADER}»;
+- если отсутствуют оба номера, используй «${CHATGPT_ROW_ID_HEADER}» как резервную ссылку;
+- цитаты бери только из приложенного CSV и не меняй их смысл.
+
+Оформи ответ в стиле глубокого исследования с такими разделами:
+1. Краткий вывод
+2. Развернутый анализ
+3. Подтверждающие заявки и цитаты
+4. Противоречия и альтернативные трактовки
+5. Чего не хватает в данных
+
+В разделе «Подтверждающие заявки и цитаты» для каждой заявки используй формат:
+- Источник: СУПП <номер> / ITIL <номер> / row_id <номер>
+- Что подтверждает: ...
+- Цитата: ...
+
+Не используй markdown-таблицы. Можно использовать обычные абзацы и списки.`;
+  }
+
+  function getChatGptModeConfig(mode) {
+    if (normalizeChatGptMode(mode) === CHATGPT_MODE_QUESTION) {
+      return {
+        title: 'Задать вопрос по заявкам',
+        subtitle: 'Расширение само соберёт компактный CSV листа «Заявки», откроет временный чат ChatGPT, прикрепит CSV и отправит вопрос вместе с исследовательским промптом. Дальше работа продолжится прямо во вкладке ChatGPT.',
+        label: 'Введите вопрос по существующим заявкам',
+        placeholder: 'Например: какие повторяющиеся причины отказов или ошибок чаще всего встречаются в заявках по ЕПГУ?',
+        startText: 'Отправить в ChatGPT',
+        runningText: 'Отправляю…',
+        idleStatus: 'Введите вопрос и откройте исследование в ChatGPT.',
+        emptyQueryError: 'Введите вопрос по заявкам.',
+        collectStatus: 'Собираю компактный CSV листа «Заявки»...',
+        openingStatus: 'Открываю вкладку ChatGPT, прикрепляю CSV и отправляю вопрос...',
+        successStatus: 'CSV, вопрос и исследовательский промпт отправлены в ChatGPT. Продолжай работу в открытой вкладке чата.',
+        errorFallback: 'Не удалось отправить вопрос в ChatGPT.',
+        promptBuilder: buildChatGptQuestionPrompt,
+        fileName: CHATGPT_QUESTION_FILE_NAME
+      };
+    }
+
+    return {
+      title: 'Поиск заявки',
+      subtitle: `Расширение само соберёт компактный CSV листа «Заявки», отправит запрос в фоновый временный чат и запишет найденные строки на лист «${CHATGPT_RESULT_SHEET_NAME}».`,
+      label: 'Введите произвольный запрос для поиска заявки',
+      placeholder: 'Например: заявки Зуйкевич Данил Иванович по теме ЕПГУ',
+      startText: 'Найти заявки',
+      runningText: 'Ищу…',
+      idleStatus: 'Введите запрос и запустите поиск.',
+      emptyQueryError: 'Введите запрос для поиска заявки.',
+      collectStatus: 'Собираю компактный CSV листа «Заявки»...',
+      openingStatus: 'Открываю вкладку ChatGPT и готовлю отправку...',
+      successStatus: '',
+      errorFallback: 'Не удалось выполнить поиск через ChatGPT.',
+      promptBuilder: buildChatGptSearchPrompt,
+      fileName: CHATGPT_SEARCH_FILE_NAME
+    };
   }
 
   async function loadChatGptSearchCsv() {
@@ -2253,6 +2354,11 @@
     const modal = document.getElementById(CHATGPT_SEARCH_MODAL_ID);
     if (!(modal instanceof HTMLElement)) return;
 
+    const mode = normalizeChatGptMode(chatGptSearchState.mode);
+    const modeConfig = getChatGptModeConfig(mode);
+    const title = $('.gs-chatgpt-search-title', modal);
+    const subtitle = $('.gs-chatgpt-search-subtitle', modal);
+    const label = $('.gs-chatgpt-search-label', modal);
     const queryInput = $('.gs-chatgpt-search-input', modal);
     const startButton = $('.gs-chatgpt-search-start', modal);
     const openChatButton = $('.gs-chatgpt-search-open-chat', modal);
@@ -2261,14 +2367,20 @@
     const details = $('.gs-chatgpt-search-details', modal);
     const prompt = $('.gs-chatgpt-search-prompt', modal);
 
+    if (title instanceof HTMLElement) title.textContent = modeConfig.title;
+    if (subtitle instanceof HTMLElement) subtitle.textContent = modeConfig.subtitle;
+    if (label instanceof HTMLElement) label.textContent = modeConfig.label;
+
     if (queryInput instanceof HTMLTextAreaElement) {
-      if (queryInput.value !== chatGptSearchState.query) queryInput.value = chatGptSearchState.query;
+      const draft = getChatGptModeDraft(mode);
+      if (queryInput.value !== draft) queryInput.value = draft;
+      queryInput.placeholder = modeConfig.placeholder;
       queryInput.disabled = chatGptSearchState.isRunning;
     }
 
     if (startButton instanceof HTMLButtonElement) {
       startButton.disabled = chatGptSearchState.isRunning;
-      startButton.textContent = chatGptSearchState.isRunning ? 'Ищу…' : 'Найти заявки';
+      startButton.textContent = chatGptSearchState.isRunning ? modeConfig.runningText : modeConfig.startText;
     }
 
     if (openChatButton instanceof HTMLButtonElement) {
@@ -2290,11 +2402,17 @@
         rowsPill.textContent = `Строк в CSV: ${chatGptSearchState.compactRowsCount}`;
         resultMeta.appendChild(rowsPill);
       }
-      if (chatGptSearchState.foundCount > 0 || chatGptSearchState.resultSheetId !== null) {
+      if (mode === CHATGPT_MODE_SEARCH && (chatGptSearchState.foundCount > 0 || chatGptSearchState.resultSheetId !== null)) {
         const foundPill = document.createElement('span');
         foundPill.className = 'gs-chatgpt-search-pill';
         foundPill.textContent = `Найдено заявок: ${chatGptSearchState.foundCount}`;
         resultMeta.appendChild(foundPill);
+      }
+      if (mode === CHATGPT_MODE_QUESTION && Number.isInteger(chatGptSearchState.chatTabId) && !chatGptSearchState.isRunning) {
+        const chatPill = document.createElement('span');
+        chatPill.className = 'gs-chatgpt-search-pill';
+        chatPill.textContent = 'Чат ChatGPT подготовлен';
+        resultMeta.appendChild(chatPill);
       }
     }
 
@@ -2359,7 +2477,9 @@
     }, { capture: true });
     $('.gs-chatgpt-search-input', modal)?.addEventListener('input', (event) => {
       const target = event.target;
-      if (target instanceof HTMLTextAreaElement) chatGptSearchState.query = target.value;
+      if (target instanceof HTMLTextAreaElement) {
+        setChatGptModeDraft(chatGptSearchState.mode, target.value);
+      }
     });
 
     (document.body || document.documentElement).appendChild(modal);
@@ -2367,8 +2487,20 @@
     return modal;
   }
 
-  function openChatGptSearchModal() {
+  function openChatGptSearchModal(mode) {
     closeMenu();
+    const nextMode = normalizeChatGptMode(mode);
+    const modeConfig = getChatGptModeConfig(nextMode);
+    chatGptSearchState = {
+      ...chatGptSearchState,
+      mode: nextMode,
+      statusText: modeConfig.idleStatus,
+      lastError: '',
+      compactRowsCount: 0,
+      foundCount: 0,
+      sentPrompt: '',
+      resultSheetId: null
+    };
     const modal = ensureChatGptSearchModal();
     modal.hidden = false;
     renderChatGptSearchModal();
@@ -2481,11 +2613,12 @@
       </section>
 
       <section class="gs-problem-picker-menu-section">
-        <div class="gs-problem-picker-menu-section-title">Поиск заявки через ChatGPT</div>
+        <div class="gs-problem-picker-menu-section-title">ChatGPT по заявкам</div>
         <div class="gs-problem-picker-menu-actions">
           <button type="button" class="gs-problem-picker-chatgpt-search-open">Поиск заявки</button>
+          <button type="button" class="gs-problem-picker-chatgpt-question-open">Задать вопрос по заявкам</button>
         </div>
-        <div class="gs-problem-picker-chatgpt-note">В фоне откроется временный чат, а найденные заявки будут записаны на лист «${CHATGPT_RESULT_SHEET_NAME}».</div>
+        <div class="gs-problem-picker-chatgpt-note"><code>Поиск заявки</code> запишет найденные строки на лист «${CHATGPT_RESULT_SHEET_NAME}». <code>Задать вопрос по заявкам</code> просто откроет временный чат ChatGPT с приложенным CSV и готовым исследовательским промптом.</div>
       </section>
     `;
   }
@@ -2534,7 +2667,11 @@
         return;
       }
       if (button.classList.contains('gs-problem-picker-chatgpt-search-open')) {
-        openChatGptSearchModal();
+        openChatGptSearchModal(CHATGPT_MODE_SEARCH);
+        return;
+      }
+      if (button.classList.contains('gs-problem-picker-chatgpt-question-open')) {
+        openChatGptSearchModal(CHATGPT_MODE_QUESTION);
         return;
       }
       if (button.classList.contains('gs-problem-picker-itil-start')) {
@@ -2683,49 +2820,83 @@ function handleMenuEscape(event) {
   async function startChatGptSearch() {
     if (chatGptSearchState.isRunning) return;
 
+    const mode = normalizeChatGptMode(chatGptSearchState.mode);
+    const modeConfig = getChatGptModeConfig(mode);
     const modal = ensureChatGptSearchModal();
     const queryInput = $('.gs-chatgpt-search-input', modal);
     const query = queryInput instanceof HTMLTextAreaElement
       ? String(queryInput.value || '').trim()
-      : String(chatGptSearchState.query || '').trim();
+      : String(getChatGptModeDraft(mode) || '').trim();
 
     if (!query) {
-      chatGptSearchState.query = '';
-      setChatGptSearchStatus('Введите запрос для поиска заявки.', true);
+      setChatGptModeDraft(mode, '');
+      setChatGptSearchStatus(modeConfig.emptyQueryError, true);
       if (queryInput instanceof HTMLTextAreaElement) queryInput.focus();
       return;
     }
 
+    setChatGptModeDraft(mode, query);
+
     chatGptSearchState = {
       ...chatGptSearchState,
+      mode,
       isRunning: true,
-      query,
-      statusText: 'Собираю компактный CSV листа «Заявки»...',
+      statusText: modeConfig.collectStatus,
       lastError: '',
       compactRowsCount: 0,
       foundCount: 0,
       chatTabId: null,
-      sentPrompt: buildChatGptSearchPrompt(query),
+      sentPrompt: modeConfig.promptBuilder(query),
       resultSheetId: null
     };
     renderChatGptSearchModal();
 
     try {
+      const csv = await loadChatGptSearchCsv();
+      chatGptSearchState.compactRowsCount = csv.rowsCount;
+      chatGptSearchState.statusText = modeConfig.openingStatus;
+      renderChatGptSearchModal();
+
+      if (mode === CHATGPT_MODE_QUESTION) {
+        const response = await sendRuntimeMessage({
+          action: CHATGPT_QUESTION_ACTION,
+          data: {
+            payload: {
+              fileName: modeConfig.fileName,
+              csvText: csv.csvText,
+              promptText: chatGptSearchState.sentPrompt
+            }
+          }
+        });
+
+        if (!response || response.success === false) {
+          throw new Error(response && response.error ? response.error : modeConfig.errorFallback);
+        }
+
+        const result = response.result && typeof response.result === 'object' ? response.result : {};
+        chatGptSearchState = {
+          ...chatGptSearchState,
+          chatTabId: Number.isInteger(result.tabId) ? result.tabId : null,
+          statusText: modeConfig.successStatus,
+          lastError: '',
+          foundCount: 0,
+          resultSheetId: null
+        };
+        updateLauncherStatus('Вопрос по заявкам отправлен в ChatGPT. Продолжай работу в открытой вкладке.', false);
+        closeChatGptSearchModal();
+        return;
+      }
+
       await loadBridgeUrl();
       if (!state.bridgeUrl) {
         throw new Error('URL bridge не задан. Нажми F2, затем «URL bridge».');
       }
 
-      const csv = await loadChatGptSearchCsv();
-      chatGptSearchState.compactRowsCount = csv.rowsCount;
-      chatGptSearchState.statusText = 'Открываю вкладку ChatGPT и готовлю отправку...';
-      renderChatGptSearchModal();
-
       const response = await sendRuntimeMessage({
         action: CHATGPT_SEARCH_ACTION,
         data: {
           payload: {
-            fileName: CHATGPT_SEARCH_FILE_NAME,
+            fileName: modeConfig.fileName,
             csvText: csv.csvText,
             promptText: chatGptSearchState.sentPrompt
           }
@@ -2792,7 +2963,7 @@ function handleMenuEscape(event) {
       chatGptSearchState = {
         ...chatGptSearchState,
         statusText: '',
-        lastError: error && error.message ? error.message : 'Не удалось выполнить поиск через ChatGPT.'
+        lastError: error && error.message ? error.message : modeConfig.errorFallback
       };
     } finally {
       chatGptSearchState.isRunning = false;

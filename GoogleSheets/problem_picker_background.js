@@ -8,6 +8,7 @@
   const ITIL_INFO_REFRESH_ACTION = 'GOOGLE_SHEETS_ITIL_REFRESH_INFO_ROW';
   const SUPP_INFO_REFRESH_ACTION = 'GOOGLE_SHEETS_SUPP_REFRESH_INFO_ROW';
   const CHATGPT_SEARCH_ACTION = 'GOOGLE_SHEETS_CHATGPT_SEARCH';
+  const CHATGPT_QUESTION_ACTION = 'GOOGLE_SHEETS_CHATGPT_QUESTION';
   const CHATGPT_OPEN_TAB_ACTION = 'GOOGLE_SHEETS_CHATGPT_OPEN_TAB';
   const CHATGPT_PROGRESS_ACTION = 'GOOGLE_SHEETS_CHATGPT_PROGRESS';
   const CHATGPT_CLOSE_TAB_ACTION = 'GOOGLE_SHEETS_CHATGPT_CLOSE_TAB';
@@ -1146,7 +1147,7 @@
       tab = await createChatGptTemporaryTab(sourceTabId, sourceWindowId);
       sendChatGptProgress(progressTabId, 'Вкладка ChatGPT открыта. Прикрепляю CSV и готовлю сообщение...');
 
-      const sendResult = await executeInTab(tab.id, prepareAndSendChatGptSearchInPage, [{
+      const sendResult = await executeInTab(tab.id, prepareAndSendChatGptPromptInPage, [{
         fileName,
         csvText,
         promptText
@@ -1170,6 +1171,51 @@
       }
 
       return answerResult;
+    } catch (error) {
+      if (Number.isInteger(tab && tab.id)) {
+        try {
+          await closeChatGptTab(tab.id, sourceTabId, sourceWindowId);
+        } catch (closeError) {
+          // Ошибка закрытия не должна скрывать первичную причину падения.
+        }
+      } else {
+        await restoreSourceTabAfterChatGptSearch(sourceTabId, sourceWindowId).catch(() => null);
+      }
+      throw error;
+    }
+  }
+
+  async function runChatGptQuestion(data, progressTabId, sourceTabId, sourceWindowId) {
+    const payload = data && data.payload ? data.payload : {};
+    const fileName = String(payload.fileName || '').trim();
+    const csvText = String(payload.csvText || '');
+    const promptText = String(payload.promptText || '').trim();
+
+    if (!fileName) throw new Error('Не передано имя CSV-файла для ChatGPT.');
+    if (!csvText) throw new Error('CSV-файл для ChatGPT пустой.');
+    if (!promptText) throw new Error('Не передан текст запроса для ChatGPT.');
+
+    let tab = null;
+
+    try {
+      tab = await createChatGptTemporaryTab(sourceTabId, sourceWindowId);
+      sendChatGptProgress(progressTabId, 'Вкладка ChatGPT открыта. Прикрепляю CSV и отправляю вопрос...');
+
+      const sendResult = await executeInTab(tab.id, prepareAndSendChatGptPromptInPage, [{
+        fileName,
+        csvText,
+        promptText
+      }]);
+
+      if (!sendResult || sendResult.success === false) {
+        throw new Error(sendResult && sendResult.error ? sendResult.error : 'Не удалось отправить вопрос в ChatGPT.');
+      }
+
+      sendChatGptProgress(progressTabId, 'Вопрос отправлен в ChatGPT. Можно продолжать работу в открытой вкладке...');
+
+      return {
+        tabId: tab.id
+      };
     } catch (error) {
       if (Number.isInteger(tab && tab.id)) {
         try {
@@ -2693,7 +2739,7 @@
     }
   }
 
-  async function prepareAndSendChatGptSearchInPage(payload) {
+  async function prepareAndSendChatGptPromptInPage(payload) {
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
     const waitFor = async (getter, timeoutMs, description) => {
@@ -2727,7 +2773,7 @@
       const csvText = String(payload && payload.csvText || '');
       const promptText = String(payload && payload.promptText || '').trim();
       if (!fileName || !csvText || !promptText) {
-        throw new Error('Для поиска ChatGPT переданы неполные данные.');
+        throw new Error('Для ChatGPT переданы неполные данные.');
       }
 
       const composer = await waitFor(getComposer, 90000, 'поле ввода ChatGPT');
@@ -2822,6 +2868,7 @@
       && request.action !== ITIL_INFO_REFRESH_ACTION
       && request.action !== SUPP_INFO_REFRESH_ACTION
       && request.action !== CHATGPT_SEARCH_ACTION
+      && request.action !== CHATGPT_QUESTION_ACTION
       && request.action !== CHATGPT_OPEN_TAB_ACTION
       && request.action !== CHATGPT_CLOSE_TAB_ACTION
     )) return false;
@@ -2854,6 +2901,16 @@
             ? sender.tab.id
             : null;
           result = await runChatGptSearch(
+            data,
+            progressTabId,
+            sender && sender.tab && Number.isInteger(sender.tab.id) ? sender.tab.id : null,
+            sender && sender.tab && Number.isInteger(sender.tab.windowId) ? sender.tab.windowId : null
+          );
+        } else if (request.action === CHATGPT_QUESTION_ACTION) {
+          const progressTabId = sender && sender.tab && Number.isInteger(sender.tab.id)
+            ? sender.tab.id
+            : null;
+          result = await runChatGptQuestion(
             data,
             progressTabId,
             sender && sender.tab && Number.isInteger(sender.tab.id) ? sender.tab.id : null,
