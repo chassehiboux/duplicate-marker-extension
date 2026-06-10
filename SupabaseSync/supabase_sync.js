@@ -19,7 +19,8 @@
   const SUPPORT_REMINDERS_STORAGE_KEY = 'support_reminders_state_v1';
 
   const SESSION_REFRESH_MARGIN_MS = 60 * 1000;
-  const REQUEST_TIMEOUT_MS = 30000;
+  const REQUEST_TIMEOUT_MS = 7000;
+  const SYNC_STALL_THRESHOLD_MS = 5000;
   const RETRY_DELAYS_MS = [600, 1500, 3500];
   const FLUSH_DEBOUNCE_MS = 250;
   const REALTIME_WS_URL = `${SUPABASE_URL.replace(/^http/i, 'ws')}/realtime/v1/websocket?apikey=${encodeURIComponent(SUPABASE_PUBLISHABLE_KEY)}&log_level=warning&vsn=1.0.0`;
@@ -145,6 +146,7 @@
   let realtimePullTimer = 0;
   let outboxLock = Promise.resolve();
   let refreshSessionPromise = null;
+  let syncIssueActive = false;
   let syncFlowState = {
     kind: '',
     title: '',
@@ -593,6 +595,105 @@
     return message;
   }
 
+  function isTimeoutSyncErrorMessage(message) {
+    return String(message || '').toLowerCase().includes('timeout:');
+  }
+
+  function isConnectivitySyncErrorMessage(message) {
+    const lower = String(message || '').toLowerCase();
+    return (
+      lower.includes('timeout:')
+      || lower.includes('networkerror:')
+      || lower.includes('failed to fetch')
+      || lower.includes('не удалось подключиться')
+    );
+  }
+
+  function createSupabaseSyncNotification(message) {
+    const notificationMessage = String(message || '').trim();
+    if (!notificationMessage) return;
+
+    const options = {
+      type: 'basic',
+      iconUrl: chrome.runtime && typeof chrome.runtime.getURL === 'function'
+        ? chrome.runtime.getURL('icon.png')
+        : 'icon.png',
+      title: 'Проблемы синхронизации Supabase',
+      message: notificationMessage
+    };
+
+    if (typeof globalThis.createExtensionNotification === 'function') {
+      globalThis.createExtensionNotification(options);
+      return;
+    }
+
+    if (!chrome.notifications || typeof chrome.notifications.create !== 'function') return;
+
+    try {
+      chrome.notifications.create(`dup-supabase-sync-${Date.now()}`, options, () => {
+        if (chrome.runtime && chrome.runtime.lastError) {
+          console.warn('Supabase sync notification error:', chrome.runtime.lastError.message);
+        }
+      });
+    } catch (error) {
+      console.warn('Supabase sync notification error:', error);
+    }
+  }
+
+  function buildSyncIssueInfo(code, message, options = {}) {
+    const pendingCount = Math.max(0, Math.trunc(Number(options.outboxSize || 0)));
+    const hint = 'Проверь доступ к supabase.co / supabase.com и маршрут через прокси.';
+
+    if (String(code || '') === 'queue-stalled') {
+      const queueText = pendingCount > 0 ? ` В очереди: ${pendingCount}.` : '';
+      return {
+        code: 'queue-stalled',
+        message: `Очередь изменений не уменьшается дольше 5с.${queueText} ${hint}`.trim()
+      };
+    }
+
+    const phaseLabel = String(options.phase || '') === 'pull' ? 'REST pull' : 'REST push';
+    const problemText = isTimeoutSyncErrorMessage(message)
+      ? 'не получил ответ вовремя'
+      : 'не смог подключиться к Supabase';
+
+    return {
+      code: 'connectivity',
+      message: `${phaseLabel} ${problemText}. ${hint}`.trim()
+    };
+  }
+
+  async function reportSyncIssue(code, message, options = {}) {
+    const issue = buildSyncIssueInfo(code, message, options);
+    await setSyncMeta({
+      syncHealthCode: issue.code,
+      syncHealthMessage: issue.message,
+      syncHealthAt: new Date().toISOString()
+    });
+    if (!syncIssueActive) {
+      syncIssueActive = true;
+      createSupabaseSyncNotification(issue.message);
+    }
+    return issue;
+  }
+
+  async function clearSyncIssue() {
+    syncIssueActive = false;
+    await setSyncMeta({
+      syncHealthCode: '',
+      syncHealthMessage: '',
+      syncHealthAt: ''
+    });
+  }
+
+  async function updateSyncTestStatus(status, message) {
+    await setSyncMeta({
+      lastSyncTestAt: new Date().toISOString(),
+      lastSyncTestStatus: String(status || ''),
+      lastSyncTestMessage: String(message || '').trim()
+    });
+  }
+
   function isRevokedSessionError(error) {
     const message = extractSupabaseErrorMessage(error).toLowerCase();
     if (!message) return false;
@@ -983,8 +1084,19 @@
     return !!dateIso && uniqueStrings(operation.edocids).length > 0;
   }
 
+  function isCounterIncrementOperation(operation) {
+    if (!operation || typeof operation !== 'object') return false;
+    if (String(operation.type || '') !== 'counter_increment') return false;
+    const counterKey = String(operation.counter_key || '').trim();
+    const dateKey = String(operation.date_key || '').trim();
+    const delta = Math.trunc(Number(operation.delta || 0));
+    return !!counterKey && !!dateKey && Number.isFinite(delta) && delta !== 0;
+  }
+
   function isCompactableOutboxOperation(operation) {
-    return isLastWriteWinsOutboxOperation(operation) || isProcessedEdocidsAddOperation(operation);
+    return isLastWriteWinsOutboxOperation(operation)
+      || isProcessedEdocidsAddOperation(operation)
+      || isCounterIncrementOperation(operation);
   }
 
   function makeCompactOutboxBlockItem(block) {
@@ -993,6 +1105,7 @@
 
     const snapshotByKey = new Map();
     const edocidsByDate = new Map();
+    const counterIncrementsByKey = new Map();
     const originalOperations = [];
     let operationOrder = 0;
     let maxAttempts = 0;
@@ -1023,20 +1136,35 @@
           return;
         }
 
-        const dateIso = String(operation.date_iso || '').trim();
-        const dateKey = String(operation.date_key || '').trim() || isoToRuDateKey(dateIso);
-        const mapKey = `${dateIso}\n${dateKey}`;
-        const existing = edocidsByDate.get(mapKey) || {
-          order,
-          dateIso,
-          dateKey,
-          edocids: []
-        };
+        if (isProcessedEdocidsAddOperation(operation)) {
+          const dateIso = String(operation.date_iso || '').trim();
+          const dateKey = String(operation.date_key || '').trim() || isoToRuDateKey(dateIso);
+          const mapKey = `${dateIso}\n${dateKey}`;
+          const existing = edocidsByDate.get(mapKey) || {
+            order,
+            dateIso,
+            dateKey,
+            edocids: []
+          };
 
-        uniqueStrings(operation.edocids).forEach((edocid) => {
-          if (!existing.edocids.includes(edocid)) existing.edocids.push(edocid);
-        });
-        edocidsByDate.set(mapKey, existing);
+          uniqueStrings(operation.edocids).forEach((edocid) => {
+            if (!existing.edocids.includes(edocid)) existing.edocids.push(edocid);
+          });
+          edocidsByDate.set(mapKey, existing);
+          return;
+        }
+
+        const counterKey = String(operation.counter_key || '').trim();
+        const dateKey = String(operation.date_key || '').trim();
+        const mapKey = `${counterKey}\n${dateKey}`;
+        const existing = counterIncrementsByKey.get(mapKey) || {
+          order,
+          counterKey,
+          dateKey,
+          delta: 0
+        };
+        existing.delta += Math.trunc(Number(operation.delta || 0));
+        counterIncrementsByKey.set(mapKey, existing);
       });
     });
 
@@ -1051,6 +1179,18 @@
           date_iso: entry.dateIso,
           date_key: entry.dateKey,
           edocids: entry.edocids
+        }
+      });
+    });
+    counterIncrementsByKey.forEach((entry) => {
+      if (!entry.delta) return;
+      entries.push({
+        order: entry.order,
+        operation: {
+          type: 'counter_increment',
+          counter_key: entry.counterKey,
+          date_key: entry.dateKey,
+          delta: entry.delta
         }
       });
     });
@@ -1660,6 +1800,8 @@
         }
 
         const item = claim.item;
+        const pendingBeforeAttempt = claim.outbox.length;
+        let stallTimer = 0;
 
         try {
           setSyncFlowStep('request', 'active', `Операций: ${toArray(item.operations).length}`);
@@ -1667,10 +1809,17 @@
           setSyncFlowStep('response', 'pending');
           setSyncFlowStep('cache', 'pending');
           await broadcastStatus('Запрос отправлен в Supabase...');
+          stallTimer = setTimeout(() => {
+            void reportSyncIssue('queue-stalled', 'Очередь изменений не уменьшается дольше 5с.', {
+              phase: 'push',
+              outboxSize: pendingBeforeAttempt
+            });
+          }, SYNC_STALL_THRESHOLD_MS);
           const state = await applyMutationItem(item);
+          if (stallTimer) clearTimeout(stallTimer);
           setSyncFlowStep('request', 'done');
           setSyncFlowStep('write', state && state.status === 'conflict' ? 'error' : 'done');
-          setSyncFlowStep('response', 'done', `Revision: ${Number(state.revision || state.applied_revision || 0)}`);
+          setSyncFlowStep('response', 'done', 'Сервер подтвердил запись');
           if (state && state.status === 'conflict') {
             const metaState = await getRemoteCanonicalState('conflict-rebase');
             const rebasedRevision = Number(metaState.revision || state.current_revision || 0);
@@ -1689,7 +1838,7 @@
               lastPushError: String(state.error || 'revision_mismatch'),
               lastReason: reason
             });
-            setSyncFlowStep('write', 'active', 'Повторная отправка после обновления revision');
+            setSyncFlowStep('write', 'active', 'Повторяю отправку после обновления состояния сервера');
             continue;
           }
 
@@ -1713,6 +1862,7 @@
             lastError: '',
             lastReason: reason
           });
+          await clearSyncIssue();
           lastRuntimeMessage = latestOutbox.length
             ? `Отправлено изменение, осталось в очереди: ${latestOutbox.length}.`
             : 'Все изменения отправлены в Supabase.';
@@ -1720,6 +1870,7 @@
           if (!latestOutbox.length) finishSyncFlow(true);
           await broadcastStatus(lastRuntimeMessage);
         } catch (error) {
+          if (stallTimer) clearTimeout(stallTimer);
           const message = localizeSupabaseError(error);
           const errorResult = await markOutboxItemError(item.mutationId, message, item.attempts);
           lastRuntimeError = message;
@@ -1730,6 +1881,12 @@
             lastError: message,
             lastPushAttemptAt: new Date().toISOString()
           });
+          if (isConnectivitySyncErrorMessage(message)) {
+            await reportSyncIssue('connectivity', message, {
+              phase: 'push',
+              outboxSize: errorResult.outbox.length
+            });
+          }
           return { success: false, error: message };
         }
       }
@@ -1757,13 +1914,13 @@
       if (traceFlow) setSyncFlowStep('prepare', 'done');
       const outboxBeforeRequest = await getOutbox();
       if (traceFlow) {
-        setSyncFlowStep('request', 'active', `Local revision: ${await getCacheRevision()}`);
+        setSyncFlowStep('request', 'active', 'Сверяю локальный кэш с сервером');
         await broadcastStatus('Запрос состояния отправлен в Supabase...');
       }
       const state = await getRemoteCanonicalState(reason);
       if (traceFlow) {
         setSyncFlowStep('request', 'done');
-        setSyncFlowStep('response', 'done', `Server revision: ${Number(state.revision || 0)}`);
+        setSyncFlowStep('response', 'done', 'Состояние сервера получено');
       }
       const localRevision = await getCacheRevision();
       const latestOutbox = await getOutbox();
@@ -1780,6 +1937,7 @@
         outboxSize: latestOutbox.length,
         lastReason: reason
       });
+      await clearSyncIssue();
       lastRuntimeMessage = applied
         ? 'Данные Supabase применены локально.'
         : ((latestOutbox.length || outboxBeforeRequest.length)
@@ -1801,6 +1959,9 @@
         lastError: message,
         lastPullAttemptAt: new Date().toISOString()
       });
+      if (isConnectivitySyncErrorMessage(message)) {
+        await reportSyncIssue('connectivity', message, { phase: 'pull' });
+      }
       return { success: false, error: message };
     } finally {
       pullInProgress = false;
@@ -1888,12 +2049,12 @@
     }
   }
 
-  async function manualSync() {
+  async function manualSync(reason = 'manual') {
     await ensureSession();
     await registerDevice();
-    const flushResult = await flushOutbox('manual');
+    const flushResult = await flushOutbox(reason);
     const outbox = await getOutbox();
-    const pullResult = await pullCanonicalState('manual', {
+    const pullResult = await pullCanonicalState(reason, {
       forceApply: outbox.length === 0
     });
     return {
@@ -1901,6 +2062,32 @@
       flush: flushResult,
       pull: pullResult
     };
+  }
+
+  async function runSyncHealthTest() {
+    const runningMessage = 'Тест синхронизации выполняется...';
+    await updateSyncTestStatus('running', runningMessage);
+    lastRuntimeMessage = runningMessage;
+    await broadcastStatus(runningMessage);
+
+    try {
+      const result = await manualSync('manual-test');
+      const success = result && result.success !== false;
+      const message = success
+        ? 'Тест пройден: Supabase отвечает, очередь и локальный кэш синхронны.'
+        : `Тест не пройден: ${result && (result.pull && result.pull.error || result.flush && result.flush.error) || 'синхронизация завершилась с ошибкой.'}`;
+      await updateSyncTestStatus(success ? 'success' : 'error', message);
+      lastRuntimeMessage = message;
+      await broadcastStatus(message);
+      return { success, message, result };
+    } catch (error) {
+      const message = `Тест не пройден: ${localizeSupabaseError(error)}`;
+      await updateSyncTestStatus('error', message);
+      lastRuntimeMessage = message;
+      lastRuntimeError = localizeSupabaseError(error);
+      await broadcastStatus(message);
+      return { success: false, error: message };
+    }
   }
 
   async function syncSet(values, options = {}) {
@@ -2758,6 +2945,8 @@
     clearFallbackPullAlarm();
     await clearStoredSession();
     await withOutboxLock(() => storageRemove([SYNC_META_KEY, OUTBOX_KEY]));
+    syncIssueActive = false;
+    lastRuntimeError = '';
     lastRuntimeMessage = 'Выход выполнен. Данные снова хранятся локально.';
     await broadcastStatus();
     return getPublicStatus();
@@ -2807,18 +2996,63 @@
     const outbox = await getOutbox();
     const localRevision = await getCacheRevision();
     const serverRevision = Number(meta.serverRevision || localRevision || 0);
+    const lastPullError = meta.lastPullError || '';
+    const lastPushError = meta.lastPushError || '';
     const lastError = lastRuntimeError || meta.lastError || meta.lastPushError || meta.lastPullError || '';
+    const syncing = flushInProgress || pullInProgress;
+    const revisionState = (() => {
+      if (lastError || lastPullError || lastPushError) {
+        return {
+          code: 'error',
+          label: 'есть ошибка обмена с Supabase'
+        };
+      }
+      if (syncing && outbox.length > 0) {
+        return {
+          code: 'syncing-push',
+          label: 'идет отправка локальных изменений'
+        };
+      }
+      if (syncing) {
+        return {
+          code: 'syncing',
+          label: 'идет синхронизация с Supabase'
+        };
+      }
+      if (outbox.length > 0) {
+        return {
+          code: 'pending-local',
+          label: 'есть неотправленные локальные изменения'
+        };
+      }
+      if (serverRevision > localRevision) {
+        return {
+          code: 'server-newer',
+          label: 'сервер новее, локальный кэш догоняет'
+        };
+      }
+      if (localRevision > serverRevision) {
+        return {
+          code: 'local-newer',
+          label: 'локальный кэш новее сервера, жду подтверждение'
+        };
+      }
+      return {
+        code: 'synced',
+        label: 'сервер и локальный кэш синхронны'
+      };
+    })();
     return {
       configured: true,
       authenticated: !!currentSession,
       email: currentUser && currentUser.email ? String(currentUser.email) : '',
       userId: currentUser && currentUser.id ? String(currentUser.id) : '',
-      syncing: flushInProgress || pullInProgress,
+      syncing,
       lastSyncAt: meta.lastPushAt || meta.lastPullAt || '',
       lastPullAt: meta.lastPullAt || '',
       lastPushAt: meta.lastPushAt || '',
-      lastPullError: meta.lastPullError || '',
-      lastPushError: meta.lastPushError || '',
+      lastPullError,
+      lastPushError,
       lastError,
       message: messageOverride || lastRuntimeMessage || '',
       remotePriority: true,
@@ -2827,8 +3061,16 @@
       realtimeLastError: meta.realtimeLastError || '',
       serverRevision,
       localRevision,
+      revisionState: revisionState.code,
+      revisionStateLabel: revisionState.label,
       outboxSize: outbox.length,
       outboxLastError: outbox.length ? String(outbox[0].lastError || '') : '',
+      syncHealthCode: meta.syncHealthCode || '',
+      syncHealthMessage: meta.syncHealthMessage || '',
+      syncHealthAt: meta.syncHealthAt || '',
+      lastSyncTestAt: meta.lastSyncTestAt || '',
+      lastSyncTestStatus: meta.lastSyncTestStatus || '',
+      lastSyncTestMessage: meta.lastSyncTestMessage || '',
       deviceId: meta.deviceId || '',
       schemaVersion: SCHEMA_VERSION,
       syncFlow: getPublicSyncFlow()
@@ -2873,6 +3115,10 @@
       if (action === 'DUP_SUPABASE_SIGN_OUT') return { success: true, status: await signOut() };
       if (action === 'DUP_SUPABASE_SYNC_NOW') {
         const result = await manualSync();
+        return { success: result.success !== false, status: await getPublicStatus(), result };
+      }
+      if (action === 'DUP_SUPABASE_SYNC_TEST') {
+        const result = await runSyncHealthTest();
         return { success: result.success !== false, status: await getPublicStatus(), result };
       }
       if (action === 'DUP_SUPABASE_SEND_PASSWORD_RECOVERY') {

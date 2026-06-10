@@ -412,7 +412,10 @@
         </div>
       </div>
       <div id="supabase-auth-signed-in" hidden>
-        <button id="supabase-auth-sync-now" class="supabase-auth-btn full" type="button">Синхронизировать сейчас</button>
+        <div class="supabase-auth-actions">
+          <button id="supabase-auth-sync-now" class="supabase-auth-btn primary" type="button">Синхронизировать</button>
+          <button id="supabase-auth-sync-test" class="supabase-auth-btn" type="button">Тест синхронизации</button>
+        </div>
         <button id="supabase-auth-sign-out" class="supabase-auth-btn full" type="button">Выйти</button>
       </div>
       <div id="supabase-sync-flow" class="supabase-sync-flow" hidden></div>

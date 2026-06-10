@@ -86,6 +86,7 @@
     const signUpButton = $('supabase-auth-sign-up');
     const signOutButton = $('supabase-auth-sign-out');
     const syncNowButton = $('supabase-auth-sync-now');
+    const syncTestButton = $('supabase-auth-sync-test');
     const syncFlowNode = $('supabase-sync-flow');
     const resetToggle = $('supabase-auth-reset-toggle');
     const resetPanel = $('supabase-auth-reset');
@@ -102,6 +103,7 @@
       signUpButton,
       signOutButton,
       syncNowButton,
+      syncTestButton,
       resetSendButton,
       resetConfirmButton,
       emailInput,
@@ -129,14 +131,23 @@
       return 'Realtime: ожидание, резервная проверка раз в минуту';
     }
 
-    function formatRevision(value) {
-      const numberValue = Number(value || 0);
-      return Number.isFinite(numberValue) ? String(Math.trunc(numberValue)) : '0';
-    }
-
     function formatOutboxSize(value) {
       const numberValue = Number(value || 0);
       return Number.isFinite(numberValue) ? String(Math.max(0, Math.trunc(numberValue))) : '0';
+    }
+
+    function buildLastTestText(status) {
+      const testStatus = String(status.lastSyncTestStatus || '').trim();
+      if (!testStatus) return '';
+
+      if (testStatus === 'running') {
+        return 'Тест синхронизации выполняется...';
+      }
+
+      const testAt = formatSyncTime(status.lastSyncTestAt);
+      const testMessage = String(status.lastSyncTestMessage || '').trim();
+      const prefix = testAt ? `${testAt} — ` : '';
+      return `${prefix}${testMessage || (testStatus === 'success' ? 'Тест пройден.' : 'Тест не пройден.')}`;
     }
 
     function buildSignedInStatusText(status) {
@@ -148,21 +159,32 @@
       const pushError = String(status.lastPushError || '').trim();
       const generalError = String(status.lastError || '').trim();
       const outboxError = String(status.outboxLastError || '').trim();
+      const syncHealthMessage = String(status.syncHealthMessage || '').trim();
+      const revisionStateLabel = String(status.revisionStateLabel || '').trim() || 'ожидание данных';
+      const lastTestText = buildLastTestText(status);
       const messageText = String(status.message || '').trim();
 
+      lines.push(`- Состояние синхронизации: ${revisionStateLabel}`);
       lines.push(`- ${getRealtimeStatusText(status)}`);
       lines.push(`- Последний pull: ${lastPull || 'еще не выполнялся'}`);
       lines.push(`- Последний push: ${lastPush || 'еще не выполнялся'}`);
-      lines.push(`- Server revision: ${formatRevision(status.serverRevision)}`);
-      lines.push(`- Local revision: ${formatRevision(status.localRevision)}`);
       lines.push(`- Очередь изменений: ${formatOutboxSize(outboxSize)}`);
+      if (lastTestText) lines.push(`- Последний тест: ${lastTestText}`);
 
-      if (pushError) lines.push(`- REST push: ошибка ${pushError}`);
-      if (pullError) lines.push(`- REST pull: ошибка ${pullError}`);
+      if (pushError) lines.push(`- REST push: ${pushError}`);
+      if (pullError) lines.push(`- REST pull: ${pullError}`);
       if (!pushError && !pullError && generalError) lines.push(`- Последняя ошибка: ${generalError}`);
       if (outboxError && outboxError !== pushError) lines.push(`- Ошибка очереди: ${outboxError}`);
+      if (
+        syncHealthMessage
+        && syncHealthMessage !== pushError
+        && syncHealthMessage !== pullError
+        && syncHealthMessage !== generalError
+      ) {
+        lines.push(`- Диагностика: ${syncHealthMessage}`);
+      }
       if (outboxSize > 0) lines.push('- Данные будут отправлены повторно автоматически');
-      if (messageText && !pushError && !pullError && !generalError) lines.push(messageText);
+      if (messageText && !pushError && !pullError && !generalError && !syncHealthMessage) lines.push(messageText);
 
       return lines.join('\n');
     }
@@ -204,6 +226,7 @@
       const email = String(currentStatus.email || '').trim();
       const isSyncing = currentStatus.syncing === true;
       const errorText = String(currentStatus.lastError || '').trim();
+      const healthText = String(currentStatus.syncHealthMessage || '').trim();
       const messageText = String(currentStatus.message || '').trim();
       const outboxSize = Number(currentStatus.outboxSize || 0);
 
@@ -225,7 +248,7 @@
             ...currentStatus,
             message: isSyncing ? 'Синхронизация...' : messageText
           }),
-          !!errorText
+          !!errorText || !!healthText
         );
       } else {
         renderSyncFlow(null, false);
@@ -256,7 +279,15 @@
         const response = await sendSupabaseMessage(action, payload);
         if (!response.success) {
           renderStatus(response.status || currentStatus || {});
-          setStatusText(response.error || 'Операция не выполнена.', true);
+          const statusError = response.status
+            ? String(
+              response.status.lastError
+              || response.status.syncHealthMessage
+              || response.status.message
+              || ''
+            ).trim()
+            : '';
+          setStatusText(response.error || statusError || 'Операция не выполнена.', true);
           return false;
         }
         if (response.status) renderStatus(response.status);
@@ -306,6 +337,12 @@
     if (syncNowButton) {
       syncNowButton.addEventListener('click', () => {
         void runAuthAction('DUP_SUPABASE_SYNC_NOW', {});
+      });
+    }
+
+    if (syncTestButton) {
+      syncTestButton.addEventListener('click', () => {
+        void runAuthAction('DUP_SUPABASE_SYNC_TEST', {});
       });
     }
 
