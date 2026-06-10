@@ -613,31 +613,71 @@
     const notificationMessage = String(message || '').trim();
     if (!notificationMessage) return;
 
-    const options = {
-      type: 'basic',
-      iconUrl: chrome.runtime && typeof chrome.runtime.getURL === 'function'
-        ? chrome.runtime.getURL('icon.png')
-        : 'icon.png',
+    void showSupabaseSyncToastInActiveTab({
       title: 'Проблемы синхронизации Supabase',
-      message: notificationMessage
-    };
+      message: notificationMessage,
+      tone: 'error',
+      badge: 'Supabase Sync',
+      dedupeKey: 'supabase-sync-issue',
+      autoCloseMs: 12000
+    });
+  }
 
-    if (typeof globalThis.createExtensionNotification === 'function') {
-      globalThis.createExtensionNotification(options);
-      return;
-    }
+  function getActiveTabForToast() {
+    return new Promise((resolve) => {
+      if (!chrome.tabs || typeof chrome.tabs.query !== 'function') {
+        resolve(null);
+        return;
+      }
 
-    if (!chrome.notifications || typeof chrome.notifications.create !== 'function') return;
+      try {
+        chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
+          const runtimeError = chrome.runtime && chrome.runtime.lastError
+            ? chrome.runtime.lastError.message
+            : '';
+          if (runtimeError) {
+            console.warn('Supabase sync toast query error:', runtimeError);
+            resolve(null);
+            return;
+          }
 
-    try {
-      chrome.notifications.create(`dup-supabase-sync-${Date.now()}`, options, () => {
-        if (chrome.runtime && chrome.runtime.lastError) {
-          console.warn('Supabase sync notification error:', chrome.runtime.lastError.message);
+          const tab = Array.isArray(tabs) ? tabs.find((item) => item && typeof item.id === 'number') : null;
+          resolve(tab || null);
+        });
+      } catch (error) {
+        console.warn('Supabase sync toast query error:', error);
+        resolve(null);
+      }
+    });
+  }
+
+  function showSupabaseSyncToastInActiveTab(payload) {
+    return getActiveTabForToast().then((tab) => {
+      if (!tab || typeof tab.id !== 'number') return false;
+      if (!chrome.tabs || typeof chrome.tabs.sendMessage !== 'function') return false;
+
+      return new Promise((resolve) => {
+        try {
+          chrome.tabs.sendMessage(tab.id, {
+            action: 'DUP_SHOW_EXTENSION_TOAST',
+            data: payload
+          }, () => {
+            const runtimeError = chrome.runtime && chrome.runtime.lastError
+              ? chrome.runtime.lastError.message
+              : '';
+            if (runtimeError) {
+              console.warn('Supabase sync toast delivery error:', runtimeError);
+              resolve(false);
+              return;
+            }
+            resolve(true);
+          });
+        } catch (error) {
+          console.warn('Supabase sync toast delivery error:', error);
+          resolve(false);
         }
       });
-    } catch (error) {
-      console.warn('Supabase sync notification error:', error);
-    }
+    });
   }
 
   function buildSyncIssueInfo(code, message, options = {}) {

@@ -14,6 +14,11 @@
   const SCREENSHOT_HIDE_PRINT_SCREEN_DURATION_MS = 5000;
   const SCREENSHOT_HIDE_PRINT_SCREEN_ON_BLUR_DURATION_MS = 5000;
   const SCREENSHOT_THROTTLE_MS = 150;
+  const EXTENSION_TOAST_STYLE_ID = 'dup-extension-toast-style';
+  const EXTENSION_TOAST_CONTAINER_ID = 'dup-extension-toast-container';
+  const EXTENSION_TOAST_KEY_ATTR = 'data-dup-toast-key';
+  const EXTENSION_TOAST_AUTO_CLOSE_DEFAULT_MS = 12000;
+  const EXTENSION_TOAST_CLOSE_ANIMATION_MS = 220;
   const KEY_CODE_PAGE_DOWN = 34;
   const KEY_CODE_PRINT_SCREEN = 44;
   const KEY_CODE_F1 = 112;
@@ -468,6 +473,18 @@
         html.dup-ui-hide-inn-batch-tools #batch-inn-check-btn,
         html.dup-ui-hide-inn-batch-tools #inn-toast-container,
         html.dup-ui-hide-inn-batch-tools #inn-batch-modal-overlay {
+          display: none !important;
+        }
+      `
+    },
+    {
+      key: 'serviceToasts',
+      storageKey: 'dup_ui_show_service_toasts',
+      label: 'Служебные уведомления',
+      description: 'Всплывающие уведомления расширения в правом верхнем углу страницы.',
+      hideClass: 'dup-ui-hide-service-toasts',
+      hideCss: `
+        html.dup-ui-hide-service-toasts #${EXTENSION_TOAST_CONTAINER_ID} {
           display: none !important;
         }
       `
@@ -1080,6 +1097,274 @@
     EXTENSION_UI_SETTING_DEFS.forEach((definition) => {
       root.classList.toggle(definition.hideClass, !isExtensionUiSettingEnabled(definition.key));
     });
+  }
+
+  function ensureExtensionToastStyle(targetDocument) {
+    const doc = targetDocument && typeof targetDocument.getElementById === 'function'
+      ? targetDocument
+      : document;
+    if (doc.getElementById(EXTENSION_TOAST_STYLE_ID)) return;
+
+    const style = doc.createElement('style');
+    style.id = EXTENSION_TOAST_STYLE_ID;
+    style.textContent = `
+      #${EXTENSION_TOAST_CONTAINER_ID} {
+        position: fixed;
+        top: 18px;
+        right: 18px;
+        width: min(380px, calc(100vw - 24px));
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 12px;
+        pointer-events: none;
+        z-index: 2147483647 !important;
+      }
+
+      .dup-extension-toast {
+        --dup-toast-accent: #60a5fa;
+        pointer-events: auto;
+        position: relative;
+        overflow: hidden;
+        padding: 15px 44px 15px 16px;
+        border-radius: 16px;
+        border: 1px solid rgba(148, 163, 184, 0.24);
+        background:
+          radial-gradient(circle at top right, rgba(255,255,255,0.18), transparent 36%),
+          linear-gradient(145deg, rgba(15, 23, 42, 0.96), rgba(30, 41, 59, 0.92));
+        color: #f8fafc;
+        box-shadow: 0 18px 40px rgba(15, 23, 42, 0.34);
+        backdrop-filter: blur(16px);
+        font-family: "Segoe UI Variable Text", "Segoe UI", Arial, sans-serif;
+        transform: translate3d(28px, 0, 0) scale(0.985);
+        opacity: 0;
+        transition:
+          transform ${EXTENSION_TOAST_CLOSE_ANIMATION_MS}ms cubic-bezier(.22,1,.36,1),
+          opacity ${EXTENSION_TOAST_CLOSE_ANIMATION_MS}ms ease,
+          box-shadow ${EXTENSION_TOAST_CLOSE_ANIMATION_MS}ms ease;
+      }
+
+      .dup-extension-toast::before {
+        content: "";
+        position: absolute;
+        inset: 0 auto 0 0;
+        width: 4px;
+        background: linear-gradient(180deg, var(--dup-toast-accent), rgba(255,255,255,0.85));
+      }
+
+      .dup-extension-toast[data-tone="error"] {
+        --dup-toast-accent: #fb7185;
+      }
+
+      .dup-extension-toast[data-tone="warning"] {
+        --dup-toast-accent: #fbbf24;
+      }
+
+      .dup-extension-toast[data-tone="success"] {
+        --dup-toast-accent: #34d399;
+      }
+
+      .dup-extension-toast[data-tone="info"] {
+        --dup-toast-accent: #60a5fa;
+      }
+
+      .dup-extension-toast.is-visible {
+        transform: translate3d(0, 0, 0) scale(1);
+        opacity: 1;
+      }
+
+      .dup-extension-toast.is-closing {
+        transform: translate3d(30px, 0, 0) scale(0.985);
+        opacity: 0;
+      }
+
+      .dup-extension-toast:hover {
+        box-shadow: 0 24px 48px rgba(15, 23, 42, 0.42);
+      }
+
+      .dup-extension-toast-title {
+        margin: 0 0 6px;
+        font-size: 14px;
+        font-weight: 700;
+        letter-spacing: 0.01em;
+      }
+
+      .dup-extension-toast-message {
+        margin: 0;
+        font-size: 13px;
+        line-height: 1.45;
+        color: rgba(241, 245, 249, 0.9);
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      .dup-extension-toast-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        margin: 0 0 8px;
+        padding: 4px 10px;
+        border-radius: 999px;
+        background: rgba(15, 23, 42, 0.24);
+        color: rgba(226, 232, 240, 0.92);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .dup-extension-toast-badge::before {
+        content: "";
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        background: var(--dup-toast-accent);
+        box-shadow: 0 0 0 4px rgba(255,255,255,0.08);
+      }
+
+      .dup-extension-toast-close {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        width: 28px;
+        height: 28px;
+        border: none;
+        border-radius: 999px;
+        background: rgba(255,255,255,0.08);
+        color: rgba(248, 250, 252, 0.86);
+        cursor: pointer;
+        font-size: 18px;
+        line-height: 1;
+        transition: background 160ms ease, color 160ms ease, transform 160ms ease;
+      }
+
+      .dup-extension-toast-close:hover {
+        background: rgba(255,255,255,0.16);
+        color: #ffffff;
+        transform: scale(1.05);
+      }
+
+      .dup-extension-toast-close:focus-visible {
+        outline: 2px solid rgba(255,255,255,0.5);
+        outline-offset: 2px;
+      }
+    `;
+    (doc.head || doc.documentElement).appendChild(style);
+  }
+
+  function getExtensionToastContainer() {
+    let container = document.getElementById(EXTENSION_TOAST_CONTAINER_ID);
+    if (container) return container;
+
+    ensureExtensionToastStyle(document);
+    container = document.createElement('div');
+    container.id = EXTENSION_TOAST_CONTAINER_ID;
+    (document.body || document.documentElement).appendChild(container);
+    return container;
+  }
+
+  function findExtensionToastByKey(container, dedupeKey) {
+    if (!container || !dedupeKey) return null;
+    return Array.from(container.querySelectorAll('.dup-extension-toast')).find((toast) => (
+      toast.getAttribute(EXTENSION_TOAST_KEY_ATTR) === dedupeKey
+    )) || null;
+  }
+
+  function closeExtensionToast(toast) {
+    if (!(toast instanceof HTMLElement) || toast.dataset.closing === '1') return;
+    toast.dataset.closing = '1';
+    if (toast._dupCloseTimer) {
+      clearTimeout(toast._dupCloseTimer);
+      toast._dupCloseTimer = null;
+    }
+    if (toast._dupRemoveTimer) {
+      clearTimeout(toast._dupRemoveTimer);
+      toast._dupRemoveTimer = null;
+    }
+    toast.classList.remove('is-visible');
+    toast.classList.add('is-closing');
+    toast._dupRemoveTimer = window.setTimeout(() => {
+      if (toast.parentNode) toast.remove();
+      toast._dupRemoveTimer = null;
+    }, EXTENSION_TOAST_CLOSE_ANIMATION_MS);
+  }
+
+  function showExtensionToast(payload) {
+    if (!isExtensionUiSettingEnabled('serviceToasts')) return false;
+
+    const message = String(payload && payload.message ? payload.message : '').trim();
+    if (!message) return false;
+
+    const title = String(payload && payload.title ? payload.title : 'Уведомление расширения').trim();
+    const badge = String(payload && payload.badge ? payload.badge : 'Extension').trim();
+    const tone = ['error', 'warning', 'success', 'info'].includes(String(payload && payload.tone ? payload.tone : ''))
+      ? String(payload.tone)
+      : 'info';
+    const dedupeKey = String(payload && payload.dedupeKey ? payload.dedupeKey : '').trim();
+    const autoCloseMsRaw = Number(payload && payload.autoCloseMs);
+    const autoCloseMs = Number.isFinite(autoCloseMsRaw)
+      ? Math.max(0, Math.trunc(autoCloseMsRaw))
+      : EXTENSION_TOAST_AUTO_CLOSE_DEFAULT_MS;
+
+    const container = getExtensionToastContainer();
+    let toast = findExtensionToastByKey(container, dedupeKey);
+    if (!toast) {
+      toast = document.createElement('section');
+      toast.className = 'dup-extension-toast';
+      if (dedupeKey) {
+        toast.setAttribute(EXTENSION_TOAST_KEY_ATTR, dedupeKey);
+      }
+
+      const closeButton = document.createElement('button');
+      closeButton.type = 'button';
+      closeButton.className = 'dup-extension-toast-close';
+      closeButton.setAttribute('aria-label', 'Закрыть уведомление');
+      closeButton.textContent = '×';
+      closeButton.addEventListener('click', () => closeExtensionToast(toast));
+
+      const badgeEl = document.createElement('div');
+      badgeEl.className = 'dup-extension-toast-badge';
+
+      const titleEl = document.createElement('h4');
+      titleEl.className = 'dup-extension-toast-title';
+
+      const messageEl = document.createElement('p');
+      messageEl.className = 'dup-extension-toast-message';
+
+      toast.appendChild(closeButton);
+      toast.appendChild(badgeEl);
+      toast.appendChild(titleEl);
+      toast.appendChild(messageEl);
+      container.appendChild(toast);
+    }
+
+    toast.dataset.tone = tone;
+    toast.dataset.closing = '0';
+    toast.querySelector('.dup-extension-toast-badge').textContent = badge;
+    toast.querySelector('.dup-extension-toast-title').textContent = title;
+    toast.querySelector('.dup-extension-toast-message').textContent = message;
+
+    if (toast._dupCloseTimer) {
+      clearTimeout(toast._dupCloseTimer);
+      toast._dupCloseTimer = null;
+    }
+    if (toast._dupRemoveTimer) {
+      clearTimeout(toast._dupRemoveTimer);
+      toast._dupRemoveTimer = null;
+    }
+
+    window.requestAnimationFrame(() => {
+      toast.classList.remove('is-closing');
+      toast.classList.add('is-visible');
+    });
+
+    if (autoCloseMs > 0) {
+      toast._dupCloseTimer = window.setTimeout(() => {
+        closeExtensionToast(toast);
+      }, autoCloseMs);
+    }
+
+    return true;
   }
 
   function createExecutionAnalysisPageId() {
@@ -4106,6 +4391,7 @@
       html.${SCREENSHOT_MODE_CLASS} .my-super-btn,
       html.${SCREENSHOT_MODE_CLASS} #batch-inn-check-btn,
       html.${SCREENSHOT_MODE_CLASS} #inn-toast-container,
+      html.${SCREENSHOT_MODE_CLASS} #${EXTENSION_TOAST_CONTAINER_ID},
       html.${SCREENSHOT_MODE_CLASS} #inn-batch-modal-overlay,
       html.${SCREENSHOT_MODE_CLASS} .ny-snow-container,
       html.${SCREENSHOT_MODE_CLASS} .ny-garland-container,
@@ -5966,6 +6252,18 @@
       return false;
     }
     rememberStageTimerMessage(action, message.data || {});
+    return false;
+  });
+
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (!message || String(message.action || '') !== 'DUP_SHOW_EXTENSION_TOAST') {
+      return false;
+    }
+
+    const shown = showExtensionToast(message.data || {});
+    if (typeof sendResponse === 'function') {
+      sendResponse({ success: true, shown });
+    }
     return false;
   });
 
