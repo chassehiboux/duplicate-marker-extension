@@ -17,6 +17,8 @@
   const SAVE_ACTION = 'GOOGLE_SHEETS_PROBLEM_PICKER_SAVE';
   const ITIL_FILL_ACTION = 'GOOGLE_SHEETS_ITIL_FILL_ROW';
   const SUPP_FILL_ACTION = 'GOOGLE_SHEETS_SUPP_FILL_ROW';
+  const ITIL_OPEN_REQUEST_ACTION = 'GOOGLE_SHEETS_ITIL_OPEN_REQUEST';
+  const SUPP_OPEN_REQUEST_ACTION = 'GOOGLE_SHEETS_SUPP_OPEN_REQUEST';
   const ITIL_INFO_REFRESH_ACTION = 'GOOGLE_SHEETS_ITIL_REFRESH_INFO_ROW';
   const SUPP_INFO_REFRESH_ACTION = 'GOOGLE_SHEETS_SUPP_REFRESH_INFO_ROW';
   const CHATGPT_SEARCH_ACTION = 'GOOGLE_SHEETS_CHATGPT_SEARCH';
@@ -59,7 +61,7 @@
   const CHATGPT_SEARCH_MODAL_ID = 'dup-google-sheets-chatgpt-search-modal';
   const MENU_ID = 'dup-google-sheets-problem-picker-menu';
   const MENU_OVERLAY_ID = 'dup-google-sheets-problem-picker-menu-overlay';
-  const MENU_LAYOUT_VERSION = '2026-05-25-1';
+  const MENU_LAYOUT_VERSION = '2026-06-11-1';
   const MENU_BOUND_FLAG = '__dupGoogleSheetsMenuBound';
   const MENU_OVERLAY_BOUND_FLAG = '__dupGoogleSheetsMenuOverlayBound';
   const STYLE_ID = 'dup-google-sheets-problem-picker-style';
@@ -88,6 +90,7 @@
     bridgeUrl: '',
     queue: [],
     currentIndex: 0,
+    viewIndex: 0,
     sentCount: 0,
     pendingSaveCount: 0,
     failedSaveCount: 0,
@@ -96,7 +99,8 @@
     gid: '',
     rowsCount: 0,
     columns: null,
-    isLoading: false
+    isLoading: false,
+    savedSelections: {}
   };
 
   let autoOpenTimer = 0;
@@ -175,13 +179,20 @@
     statusText: 'Ожидание запуска.',
     lastError: ''
   };
-  let newResponseReviewState = {
-    queue: [],
-    currentIndex: 0,
-    totalExpected: 0,
-    isProcessing: false,
-    statusText: 'Ожидание запуска.'
-  };
+  function createNewResponseReviewState(overrides) {
+    return Object.assign({
+      queue: [],
+      currentIndex: 0,
+      totalExpected: 0,
+      isProcessing: false,
+      statusText: 'Ожидание запуска.',
+      errorText: '',
+      sourceSheetName: ''
+    }, overrides || {});
+  }
+
+  let newResponseReviewState = createNewResponseReviewState();
+  let lastNewResponseReviewSnapshot = null;
   let combinedFlowState = {
     queue: [],
     currentIndex: 0,
@@ -205,6 +216,18 @@
 
   const $ = (selector, root = document) => root.querySelector(selector);
   const FILE_NAME_ONLY_LINE_RE = /^\s*[^\r\n\\/:*?"<>|]+\.(?:png|jpe?g|gif|bmp|webp|svg|heic|pdf|docx?|xlsx?|pptx?|txt|rtf|csv|xml|json|zip|rar|7z)\s*$/i;
+
+  function clonePlainData(value) {
+    if (typeof structuredClone === 'function') {
+      try {
+        return structuredClone(value);
+      } catch (_) {
+        // Fallback ниже.
+      }
+    }
+
+    return JSON.parse(JSON.stringify(value));
+  }
 
   function isFileNameOnlyLine(line) {
     return !!line && FILE_NAME_ONLY_LINE_RE.test(String(line).trim());
@@ -963,6 +986,7 @@
       ...state,
       queue,
       currentIndex: 0,
+      viewIndex: 0,
       sentCount: 0,
       pendingSaveCount: 0,
       failedSaveCount: 0,
@@ -980,7 +1004,8 @@
         itil: itilColumnIndex + 1,
         supp: suppColumnIndex + 1
       },
-      isLoading: false
+      isLoading: false,
+      savedSelections: {}
     };
   }
 
@@ -1444,11 +1469,101 @@
   }
 
   function getCurrentItem() {
+    return state.queue[state.viewIndex] || null;
+  }
+
+  function getCurrentPendingClassificationItem() {
     return state.queue[state.currentIndex] || null;
+  }
+
+  function getSavedSelectionForRow(row) {
+    const key = String(row || '');
+    return Object.prototype.hasOwnProperty.call(state.savedSelections || {}, key)
+      ? String(state.savedSelections[key] || '')
+      : '';
+  }
+
+  function isViewingPastClassificationItem() {
+    return Number.isInteger(state.viewIndex) && state.viewIndex < state.currentIndex;
+  }
+
+  function canGoBackInClassification() {
+    return Array.isArray(state.queue) && state.queue.length > 0 && state.viewIndex > 0;
+  }
+
+  function resetClassificationView() {
+    state = {
+      ...state,
+      viewIndex: state.currentIndex
+    };
+  }
+
+  function goToPreviousClassificationItem() {
+    if (!canGoBackInClassification()) return;
+
+    state = {
+      ...state,
+      viewIndex: Math.max(0, Math.min(state.viewIndex - 1, state.queue.length - 1))
+    };
+
+    const modal = ensureModal();
+    renderModal();
+    focusDefaultCategoryButton(modal, getCurrentItem());
   }
 
   function getNewResponseReviewCurrentItem() {
     return newResponseReviewState.queue[newResponseReviewState.currentIndex] || null;
+  }
+
+  function canGoBackInNewResponseReview() {
+    return newResponseReviewState.currentIndex > 0;
+  }
+
+  function persistNewResponseReviewSnapshot() {
+    if (newResponseReviewState.isProcessing) return;
+
+    const queue = clonePlainData(newResponseReviewState.queue || []);
+    const maxIndex = Math.max(0, queue.length - 1);
+    const rawIndex = Number(newResponseReviewState.currentIndex) || 0;
+    const currentIndex = queue.length ? Math.min(Math.max(0, rawIndex), maxIndex) : 0;
+
+    lastNewResponseReviewSnapshot = {
+      queue,
+      currentIndex,
+      totalExpected: Math.max(0, Number(newResponseReviewState.totalExpected) || 0),
+      statusText: String(newResponseReviewState.statusText || ''),
+      errorText: String(newResponseReviewState.errorText || ''),
+      sourceSheetName: String(newResponseReviewState.sourceSheetName || '')
+    };
+  }
+
+  function hasNewResponseReviewHistory() {
+    return !!lastNewResponseReviewSnapshot;
+  }
+
+  function openLastNewResponseReviewHistory() {
+    if (!hasNewResponseReviewHistory()) {
+      updateLauncherStatus('История новых ответов в этой сессии ещё не сохранена.', true);
+      return;
+    }
+
+    const snapshot = lastNewResponseReviewSnapshot;
+    const queue = clonePlainData(snapshot.queue || []);
+    const maxIndex = Math.max(0, queue.length - 1);
+    const rawIndex = Number(snapshot.currentIndex) || 0;
+    const currentIndex = queue.length ? Math.min(Math.max(0, rawIndex), maxIndex) : 0;
+
+    newResponseReviewState = createNewResponseReviewState({
+      queue,
+      currentIndex,
+      totalExpected: Math.max(0, Number(snapshot.totalExpected) || 0),
+      statusText: String(snapshot.statusText || ''),
+      errorText: String(snapshot.errorText || ''),
+      sourceSheetName: String(snapshot.sourceSheetName || '')
+    });
+
+    closeMenu();
+    openNewResponseReviewModal();
   }
 
   function normalizeInfoText(value) {
@@ -1852,8 +1967,20 @@
         value: item && item.initiator ? item.initiator : '—',
         backgroundColor: normalizeSheetBackgroundColor(item && item.initiatorBackgroundColor)
       },
-      { key: 'itil', label: 'Номер ITIL', value: item && item.itilNumber ? item.itilNumber : '—' },
-      { key: 'supp', label: 'Номер СУПП (последний)', value: item && item.suppValue ? item.suppValue : '—' }
+      {
+        key: 'itil',
+        label: 'Номер ITIL',
+        value: item && item.itilNumber ? item.itilNumber : '—',
+        openAction: ITIL_OPEN_REQUEST_ACTION,
+        openValue: item && item.itilNumber ? item.itilNumber : ''
+      },
+      {
+        key: 'supp',
+        label: 'Номер СУПП (последний)',
+        value: item && item.suppValue ? item.suppValue : '—',
+        openAction: SUPP_OPEN_REQUEST_ACTION,
+        openValue: item && item.suppValue ? extractSuppNumber(item.suppValue) : ''
+      }
     ];
 
     container.replaceChildren();
@@ -1874,9 +2001,23 @@
       const header = document.createElement('div');
       header.className = 'gs-request-summary-header';
 
+      const actions = document.createElement('div');
+      actions.className = 'gs-request-summary-actions';
+
       const value = document.createElement('div');
       value.className = 'gs-request-summary-value';
       value.textContent = valueText;
+
+      const openButton = document.createElement('button');
+      openButton.type = 'button';
+      openButton.className = 'gs-request-summary-open';
+      openButton.title = `Открыть заявку: ${labelText}`;
+      openButton.setAttribute('aria-label', `Открыть заявку из поля «${labelText}»`);
+      openButton.disabled = !fieldData.openAction || !fieldData.openValue;
+      setSummaryOpenButtonIcon(openButton, 'open');
+      openButton.addEventListener('click', () => {
+        void openSummaryRequest(openButton, fieldData);
+      }, { capture: true });
 
       const copyButton = document.createElement('button');
       copyButton.type = 'button';
@@ -1889,10 +2030,41 @@
         void copySummaryValue(copyButton, valueText);
       }, { capture: true });
 
-      header.append(label, copyButton);
+      if (fieldData.openAction) actions.appendChild(openButton);
+      actions.appendChild(copyButton);
+
+      header.append(label, actions);
       field.append(header, value);
       container.appendChild(field);
     });
+  }
+
+  function setSummaryOpenButtonIcon(button, stateName) {
+    if (!(button instanceof HTMLButtonElement)) return;
+
+    const icons = {
+      open: `
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M14 5h5v5"></path>
+          <path d="m10 14 9-9"></path>
+          <path d="M19 14v4a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h4"></path>
+        </svg>
+      `,
+      opened: `
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="m5 12.5 4.25 4.25L19 7"></path>
+        </svg>
+      `,
+      error: `
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 8v5"></path>
+          <path d="M12 16h.01"></path>
+          <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"></path>
+        </svg>
+      `
+    };
+
+    button.innerHTML = icons[stateName] || icons.open;
   }
 
   function setSummaryCopyButtonIcon(button, stateName) {
@@ -1968,6 +2140,73 @@
     }, 1200);
   }
 
+  function setNewResponseReviewMessage(text, isError) {
+    const message = $(`#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-message`);
+    if (!(message instanceof HTMLElement)) return;
+    message.textContent = String(text || '');
+    message.classList.toggle('is-error', !!isError);
+  }
+
+  function setSummaryActionMessage(button, text, isError) {
+    if (!(button instanceof HTMLElement)) return;
+
+    if (button.closest(`#${MODAL_ID}`)) {
+      setModalMessage(text, isError);
+      return;
+    }
+
+    if (button.closest(`#${NEW_RESPONSE_REVIEW_MODAL_ID}`)) {
+      setNewResponseReviewMessage(text, isError);
+      return;
+    }
+
+    updateLauncherStatus(text, isError);
+  }
+
+  async function openSummaryRequest(button, fieldData) {
+    if (!(button instanceof HTMLButtonElement) || button.disabled) return;
+
+    const action = String(fieldData && fieldData.openAction || '').trim();
+    const requestNumber = String(fieldData && fieldData.openValue || '').trim();
+    const labelText = String(fieldData && fieldData.label || 'заявка').trim();
+
+    if (!action || !requestNumber) return;
+
+    button.disabled = true;
+    setSummaryActionMessage(button, `Открываю ${labelText}: ${requestNumber}...`, false);
+
+    try {
+      const response = await sendRuntimeMessage({
+        action,
+        data: action === ITIL_OPEN_REQUEST_ACTION
+          ? { itilNumber: requestNumber }
+          : { suppNumber: requestNumber }
+      });
+
+      if (!response || response.success !== true) {
+        throw new Error(response && response.error ? response.error : 'Не удалось открыть заявку.');
+      }
+
+      setSummaryOpenButtonIcon(button, 'opened');
+      button.classList.add('is-opened');
+      setSummaryActionMessage(button, `Открыта заявка ${requestNumber}.`, false);
+    } catch (error) {
+      setSummaryOpenButtonIcon(button, 'error');
+      button.classList.add('is-error');
+      setSummaryActionMessage(
+        button,
+        error && error.message ? error.message : `Не удалось открыть заявку ${requestNumber}.`,
+        true
+      );
+    } finally {
+      window.setTimeout(() => {
+        setSummaryOpenButtonIcon(button, 'open');
+        button.classList.remove('is-opened', 'is-error');
+        button.disabled = !action || !requestNumber;
+      }, 1200);
+    }
+  }
+
   function ensureStyle() {
     if (document.getElementById(STYLE_ID)) return;
 
@@ -2011,6 +2250,7 @@
       #${ROOT_ID} button,#${MODAL_ID} button,#${NEW_RESPONSE_REVIEW_MODAL_ID} button,#${CHATGPT_SEARCH_MODAL_ID} button,#${MENU_ID} button{border:1px solid #b7c2d3;border-radius:7px;background:#fff;color:#162033;cursor:pointer;font:600 13px/1.2 "Segoe UI",Tahoma,sans-serif;padding:8px 12px}
       #${MENU_ID} button:disabled{opacity:.58;cursor:default}
       #${MENU_ID} .gs-problem-picker-open,#${MENU_ID} .gs-problem-picker-chatgpt-search-open,#${MENU_ID} .gs-problem-picker-combined-start,#${MENU_ID} .gs-problem-picker-itil-start,#${MENU_ID} .gs-problem-picker-supp-start,#${MENU_ID} .gs-problem-picker-supp-test,#${MENU_ID} .gs-problem-picker-new-response-start{border-color:#1155cc;background:#1155cc;color:#fff;box-shadow:0 8px 22px rgba(17,85,204,.2)}
+      #${MENU_ID} .gs-problem-picker-new-response-history{border-color:#c9d7ef;background:#f4f8ff;color:#0f3f99}
       #${MENU_ID} .gs-problem-picker-combined-stop,#${MENU_ID} .gs-problem-picker-itil-stop,#${MENU_ID} .gs-problem-picker-supp-stop,#${MENU_ID} .gs-problem-picker-new-response-stop{border-color:#b3261e;color:#b3261e}
       #${MODAL_ID},#${NEW_RESPONSE_REVIEW_MODAL_ID}{position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;box-sizing:border-box;padding:16px;overflow:hidden;background:rgba(17,24,39,.42);pointer-events:none;font-family:"Segoe UI",Tahoma,sans-serif}
       #${CHATGPT_SEARCH_MODAL_ID}{position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;background:rgba(15,23,42,.48);pointer-events:none;font-family:"Segoe UI",Tahoma,sans-serif}
@@ -2032,8 +2272,15 @@
       #${MODAL_ID} .gs-request-summary-item,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-item{flex:0 1 auto;width:max-content;max-width:min(320px,100%);min-width:0;padding:8px 9px 9px;border:1px solid #dbe2ec;border-radius:10px;background:#f7f9fc}
       #${MODAL_ID} .gs-request-summary-item.has-sheet-background,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-item.has-sheet-background{background:var(--gs-request-summary-sheet-bg,#f7f9fc);border-color:rgba(15,23,42,.16)}
       #${MODAL_ID} .gs-request-summary-header,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-header{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:4px}
+      #${MODAL_ID} .gs-request-summary-actions,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-actions{display:flex;align-items:center;gap:6px;flex:none}
       #${MODAL_ID} .gs-request-summary-label,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-label{min-width:0;color:#64748b;font-size:11px;font-weight:700;letter-spacing:.02em;text-transform:uppercase}
       #${MODAL_ID} .gs-request-summary-value,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-value{min-width:0;overflow-wrap:anywhere;color:#172033;font-size:13px;font-weight:600;line-height:1.35}
+      #${MODAL_ID} .gs-request-summary-open,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-open{flex:none;width:20px;height:20px;display:grid;place-items:center;padding:0;border-radius:6px;border-color:#d1d9e6;background:#fff;color:#526071;line-height:1;box-shadow:none}
+      #${MODAL_ID} .gs-request-summary-open svg,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-open svg{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
+      #${MODAL_ID} .gs-request-summary-open:hover:not(:disabled),#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-open:hover:not(:disabled){border-color:#1155cc;color:#0f3f99;background:#eef5ff}
+      #${MODAL_ID} .gs-request-summary-open.is-opened,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-open.is-opened{border-color:#8ec9a3;background:#e8f3ee;color:#14532d}
+      #${MODAL_ID} .gs-request-summary-open.is-error,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-open.is-error{border-color:#f0b7b3;background:#fff1f0;color:#b3261e}
+      #${MODAL_ID} .gs-request-summary-open:disabled,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-open:disabled{opacity:.58;cursor:default}
       #${MODAL_ID} .gs-request-summary-copy,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-copy{flex:none;width:20px;height:20px;display:grid;place-items:center;padding:0;border-radius:6px;border-color:#d1d9e6;background:#fff;color:#526071;line-height:1;box-shadow:none}
       #${MODAL_ID} .gs-request-summary-copy svg,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-copy svg{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
       #${MODAL_ID} .gs-request-summary-copy:hover:not(:disabled),#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-copy:hover:not(:disabled){border-color:#1155cc;color:#0f3f99;background:#eef5ff}
@@ -2069,6 +2316,8 @@
       #${MODAL_ID} .gs-problem-picker-category-button{width:100%;min-height:40px;text-align:left;white-space:normal;overflow-wrap:anywhere;line-height:1.25;padding:9px 10px;border-color:#cbd5e1;background:#fff;color:#172033;box-shadow:0 3px 10px rgba(15,23,42,.05)}
       #${MODAL_ID} .gs-problem-picker-category-button:hover:not(:disabled),#${MODAL_ID} .gs-problem-picker-category-button:focus-visible{border-color:#1155cc;background:#eef5ff;color:#0f3f99;outline:none}
       #${MODAL_ID} .gs-problem-picker-category-button.is-default{border-color:#1155cc;background:#1155cc;color:#fff;box-shadow:0 8px 22px rgba(17,85,204,.2)}
+      #${MODAL_ID} .gs-problem-picker-category-button.is-selected{border-color:#2e7d32;box-shadow:0 0 0 2px rgba(46,125,50,.14),0 3px 10px rgba(15,23,42,.05)}
+      #${MODAL_ID} .gs-problem-picker-category-button.is-selected:not(.is-default){background:#e9f6ee;color:#14532d}
       #${MODAL_ID} .gs-problem-picker-category-button:disabled{opacity:.58;cursor:default;box-shadow:none}
       #${CHATGPT_SEARCH_MODAL_ID} .gs-chatgpt-search-card{width:min(1180px,100%);max-height:min(780px,calc(100vh - 32px));display:grid;grid-template-rows:auto auto auto auto;gap:16px;box-sizing:border-box;padding:22px;border:1px solid rgba(182,193,210,.92);border-radius:16px;background:linear-gradient(145deg,#fbfdff 0%,#f3f7ff 54%,#eef6f3 100%);color:#172033;box-shadow:0 28px 90px rgba(15,23,42,.28);pointer-events:auto}
       #${CHATGPT_SEARCH_MODAL_ID} .gs-chatgpt-search-header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
@@ -2164,7 +2413,7 @@
   function getCombinedCurrentText() {
     if (combinedFlowState.stage === 'classification') {
       if (state.isLoading) return 'подготавливаю очередь классификации';
-      const item = getCurrentItem();
+      const item = getCurrentPendingClassificationItem();
       return item ? `классификация: строка ${item.row}` : 'классификация завершена';
     }
 
@@ -2329,6 +2578,7 @@
     const current = $('.gs-problem-picker-new-response-current', menu);
     const status = $('.gs-problem-picker-new-response-status', menu);
     const startButton = $('.gs-problem-picker-new-response-start', menu);
+    const historyButton = $('.gs-problem-picker-new-response-history', menu);
     const stopButton = $('.gs-problem-picker-new-response-stop', menu);
 
     if (collected instanceof HTMLElement) collected.textContent = String(total);
@@ -2339,6 +2589,13 @@
       status.classList.toggle('is-error', !!newResponseState.lastError);
     }
     if (startButton instanceof HTMLButtonElement) startButton.disabled = newResponseState.isRunning || itilState.isRunning || suppState.isRunning || combinedFlowState.isRunning;
+    if (historyButton instanceof HTMLButtonElement) {
+      historyButton.disabled = newResponseState.isRunning
+        || itilState.isRunning
+        || suppState.isRunning
+        || combinedFlowState.isRunning
+        || !hasNewResponseReviewHistory();
+    }
     if (stopButton instanceof HTMLButtonElement) stopButton.disabled = !newResponseState.isRunning || !!newResponseState.stopRequested;
     renderNewResponseReviewModal();
     renderCombinedFlowStatus();
@@ -2593,11 +2850,12 @@
           </div>
 
           <div class="gs-problem-picker-manual-section">
-            <div class="gs-problem-picker-manual-section-title">Пришел новый ответ</div>
-            <div class="gs-problem-picker-menu-actions">
-              <button type="button" class="gs-problem-picker-new-response-start">Старт</button>
-              <button type="button" class="gs-problem-picker-new-response-stop" disabled>Стоп</button>
-            </div>
+          <div class="gs-problem-picker-manual-section-title">Пришел новый ответ</div>
+          <div class="gs-problem-picker-menu-actions">
+            <button type="button" class="gs-problem-picker-new-response-start">Старт</button>
+            <button type="button" class="gs-problem-picker-new-response-history" disabled>История</button>
+            <button type="button" class="gs-problem-picker-new-response-stop" disabled>Стоп</button>
+          </div>
             <dl class="gs-problem-picker-new-response-grid">
               <dt>Собрано строк</dt>
               <dd class="gs-problem-picker-new-response-collected">0</dd>
@@ -2695,6 +2953,10 @@
       }
       if (button.classList.contains('gs-problem-picker-new-response-start')) {
         void startNewResponseRefresh();
+        return;
+      }
+      if (button.classList.contains('gs-problem-picker-new-response-history')) {
+        openLastNewResponseReviewHistory();
         return;
       }
       if (button.classList.contains('gs-problem-picker-new-response-stop')) {
@@ -3019,6 +3281,7 @@ function handleMenuEscape(event) {
           <footer class="gs-problem-picker-footer">
             <div class="gs-problem-picker-message" aria-live="polite"></div>
             <div class="gs-problem-picker-buttons">
+              <button type="button" class="gs-problem-picker-back">Назад</button>
               <button type="button" class="gs-problem-picker-close">Закрыть</button>
             </div>
           </footer>
@@ -3047,9 +3310,11 @@ function handleMenuEscape(event) {
     }
 
     const close = () => {
+      resetClassificationView();
       modal.hidden = true;
     };
 
+    $('.gs-problem-picker-back', modal)?.addEventListener('click', goToPreviousClassificationItem, { capture: true });
     $('.gs-problem-picker-close-x', modal)?.addEventListener('click', close, { capture: true });
     $('.gs-problem-picker-close', modal)?.addEventListener('click', close, { capture: true });
 
@@ -3062,16 +3327,19 @@ function handleMenuEscape(event) {
       .filter((button) => button instanceof HTMLButtonElement);
   }
 
-  function focusDefaultCategoryButton(modal) {
+  function focusDefaultCategoryButton(modal, item) {
     const buttons = getCategoryButtons(modal);
-    const button = buttons.find((item) => item.dataset.value === DEFAULT_VALUE && !item.disabled)
-      || buttons.find((item) => !item.disabled);
+    const selectedValue = item ? getSavedSelectionForRow(item.row) : '';
+    const button = buttons.find((entry) => entry.dataset.value === selectedValue && !entry.disabled)
+      || buttons.find((entry) => entry.dataset.value === DEFAULT_VALUE && !entry.disabled)
+      || buttons.find((entry) => !entry.disabled);
     if (button instanceof HTMLButtonElement) button.focus();
   }
 
   function renderModal() {
     const modal = ensureModal();
     const item = getCurrentItem();
+    const pendingItem = getCurrentPendingClassificationItem();
     const meta = $('.gs-problem-picker-meta', modal);
     const progress = $('.gs-problem-picker-progress', modal);
     const summary = $('.gs-request-summary', modal);
@@ -3079,6 +3347,7 @@ function handleMenuEscape(event) {
     const text = $('.gs-problem-picker-text', modal);
     const infoLabel = $('.gs-problem-picker-info-label', modal);
     const info = $('.gs-problem-picker-info', modal);
+    const backButton = $('.gs-problem-picker-back', modal);
     const categoryButtons = getCategoryButtons(modal);
 
     const pending = state.pendingSaveCount ? ` · в фоне: ${state.pendingSaveCount}` : '';
@@ -3098,20 +3367,34 @@ function handleMenuEscape(event) {
       categoryButtons.forEach((button) => {
         button.disabled = true;
         button.title = '';
+        button.classList.remove('is-selected');
       });
     } else {
       if (progress instanceof HTMLElement) {
-        progress.textContent = `Очередь: ${state.currentIndex + 1}/${state.queue.length} · отправлено: ${state.sentCount}${pending}${failed}`;
+        if (isViewingPastClassificationItem()) {
+          const currentQueueText = pendingItem
+            ? `текущая: ${state.currentIndex + 1}/${state.queue.length}`
+            : 'очередь завершена';
+          progress.textContent = `Просмотр: ${state.viewIndex + 1}/${state.queue.length} · ${currentQueueText} · отправлено: ${state.sentCount}${pending}${failed}`;
+        } else {
+          progress.textContent = `Очередь: ${state.currentIndex + 1}/${state.queue.length} · отправлено: ${state.sentCount}${pending}${failed}`;
+        }
       }
       renderRequestSummary(summary, item);
       if (textLabel instanceof HTMLElement) textLabel.textContent = `Текст заявки (строка ${item.row}):`;
       if (text instanceof HTMLElement) text.textContent = item.text || '';
       if (infoLabel instanceof HTMLElement) infoLabel.textContent = 'Информация из СУПП/ITIL:';
       if (info instanceof HTMLElement) renderInfoBlocks(info, buildDefaultInfoBlocks(item.info));
+      const selectedValue = getSavedSelectionForRow(item.row);
       categoryButtons.forEach((button) => {
         button.disabled = !state.bridgeUrl;
         button.title = state.bridgeUrl ? '' : 'Нажми F2, затем «URL bridge» и задай Apps Script bridge.';
+        button.classList.toggle('is-selected', !!selectedValue && button.dataset.value === selectedValue);
       });
+    }
+
+    if (backButton instanceof HTMLButtonElement) {
+      backButton.disabled = !canGoBackInClassification();
     }
 
     if (!state.bridgeUrl) {
@@ -3122,6 +3405,13 @@ function handleMenuEscape(event) {
       setModalMessage(item
         ? `Сохранение идёт в фоне: ${state.pendingSaveCount}. Можно классифицировать дальше.`
         : `Очередь завершена. Дожидаюсь фонового сохранения: ${state.pendingSaveCount}.`, false);
+    } else if (item && isViewingPastClassificationItem()) {
+      const selectedValue = getSavedSelectionForRow(item.row);
+      const selectedPart = selectedValue ? `Ранее выбрано: «${selectedValue}». ` : '';
+      const returnPart = pendingItem
+        ? `Выбери категорию или закрой окно, чтобы вернуться к строке ${pendingItem.row}.`
+        : 'Выбери категорию или закрой окно, чтобы вернуться к завершённой очереди.';
+      setModalMessage(`${selectedPart}${returnPart}`, false);
     } else {
       setModalMessage(item ? '' : 'Классификация завершена.', false);
     }
@@ -3129,6 +3419,7 @@ function handleMenuEscape(event) {
 
   function closeNewResponseReviewModal() {
     const modal = document.getElementById(NEW_RESPONSE_REVIEW_MODAL_ID);
+    persistNewResponseReviewSnapshot();
     if (modal instanceof HTMLElement) modal.hidden = true;
   }
 
@@ -3167,6 +3458,7 @@ function handleMenuEscape(event) {
             <div class="gs-new-response-review-message" aria-live="polite"></div>
             <div class="gs-new-response-review-buttons">
               <button type="button" class="gs-new-response-review-close">Закрыть</button>
+              <button type="button" class="gs-new-response-review-prev">Назад</button>
               <button type="button" class="gs-new-response-review-next">Дальше</button>
             </div>
           </footer>
@@ -3180,6 +3472,15 @@ function handleMenuEscape(event) {
 
     $('.gs-new-response-review-close-x', modal)?.addEventListener('click', close, { capture: true });
     $('.gs-new-response-review-close', modal)?.addEventListener('click', close, { capture: true });
+    $('.gs-new-response-review-prev', modal)?.addEventListener('click', () => {
+      if (!canGoBackInNewResponseReview() || newResponseReviewState.isProcessing) return;
+
+      newResponseReviewState = {
+        ...newResponseReviewState,
+        currentIndex: Math.max(0, newResponseReviewState.currentIndex - 1)
+      };
+      renderNewResponseReviewModal();
+    }, { capture: true });
     $('.gs-new-response-review-next', modal)?.addEventListener('click', () => {
       const total = newResponseReviewState.queue.length;
       if (!total || newResponseReviewState.isProcessing) return;
@@ -3211,10 +3512,11 @@ function handleMenuEscape(event) {
     const text = $('.gs-new-response-review-text', modal);
     const info = $('.gs-new-response-review-info', modal);
     const message = $('.gs-new-response-review-message', modal);
+    const prevButton = $('.gs-new-response-review-prev', modal);
     const nextButton = $('.gs-new-response-review-next', modal);
 
     if (meta instanceof HTMLElement) {
-      meta.textContent = `Лист: ${newResponseState.sheetName || 'не выбран'} · строк найдено: ${newResponseReviewState.totalExpected}`;
+      meta.textContent = `Лист: ${newResponseReviewState.sourceSheetName || newResponseState.sheetName || 'не выбран'} · строк найдено: ${newResponseReviewState.totalExpected}`;
     }
 
     if (progress instanceof HTMLElement) {
@@ -3245,10 +3547,14 @@ function handleMenuEscape(event) {
     }
 
     if (message instanceof HTMLElement) {
-      message.textContent = newResponseState.lastError
+      message.textContent = newResponseReviewState.errorText
         || (newResponseReviewState.isProcessing ? (newResponseState.statusText || newResponseReviewState.statusText) : newResponseReviewState.statusText)
         || '';
-      message.classList.toggle('is-error', !!newResponseState.lastError);
+      message.classList.toggle('is-error', !!newResponseReviewState.errorText);
+    }
+
+    if (prevButton instanceof HTMLButtonElement) {
+      prevButton.disabled = newResponseReviewState.isProcessing || !item || !canGoBackInNewResponseReview();
     }
 
     if (nextButton instanceof HTMLButtonElement) {
@@ -3257,6 +3563,8 @@ function handleMenuEscape(event) {
         ? 'Закрыть'
         : 'Дальше';
     }
+
+    persistNewResponseReviewSnapshot();
   }
 
   function openNewResponseReviewModal() {
@@ -3270,7 +3578,7 @@ function handleMenuEscape(event) {
     const modal = ensureModal();
     renderModal();
     modal.hidden = false;
-    focusDefaultCategoryButton(modal);
+    focusDefaultCategoryButton(modal, getCurrentItem());
   }
 
   async function openClassificationPicker(options) {
@@ -3352,6 +3660,12 @@ function handleMenuEscape(event) {
 
     const modal = ensureModal();
     const selectedValue = String(value || '').trim();
+    const rowKey = String(item.row || '');
+    const alreadySaved = !!getSavedSelectionForRow(item.row);
+    const wasViewingPastItem = isViewingPastClassificationItem();
+    const nextCurrentIndex = wasViewingPastItem
+      ? state.currentIndex
+      : Math.min(state.queue.length, state.currentIndex + 1);
 
     if (!selectedValue) {
       setModalMessage('Выберите проблему.', true);
@@ -3363,19 +3677,27 @@ function handleMenuEscape(event) {
       return;
     }
 
-    state.sentCount += 1;
-    state.currentIndex += 1;
+    state = {
+      ...state,
+      sentCount: alreadySaved ? state.sentCount : state.sentCount + 1,
+      currentIndex: nextCurrentIndex,
+      viewIndex: nextCurrentIndex,
+      savedSelections: {
+        ...(state.savedSelections || {}),
+        [rowKey]: selectedValue
+      }
+    };
 
     enqueueBackgroundSave({ ...item }, selectedValue, state.bridgeUrl, state.sheetName);
     renderCombinedFlowStatus();
     renderModal();
 
-    if (!getCurrentItem()) {
+    if (!getCurrentPendingClassificationItem()) {
       transitionCombinedFlowToNewResponseReview();
       return;
     }
 
-    focusDefaultCategoryButton(modal);
+    focusDefaultCategoryButton(modal, getCurrentItem());
   }
 
   function uniqueRows(rows) {
@@ -3510,17 +3832,19 @@ function handleMenuEscape(event) {
       .map((item) => item.reviewItem);
   }
 
-  function finishNewResponseReview(results, totalExpected, statusText) {
+  function finishNewResponseReview(results, totalExpected, statusText, errorText) {
     const queue = buildNewResponseReviewQueue(results);
-    newResponseReviewState = {
+    newResponseReviewState = createNewResponseReviewState({
       queue,
       currentIndex: 0,
       totalExpected: Number(totalExpected || 0),
       isProcessing: false,
       statusText: queue.length
         ? (statusText || 'Показываю только сохранённые изменения.')
-        : 'Сохранённых новых ответов для просмотра нет.'
-    };
+        : 'Сохранённых новых ответов для просмотра нет.',
+      errorText: String(errorText || ''),
+      sourceSheetName: newResponseState.sheetName || ''
+    });
     renderNewResponseReviewModal();
   }
 
@@ -4328,13 +4652,10 @@ function handleMenuEscape(event) {
       statusText: 'Собираю строки для проверки новых ответов...',
       lastError: ''
     };
-    newResponseReviewState = {
-      queue: [],
-      currentIndex: 0,
-      totalExpected: 0,
+    newResponseReviewState = createNewResponseReviewState({
       isProcessing: true,
       statusText: 'Собираю строки для проверки новых ответов...'
-    };
+    });
     if (closeMenuOnStart) closeMenu();
     if (openReviewOnStart) openNewResponseReviewModal();
     renderNewResponseStatus();
@@ -4352,6 +4673,7 @@ function handleMenuEscape(event) {
       newResponseReviewState = {
         ...newResponseReviewState,
         totalExpected: newResponseState.queue.length,
+        sourceSheetName: newResponseState.sheetName || '',
         statusText: newResponseState.queue.length
           ? 'Обновляю заявки и собираю очередь просмотра.'
           : 'Строк для проверки новых ответов не найдено.'
@@ -4373,7 +4695,8 @@ function handleMenuEscape(event) {
         renderSuppStatus();
         newResponseReviewState = {
           ...newResponseReviewState,
-          isProcessing: false
+          isProcessing: false,
+          sourceSheetName: newResponseState.sheetName || newResponseReviewState.sourceSheetName
         };
         if (openReviewOnStart) renderNewResponseReviewModal();
         return;
@@ -4441,17 +4764,18 @@ function handleMenuEscape(event) {
           renderNewResponseStatus();
           const bridgeFinalize = await waitBridgeSaves(newResponseState.pendingBridgeSaves);
           if (runId !== newResponseRunId) return;
-          finishNewResponseReview(
-            bridgeFinalize.results,
-            newResponseState.queue.length,
-            'Процесс остановлен из-за ошибки. Ниже — уже сохранённые изменения.'
-          );
           const label = item.mode === 'supp'
             ? `Строка ${item.row}, СУПП ${item.suppNumber}`
             : `Строка ${item.row}, ITIL ${item.itilNumber}`;
           const finalError = [bridgeFinalize.errorText, `${label}: ${errorText}`]
             .filter(Boolean)
             .join(' ');
+          finishNewResponseReview(
+            bridgeFinalize.results,
+            newResponseState.queue.length,
+            'Процесс остановлен из-за ошибки. Ниже — уже сохранённые изменения.',
+            finalError
+          );
           newResponseState = {
             ...newResponseState,
             failedCount: newResponseState.failedCount + 1,
@@ -4514,7 +4838,8 @@ function handleMenuEscape(event) {
         newResponseState.queue.length,
         wasStopped
           ? 'Процесс остановлен. Ниже — сохранённые изменения, которые успели попасть в таблицу.'
-          : 'Показываю только сохранённые изменения.'
+          : 'Показываю только сохранённые изменения.',
+        bridgeFinalize.errorText
       );
 
       newResponseState = {
@@ -4549,7 +4874,8 @@ function handleMenuEscape(event) {
       finishNewResponseReview(
         bridgeFinalize.results,
         newResponseState.queue.length,
-        'Процесс завершился с ошибкой. Ниже — уже сохранённые изменения.'
+        'Процесс завершился с ошибкой. Ниже — уже сохранённые изменения.',
+        [message, bridgeFinalize.errorText].filter(Boolean).join(' ')
       );
       newResponseState = {
         ...newResponseState,

@@ -5,6 +5,8 @@
   const SAVE_ACTION = 'GOOGLE_SHEETS_PROBLEM_PICKER_SAVE';
   const ITIL_FILL_ACTION = 'GOOGLE_SHEETS_ITIL_FILL_ROW';
   const SUPP_FILL_ACTION = 'GOOGLE_SHEETS_SUPP_FILL_ROW';
+  const ITIL_OPEN_REQUEST_ACTION = 'GOOGLE_SHEETS_ITIL_OPEN_REQUEST';
+  const SUPP_OPEN_REQUEST_ACTION = 'GOOGLE_SHEETS_SUPP_OPEN_REQUEST';
   const ITIL_INFO_REFRESH_ACTION = 'GOOGLE_SHEETS_ITIL_REFRESH_INFO_ROW';
   const SUPP_INFO_REFRESH_ACTION = 'GOOGLE_SHEETS_SUPP_REFRESH_INFO_ROW';
   const CHATGPT_SEARCH_ACTION = 'GOOGLE_SHEETS_CHATGPT_SEARCH';
@@ -1289,6 +1291,27 @@
     };
   }
 
+  async function runItilOpenRequest(data) {
+    const itilNumber = String(
+      (data && data.itilNumber)
+      || (data && data.payload && data.payload.itilNumber)
+      || ''
+    ).trim();
+    if (!itilNumber) throw new Error('Не передан номер ITIL для открытия заявки.');
+
+    const tab = await getOrCreateItilTab();
+    const clipboardPrepared = await writeClipboardText(itilNumber);
+    const result = await executeInTab(tab.id, collectItilRequestData, [itilNumber, clipboardPrepared, { leaveOpen: true }]);
+    if (!result || result.success !== true) {
+      throw new Error(result && result.error ? result.error : 'Не удалось открыть заявку ITIL.');
+    }
+
+    return {
+      tabId: tab.id,
+      itilNumber
+    };
+  }
+
   async function runSuppFillRow(data) {
     const payload = data && data.payload ? data.payload : {};
     const row = Number(payload.row);
@@ -1365,6 +1388,28 @@
       requestTextLength: requestText.length,
       infoTextLength: infoText.length,
       bridgePayload
+    };
+  }
+
+  async function runSuppOpenRequest(data) {
+    const suppNumber = String(
+      (data && data.suppNumber)
+      || (data && data.payload && data.payload.suppNumber)
+      || ''
+    ).trim();
+    if (!/^ЗНР-[A-Za-zА-Яа-яЁё0-9-]+$/.test(suppNumber)) {
+      throw new Error('Не передан корректный номер СУПП для открытия заявки.');
+    }
+
+    const tab = await getOrCreateSuppTab();
+    const result = await executeInTab(tab.id, collectSuppRequestData, [suppNumber, { leaveOpen: true }]);
+    if (!result || result.success !== true) {
+      throw new Error(result && result.error ? result.error : 'Не удалось открыть заявку СУПП.');
+    }
+
+    return {
+      tabId: tab.id,
+      suppNumber
     };
   }
 
@@ -1470,9 +1515,11 @@
     };
   }
 
-  async function collectItilRequestData(itilNumber, clipboardPrepared) {
+  async function collectItilRequestData(itilNumber, clipboardPrepared, options) {
     const number = String(itilNumber || '').trim();
     const canUseClipboardPaste = !!clipboardPrepared;
+    const settings = options && typeof options === 'object' ? options : {};
+    const leaveOpen = !!settings.leaveOpen;
     if (!number) return { success: false, error: 'Пустой номер ITIL.' };
 
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -1775,6 +1822,13 @@
       await waitFor(findRequestTab, 60000, `вкладка заявки ${number}`);
       await waitFor(() => getIframeText(), 60000, `текст заявки ${number}`);
 
+      if (leaveOpen) {
+        return {
+          success: true,
+          opened: true
+        };
+      }
+
       const requestText = getIframeText();
       const solutionText = getSolutionText();
       const additionalInfoText = getAdditionalInfoText();
@@ -1798,8 +1852,10 @@
     }
   }
 
-  async function collectSuppRequestData(suppNumber) {
+  async function collectSuppRequestData(suppNumber, options) {
     const number = String(suppNumber || '').trim();
+    const settings = options && typeof options === 'object' ? options : {};
+    const leaveOpen = !!settings.leaveOpen;
     if (!number) return { success: false, error: 'Пустой номер СУПП.' };
 
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -2710,6 +2766,14 @@
       }
 
       const requestText = await waitFor(getInfoIframeText, 60000, `текст заявки СУПП ${number}`);
+      if (leaveOpen) {
+        return {
+          success: true,
+          opened: true,
+          requestItilNumber: extractSuppRequestItilNumber(requestText)
+        };
+      }
+
       const incidentReasonText = extractSuppIncidentReasonTextLocal(requestText);
       const commentsText = extractCommentsText(requestText);
 
@@ -2865,6 +2929,8 @@
       request.action !== SAVE_ACTION
       && request.action !== ITIL_FILL_ACTION
       && request.action !== SUPP_FILL_ACTION
+      && request.action !== ITIL_OPEN_REQUEST_ACTION
+      && request.action !== SUPP_OPEN_REQUEST_ACTION
       && request.action !== ITIL_INFO_REFRESH_ACTION
       && request.action !== SUPP_INFO_REFRESH_ACTION
       && request.action !== CHATGPT_SEARCH_ACTION
@@ -2892,6 +2958,10 @@
           result = await runItilFillRow(data);
         } else if (request.action === SUPP_FILL_ACTION) {
           result = await runSuppFillRow(data);
+        } else if (request.action === ITIL_OPEN_REQUEST_ACTION) {
+          result = await runItilOpenRequest(data);
+        } else if (request.action === SUPP_OPEN_REQUEST_ACTION) {
+          result = await runSuppOpenRequest(data);
         } else if (request.action === ITIL_INFO_REFRESH_ACTION) {
           result = await runItilInfoRefreshRow(data);
         } else if (request.action === SUPP_INFO_REFRESH_ACTION) {
