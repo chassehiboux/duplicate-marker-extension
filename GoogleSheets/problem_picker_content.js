@@ -41,6 +41,7 @@
   const CHATGPT_ROW_ID_HEADER = '__row_id';
   const CHATGPT_SEARCH_FILE_NAME = 'zayavki-search.csv';
   const CHATGPT_QUESTION_FILE_NAME = 'zayavki-question.csv';
+  const SUPP_NOT_FOUND_INFO_TEXT = 'Не найдена заявка в СУПП. Проверьте вручную';
   const CHATGPT_SEARCH_VISIBLE_HEADERS = Object.freeze([
     'Дата заявки',
     REQUEST_STATUS_HEADER,
@@ -959,6 +960,7 @@
       const problem = String(row[problemColumnIndex] || '').trim();
 
       if (text && !problem) {
+        const suppValue = String(row[suppColumnIndex] || '').trim();
         queue.push({
           row: index + 1,
           text,
@@ -968,7 +970,8 @@
           currentStage: currentStageColumnIndex >= 0 ? String(row[currentStageColumnIndex] || '').trim() : '',
           initiator: String(row[initiatorColumnIndex] || '').trim(),
           itilNumber: String(row[itilColumnIndex] || '').trim(),
-          suppValue: String(row[suppColumnIndex] || '').trim()
+          suppValue,
+          suppNumbers: extractSuppNumbers(suppValue)
         });
       }
     }
@@ -1038,10 +1041,10 @@
     for (let index = 1; index < rows.length; index++) {
       const row = rows[index] || [];
       const itilNumber = String(row[itilColumnIndex] || '').trim();
-      const suppNumber = String(row[suppColumnIndex] || '').trim();
+      const suppValue = String(row[suppColumnIndex] || '').trim();
       const text = String(row[textColumnIndex] || '').trim();
 
-      if (itilNumber && suppNumber === '–' && !text) {
+      if (itilNumber && isSuppPlaceholderLine(suppValue) && !text) {
         queue.push({
           row: index + 1,
           itilNumber
@@ -1071,10 +1074,42 @@
     };
   }
 
+  function isSuppPlaceholderLine(value) {
+    const text = String(value || '').trim();
+    return text === '–' || text === '—' || text === '-';
+  }
+
+  function extractSuppNumbers(value) {
+    const lines = String(value || '')
+      .replace(/\r\n?/g, '\n')
+      .split('\n')
+      .map((line) => String(line || '').trim())
+      .filter(Boolean)
+      .filter((line) => !isSuppPlaceholderLine(line));
+
+    const unique = [];
+    const seen = new Set();
+    lines.forEach((line) => {
+      if (seen.has(line)) return;
+      seen.add(line);
+      unique.push(line);
+    });
+
+    return unique.reverse();
+  }
+
   function extractSuppNumber(value) {
-    const text = String(value || '').replace(/\r\n?/g, '\n');
-    const matches = text.match(/ЗНР-[A-Za-zА-Яа-яЁё0-9-]+/g);
-    return matches && matches.length ? matches[matches.length - 1].trim() : '';
+    const suppNumbers = extractSuppNumbers(value);
+    return suppNumbers[0] || '';
+  }
+
+  function getItemSuppNumbers(item) {
+    if (item && Array.isArray(item.suppNumbers) && item.suppNumbers.length) {
+      return item.suppNumbers
+        .map((value) => String(value || '').trim())
+        .filter(Boolean);
+    }
+    return extractSuppNumbers(item && item.suppValue ? item.suppValue : '');
   }
 
   async function loadCurrentSheetSnapshot() {
@@ -1111,17 +1146,18 @@
     for (let index = 1; index < rows.length; index++) {
       const row = rows[index] || [];
       const rowNumber = index + 1;
-      byRow.set(rowNumber, {
-        row: rowNumber,
-        date: String(row[indexes.date] || '').trim(),
-        status: String(row[indexes.status] || '').trim(),
-        currentStage: indexes.currentStage >= 0 ? String(row[indexes.currentStage] || '').trim() : '',
-        initiator: String(row[indexes.initiator] || '').trim(),
-        itilNumber: String(row[indexes.itil] || '').trim(),
-        suppValue: String(row[indexes.supp] || '').trim(),
-        text: String(row[indexes.text] || '').trim(),
-        info: String(row[indexes.info] || '').trim()
-      });
+        byRow.set(rowNumber, {
+          row: rowNumber,
+          date: String(row[indexes.date] || '').trim(),
+          status: String(row[indexes.status] || '').trim(),
+          currentStage: indexes.currentStage >= 0 ? String(row[indexes.currentStage] || '').trim() : '',
+          initiator: String(row[indexes.initiator] || '').trim(),
+          itilNumber: String(row[indexes.itil] || '').trim(),
+          suppValue: String(row[indexes.supp] || '').trim(),
+          suppNumbers: extractSuppNumbers(row[indexes.supp]),
+          text: String(row[indexes.text] || '').trim(),
+          info: String(row[indexes.info] || '').trim()
+        });
     }
 
     return {
@@ -1162,7 +1198,9 @@
     const queue = [];
     for (let index = 1; index < rows.length; index++) {
       const row = rows[index] || [];
-      const suppNumber = extractSuppNumber(row[suppColumnIndex]);
+      const suppValue = String(row[suppColumnIndex] || '').trim();
+      const suppNumbers = extractSuppNumbers(suppValue);
+      const suppNumber = suppNumbers[0] || '';
       const itilNumber = String(row[itilColumnIndex] || '').trim();
       const text = String(row[textColumnIndex] || '').trim();
 
@@ -1170,6 +1208,8 @@
         queue.push({
           row: index + 1,
           suppNumber,
+          suppNumbers,
+          suppValue,
           itilNumber
         });
       }
@@ -1231,7 +1271,8 @@
       if (text) continue;
 
       const suppValue = String(row[suppColumnIndex] || '').trim();
-      const suppNumber = extractSuppNumber(suppValue);
+      const suppNumbers = extractSuppNumbers(suppValue);
+      const suppNumber = suppNumbers[0] || '';
       const itilNumber = String(row[itilColumnIndex] || '').trim();
 
       if (suppNumber) {
@@ -1239,12 +1280,14 @@
           mode: 'supp',
           row: rowNumber,
           suppNumber,
+          suppNumbers,
+          suppValue,
           itilNumber
         });
         continue;
       }
 
-      if (itilNumber && suppValue === '–') {
+      if (itilNumber && isSuppPlaceholderLine(suppValue)) {
         queue.push({
           mode: 'itil',
           row: rowNumber,
@@ -1383,7 +1426,8 @@
       const row = Number(rowData && rowData.row);
       const itilNumber = String(rowData && rowData.itilNumber || '').trim();
       const suppValue = String(rowData && rowData.suppValue || '').trim();
-      const suppNumber = extractSuppNumber(suppValue);
+      const suppNumbers = extractSuppNumbers(suppValue);
+      const suppNumber = suppNumbers[0] || '';
       const snapshotItem = snapshot.byRow.get(row) || null;
       const forceEmptyInfoPlaceholder = !!(rowData && rowData.forceEmptyInfoPlaceholder);
 
@@ -1392,6 +1436,7 @@
           row,
           mode: 'supp',
           suppNumber,
+          suppNumbers,
           suppValue,
           itilNumber,
           forceEmptyInfoPlaceholder,
@@ -1399,7 +1444,7 @@
         };
       }
 
-      if (suppValue === '–') {
+      if (isSuppPlaceholderLine(suppValue)) {
         return {
           row,
           mode: 'itil',
@@ -1572,7 +1617,7 @@
 
   function isInfoSourceLine(value) {
     const text = String(value || '').trim();
-    return text === 'ИТИЛ' || /^ЗНР-[A-Za-zА-Яа-яЁё0-9-]+$/.test(text);
+    return text === 'ИТИЛ' || /^[^\s/:]+(?:-[^\s/:]+)+$/.test(text);
   }
 
   function isInfoLogHeaderLine(value) {
@@ -1699,36 +1744,28 @@
     return fragments;
   }
 
-  function parseInfoPresentation(value) {
-    const text = normalizeInfoText(value);
-    if (!text) {
-      return {
-        sourceLabel: '',
-        blocks: []
-      };
-    }
+  function isInfoWarningText(value) {
+    return String(value || '').includes(SUPP_NOT_FOUND_INFO_TEXT);
+  }
 
-    const lines = text.split('\n').map((line) => normalizeInfoLine(line));
-    let index = 0;
-    while (index < lines.length && !String(lines[index] || '').trim()) index += 1;
-
-    let sourceLabel = '';
-    if (index < lines.length && isInfoSourceLine(lines[index])) {
-      sourceLabel = String(lines[index] || '').trim();
-      index += 1;
-      while (index < lines.length && !String(lines[index] || '').trim()) index += 1;
-    }
-
+  function buildInfoSection(sourceLabel, lines) {
+    const normalizedSourceLabel = String(sourceLabel || '').trim();
+    const preparedLines = Array.isArray(lines) ? lines : [];
     const blocks = [];
     let currentLines = [];
     const pushCurrentBlock = () => {
       const block = buildParsedInfoBlock(trimInfoBlockLines(currentLines));
-      if (block) blocks.push(block);
       currentLines = [];
+      if (!block) return;
+      const warningText = [block.headerText, block.bodyText, block.text].filter(Boolean).join('\n');
+      blocks.push({
+        ...block,
+        isWarning: isInfoWarningText(warningText)
+      });
     };
 
-    for (; index < lines.length; index += 1) {
-      const line = lines[index];
+    for (let index = 0; index < preparedLines.length; index += 1) {
+      const line = preparedLines[index];
       const trimmed = String(line || '').trim();
 
       if (isInfoLogHeaderLine(trimmed) || isInfoSectionHeaderLine(trimmed)) {
@@ -1743,18 +1780,66 @@
 
     pushCurrentBlock();
 
+    if (!normalizedSourceLabel && !blocks.length) return null;
     return {
-      sourceLabel,
-      blocks
+      sourceLabel: normalizedSourceLabel,
+      blocks,
+      isWarning: blocks.some((block) => !!(block && block.isWarning))
     };
   }
 
-  function buildInfoBlockCounts(blocks) {
+  function parseInfoPresentation(value) {
+    const text = normalizeInfoText(value);
+    if (!text) {
+      return {
+        sections: []
+      };
+    }
+
+    const lines = text.split('\n').map((line) => normalizeInfoLine(line));
+    const sections = [];
+    let currentSourceLabel = '';
+    let currentSectionLines = [];
+
+    const pushCurrentSection = () => {
+      const section = buildInfoSection(currentSourceLabel, currentSectionLines);
+      currentSourceLabel = '';
+      currentSectionLines = [];
+      if (section) sections.push(section);
+    };
+
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index];
+      const trimmed = String(line || '').trim();
+
+      if (!trimmed && !currentSourceLabel && !currentSectionLines.length) continue;
+
+      if (isInfoSourceLine(trimmed)) {
+        pushCurrentSection();
+        currentSourceLabel = trimmed;
+        continue;
+      }
+
+      currentSectionLines.push(line);
+    }
+
+    pushCurrentSection();
+
+    return {
+      sections
+    };
+  }
+
+  function buildInfoBlockCounts(sections) {
     const counts = new Map();
-    blocks.forEach((block) => {
-      const key = block && block.text ? block.text : '';
-      if (!key) return;
-      counts.set(key, (counts.get(key) || 0) + 1);
+    (sections || []).forEach((section) => {
+      const sourceLabel = String(section && section.sourceLabel || '').trim();
+      (Array.isArray(section && section.blocks) ? section.blocks : []).forEach((block) => {
+        const text = block && block.text ? block.text : '';
+        if (!text) return;
+        const key = `${sourceLabel}\n${text}`;
+        counts.set(key, (counts.get(key) || 0) + 1);
+      });
     });
     return counts;
   }
@@ -1764,35 +1849,38 @@
     return body ? `ИТИЛ\n\n${body}` : 'ИТИЛ';
   }
 
-  function buildSuppInfoText(suppNumber, infoText) {
-    const header = String(suppNumber || '').trim();
-    let fullText = normalizeInfoText(infoText);
-    if (header && fullText.indexOf(header) !== 0) {
-      fullText = header + (fullText ? `\n\n${fullText}` : '');
-    }
-    return normalizeInfoText(fullText);
+  function buildSuppInfoText(infoText) {
+    return normalizeInfoText(infoText);
   }
 
   function buildInfoBlockDiff(beforeInfo, afterInfo) {
     const previousPresentation = parseInfoPresentation(beforeInfo);
     const nextPresentation = parseInfoPresentation(afterInfo);
-    const previousCounts = buildInfoBlockCounts(previousPresentation.blocks);
+    const previousCounts = buildInfoBlockCounts(previousPresentation.sections);
 
     return {
-      sourceLabel: nextPresentation.sourceLabel,
-      blocks: nextPresentation.blocks.map((block) => {
-        const key = block && block.text ? block.text : '';
-        const previousCount = previousCounts.get(key) || 0;
-        if (previousCount > 0) {
-          previousCounts.set(key, previousCount - 1);
+      sections: (nextPresentation.sections || []).map((section) => {
+        const sourceLabel = String(section && section.sourceLabel || '').trim();
+        const blocks = (Array.isArray(section && section.blocks) ? section.blocks : []).map((block) => {
+          const text = block && block.text ? block.text : '';
+          const key = `${sourceLabel}\n${text}`;
+          const previousCount = previousCounts.get(key) || 0;
+          if (previousCount > 0) {
+            previousCounts.set(key, previousCount - 1);
+            return {
+              ...block,
+              isNew: false
+            };
+          }
           return {
             ...block,
-            isNew: false
+            isNew: true
           };
-        }
+        });
         return {
-          ...block,
-          isNew: true
+          sourceLabel,
+          blocks,
+          isWarning: !!(section && section.isWarning)
         };
       })
     };
@@ -1801,10 +1889,13 @@
   function buildDefaultInfoBlocks(value) {
     const presentation = parseInfoPresentation(value);
     return {
-      sourceLabel: presentation.sourceLabel,
-      blocks: presentation.blocks.map((block) => ({
-        ...block,
-        isNew: false
+      sections: (presentation.sections || []).map((section) => ({
+        sourceLabel: String(section && section.sourceLabel || '').trim(),
+        isWarning: !!(section && section.isWarning),
+        blocks: (Array.isArray(section && section.blocks) ? section.blocks : []).map((block) => ({
+          ...block,
+          isNew: false
+        }))
       }))
     };
   }
@@ -1815,88 +1906,102 @@
 
     const data = presentation && typeof presentation === 'object'
       ? presentation
-      : { sourceLabel: '', blocks: [] };
-    const sourceLabel = String(data.sourceLabel || '').trim();
-    const blocks = Array.isArray(data.blocks) ? data.blocks : [];
+      : { sections: [] };
+    const sections = Array.isArray(data.sections) ? data.sections : [];
 
-    if (!sourceLabel && !blocks.length) {
+    if (!sections.length) {
       container.textContent = '';
       return;
     }
 
-    if (sourceLabel) {
-      const source = document.createElement('div');
-      source.className = 'gs-info-source';
+    sections.forEach((section) => {
+      const sectionElement = document.createElement('div');
+      sectionElement.className = 'gs-info-section';
 
-      const sourceCaption = document.createElement('div');
-      sourceCaption.className = 'gs-info-source-caption';
-      sourceCaption.textContent = 'Источник';
+      const sourceLabel = String(section && section.sourceLabel || '').trim();
+      const blocks = Array.isArray(section && section.blocks) ? section.blocks : [];
+      const isWarningSection = !!(section && section.isWarning);
 
-      const sourceValue = document.createElement('div');
-      sourceValue.className = 'gs-info-source-value';
-      sourceValue.textContent = sourceLabel;
+      if (sourceLabel) {
+        const source = document.createElement('div');
+        source.className = 'gs-info-source';
+        if (isWarningSection) source.classList.add('is-warning');
 
-      source.append(sourceCaption, sourceValue);
-      container.appendChild(source);
-    }
+        const sourceCaption = document.createElement('div');
+        sourceCaption.className = 'gs-info-source-caption';
+        sourceCaption.textContent = 'Источник';
 
-    blocks.forEach((block) => {
-      const element = document.createElement('div');
-      element.className = 'gs-info-block';
-      if (block && block.isNew) {
-        element.classList.add('is-new');
-      } else {
-        element.classList.add('is-default');
+        const sourceValue = document.createElement('div');
+        sourceValue.className = 'gs-info-source-value';
+        sourceValue.textContent = sourceLabel;
+
+        source.append(sourceCaption, sourceValue);
+        sectionElement.appendChild(source);
       }
 
-      const headerText = block && block.headerText ? String(block.headerText).trim() : '';
-      const bodyText = block && typeof block.bodyText === 'string'
-        ? block.bodyText
-        : (block && block.text ? block.text : '');
-
-      if (headerText) {
-        const header = document.createElement('div');
-        header.className = 'gs-info-block-header';
-        header.textContent = headerText;
-        element.appendChild(header);
-      }
-
-      if (bodyText) {
-        const body = document.createElement('div');
-        body.className = 'gs-info-block-body';
-        const fragments = parseInfoBodyFragments(bodyText);
-        if (!fragments.length) {
-          body.textContent = bodyText;
+      blocks.forEach((block) => {
+        const element = document.createElement('div');
+        element.className = 'gs-info-block';
+        if (block && block.isNew) {
+          element.classList.add('is-new');
         } else {
-          fragments.forEach((fragment) => {
-            if (fragment.type === 'quote') {
-              const quote = document.createElement('div');
-              quote.className = 'gs-info-quote';
-
-              (Array.isArray(fragment.lines) ? fragment.lines : []).forEach((quoteLine) => {
-                const line = document.createElement('div');
-                line.className = 'gs-info-quote-line';
-                line.style.setProperty('--gs-info-quote-depth', String(Math.max(1, Number(quoteLine && quoteLine.depth) || 1)));
-                line.textContent = quoteLine && typeof quoteLine.text === 'string' && quoteLine.text
-                  ? quoteLine.text
-                  : ' ';
-                quote.appendChild(line);
-              });
-
-              body.appendChild(quote);
-              return;
-            }
-
-            const textFragment = document.createElement('div');
-            textFragment.className = 'gs-info-block-body-text';
-            textFragment.textContent = fragment && fragment.text ? fragment.text : '';
-            body.appendChild(textFragment);
-          });
+          element.classList.add('is-default');
         }
-        element.appendChild(body);
-      }
+        if (block && block.isWarning) {
+          element.classList.add('is-warning');
+        }
 
-      container.appendChild(element);
+        const headerText = block && block.headerText ? String(block.headerText).trim() : '';
+        const bodyText = block && typeof block.bodyText === 'string'
+          ? block.bodyText
+          : (block && block.text ? block.text : '');
+
+        if (headerText) {
+          const header = document.createElement('div');
+          header.className = 'gs-info-block-header';
+          header.textContent = headerText;
+          element.appendChild(header);
+        }
+
+        if (bodyText) {
+          const body = document.createElement('div');
+          body.className = 'gs-info-block-body';
+          const fragments = parseInfoBodyFragments(bodyText);
+          if (!fragments.length) {
+            body.textContent = bodyText;
+          } else {
+            fragments.forEach((fragment) => {
+              if (fragment.type === 'quote') {
+                const quote = document.createElement('div');
+                quote.className = 'gs-info-quote';
+
+                (Array.isArray(fragment.lines) ? fragment.lines : []).forEach((quoteLine) => {
+                  const line = document.createElement('div');
+                  line.className = 'gs-info-quote-line';
+                  line.style.setProperty('--gs-info-quote-depth', String(Math.max(1, Number(quoteLine && quoteLine.depth) || 1)));
+                  line.textContent = quoteLine && typeof quoteLine.text === 'string' && quoteLine.text
+                    ? quoteLine.text
+                    : ' ';
+                  quote.appendChild(line);
+                });
+
+                body.appendChild(quote);
+                return;
+              }
+
+              const textFragment = document.createElement('div');
+              textFragment.className = 'gs-info-block-body-text';
+              textFragment.textContent = fragment && fragment.text ? fragment.text : '';
+              body.appendChild(textFragment);
+            });
+          }
+          element.appendChild(body);
+        }
+
+        sectionElement.appendChild(element);
+      });
+
+      container.appendChild(sectionElement);
     });
   }
 
@@ -1905,7 +2010,7 @@
       ? result.bridgePayload
       : {};
     const afterInfo = item && item.mode === 'supp'
-      ? buildSuppInfoText(item.suppNumber, payload.infoText)
+      ? buildSuppInfoText(payload.infoText)
       : buildItilInfoText(payload.solutionText);
 
     return {
@@ -1919,11 +2024,23 @@
       initiatorBackgroundColor: normalizeSheetBackgroundColor(item && item.initiatorBackgroundColor),
       itilNumber: String(item && item.itilNumber || '').trim(),
       suppValue: String(item && item.suppValue || '').trim(),
+      suppNumbers: getItemSuppNumbers(item),
       text: String(item && item.text || '').trim(),
       beforeInfo: String(item && item.info || '').trim(),
       afterInfo,
       infoBlocks: buildInfoBlockDiff(item && item.info, afterInfo)
     };
+  }
+
+  function buildSuppSummaryItems(item) {
+    return getItemSuppNumbers(item).map((suppNumber, index) => ({
+      label: index === 0 ? `СУПП ${suppNumber} (последняя)` : `СУПП ${suppNumber}`,
+      value: suppNumber,
+      copyValue: suppNumber,
+      openAction: SUPP_OPEN_REQUEST_ACTION,
+      openValue: suppNumber,
+      isPrimary: index === 0
+    }));
   }
 
   function renderRequestSummary(container, item) {
@@ -1959,10 +2076,9 @@
       },
       {
         key: 'supp',
-        label: 'Номер СУПП (последний)',
+        label: 'Связанные заявки СУПП',
         value: item && item.suppValue ? item.suppValue : '—',
-        openAction: SUPP_OPEN_REQUEST_ACTION,
-        openValue: item && item.suppValue ? extractSuppNumber(item.suppValue) : ''
+        items: buildSuppSummaryItems(item)
       }
     ];
 
@@ -1970,6 +2086,8 @@
     fields.forEach((fieldData) => {
       const labelText = fieldData.label;
       const valueText = fieldData.value;
+      const listItems = Array.isArray(fieldData.items) ? fieldData.items : [];
+      const hasListItems = listItems.length > 0;
       const field = document.createElement('div');
       field.className = 'gs-request-summary-item';
       if (fieldData.backgroundColor) {
@@ -1987,37 +2105,100 @@
       const actions = document.createElement('div');
       actions.className = 'gs-request-summary-actions';
 
-      const value = document.createElement('div');
-      value.className = 'gs-request-summary-value';
-      value.textContent = valueText;
+      header.append(label);
 
-      const openButton = document.createElement('button');
-      openButton.type = 'button';
-      openButton.className = 'gs-request-summary-open';
-      openButton.title = `Открыть заявку: ${labelText}`;
-      openButton.setAttribute('aria-label', `Открыть заявку из поля «${labelText}»`);
-      openButton.disabled = !fieldData.openAction || !fieldData.openValue;
-      setSummaryOpenButtonIcon(openButton, 'open');
-      openButton.addEventListener('click', () => {
-        void openSummaryRequest(openButton, fieldData);
-      }, { capture: true });
+      if (hasListItems) {
+        const value = document.createElement('div');
+        value.className = 'gs-request-summary-value';
 
-      const copyButton = document.createElement('button');
-      copyButton.type = 'button';
-      copyButton.className = 'gs-request-summary-copy';
-      copyButton.title = `Копировать: ${labelText}`;
-      copyButton.setAttribute('aria-label', `Копировать поле «${labelText}»`);
-      copyButton.disabled = !valueText || valueText === '—';
-      setSummaryCopyButtonIcon(copyButton, 'copy');
-      copyButton.addEventListener('click', () => {
-        void copySummaryValue(copyButton, valueText);
-      }, { capture: true });
+        const list = document.createElement('div');
+        list.className = 'gs-request-summary-list';
 
-      if (fieldData.openAction) actions.appendChild(openButton);
-      actions.appendChild(copyButton);
+        listItems.forEach((listItem) => {
+          const itemRow = document.createElement('div');
+          itemRow.className = 'gs-request-summary-list-item';
+          if (listItem && listItem.isPrimary) itemRow.classList.add('is-primary');
 
-      header.append(label, actions);
-      field.append(header, value);
+          const itemValueWrap = document.createElement('div');
+          itemValueWrap.className = 'gs-request-summary-list-value-wrap';
+
+          const itemValue = document.createElement('div');
+          itemValue.className = 'gs-request-summary-list-value';
+          itemValue.textContent = listItem && listItem.value ? listItem.value : '—';
+          itemValueWrap.appendChild(itemValue);
+
+          if (listItem && listItem.isPrimary) {
+            const badge = document.createElement('div');
+            badge.className = 'gs-request-summary-list-badge';
+            badge.textContent = 'последняя';
+            itemValueWrap.appendChild(badge);
+          }
+
+          const itemActions = document.createElement('div');
+          itemActions.className = 'gs-request-summary-list-actions';
+
+          const itemOpenButton = document.createElement('button');
+          itemOpenButton.type = 'button';
+          itemOpenButton.className = 'gs-request-summary-open';
+          itemOpenButton.title = `Открыть заявку: ${listItem && listItem.label ? listItem.label : labelText}`;
+          itemOpenButton.setAttribute('aria-label', `Открыть заявку ${listItem && listItem.value ? listItem.value : ''}`);
+          itemOpenButton.disabled = !(listItem && listItem.openAction && listItem.openValue);
+          setSummaryOpenButtonIcon(itemOpenButton, 'open');
+          itemOpenButton.addEventListener('click', () => {
+            void openSummaryRequest(itemOpenButton, listItem);
+          }, { capture: true });
+
+          const itemCopyButton = document.createElement('button');
+          itemCopyButton.type = 'button';
+          itemCopyButton.className = 'gs-request-summary-copy';
+          itemCopyButton.title = `Копировать: ${listItem && listItem.label ? listItem.label : labelText}`;
+          itemCopyButton.setAttribute('aria-label', `Копировать заявку ${listItem && listItem.value ? listItem.value : ''}`);
+          itemCopyButton.disabled = !(listItem && listItem.copyValue);
+          setSummaryCopyButtonIcon(itemCopyButton, 'copy');
+          itemCopyButton.addEventListener('click', () => {
+            void copySummaryValue(itemCopyButton, listItem && listItem.copyValue ? listItem.copyValue : '');
+          }, { capture: true });
+
+          itemActions.append(itemOpenButton, itemCopyButton);
+          itemRow.append(itemValueWrap, itemActions);
+          list.appendChild(itemRow);
+        });
+
+        value.appendChild(list);
+        field.append(header, value);
+      } else {
+        const value = document.createElement('div');
+        value.className = 'gs-request-summary-value';
+        value.textContent = valueText;
+
+        const openButton = document.createElement('button');
+        openButton.type = 'button';
+        openButton.className = 'gs-request-summary-open';
+        openButton.title = `Открыть заявку: ${labelText}`;
+        openButton.setAttribute('aria-label', `Открыть заявку из поля «${labelText}»`);
+        openButton.disabled = !fieldData.openAction || !fieldData.openValue;
+        setSummaryOpenButtonIcon(openButton, 'open');
+        openButton.addEventListener('click', () => {
+          void openSummaryRequest(openButton, fieldData);
+        }, { capture: true });
+
+        const copyButton = document.createElement('button');
+        copyButton.type = 'button';
+        copyButton.className = 'gs-request-summary-copy';
+        copyButton.title = `Копировать: ${labelText}`;
+        copyButton.setAttribute('aria-label', `Копировать поле «${labelText}»`);
+        copyButton.disabled = !valueText || valueText === '—';
+        setSummaryCopyButtonIcon(copyButton, 'copy');
+        copyButton.addEventListener('click', () => {
+          void copySummaryValue(copyButton, valueText);
+        }, { capture: true });
+
+        if (fieldData.openAction) actions.appendChild(openButton);
+        actions.appendChild(copyButton);
+        header.appendChild(actions);
+        field.append(header, value);
+      }
+
       container.appendChild(field);
     });
   }
@@ -2258,6 +2439,13 @@
       #${MODAL_ID} .gs-request-summary-actions,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-actions{display:flex;align-items:center;gap:6px;flex:none}
       #${MODAL_ID} .gs-request-summary-label,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-label{min-width:0;color:#64748b;font-size:11px;font-weight:700;letter-spacing:.02em;text-transform:uppercase}
       #${MODAL_ID} .gs-request-summary-value,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-value{min-width:0;overflow-wrap:anywhere;color:#172033;font-size:13px;font-weight:600;line-height:1.35}
+      #${MODAL_ID} .gs-request-summary-list,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-list{display:flex;flex-direction:column;gap:7px}
+      #${MODAL_ID} .gs-request-summary-list-item,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-list-item{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;padding:8px 9px;border-radius:9px;background:rgba(255,255,255,.72);box-shadow:inset 0 0 0 1px rgba(148,163,184,.16)}
+      #${MODAL_ID} .gs-request-summary-list-item.is-primary,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-list-item.is-primary{background:rgba(226,240,255,.78);box-shadow:inset 0 0 0 1px rgba(59,130,246,.18)}
+      #${MODAL_ID} .gs-request-summary-list-value-wrap,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-list-value-wrap{display:flex;flex-direction:column;gap:4px;min-width:0}
+      #${MODAL_ID} .gs-request-summary-list-value,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-list-value{min-width:0;overflow-wrap:anywhere;color:#172033;font-size:13px;font-weight:600;line-height:1.35}
+      #${MODAL_ID} .gs-request-summary-list-badge,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-list-badge{width:fit-content;padding:2px 7px;border-radius:999px;background:#dcecff;color:#0f3f99;font-size:10px;font-weight:700;letter-spacing:.04em;text-transform:uppercase}
+      #${MODAL_ID} .gs-request-summary-list-actions,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-list-actions{display:flex;align-items:center;gap:6px;flex:none}
       #${MODAL_ID} .gs-request-summary-open,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-open{flex:none;width:20px;height:20px;display:grid;place-items:center;padding:0;border-radius:6px;border-color:#d1d9e6;background:#fff;color:#526071;line-height:1;box-shadow:none}
       #${MODAL_ID} .gs-request-summary-open svg,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-open svg{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
       #${MODAL_ID} .gs-request-summary-open:hover:not(:disabled),#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-open:hover:not(:disabled){border-color:#1155cc;color:#0f3f99;background:#eef5ff}
@@ -2279,11 +2467,16 @@
       #${MODAL_ID} .gs-problem-picker-text{height:100%;max-height:100%;min-height:0;box-sizing:border-box;overflow:auto;white-space:pre-wrap;border:1px solid #d7dce6;border-left:6px solid #2d6cdf;border-radius:8px;background:#fff;padding:14px;color:#1f2937;font-size:15px;line-height:1.55}
       #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-problem-picker-text{height:100%;max-height:100%;min-height:0;box-sizing:border-box;overflow:auto;white-space:pre-wrap;border:1px solid #d7dce6;border-left:6px solid #2d6cdf;border-radius:8px;background:#fff;padding:14px;color:#1f2937;font-size:15px;line-height:1.55}
       #${MODAL_ID} .gs-problem-picker-info,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-problem-picker-info{display:flex;flex-direction:column;gap:12px;border-left-color:#2e7d32;white-space:normal}
+      #${MODAL_ID} .gs-info-section,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-info-section{display:flex;flex-direction:column;gap:10px}
       #${MODAL_ID} .gs-info-source,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-info-source{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;padding:10px 12px;border-radius:12px;background:rgba(59,130,246,.14);box-shadow:inset 0 0 0 1px rgba(59,130,246,.2)}
+      #${MODAL_ID} .gs-info-source.is-warning,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-info-source.is-warning{background:rgba(251,191,36,.18);box-shadow:inset 0 0 0 1px rgba(217,119,6,.24)}
       #${MODAL_ID} .gs-info-source-caption,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-info-source-caption{color:#5473a6;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
+      #${MODAL_ID} .gs-info-source.is-warning .gs-info-source-caption,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-info-source.is-warning .gs-info-source-caption{color:#9a6700}
       #${MODAL_ID} .gs-info-source-value,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-info-source-value{color:#1f4f8b;font-size:14px;font-weight:700;line-height:1.35;white-space:pre-wrap;overflow-wrap:anywhere}
+      #${MODAL_ID} .gs-info-source.is-warning .gs-info-source-value,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-info-source.is-warning .gs-info-source-value{color:#7c4a03}
       #${MODAL_ID} .gs-info-block,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-info-block{padding:12px 14px;border-radius:12px;background:rgba(148,163,184,.13);box-shadow:inset 0 0 0 1px rgba(148,163,184,.18)}
       #${MODAL_ID} .gs-info-block.is-new,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-info-block.is-new{background:rgba(34,197,94,.12);box-shadow:inset 0 0 0 1px rgba(22,163,74,.18)}
+      #${MODAL_ID} .gs-info-block.is-warning,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-info-block.is-warning{background:rgba(251,191,36,.18);box-shadow:inset 0 0 0 1px rgba(217,119,6,.24)}
       #${MODAL_ID} .gs-info-block-header,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-info-block-header{margin-bottom:6px;color:#263244;font-size:13px;font-weight:700;line-height:1.45;white-space:pre-wrap;overflow-wrap:anywhere}
       #${MODAL_ID} .gs-info-block-body,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-info-block-body{display:flex;flex-direction:column;gap:8px;color:#1f2937;font-size:14px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere}
       #${MODAL_ID} .gs-info-block-body-text,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-info-block-body-text{white-space:pre-wrap;overflow-wrap:anywhere}
@@ -2363,6 +2556,15 @@
     message.classList.toggle('is-error', !!isError);
   }
 
+  function formatSuppRequestLabel(item) {
+    const suppNumbers = getItemSuppNumbers(item);
+    const primarySuppNumber = suppNumbers[0] || String(item && item.suppNumber || '').trim();
+    if (!primarySuppNumber) return 'СУПП не задан';
+    return suppNumbers.length > 1
+      ? `СУПП ${primarySuppNumber} +${suppNumbers.length - 1}`
+      : `СУПП ${primarySuppNumber}`;
+  }
+
   function getItilCurrentText() {
     const queuedItem = itilState.isRunning && !itilState.stopRequested ? itilState.queue[itilState.currentIndex] : null;
     const item = itilState.currentItem || queuedItem || null;
@@ -2373,7 +2575,7 @@
     const queuedItem = suppState.isRunning && !suppState.stopRequested ? suppState.queue[suppState.currentIndex] : null;
     const item = suppState.currentItem || queuedItem || null;
     if (!item) return 'нет';
-    return `строка ${item.row}, СУПП ${item.suppNumber}`;
+    return `строка ${item.row}, ${formatSuppRequestLabel(item)}`;
   }
 
   function getNewResponseCurrentText() {
@@ -2382,7 +2584,7 @@
       : null;
     const item = newResponseState.currentItem || queuedItem || null;
     if (!item) return 'нет';
-    if (item.mode === 'supp') return `строка ${item.row}, СУПП ${item.suppNumber}`;
+    if (item.mode === 'supp') return `строка ${item.row}, ${formatSuppRequestLabel(item)}`;
     if (item.mode === 'itil') return `строка ${item.row}, ITIL ${item.itilNumber || 'не задан'}`;
     return `строка ${item.row}, неизвестная ветка`;
   }
@@ -2404,7 +2606,7 @@
     const item = combinedFlowState.currentItem || queuedItem || null;
     if (!item) return 'нет';
 
-    if (item.mode === 'supp') return `строка ${item.row}, СУПП ${item.suppNumber}`;
+    if (item.mode === 'supp') return `строка ${item.row}, ${formatSuppRequestLabel(item)}`;
 
     if (item.mode === 'itil') return `строка ${item.row}, ITIL ${item.itilNumber || 'не задан'}`;
     return `строка ${item.row}, неизвестная ветка`;
@@ -3738,7 +3940,7 @@ function handleMenuEscape(event) {
 
   function queueSuppBridgeSave(result, item) {
     const row = Number(item && item.row);
-    const label = `строка ${row}, СУПП ${item && item.suppNumber ? item.suppNumber : ''}`;
+    const label = `строка ${row}, ${formatSuppRequestLabel(item)}`;
     const tracked = createBridgeSaveTracker(result && result.bridgePayload, row, label);
     suppState = {
       ...suppState,
@@ -3749,7 +3951,7 @@ function handleMenuEscape(event) {
   function queueNewResponseBridgeSave(result, item) {
     const row = Number(item && item.row);
     const label = item && item.mode === 'supp'
-      ? `строка ${row}, СУПП ${item.suppNumber || ''}`
+      ? `строка ${row}, ${formatSuppRequestLabel(item)}`
       : `строка ${row}, ITIL ${item && item.itilNumber ? item.itilNumber : ''}`;
     const reviewItem = buildNewResponseReviewItem(item, result);
     const tracked = createBridgeSaveTracker(result && result.bridgePayload, row, label)
@@ -3766,7 +3968,7 @@ function handleMenuEscape(event) {
   function queueCombinedBridgeSave(result, item) {
     const row = Number(item && item.row);
     const label = item && item.mode === 'supp'
-      ? `строка ${row}, СУПП ${item.suppNumber || ''}`
+      ? `строка ${row}, ${formatSuppRequestLabel(item)}`
       : `строка ${row}, ITIL ${item && item.itilNumber ? item.itilNumber : ''}`;
     const tracked = createBridgeSaveTracker(result && result.bridgePayload, row, label);
     combinedFlowState = {
@@ -3926,7 +4128,7 @@ function handleMenuEscape(event) {
           currentIndex: index,
           currentItem: item,
           statusText: item.mode === 'supp'
-            ? `Ищу СУПП ${item.suppNumber} для строки ${item.row}...`
+            ? `Ищу ${formatSuppRequestLabel(item)} для строки ${item.row}...`
             : `Ищу ITIL ${item.itilNumber} для строки ${item.row}...`,
           lastError: ''
         };
@@ -3942,6 +4144,7 @@ function handleMenuEscape(event) {
                 sheetName: combinedFlowState.sheetName,
                 row: item.row,
                 suppNumber: item.suppNumber,
+                suppNumbers: getItemSuppNumbers(item),
                 itilNumber: item.itilNumber,
                 columns: combinedFlowState.columns
               }
@@ -3990,13 +4193,17 @@ function handleMenuEscape(event) {
         }
 
         queueCombinedBridgeSave(result, item);
+        const combinedSuppSummaryText = item.mode === 'supp' && Number(result.totalSuppCount || 0) > 1
+          ? `. Заявок СУПП: ${Number(result.updatedSuppCount || 0)}/${Number(result.totalSuppCount || 0)}`
+            + (Number(result.warningSuppCount || 0) > 0 ? `, предупреждений: ${Number(result.warningSuppCount || 0)}` : '')
+          : '';
         combinedFlowState = {
           ...combinedFlowState,
           currentIndex: index + 1,
           successCount: combinedFlowState.successCount + 1,
           currentItem: null,
           statusText: item.mode === 'supp'
-            ? `Строка ${item.row} подготовлена. Сохранение в bridge поставлено в очередь. Текст: ${Number(result.requestTextLength || 0)} симв., информация: ${Number(result.infoTextLength || 0)} симв.`
+            ? `Строка ${item.row} подготовлена. Сохранение в bridge поставлено в очередь. Текст: ${Number(result.requestTextLength || 0)} симв., информация: ${Number(result.infoTextLength || 0)} симв.${combinedSuppSummaryText}`
             : `Строка ${item.row} подготовлена. Сохранение в bridge поставлено в очередь. Текст: ${Number(result.requestTextLength || 0)} симв., информация: ${Number(result.solutionTextLength || 0)} симв.`,
           lastError: ''
         };
@@ -4412,7 +4619,7 @@ function handleMenuEscape(event) {
           ...suppState,
           currentIndex: index,
           currentItem: item,
-          statusText: `Ищу СУПП ${item.suppNumber} для строки ${item.row}...`,
+          statusText: `Ищу ${formatSuppRequestLabel(item)} для строки ${item.row}...`,
           lastError: ''
         };
         renderSuppStatus();
@@ -4426,6 +4633,7 @@ function handleMenuEscape(event) {
               sheetName: suppState.sheetName,
               row: item.row,
               suppNumber: item.suppNumber,
+              suppNumbers: getItemSuppNumbers(item),
               itilNumber: item.itilNumber,
               columns: suppState.columns
             }
@@ -4445,7 +4653,7 @@ function handleMenuEscape(event) {
           renderSuppStatus();
           const bridgeFinalize = await waitBridgeSaves(suppState.pendingBridgeSaves);
           if (runId !== suppRunId) return;
-          const finalError = [bridgeFinalize.errorText, `Строка ${item.row}, СУПП ${item.suppNumber}: ${errorText}`]
+          const finalError = [bridgeFinalize.errorText, `Строка ${item.row}, ${formatSuppRequestLabel(item)}: ${errorText}`]
             .filter(Boolean)
             .join(' ');
           suppState = {
@@ -4481,12 +4689,16 @@ function handleMenuEscape(event) {
         const requestSourceText = result.requestTextSource === 'ITIL'
           ? `, текст через ITIL ${result.itilNumber || item.itilNumber || ''}`
           : '';
+        const suppSummaryText = Number(result.totalSuppCount || 0) > 1
+          ? `. Заявок СУПП: ${Number(result.updatedSuppCount || 0)}/${Number(result.totalSuppCount || 0)}`
+            + (Number(result.warningSuppCount || 0) > 0 ? `, предупреждений: ${Number(result.warningSuppCount || 0)}` : '')
+          : '';
         suppState = {
           ...suppState,
           currentIndex: index + 1,
           successCount: suppState.successCount + 1,
           currentItem: null,
-          statusText: `Строка ${item.row} подготовлена${requestSourceText}. Сохранение в bridge поставлено в очередь. Текст: ${textLength} симв., информация: ${infoLength} симв.`,
+          statusText: `Строка ${item.row} подготовлена${requestSourceText}. Сохранение в bridge поставлено в очередь. Текст: ${textLength} симв., информация: ${infoLength} симв.${suppSummaryText}`,
           lastError: ''
         };
         renderSuppStatus();
@@ -4699,7 +4911,7 @@ function handleMenuEscape(event) {
           currentIndex: index,
           currentItem: item,
           statusText: item.mode === 'supp'
-            ? `Ищу СУПП ${item.suppNumber} для обновления INFO строки ${item.row}...`
+            ? `Ищу ${formatSuppRequestLabel(item)} для обновления INFO строки ${item.row}...`
             : `Ищу ITIL ${item.itilNumber} для обновления INFO строки ${item.row}...`,
           lastError: ''
         };
@@ -4715,8 +4927,10 @@ function handleMenuEscape(event) {
               sheetName: newResponseState.sheetName,
               row: item.row,
               suppNumber: item.suppNumber,
+              suppNumbers: getItemSuppNumbers(item),
               itilNumber: item.itilNumber,
               forceEmptyInfoPlaceholder: !!item.forceEmptyInfoPlaceholder,
+              currentInfoText: String(item && item.info || ''),
               columns: newResponseState.columns
             }
           }
@@ -4736,7 +4950,7 @@ function handleMenuEscape(event) {
           const bridgeFinalize = await waitBridgeSaves(newResponseState.pendingBridgeSaves);
           if (runId !== newResponseRunId) return;
           const label = item.mode === 'supp'
-            ? `Строка ${item.row}, СУПП ${item.suppNumber}`
+            ? `Строка ${item.row}, ${formatSuppRequestLabel(item)}`
             : `Строка ${item.row}, ITIL ${item.itilNumber}`;
           const finalError = [bridgeFinalize.errorText, `${label}: ${errorText}`]
             .filter(Boolean)
@@ -4779,12 +4993,16 @@ function handleMenuEscape(event) {
 
         queueNewResponseBridgeSave(result, item);
         const infoLength = Number(result.infoTextLength || result.solutionTextLength || 0);
+        const suppSummaryText = item.mode === 'supp' && Number(result.totalSuppCount || 0) > 1
+          ? ` Обновлено заявок СУПП: ${Number(result.updatedSuppCount || 0)}/${Number(result.totalSuppCount || 0)}.`
+            + (Number(result.warningSuppCount || 0) > 0 ? ` Предупреждений: ${Number(result.warningSuppCount || 0)}.` : '')
+          : '';
         newResponseState = {
           ...newResponseState,
           currentIndex: index + 1,
           successCount: newResponseState.successCount + 1,
           currentItem: null,
-          statusText: `Строка ${item.row} подготовлена. Сохранение в bridge поставлено в очередь. Информация: ${infoLength} симв.`,
+          statusText: `Строка ${item.row} подготовлена. Сохранение в bridge поставлено в очередь. Информация: ${infoLength} симв.${suppSummaryText}`,
           lastError: ''
         };
         renderNewResponseStatus();

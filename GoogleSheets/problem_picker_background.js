@@ -22,6 +22,8 @@
   const ONE_C_PASSWORD = 'Nu3ho5ja';
   const CHATGPT_TEMPORARY_URL = 'https://chatgpt.com/?temporary-chat=true';
   const CHATGPT_URL_PREFIX = 'https://chatgpt.com/';
+  const SUPP_NOT_FOUND_INFO_TEXT = 'Не найдена заявка в СУПП. Проверьте вручную';
+  const SUPP_NO_DATA_INFO_TEXT = 'Информации по решению заявки нет';
 
   function isAllowedSender(sender) {
     const url = sender && sender.url ? String(sender.url) : '';
@@ -502,6 +504,28 @@
     return finalResult.join('\n\n').replace(/\n{3,}/g, '\n\n').trim();
   }
 
+  function normalizeSuppNumberList(values) {
+    const source = Array.isArray(values) ? values : [values];
+    const unique = [];
+    const seen = new Set();
+
+    source.forEach((value) => {
+      const normalized = String(value || '').trim();
+      if (!normalized || normalized === '–' || normalized === '—' || normalized === '-') return;
+      if (seen.has(normalized)) return;
+      seen.add(normalized);
+      unique.push(normalized);
+    });
+
+    return unique;
+  }
+
+  function buildSuppWarningInfoText(suppNumber, messageText) {
+    const header = String(suppNumber || '').trim();
+    const body = normalizeMultilineText(messageText || SUPP_NOT_FOUND_INFO_TEXT);
+    return normalizeMultilineText([header, body].filter(Boolean).join('\n\n'));
+  }
+
   function processSuppInfoText(suppNumber, incidentReasonText, commentsText, discussionText) {
     const header = String(suppNumber || '').trim();
     const reasonText = normalizeSuppSectionText(incidentReasonText);
@@ -515,6 +539,120 @@
     const validHeaders = new Set([header, 'ИТИЛ'].filter(Boolean));
     const processed = processAndSortInfoCell(rawText, validHeaders);
     return processed ? processed.trim() + '\n\n' : header + '\n\n';
+  }
+
+  function buildCombinedSuppInfoText(sectionTexts) {
+    return normalizeMultilineText((sectionTexts || [])
+      .map((text) => normalizeMultilineText(text))
+      .filter(Boolean)
+      .join('\n\n'));
+  }
+
+  function extractExistingSuppInfoSections(infoText, suppNumbers) {
+    const headers = new Set(normalizeSuppNumberList(suppNumbers));
+    const sections = new Map();
+    if (!headers.size) return sections;
+
+    const lines = String(infoText || '').replace(/\r\n?/g, '\n').split('\n');
+    let currentHeader = '';
+    let currentLines = [];
+
+    const pushCurrentSection = () => {
+      if (!currentHeader || !currentLines.length) return;
+      sections.set(currentHeader, normalizeMultilineText(currentLines.join('\n')));
+      currentHeader = '';
+      currentLines = [];
+    };
+
+    lines.forEach((line) => {
+      const trimmed = String(line || '').trim();
+      if (headers.has(trimmed)) {
+        pushCurrentSection();
+        currentHeader = trimmed;
+        currentLines = [trimmed];
+        return;
+      }
+
+      if (!currentHeader) return;
+      currentLines.push(line);
+    });
+
+    pushCurrentSection();
+    return sections;
+  }
+
+  async function collectSuppInfoBundle(suppNumbers, options) {
+    const normalizedSuppNumbers = normalizeSuppNumberList(suppNumbers);
+    if (!normalizedSuppNumbers.length) {
+      return {
+        primarySuppNumber: '',
+        totalCount: 0,
+        updatedCount: 0,
+        warningCount: 0,
+        infoText: ''
+      };
+    }
+
+    const settings = options && typeof options === 'object' ? options : {};
+    const forceEmptyPrimaryInfoPlaceholder = !!settings.forceEmptyPrimaryInfoPlaceholder;
+    const preserveExistingOnSkip = !!settings.preserveExistingOnSkip;
+    const existingSections = preserveExistingOnSkip
+      ? extractExistingSuppInfoSections(settings.currentInfoText, normalizedSuppNumbers)
+      : new Map();
+    const tab = settings.tab || await getOrCreateSuppTab();
+    const sectionTexts = [];
+    let updatedCount = 0;
+    let warningCount = 0;
+
+    for (let index = 0; index < normalizedSuppNumbers.length; index += 1) {
+      const suppNumber = normalizedSuppNumbers[index];
+      const result = await executeInTab(tab.id, collectSuppRequestData, [suppNumber]);
+      if (!result || result.success !== true) {
+        throw new Error(result && result.error ? result.error : `Не удалось получить данные из СУПП для ${suppNumber}.`);
+      }
+
+      if (result.skipped === true) {
+        warningCount += 1;
+        const existingSection = existingSections.get(suppNumber);
+        if (existingSection) {
+          sectionTexts.push(existingSection);
+          continue;
+        }
+
+        const warningText = result.skipReason === 'not-found'
+          ? SUPP_NOT_FOUND_INFO_TEXT
+          : (result.skipMessage || SUPP_NOT_FOUND_INFO_TEXT);
+        sectionTexts.push(buildSuppWarningInfoText(suppNumber, warningText));
+        continue;
+      }
+
+      let sectionText = processSuppInfoText(
+        suppNumber,
+        index === 0 ? (result.incidentReasonText || '') : '',
+        result.commentsText || '',
+        result.discussionText || ''
+      );
+
+      if (index === 0 && forceEmptyPrimaryInfoPlaceholder && normalizeMultilineText(sectionText) === suppNumber) {
+        sectionText = processSuppInfoText(
+          suppNumber,
+          SUPP_NO_DATA_INFO_TEXT,
+          '',
+          ''
+        );
+      }
+
+      updatedCount += 1;
+      sectionTexts.push(sectionText);
+    }
+
+    return {
+      primarySuppNumber: normalizedSuppNumbers[0] || '',
+      totalCount: normalizedSuppNumbers.length,
+      updatedCount,
+      warningCount,
+      infoText: buildCombinedSuppInfoText(sectionTexts)
+    };
   }
 
   async function writeClipboardText(text) {
@@ -852,13 +990,32 @@
       if (!(element instanceof Element)) return;
       element.scrollIntoView({ block: 'center', inline: 'center' });
       if (typeof element.focus === 'function') element.focus();
-      ['mousedown', 'mouseup', 'click'].forEach((type) => {
-        element.dispatchEvent(new MouseEvent(type, {
+      const rect = typeof element.getBoundingClientRect === 'function'
+        ? element.getBoundingClientRect()
+        : { left: 0, top: 0, width: 0, height: 0 };
+      const clientX = rect.left + Math.max(1, Math.min(Math.max(rect.width, 2) - 1, rect.width / 2 || 1));
+      const clientY = rect.top + Math.max(1, Math.min(Math.max(rect.height, 2) - 1, rect.height / 2 || 1));
+      ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach((type) => {
+        const eventInit = {
           bubbles: true,
           cancelable: true,
           view: window,
           button: 0,
-          buttons: type === 'mousedown' ? 1 : 0
+          buttons: type === 'pointerdown' || type === 'mousedown' ? 1 : 0,
+          clientX,
+          clientY
+        };
+        if (type.startsWith('pointer') && typeof PointerEvent === 'function') {
+          element.dispatchEvent(new PointerEvent(type, {
+            ...eventInit,
+            pointerId: 1,
+            pointerType: 'mouse',
+            isPrimary: true
+          }));
+          return;
+        }
+        element.dispatchEvent(new MouseEvent(type, {
+          ...eventInit
         }));
       });
       if (typeof element.click === 'function') {
@@ -869,6 +1026,87 @@
         }
       }
       await sleep(160);
+    }
+
+    async function submitLoginForm(userInput, passwordInput, loginButton) {
+      const triggerOneCButtonController = (button) => {
+        if (!(button instanceof Element)) return false;
+        const managerKey = Object.getOwnPropertyNames(button)
+          .find((name) => /^closure_lm_/.test(String(name || '')));
+        const manager = managerKey ? button[managerKey] : null;
+        const clickListeners = manager && manager.$ && Array.isArray(manager.$.click)
+          ? manager.$.click
+          : [];
+
+        for (const item of clickListeners) {
+          const control = item && item.vy;
+          if (control && typeof control.onButtonClick === 'function') {
+            try {
+              control.onButtonClick();
+              return true;
+            } catch (error) {
+              // Пробуем следующий способ.
+            }
+          }
+          if (control && typeof control.aa === 'function') {
+            try {
+              control.aa(0);
+              return true;
+            } catch (error) {
+              // Пробуем следующий способ.
+            }
+          }
+        }
+        return false;
+      };
+
+      const candidateForms = [];
+      [loginButton, passwordInput, userInput].forEach((element) => {
+        if (!(element instanceof Element)) return;
+        const closestForm = typeof element.closest === 'function' ? element.closest('form') : null;
+        if (closestForm && !candidateForms.includes(closestForm)) candidateForms.push(closestForm);
+        if ('form' in element && element.form && !candidateForms.includes(element.form)) {
+          candidateForms.push(element.form);
+        }
+      });
+
+      const invokedController = triggerOneCButtonController(loginButton);
+      if (!invokedController) {
+        await clickLikeUser(loginButton);
+      }
+      await sleep(220);
+
+      if (passwordInput instanceof HTMLInputElement) {
+        passwordInput.focus();
+        ['keydown', 'keypress', 'keyup'].forEach((type) => {
+          passwordInput.dispatchEvent(new KeyboardEvent(type, {
+            key: 'Enter',
+            code: 'Enter',
+            keyCode: 13,
+            which: 13,
+            bubbles: true,
+            cancelable: true
+          }));
+        });
+        await sleep(220);
+      }
+
+      for (const form of candidateForms) {
+        try {
+          if (typeof form.requestSubmit === 'function') {
+            if (loginButton instanceof HTMLElement) {
+              form.requestSubmit(loginButton);
+            } else {
+              form.requestSubmit();
+            }
+          } else if (typeof form.submit === 'function') {
+            form.submit();
+          }
+        } catch (error) {
+          // Пробуем следующий способ отправки формы.
+        }
+        await sleep(220);
+      }
     }
 
     function findLoginUserInput() {
@@ -942,7 +1180,7 @@
           lastLoginAttemptAt = Date.now();
           await fillInputLikeUser(userInput, username);
           await fillInputLikeUser(passwordInput, password);
-          await clickLikeUser(loginButton);
+          await submitLoginForm(userInput, passwordInput, loginButton);
           await sleep(600);
           continue;
         }
@@ -1315,7 +1553,12 @@
   async function runSuppFillRow(data) {
     const payload = data && data.payload ? data.payload : {};
     const row = Number(payload.row);
-    const suppNumber = String(payload.suppNumber || '').trim();
+    const suppNumbers = normalizeSuppNumberList(
+      Array.isArray(payload.suppNumbers) && payload.suppNumbers.length
+        ? payload.suppNumbers
+        : [payload.suppNumber]
+    );
+    const suppNumber = suppNumbers[0] || '';
     const itilNumber = String(payload.itilNumber || '').trim();
     const sheetName = String(payload.sheetName || '').trim();
     const spreadsheetId = String(payload.spreadsheetId || '').trim();
@@ -1324,46 +1567,73 @@
     if (spreadsheetId !== SPREADSHEET_ID) throw new Error('Некорректная таблица для СУПП-заполнения.');
     if (!sheetName) throw new Error('Не передан лист для СУПП-заполнения.');
     if (!Number.isInteger(row) || row < 2) throw new Error('Некорректный номер строки для СУПП-заполнения.');
-    if (!/^ЗНР-[A-Za-zА-Яа-яЁё0-9-]+$/.test(suppNumber)) throw new Error('Не передан корректный номер СУПП.');
+    if (!suppNumber) throw new Error('Не передан корректный номер СУПП.');
     normalizeBridgeUrl(data.bridgeUrl);
 
-    const tab = await getOrCreateSuppTab();
-    const result = await executeInTab(tab.id, collectSuppRequestData, [suppNumber]);
-    if (!result || result.success !== true) {
-      throw new Error(result && result.error ? result.error : 'Не удалось получить данные из СУПП.');
-    }
-    if (result.skipped === true) {
-      return {
-        row,
+    let requestText = '';
+    let requestTextSource = 'SUPP';
+    let infoText = '';
+    let updatedSuppCount = 0;
+    let warningSuppCount = 0;
+    const totalSuppCount = suppNumbers.length;
+
+    if (suppNumbers.length > 1) {
+      if (!itilNumber) throw new Error(`Строка ${row}: для строки с несколькими СУПП не найден «Номер ITIL».`);
+      const itilData = await collectItilFillData(itilNumber);
+      requestText = itilData.requestText;
+      requestTextSource = 'ITIL';
+      if (!requestText) {
+        throw new Error(`ITIL ${itilNumber}: текст заявки пустой.`);
+      }
+
+      const suppBundle = await collectSuppInfoBundle(suppNumbers, {
+        tab: await getOrCreateSuppTab()
+      });
+      infoText = suppBundle.infoText;
+      updatedSuppCount = suppBundle.updatedCount;
+      warningSuppCount = suppBundle.warningCount;
+    } else {
+      const tab = await getOrCreateSuppTab();
+      const result = await executeInTab(tab.id, collectSuppRequestData, [suppNumber]);
+      if (!result || result.success !== true) {
+        throw new Error(result && result.error ? result.error : 'Не удалось получить данные из СУПП.');
+      }
+      if (result.skipped === true) {
+        return {
+          row,
+          suppNumber,
+          suppNumbers,
+          skipped: true,
+          skipReason: String(result.skipReason || 'search-result-unavailable'),
+          skipMessage: String(result.skipMessage || `СУПП ${suppNumber}: заявка пропущена.`)
+        };
+      }
+
+      const suppRequestItilNumber = String(result.requestItilNumber || '').trim();
+      const useItilBySuppMismatch = !!suppRequestItilNumber && suppRequestItilNumber !== itilNumber;
+      if (useItilBySuppMismatch && !itilNumber) {
+        throw new Error(`Строка ${row}, СУПП ${suppNumber}: в описании СУПП найден ITIL ${suppRequestItilNumber}, но в строке не заполнен «Номер ITIL».`);
+      }
+
+      const shouldUseItilRequestText = useItilBySuppMismatch;
+      const itilData = shouldUseItilRequestText ? await collectItilFillData(itilNumber) : null;
+      requestText = shouldUseItilRequestText
+        ? (itilData ? itilData.requestText : '')
+        : processSuppRequestText(result.requestText || '');
+      infoText = processSuppInfoText(
         suppNumber,
-        skipped: true,
-        skipReason: String(result.skipReason || 'search-result-unavailable'),
-        skipMessage: String(result.skipMessage || `СУПП ${suppNumber}: заявка пропущена.`)
-      };
-    }
-
-    const suppRequestItilNumber = String(result.requestItilNumber || '').trim();
-    const useItilBySuppMismatch = !!suppRequestItilNumber && suppRequestItilNumber !== itilNumber;
-    if (useItilBySuppMismatch && !itilNumber) {
-      throw new Error(`Строка ${row}, СУПП ${suppNumber}: в описании СУПП найден ITIL ${suppRequestItilNumber}, но в строке не заполнен «Номер ITIL».`);
-    }
-
-    const shouldUseItilRequestText = useItilBySuppMismatch;
-    const itilData = shouldUseItilRequestText ? await collectItilFillData(itilNumber) : null;
-    const requestText = shouldUseItilRequestText
-      ? (itilData ? itilData.requestText : '')
-      : processSuppRequestText(result.requestText || '');
-    const infoText = processSuppInfoText(
-      suppNumber,
-      result.incidentReasonText || '',
-      result.commentsText || '',
-      result.discussionText || ''
-    );
-    const requestTextSource = shouldUseItilRequestText ? 'ITIL' : 'SUPP';
-    if (!requestText) {
-      throw new Error(shouldUseItilRequestText
-        ? `ITIL ${itilNumber}: текст заявки пустой.`
-        : `СУПП ${suppNumber}: текст заявки пустой.`);
+        result.incidentReasonText || '',
+        result.commentsText || '',
+        result.discussionText || ''
+      );
+      requestTextSource = shouldUseItilRequestText ? 'ITIL' : 'SUPP';
+      if (!requestText) {
+        throw new Error(shouldUseItilRequestText
+          ? `ITIL ${itilNumber}: текст заявки пустой.`
+          : `СУПП ${suppNumber}: текст заявки пустой.`);
+      }
+      updatedSuppCount = 1;
+      warningSuppCount = 0;
     }
 
     const bridgePayload = {
@@ -1372,6 +1642,7 @@
       sheetName,
       row,
       suppNumber,
+      suppNumbers,
       requestTextSource,
       columns,
       requestText,
@@ -1381,10 +1652,14 @@
     return {
       row,
       suppNumber,
+      suppNumbers,
       itilNumber,
       requestTextSource,
       requestTextLength: requestText.length,
       infoTextLength: infoText.length,
+      updatedSuppCount,
+      warningSuppCount,
+      totalSuppCount,
       bridgePayload
     };
   }
@@ -1395,7 +1670,7 @@
       || (data && data.payload && data.payload.suppNumber)
       || ''
     ).trim();
-    if (!/^ЗНР-[A-Za-zА-Яа-яЁё0-9-]+$/.test(suppNumber)) {
+    if (!suppNumber || suppNumber === '–' || suppNumber === '—' || suppNumber === '-') {
       throw new Error('Не передан корректный номер СУПП для открытия заявки.');
     }
 
@@ -1453,46 +1728,72 @@
   async function runSuppInfoRefreshRow(data) {
     const payload = data && data.payload ? data.payload : {};
     const row = Number(payload.row);
-    const suppNumber = String(payload.suppNumber || '').trim();
+    const suppNumbers = normalizeSuppNumberList(
+      Array.isArray(payload.suppNumbers) && payload.suppNumbers.length
+        ? payload.suppNumbers
+        : [payload.suppNumber]
+    );
+    const suppNumber = suppNumbers[0] || '';
     const sheetName = String(payload.sheetName || '').trim();
     const spreadsheetId = String(payload.spreadsheetId || '').trim();
     const columns = payload.columns && typeof payload.columns === 'object' ? payload.columns : null;
     const forceEmptyInfoPlaceholder = !!payload.forceEmptyInfoPlaceholder;
+    const currentInfoText = String(payload.currentInfoText || '').trim();
 
     if (spreadsheetId !== SPREADSHEET_ID) throw new Error('Некорректная таблица для обновления INFO из СУПП.');
     if (!sheetName) throw new Error('Не передан лист для обновления INFO из СУПП.');
     if (!Number.isInteger(row) || row < 2) throw new Error('Некорректный номер строки для обновления INFO из СУПП.');
-    if (!/^ЗНР-[A-Za-zА-Яа-яЁё0-9-]+$/.test(suppNumber)) throw new Error('Не передан корректный номер СУПП.');
+    if (!suppNumber) throw new Error('Не передан корректный номер СУПП.');
     normalizeBridgeUrl(data.bridgeUrl);
 
-    const tab = await getOrCreateSuppTab();
-    const result = await executeInTab(tab.id, collectSuppRequestData, [suppNumber]);
-    if (!result || result.success !== true) {
-      throw new Error(result && result.error ? result.error : 'Не удалось получить данные из СУПП.');
-    }
-    if (result.skipped === true) {
-      return {
-        row,
-        suppNumber,
-        skipped: true,
-        skipReason: String(result.skipReason || 'search-result-unavailable'),
-        skipMessage: String(result.skipMessage || `СУПП ${suppNumber}: заявка пропущена.`)
-      };
-    }
+    let infoText = '';
+    let updatedSuppCount = 0;
+    let warningSuppCount = 0;
+    const totalSuppCount = suppNumbers.length;
 
-    let infoText = processSuppInfoText(
-      suppNumber,
-      result.incidentReasonText || '',
-      result.commentsText || '',
-      result.discussionText || ''
-    );
-    if (forceEmptyInfoPlaceholder && infoText === suppNumber) {
+    if (suppNumbers.length > 1) {
+      const suppBundle = await collectSuppInfoBundle(suppNumbers, {
+        tab: await getOrCreateSuppTab(),
+        forceEmptyPrimaryInfoPlaceholder: forceEmptyInfoPlaceholder,
+        preserveExistingOnSkip: true,
+        currentInfoText
+      });
+      infoText = suppBundle.infoText;
+      updatedSuppCount = suppBundle.updatedCount;
+      warningSuppCount = suppBundle.warningCount;
+    } else {
+      const tab = await getOrCreateSuppTab();
+      const result = await executeInTab(tab.id, collectSuppRequestData, [suppNumber]);
+      if (!result || result.success !== true) {
+        throw new Error(result && result.error ? result.error : 'Не удалось получить данные из СУПП.');
+      }
+      if (result.skipped === true) {
+        return {
+          row,
+          suppNumber,
+          suppNumbers,
+          skipped: true,
+          skipReason: String(result.skipReason || 'search-result-unavailable'),
+          skipMessage: String(result.skipMessage || `СУПП ${suppNumber}: заявка пропущена.`)
+        };
+      }
+
       infoText = processSuppInfoText(
         suppNumber,
-        'Информации по решению заявки нет',
-        '',
-        ''
+        result.incidentReasonText || '',
+        result.commentsText || '',
+        result.discussionText || ''
       );
+      if (forceEmptyInfoPlaceholder && normalizeMultilineText(infoText) === suppNumber) {
+        infoText = processSuppInfoText(
+          suppNumber,
+          SUPP_NO_DATA_INFO_TEXT,
+          '',
+          ''
+        );
+      }
+      updatedSuppCount = 1;
+      warningSuppCount = 0;
     }
 
     const bridgePayload = {
@@ -1501,6 +1802,7 @@
       sheetName,
       row,
       suppNumber,
+      suppNumbers,
       columns,
       infoText
     };
@@ -1508,7 +1810,11 @@
     return {
       row,
       suppNumber,
+      suppNumbers,
       infoTextLength: infoText.length,
+      updatedSuppCount,
+      warningSuppCount,
+      totalSuppCount,
       bridgePayload
     };
   }

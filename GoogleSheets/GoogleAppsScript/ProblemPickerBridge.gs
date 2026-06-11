@@ -121,10 +121,47 @@ function _problemPickerBridgeReadRowDisplayValues_(sh, row, columns) {
   return result;
 }
 
+function _problemPickerBridgeIsSuppPlaceholderLine_(value) {
+  const text = String(value || '').trim();
+  return text === '–' || text === '—' || text === '-';
+}
+
+function _problemPickerBridgeNormalizeSuppNumbersList_(values) {
+  const source = Array.isArray(values) ? values : [values];
+  const unique = [];
+  const seen = {};
+
+  source.forEach(function(value) {
+    const normalized = String(value || '').trim();
+    if (!normalized || _problemPickerBridgeIsSuppPlaceholderLine_(normalized) || seen[normalized]) return;
+    seen[normalized] = true;
+    unique.push(normalized);
+  });
+
+  return unique;
+}
+
+function _problemPickerBridgeExtractSuppNumbers_(value) {
+  const lines = String(value || '')
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map(function(line) { return String(line || '').trim(); })
+    .filter(function(line) { return !!line && !_problemPickerBridgeIsSuppPlaceholderLine_(line); });
+
+  const unique = [];
+  const seen = {};
+  lines.forEach(function(line) {
+    if (seen[line]) return;
+    seen[line] = true;
+    unique.push(line);
+  });
+
+  return unique.reverse();
+}
+
 function _problemPickerBridgeExtractSuppNumber_(value) {
-  const text = String(value || '').replace(/\r\n?/g, '\n');
-  const matches = text.match(/ЗНР-[A-Za-zА-Яа-яЁё0-9-]+/g);
-  return matches && matches.length ? String(matches[matches.length - 1] || '').trim() : '';
+  const numbers = _problemPickerBridgeExtractSuppNumbers_(value);
+  return numbers.length ? String(numbers[0] || '').trim() : '';
 }
 
 function _problemPickerBridgeResetRowColors_(sh, row, colResp, colSupp) {
@@ -196,11 +233,12 @@ function _problemPickerBridgeGetNewResponseRows_(payload) {
     const values = rowValues[index] || [];
     const itilNumber = String(values[colItil - minColumn] || '').trim();
     const suppValue = String(values[colSupp - minColumn] || '').trim();
-    const suppNumber = _problemPickerBridgeExtractSuppNumber_(suppValue);
+    const suppNumbers = _problemPickerBridgeExtractSuppNumbers_(suppValue);
+    const suppNumber = suppNumbers.length ? suppNumbers[0] : '';
     const requestText = String(values[colText - minColumn] || '').trim();
     const infoText = String(values[colInfo - minColumn] || '').trim();
     const statusText = String(values[colStatus - minColumn] || '').trim();
-    const forceEmptyItilInfoPlaceholder = suppValue === '–'
+    const forceEmptyItilInfoPlaceholder = _problemPickerBridgeIsSuppPlaceholderLine_(suppValue)
       && !!itilNumber
       && !!requestText
       && infoText === 'ИТИЛ'
@@ -516,7 +554,7 @@ function _problemPickerBridgeSaveItilData_(payload) {
 
   const rowSupp = String(rowValues[colSupp] || '').trim();
 
-  if (rowSupp !== '–') {
+  if (!_problemPickerBridgeIsSuppPlaceholderLine_(rowSupp)) {
     throw new Error('Строка ' + row + ' больше не подходит для ITIL-заполнения: «Номер СУПП (последний)» = ' + rowSupp + '.');
   }
 
@@ -599,7 +637,7 @@ function _problemPickerBridgeSaveItilInfoData_(payload) {
 
   const rowSupp = String(rowValues[colSupp] || '').trim();
 
-  if (rowSupp !== '–') {
+  if (!_problemPickerBridgeIsSuppPlaceholderLine_(rowSupp)) {
     throw new Error('Строка ' + row + ' больше не подходит для обновления INFO из ITIL: «Номер СУПП (последний)» = ' + rowSupp + '.');
   }
 
@@ -698,9 +736,14 @@ function _problemPickerBridgeSaveSuppData_(payload) {
     throw new Error('Некорректный номер строки: ' + payload.row);
   }
 
-  const suppNumber = String(payload.suppNumber || '').trim();
+  const suppNumbers = _problemPickerBridgeNormalizeSuppNumbersList_(
+    Array.isArray(payload.suppNumbers) && payload.suppNumbers.length
+      ? payload.suppNumbers
+      : [payload.suppNumber]
+  );
+  const suppNumber = String(suppNumbers[0] || '').trim();
 
-  if (!/^ЗНР-[A-Za-zА-Яа-яЁё0-9-]+$/.test(suppNumber)) {
+  if (!suppNumber) {
     throw new Error('Некорректный номер СУПП: ' + payload.suppNumber);
   }
 
@@ -733,9 +776,10 @@ function _problemPickerBridgeSaveSuppData_(payload) {
 
   const rowValues = _problemPickerBridgeReadRowDisplayValues_(sh, row, [colSupp, colText]);
   const rowSupp = String(rowValues[colSupp] || '').trim();
+  const rowSuppNumbers = _problemPickerBridgeExtractSuppNumbers_(rowSupp);
 
-  if (rowSupp.indexOf(suppNumber) === -1) {
-    throw new Error('Строка ' + row + ' больше не содержит СУПП ' + suppNumber + ' (сейчас: ' + rowSupp + ').');
+  if (suppNumbers.some(function(number) { return rowSuppNumbers.indexOf(number) === -1; })) {
+    throw new Error('Строка ' + row + ' больше не содержит ожидаемый список СУПП (сейчас: ' + rowSupp + ').');
   }
 
   const currentText = String(rowValues[colText] || '').trim();
@@ -746,7 +790,7 @@ function _problemPickerBridgeSaveSuppData_(payload) {
 
   sh.getRange(row, colText).setValue(requestText);
 
-  const infoRichText = _problemPickerBridgeBuildSuppInfoRichText_(suppNumber, infoText);
+  const infoRichText = _problemPickerBridgeBuildSuppInfoRichText_(suppNumbers, infoText);
   sh.getRange(row, colInfo).setRichTextValue(infoRichText);
   _problemPickerBridgeResetRowColors_(
     sh,
@@ -759,6 +803,7 @@ function _problemPickerBridgeSaveSuppData_(payload) {
     sheetName: sheetName,
     row: row,
     suppNumber: suppNumber,
+    suppNumbers: suppNumbers,
     requestTextLength: requestText.length,
     infoTextLength: infoRichText.getText().length
   };
@@ -783,9 +828,14 @@ function _problemPickerBridgeSaveSuppInfoData_(payload) {
     throw new Error('Некорректный номер строки: ' + payload.row);
   }
 
-  const suppNumber = String(payload.suppNumber || '').trim();
+  const suppNumbers = _problemPickerBridgeNormalizeSuppNumbersList_(
+    Array.isArray(payload.suppNumbers) && payload.suppNumbers.length
+      ? payload.suppNumbers
+      : [payload.suppNumber]
+  );
+  const suppNumber = String(suppNumbers[0] || '').trim();
 
-  if (!/^ЗНР-[A-Za-zА-Яа-яЁё0-9-]+$/.test(suppNumber)) {
+  if (!suppNumber) {
     throw new Error('Некорректный номер СУПП: ' + payload.suppNumber);
   }
 
@@ -809,12 +859,13 @@ function _problemPickerBridgeSaveSuppInfoData_(payload) {
 
   const rowValues = _problemPickerBridgeReadRowDisplayValues_(sh, row, [colSupp]);
   const rowSupp = String(rowValues[colSupp] || '').trim();
+  const rowSuppNumbers = _problemPickerBridgeExtractSuppNumbers_(rowSupp);
 
-  if (rowSupp.indexOf(suppNumber) === -1) {
-    throw new Error('Строка ' + row + ' больше не содержит СУПП ' + suppNumber + ' (сейчас: ' + rowSupp + ').');
+  if (suppNumbers.some(function(number) { return rowSuppNumbers.indexOf(number) === -1; })) {
+    throw new Error('Строка ' + row + ' больше не содержит ожидаемый список СУПП (сейчас: ' + rowSupp + ').');
   }
 
-  const infoRichText = _problemPickerBridgeBuildSuppInfoRichText_(suppNumber, infoText);
+  const infoRichText = _problemPickerBridgeBuildSuppInfoRichText_(suppNumbers, infoText);
   sh.getRange(row, colInfo).setRichTextValue(infoRichText);
   _problemPickerBridgeResetRowColors_(
     sh,
@@ -827,12 +878,14 @@ function _problemPickerBridgeSaveSuppInfoData_(payload) {
     sheetName: sheetName,
     row: row,
     suppNumber: suppNumber,
+    suppNumbers: suppNumbers,
     infoTextLength: infoRichText.getText().length
   };
 }
 
-function _problemPickerBridgeBuildSuppInfoRichText_(suppNumber, infoText) {
-  const header = String(suppNumber || '').trim();
+function _problemPickerBridgeBuildSuppInfoRichText_(suppNumbers, infoText) {
+  const headers = _problemPickerBridgeNormalizeSuppNumbersList_(suppNumbers);
+  const header = String(headers[0] || '').trim();
   let fullText = String(infoText || '')
     .replace(/\r\n?/g, '\n')
     .trim();
@@ -866,13 +919,17 @@ function _problemPickerBridgeBuildSuppInfoRichText_(suppNumber, infoText) {
     .setText(fullText)
     .setTextStyle(0, fullText.length, normalStyle);
 
-  _problemPickerBridgeApplySuppInfoStyles_(builder, fullText, header, headerStyle, logStyle);
+  _problemPickerBridgeApplySuppInfoStyles_(builder, fullText, headers, headerStyle, logStyle);
 
   return builder.build();
 }
 
-function _problemPickerBridgeApplySuppInfoStyles_(builder, text, suppNumber, headerStyle, logStyle) {
+function _problemPickerBridgeApplySuppInfoStyles_(builder, text, suppNumbers, headerStyle, logStyle) {
   const logLineRe = /^\d{2}\.\d{2}\.\d{4}\s+\d{1,2}:\d{2}:\d{2}\s+\/.*$/;
+  const headerSet = {};
+  _problemPickerBridgeNormalizeSuppNumbersList_(suppNumbers).forEach(function(value) {
+    headerSet[value] = true;
+  });
   let pos = 0;
 
   while (pos < text.length) {
@@ -881,7 +938,7 @@ function _problemPickerBridgeApplySuppInfoStyles_(builder, text, suppNumber, hea
     const line = text.substring(pos, end);
     const trimmed = line.trim();
 
-    if (trimmed === suppNumber) {
+    if (headerSet[trimmed]) {
       builder.setTextStyle(pos, end, headerStyle);
     } else if (logLineRe.test(trimmed)) {
       builder.setTextStyle(pos, end, logStyle);
