@@ -1159,27 +1159,18 @@
       throw new Error('Не найдены колонки «Номер ITIL», «Номер СУПП (последний)», «Текст заявки» или «Информация из СУПП/ITIL».');
     }
 
-    const suppCounts = {};
-    for (let index = 1; index < rows.length; index++) {
-      const row = rows[index] || [];
-      const suppNumber = extractSuppNumber(row[suppColumnIndex]);
-      if (suppNumber) suppCounts[suppNumber] = (suppCounts[suppNumber] || 0) + 1;
-    }
-
     const queue = [];
     for (let index = 1; index < rows.length; index++) {
       const row = rows[index] || [];
       const suppNumber = extractSuppNumber(row[suppColumnIndex]);
       const itilNumber = String(row[itilColumnIndex] || '').trim();
       const text = String(row[textColumnIndex] || '').trim();
-      const isDuplicateSupp = suppNumber && suppCounts[suppNumber] > 1;
 
       if (suppNumber && !text) {
         queue.push({
           row: index + 1,
           suppNumber,
-          itilNumber,
-          useItilRequestText: isDuplicateSupp
+          itilNumber
         });
       }
     }
@@ -1232,13 +1223,6 @@
       throw new Error('Не найдены колонки «Номер ITIL», «Номер СУПП (последний)», «Текст заявки» или «Информация из СУПП/ITIL».');
     }
 
-    const suppCounts = {};
-    for (let index = 1; index < rows.length; index++) {
-      const row = rows[index] || [];
-      const suppNumber = extractSuppNumber(row[suppColumnIndex]);
-      if (suppNumber) suppCounts[suppNumber] = (suppCounts[suppNumber] || 0) + 1;
-    }
-
     const queue = [];
     for (let index = 1; index < rows.length; index++) {
       const row = rows[index] || [];
@@ -1255,8 +1239,7 @@
           mode: 'supp',
           row: rowNumber,
           suppNumber,
-          itilNumber,
-          useItilRequestText: suppCounts[suppNumber] > 1
+          itilNumber
         });
         continue;
       }
@@ -2390,9 +2373,7 @@
     const queuedItem = suppState.isRunning && !suppState.stopRequested ? suppState.queue[suppState.currentIndex] : null;
     const item = suppState.currentItem || queuedItem || null;
     if (!item) return 'нет';
-    return item.useItilRequestText
-      ? `строка ${item.row}, СУПП ${item.suppNumber}, текст через ITIL ${item.itilNumber || 'не задан'}`
-      : `строка ${item.row}, СУПП ${item.suppNumber}`;
+    return `строка ${item.row}, СУПП ${item.suppNumber}`;
   }
 
   function getNewResponseCurrentText() {
@@ -2423,11 +2404,7 @@
     const item = combinedFlowState.currentItem || queuedItem || null;
     if (!item) return 'нет';
 
-    if (item.mode === 'supp') {
-      return item.useItilRequestText
-        ? `строка ${item.row}, СУПП ${item.suppNumber}, текст через ITIL ${item.itilNumber || 'не задан'}`
-        : `строка ${item.row}, СУПП ${item.suppNumber}`;
-    }
+    if (item.mode === 'supp') return `строка ${item.row}, СУПП ${item.suppNumber}`;
 
     if (item.mode === 'itil') return `строка ${item.row}, ITIL ${item.itilNumber || 'не задан'}`;
     return `строка ${item.row}, неизвестная ветка`;
@@ -2788,6 +2765,7 @@
         <div class="gs-problem-picker-menu-actions">
           <button type="button" class="gs-problem-picker-combined-start">Старт</button>
           <button type="button" class="gs-problem-picker-combined-stop" disabled>Стоп</button>
+          <button type="button" class="gs-problem-picker-new-response-history" disabled>История</button>
           <button type="button" class="gs-problem-picker-manual-toggle" aria-expanded="false" aria-label="Показать ручные действия">▼</button>
           <button type="button" class="gs-problem-picker-url">URL bridge</button>
         </div>
@@ -2853,7 +2831,6 @@
           <div class="gs-problem-picker-manual-section-title">Пришел новый ответ</div>
           <div class="gs-problem-picker-menu-actions">
             <button type="button" class="gs-problem-picker-new-response-start">Старт</button>
-            <button type="button" class="gs-problem-picker-new-response-history" disabled>История</button>
             <button type="button" class="gs-problem-picker-new-response-stop" disabled>Стоп</button>
           </div>
             <dl class="gs-problem-picker-new-response-grid">
@@ -3949,9 +3926,7 @@ function handleMenuEscape(event) {
           currentIndex: index,
           currentItem: item,
           statusText: item.mode === 'supp'
-            ? (item.useItilRequestText
-              ? `Ищу СУПП ${item.suppNumber} для INFO и ITIL ${item.itilNumber || 'не задан'} для текста строки ${item.row}...`
-              : `Ищу СУПП ${item.suppNumber} для строки ${item.row}...`)
+            ? `Ищу СУПП ${item.suppNumber} для строки ${item.row}...`
             : `Ищу ITIL ${item.itilNumber} для строки ${item.row}...`,
           lastError: ''
         };
@@ -3968,7 +3943,6 @@ function handleMenuEscape(event) {
                 row: item.row,
                 suppNumber: item.suppNumber,
                 itilNumber: item.itilNumber,
-                useItilRequestText: !!item.useItilRequestText,
                 columns: combinedFlowState.columns
               }
               : {
@@ -4438,9 +4412,7 @@ function handleMenuEscape(event) {
           ...suppState,
           currentIndex: index,
           currentItem: item,
-          statusText: item.useItilRequestText
-            ? `Ищу СУПП ${item.suppNumber} для INFO и ITIL ${item.itilNumber || 'не задан'} для текста строки ${item.row}...`
-            : `Ищу СУПП ${item.suppNumber} для строки ${item.row}...`,
+          statusText: `Ищу СУПП ${item.suppNumber} для строки ${item.row}...`,
           lastError: ''
         };
         renderSuppStatus();
@@ -4455,7 +4427,6 @@ function handleMenuEscape(event) {
               row: item.row,
               suppNumber: item.suppNumber,
               itilNumber: item.itilNumber,
-              useItilRequestText: !!item.useItilRequestText,
               columns: suppState.columns
             }
           }

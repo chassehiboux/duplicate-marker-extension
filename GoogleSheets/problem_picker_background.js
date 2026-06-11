@@ -1317,7 +1317,6 @@
     const row = Number(payload.row);
     const suppNumber = String(payload.suppNumber || '').trim();
     const itilNumber = String(payload.itilNumber || '').trim();
-    const useItilRequestText = !!payload.useItilRequestText;
     const sheetName = String(payload.sheetName || '').trim();
     const spreadsheetId = String(payload.spreadsheetId || '').trim();
     const columns = payload.columns && typeof payload.columns === 'object' ? payload.columns : null;
@@ -1326,7 +1325,6 @@
     if (!sheetName) throw new Error('Не передан лист для СУПП-заполнения.');
     if (!Number.isInteger(row) || row < 2) throw new Error('Некорректный номер строки для СУПП-заполнения.');
     if (!/^ЗНР-[A-Za-zА-Яа-яЁё0-9-]+$/.test(suppNumber)) throw new Error('Не передан корректный номер СУПП.');
-    if (useItilRequestText && !itilNumber) throw new Error(`Строка ${row}, СУПП ${suppNumber}: для повторяющегося СУПП не передан номер ITIL.`);
     normalizeBridgeUrl(data.bridgeUrl);
 
     const tab = await getOrCreateSuppTab();
@@ -1350,7 +1348,7 @@
       throw new Error(`Строка ${row}, СУПП ${suppNumber}: в описании СУПП найден ITIL ${suppRequestItilNumber}, но в строке не заполнен «Номер ITIL».`);
     }
 
-    const shouldUseItilRequestText = useItilRequestText || useItilBySuppMismatch;
+    const shouldUseItilRequestText = useItilBySuppMismatch;
     const itilData = shouldUseItilRequestText ? await collectItilFillData(itilNumber) : null;
     const requestText = shouldUseItilRequestText
       ? (itilData ? itilData.requestText : '')
