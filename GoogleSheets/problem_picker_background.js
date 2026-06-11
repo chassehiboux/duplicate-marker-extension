@@ -1936,6 +1936,17 @@
       if (endIdx !== -1) result = result.substring(0, endIdx);
 
       const lines = result.replace(/\r\n?/g, '\n').split('\n');
+      for (const rawLine of lines) {
+        const line = String(rawLine || '').trim();
+        if (!line) continue;
+
+        const suppLinkMatch = line.match(/^Ссылка на заявку ITIL\s*[:\t ]+([0-9-]+)\b/i);
+        if (suppLinkMatch) return String(suppLinkMatch[1] || '').trim();
+
+        const znoMatch = line.match(/^ЗНО\s+([0-9-]+)(?::|\s|$)/i);
+        if (znoMatch) return String(znoMatch[1] || '').trim();
+      }
+
       const authorLineRe = /^\s*[^\r\n()]+?\s+\(\d{2}\.\d{2}\.\d{4}\s+\d{2}:\d{2}:\d{2}\):\s*$/;
       const markers = [];
       for (let index = 0; index < lines.length; index++) {
