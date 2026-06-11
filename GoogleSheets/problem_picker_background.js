@@ -526,6 +526,19 @@
     return normalizeMultilineText([header, body].filter(Boolean).join('\n\n'));
   }
 
+  function buildSuppItilFallbackInfoText(itilSolutionText) {
+    return normalizeMultilineText(itilSolutionText || buildItilNoInfoFallbackText())
+      .replace(/^Решение обращения:/gm, 'Решение обращения (ITIL):')
+      .replace(/^Дополнительная информация:/gm, 'Дополнительная информация (ITIL):');
+  }
+
+  function buildSuppWarningWithItilInfoText(suppNumber, messageText, itilSolutionText) {
+    const header = String(suppNumber || '').trim();
+    const body = normalizeMultilineText(messageText || SUPP_NOT_FOUND_INFO_TEXT);
+    const itilInfoText = buildSuppItilFallbackInfoText(itilSolutionText);
+    return normalizeMultilineText([header, body, itilInfoText].filter(Boolean).join('\n\n'));
+  }
+
   function processSuppInfoText(suppNumber, incidentReasonText, commentsText, discussionText) {
     const header = String(suppNumber || '').trim();
     const reasonText = normalizeSuppSectionText(incidentReasonText);
@@ -596,6 +609,8 @@
     const settings = options && typeof options === 'object' ? options : {};
     const forceEmptyPrimaryInfoPlaceholder = !!settings.forceEmptyPrimaryInfoPlaceholder;
     const preserveExistingOnSkip = !!settings.preserveExistingOnSkip;
+    const itilNumber = String(settings.itilNumber || '').trim();
+    const presetItilSolutionText = String(settings.itilSolutionText || '').trim();
     const existingSections = preserveExistingOnSkip
       ? extractExistingSuppInfoSections(settings.currentInfoText, normalizedSuppNumbers)
       : new Map();
@@ -603,6 +618,17 @@
     const sectionTexts = [];
     let updatedCount = 0;
     let warningCount = 0;
+    let itilDataPromise = null;
+
+    const getItilSolutionText = async () => {
+      if (presetItilSolutionText) return presetItilSolutionText;
+      if (!itilNumber) return '';
+      if (!itilDataPromise) {
+        itilDataPromise = collectItilFillData(itilNumber);
+      }
+      const itilData = await itilDataPromise;
+      return String(itilData && itilData.solutionText || '').trim();
+    };
 
     for (let index = 0; index < normalizedSuppNumbers.length; index += 1) {
       const suppNumber = normalizedSuppNumbers[index];
@@ -613,15 +639,25 @@
 
       if (result.skipped === true) {
         warningCount += 1;
+        const isSuppNotFound = result.skipReason === 'not-found';
         const existingSection = existingSections.get(suppNumber);
-        if (existingSection) {
+        if (existingSection && !isSuppNotFound) {
           sectionTexts.push(existingSection);
           continue;
         }
 
-        const warningText = result.skipReason === 'not-found'
+        const warningText = isSuppNotFound
           ? SUPP_NOT_FOUND_INFO_TEXT
           : (result.skipMessage || SUPP_NOT_FOUND_INFO_TEXT);
+        if (isSuppNotFound) {
+          sectionTexts.push(buildSuppWarningWithItilInfoText(
+            suppNumber,
+            warningText,
+            await getItilSolutionText()
+          ));
+          continue;
+        }
+
         sectionTexts.push(buildSuppWarningInfoText(suppNumber, warningText));
         continue;
       }
@@ -1587,7 +1623,9 @@
       }
 
       const suppBundle = await collectSuppInfoBundle(suppNumbers, {
-        tab: await getOrCreateSuppTab()
+        tab: await getOrCreateSuppTab(),
+        itilNumber,
+        itilSolutionText: itilData.solutionText
       });
       infoText = suppBundle.infoText;
       updatedSuppCount = suppBundle.updatedCount;
@@ -1599,41 +1637,63 @@
         throw new Error(result && result.error ? result.error : 'Не удалось получить данные из СУПП.');
       }
       if (result.skipped === true) {
-        return {
-          row,
+        const skipReason = String(result.skipReason || 'search-result-unavailable');
+        const skipMessage = String(result.skipMessage || `СУПП ${suppNumber}: заявка пропущена.`);
+        if (skipReason !== 'not-found') {
+          return {
+            row,
+            suppNumber,
+            suppNumbers,
+            skipped: true,
+            skipReason,
+            skipMessage
+          };
+        }
+
+        if (!itilNumber) {
+          throw new Error(`Строка ${row}, СУПП ${suppNumber}: заявка не найдена в СУПП, но в строке не заполнен «Номер ITIL».`);
+        }
+
+        const itilData = await collectItilFillData(itilNumber);
+        requestText = itilData.requestText;
+        requestTextSource = 'ITIL';
+        if (!requestText) {
+          throw new Error(`ITIL ${itilNumber}: текст заявки пустой.`);
+        }
+        infoText = buildSuppWarningWithItilInfoText(
           suppNumber,
-          suppNumbers,
-          skipped: true,
-          skipReason: String(result.skipReason || 'search-result-unavailable'),
-          skipMessage: String(result.skipMessage || `СУПП ${suppNumber}: заявка пропущена.`)
-        };
-      }
+          SUPP_NOT_FOUND_INFO_TEXT,
+          itilData.solutionText
+        );
+        updatedSuppCount = 0;
+        warningSuppCount = 1;
+      } else {
+        const suppRequestItilNumber = String(result.requestItilNumber || '').trim();
+        const useItilBySuppMismatch = !!suppRequestItilNumber && suppRequestItilNumber !== itilNumber;
+        if (useItilBySuppMismatch && !itilNumber) {
+          throw new Error(`Строка ${row}, СУПП ${suppNumber}: в описании СУПП найден ITIL ${suppRequestItilNumber}, но в строке не заполнен «Номер ITIL».`);
+        }
 
-      const suppRequestItilNumber = String(result.requestItilNumber || '').trim();
-      const useItilBySuppMismatch = !!suppRequestItilNumber && suppRequestItilNumber !== itilNumber;
-      if (useItilBySuppMismatch && !itilNumber) {
-        throw new Error(`Строка ${row}, СУПП ${suppNumber}: в описании СУПП найден ITIL ${suppRequestItilNumber}, но в строке не заполнен «Номер ITIL».`);
+        const shouldUseItilRequestText = useItilBySuppMismatch;
+        const itilData = shouldUseItilRequestText ? await collectItilFillData(itilNumber) : null;
+        requestText = shouldUseItilRequestText
+          ? (itilData ? itilData.requestText : '')
+          : processSuppRequestText(result.requestText || '');
+        infoText = processSuppInfoText(
+          suppNumber,
+          result.incidentReasonText || '',
+          result.commentsText || '',
+          result.discussionText || ''
+        );
+        requestTextSource = shouldUseItilRequestText ? 'ITIL' : 'SUPP';
+        if (!requestText) {
+          throw new Error(shouldUseItilRequestText
+            ? `ITIL ${itilNumber}: текст заявки пустой.`
+            : `СУПП ${suppNumber}: текст заявки пустой.`);
+        }
+        updatedSuppCount = 1;
+        warningSuppCount = 0;
       }
-
-      const shouldUseItilRequestText = useItilBySuppMismatch;
-      const itilData = shouldUseItilRequestText ? await collectItilFillData(itilNumber) : null;
-      requestText = shouldUseItilRequestText
-        ? (itilData ? itilData.requestText : '')
-        : processSuppRequestText(result.requestText || '');
-      infoText = processSuppInfoText(
-        suppNumber,
-        result.incidentReasonText || '',
-        result.commentsText || '',
-        result.discussionText || ''
-      );
-      requestTextSource = shouldUseItilRequestText ? 'ITIL' : 'SUPP';
-      if (!requestText) {
-        throw new Error(shouldUseItilRequestText
-          ? `ITIL ${itilNumber}: текст заявки пустой.`
-          : `СУПП ${suppNumber}: текст заявки пустой.`);
-      }
-      updatedSuppCount = 1;
-      warningSuppCount = 0;
     }
 
     const bridgePayload = {
@@ -1734,6 +1794,7 @@
         : [payload.suppNumber]
     );
     const suppNumber = suppNumbers[0] || '';
+    const itilNumber = String(payload.itilNumber || '').trim();
     const sheetName = String(payload.sheetName || '').trim();
     const spreadsheetId = String(payload.spreadsheetId || '').trim();
     const columns = payload.columns && typeof payload.columns === 'object' ? payload.columns : null;
@@ -1754,6 +1815,7 @@
     if (suppNumbers.length > 1) {
       const suppBundle = await collectSuppInfoBundle(suppNumbers, {
         tab: await getOrCreateSuppTab(),
+        itilNumber,
         forceEmptyPrimaryInfoPlaceholder: forceEmptyInfoPlaceholder,
         preserveExistingOnSkip: true,
         currentInfoText
@@ -1768,32 +1830,45 @@
         throw new Error(result && result.error ? result.error : 'Не удалось получить данные из СУПП.');
       }
       if (result.skipped === true) {
-        return {
-          row,
-          suppNumber,
-          suppNumbers,
-          skipped: true,
-          skipReason: String(result.skipReason || 'search-result-unavailable'),
-          skipMessage: String(result.skipMessage || `СУПП ${suppNumber}: заявка пропущена.`)
-        };
-      }
+        const skipReason = String(result.skipReason || 'search-result-unavailable');
+        const skipMessage = String(result.skipMessage || `СУПП ${suppNumber}: заявка пропущена.`);
+        if (skipReason !== 'not-found') {
+          return {
+            row,
+            suppNumber,
+            suppNumbers,
+            skipped: true,
+            skipReason,
+            skipMessage
+          };
+        }
 
-      infoText = processSuppInfoText(
-        suppNumber,
-        result.incidentReasonText || '',
-        result.commentsText || '',
-        result.discussionText || ''
-      );
-      if (forceEmptyInfoPlaceholder && normalizeMultilineText(infoText) === suppNumber) {
+        const itilData = itilNumber ? await collectItilFillData(itilNumber) : null;
+        infoText = buildSuppWarningWithItilInfoText(
+          suppNumber,
+          SUPP_NOT_FOUND_INFO_TEXT,
+          itilData ? itilData.solutionText : ''
+        );
+        updatedSuppCount = 0;
+        warningSuppCount = 1;
+      } else {
         infoText = processSuppInfoText(
           suppNumber,
-          SUPP_NO_DATA_INFO_TEXT,
-          '',
-          ''
+          result.incidentReasonText || '',
+          result.commentsText || '',
+          result.discussionText || ''
         );
+        if (forceEmptyInfoPlaceholder && normalizeMultilineText(infoText) === suppNumber) {
+          infoText = processSuppInfoText(
+            suppNumber,
+            SUPP_NO_DATA_INFO_TEXT,
+            '',
+            ''
+          );
+        }
+        updatedSuppCount = 1;
+        warningSuppCount = 0;
       }
-      updatedSuppCount = 1;
-      warningSuppCount = 0;
     }
 
     const bridgePayload = {

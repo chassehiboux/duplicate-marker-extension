@@ -926,6 +926,13 @@ function _problemPickerBridgeBuildSuppInfoRichText_(suppNumbers, infoText) {
 
 function _problemPickerBridgeApplySuppInfoStyles_(builder, text, suppNumbers, headerStyle, logStyle) {
   const logLineRe = /^\d{2}\.\d{2}\.\d{4}\s+\d{1,2}:\d{2}:\d{2}\s+\/.*$/;
+  const sectionHeaders = {
+    'Причина возникновения инцидента:': true,
+    'Решение обращения:': true,
+    'Дополнительная информация:': true,
+    'Решение обращения (ITIL):': true,
+    'Дополнительная информация (ITIL):': true
+  };
   const headerSet = {};
   _problemPickerBridgeNormalizeSuppNumbersList_(suppNumbers).forEach(function(value) {
     headerSet[value] = true;
@@ -940,7 +947,7 @@ function _problemPickerBridgeApplySuppInfoStyles_(builder, text, suppNumbers, he
 
     if (headerSet[trimmed]) {
       builder.setTextStyle(pos, end, headerStyle);
-    } else if (logLineRe.test(trimmed)) {
+    } else if (sectionHeaders[trimmed] || logLineRe.test(trimmed)) {
       builder.setTextStyle(pos, end, logStyle);
     }
 
