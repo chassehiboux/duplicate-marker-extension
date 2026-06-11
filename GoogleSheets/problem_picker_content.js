@@ -1981,8 +1981,8 @@
       #${ROOT_ID} .gs-problem-picker-url{min-width:44px}
       #${ROOT_ID} .gs-problem-picker-status{max-width:360px;min-height:18px;padding:5px 8px;border-radius:6px;background:rgba(255,255,255,.94);color:#24513a;font-size:12px;box-shadow:0 6px 18px rgba(15,23,42,.12)}
       #${ROOT_ID} .gs-problem-picker-status.is-error,#${MODAL_ID} .gs-problem-picker-message.is-error,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-message.is-error{color:#b3261e}
-      #${MENU_OVERLAY_ID}{position:fixed;inset:0;z-index:2147483644;background:rgba(17,24,39,.38);font-family:"Segoe UI",Tahoma,sans-serif}
-      #${MENU_ID}{position:fixed;right:24px;top:76px;z-index:2147483645;width:min(560px,calc(100vw - 32px));max-height:calc(100vh - 110px);overflow:auto;box-sizing:border-box;padding:18px;border:1px solid #d5dce8;border-radius:8px;background:#fbfcfe;color:#172033;box-shadow:0 24px 70px rgba(15,23,42,.24);font-family:"Segoe UI",Tahoma,sans-serif}
+      #${MENU_OVERLAY_ID}{position:fixed;inset:0;z-index:2147483644;background:rgba(17,24,39,.38);pointer-events:none;font-family:"Segoe UI",Tahoma,sans-serif}
+      #${MENU_ID}{position:fixed;right:24px;top:76px;z-index:2147483645;width:min(560px,calc(100vw - 32px));max-height:calc(100vh - 110px);overflow:auto;box-sizing:border-box;padding:18px;border:1px solid #d5dce8;border-radius:8px;background:#fbfcfe;color:#172033;box-shadow:0 24px 70px rgba(15,23,42,.24);pointer-events:auto;font-family:"Segoe UI",Tahoma,sans-serif}
       #${MENU_OVERLAY_ID}[hidden],#${MENU_ID}[hidden]{display:none!important}
       #${MENU_ID} .gs-problem-picker-menu-header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px}
       #${MENU_ID} .gs-problem-picker-menu-title{font-size:20px;line-height:1.2;font-weight:700}
@@ -2012,11 +2012,11 @@
       #${MENU_ID} button:disabled{opacity:.58;cursor:default}
       #${MENU_ID} .gs-problem-picker-open,#${MENU_ID} .gs-problem-picker-chatgpt-search-open,#${MENU_ID} .gs-problem-picker-combined-start,#${MENU_ID} .gs-problem-picker-itil-start,#${MENU_ID} .gs-problem-picker-supp-start,#${MENU_ID} .gs-problem-picker-supp-test,#${MENU_ID} .gs-problem-picker-new-response-start{border-color:#1155cc;background:#1155cc;color:#fff;box-shadow:0 8px 22px rgba(17,85,204,.2)}
       #${MENU_ID} .gs-problem-picker-combined-stop,#${MENU_ID} .gs-problem-picker-itil-stop,#${MENU_ID} .gs-problem-picker-supp-stop,#${MENU_ID} .gs-problem-picker-new-response-stop{border-color:#b3261e;color:#b3261e}
-      #${MODAL_ID},#${NEW_RESPONSE_REVIEW_MODAL_ID}{position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;box-sizing:border-box;padding:16px;overflow:hidden;background:rgba(17,24,39,.42);font-family:"Segoe UI",Tahoma,sans-serif}
-      #${CHATGPT_SEARCH_MODAL_ID}{position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;background:rgba(15,23,42,.48);font-family:"Segoe UI",Tahoma,sans-serif}
+      #${MODAL_ID},#${NEW_RESPONSE_REVIEW_MODAL_ID}{position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;box-sizing:border-box;padding:16px;overflow:hidden;background:rgba(17,24,39,.42);pointer-events:none;font-family:"Segoe UI",Tahoma,sans-serif}
+      #${CHATGPT_SEARCH_MODAL_ID}{position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;background:rgba(15,23,42,.48);pointer-events:none;font-family:"Segoe UI",Tahoma,sans-serif}
       #${MODAL_ID}[hidden],#${NEW_RESPONSE_REVIEW_MODAL_ID}[hidden],#${CHATGPT_SEARCH_MODAL_ID}[hidden],html.dup-ext-screenshot-mode #${ROOT_ID},html.dup-ext-screenshot-mode #${MODAL_ID},html.dup-ext-screenshot-mode #${NEW_RESPONSE_REVIEW_MODAL_ID},html.dup-ext-screenshot-mode #${CHATGPT_SEARCH_MODAL_ID},html.dup-ext-screenshot-mode #${MENU_ID},html.dup-ext-screenshot-mode #${MENU_OVERLAY_ID}{display:none!important}
-      #${MODAL_ID} .gs-problem-picker-layout{width:min(1840px,calc(100vw - 32px));height:min(880px,calc(100vh - 32px));max-height:100%;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 298px;gap:14px;align-items:stretch;overflow:hidden}
-      #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-layout{width:min(1540px,calc(100vw - 32px));height:min(880px,calc(100vh - 32px));max-height:100%;min-height:0;display:grid;grid-template-columns:1fr;align-items:stretch;overflow:hidden}
+      #${MODAL_ID} .gs-problem-picker-layout{width:min(1840px,calc(100vw - 32px));height:min(880px,calc(100vh - 32px));max-height:100%;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 298px;gap:14px;align-items:stretch;overflow:hidden;pointer-events:auto}
+      #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-layout{width:min(1540px,calc(100vw - 32px));height:min(880px,calc(100vh - 32px));max-height:100%;min-height:0;display:grid;grid-template-columns:1fr;align-items:stretch;overflow:hidden;pointer-events:auto}
       #${MODAL_ID} .gs-problem-picker-panel,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-panel{width:100%;height:100%;min-width:0;min-height:0;overflow:hidden;display:grid;grid-template-rows:auto auto auto minmax(0,1fr) auto;gap:14px;box-sizing:border-box;padding:22px;border:1px solid #d6dce8;border-radius:8px;background:#fbfcfe;color:#172033;box-shadow:0 24px 70px rgba(15,23,42,.26)}
       #${MODAL_ID} .gs-problem-picker-header,#${MODAL_ID} .gs-problem-picker-footer{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}
       #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-header,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-footer{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}
@@ -2070,7 +2070,7 @@
       #${MODAL_ID} .gs-problem-picker-category-button:hover:not(:disabled),#${MODAL_ID} .gs-problem-picker-category-button:focus-visible{border-color:#1155cc;background:#eef5ff;color:#0f3f99;outline:none}
       #${MODAL_ID} .gs-problem-picker-category-button.is-default{border-color:#1155cc;background:#1155cc;color:#fff;box-shadow:0 8px 22px rgba(17,85,204,.2)}
       #${MODAL_ID} .gs-problem-picker-category-button:disabled{opacity:.58;cursor:default;box-shadow:none}
-      #${CHATGPT_SEARCH_MODAL_ID} .gs-chatgpt-search-card{width:min(1180px,100%);max-height:min(780px,calc(100vh - 32px));display:grid;grid-template-rows:auto auto auto auto;gap:16px;box-sizing:border-box;padding:22px;border:1px solid rgba(182,193,210,.92);border-radius:16px;background:linear-gradient(145deg,#fbfdff 0%,#f3f7ff 54%,#eef6f3 100%);color:#172033;box-shadow:0 28px 90px rgba(15,23,42,.28)}
+      #${CHATGPT_SEARCH_MODAL_ID} .gs-chatgpt-search-card{width:min(1180px,100%);max-height:min(780px,calc(100vh - 32px));display:grid;grid-template-rows:auto auto auto auto;gap:16px;box-sizing:border-box;padding:22px;border:1px solid rgba(182,193,210,.92);border-radius:16px;background:linear-gradient(145deg,#fbfdff 0%,#f3f7ff 54%,#eef6f3 100%);color:#172033;box-shadow:0 28px 90px rgba(15,23,42,.28);pointer-events:auto}
       #${CHATGPT_SEARCH_MODAL_ID} .gs-chatgpt-search-header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
       #${CHATGPT_SEARCH_MODAL_ID} .gs-chatgpt-search-kicker{margin-bottom:5px;color:#49627b;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
       #${CHATGPT_SEARCH_MODAL_ID} .gs-chatgpt-search-title{font-size:24px;line-height:1.2;font-weight:700}
@@ -2625,7 +2625,6 @@
 
   function bindMenuInteractions(menu, overlay) {
     if (overlay instanceof HTMLElement && !overlay[MENU_OVERLAY_BOUND_FLAG]) {
-      overlay.addEventListener('click', closeMenu, { capture: true });
       overlay[MENU_OVERLAY_BOUND_FLAG] = true;
     }
 
@@ -3051,10 +3050,6 @@ function handleMenuEscape(event) {
       modal.hidden = true;
     };
 
-    modal.addEventListener('click', (event) => {
-      if (event.target === modal) close();
-    }, { capture: true });
-
     $('.gs-problem-picker-close-x', modal)?.addEventListener('click', close, { capture: true });
     $('.gs-problem-picker-close', modal)?.addEventListener('click', close, { capture: true });
 
@@ -3182,10 +3177,6 @@ function handleMenuEscape(event) {
     const close = () => {
       closeNewResponseReviewModal();
     };
-
-    modal.addEventListener('click', (event) => {
-      if (event.target === modal) close();
-    }, { capture: true });
 
     $('.gs-new-response-review-close-x', modal)?.addEventListener('click', close, { capture: true });
     $('.gs-new-response-review-close', modal)?.addEventListener('click', close, { capture: true });
