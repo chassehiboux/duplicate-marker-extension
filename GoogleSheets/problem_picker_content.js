@@ -2035,13 +2035,15 @@
   }
 
   function buildSuppSummaryItems(item) {
-    return getItemSuppNumbers(item).map((suppNumber, index) => ({
-      label: index === 0 ? `СУПП ${suppNumber} (последняя)` : `СУПП ${suppNumber}`,
+    const suppNumbers = getItemSuppNumbers(item);
+    const hasMultipleSuppNumbers = suppNumbers.length > 1;
+    return suppNumbers.map((suppNumber, index) => ({
+      label: hasMultipleSuppNumbers && index === 0 ? `СУПП ${suppNumber} (последняя)` : `СУПП ${suppNumber}`,
       value: suppNumber,
       copyValue: suppNumber,
       openAction: SUPP_OPEN_REQUEST_ACTION,
       openValue: suppNumber,
-      isPrimary: index === 0
+      isPrimary: hasMultipleSuppNumbers && index === 0
     }));
   }
 
@@ -2434,7 +2436,7 @@
       #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-close-x{width:34px;height:34px;padding:0;font-size:22px;line-height:1}
       #${MODAL_ID} .gs-problem-picker-progress{width:fit-content;padding:5px 10px;border-radius:999px;background:#e8f3ee;color:#14532d;font-size:13px;font-weight:700}
       #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-progress{width:fit-content;padding:5px 10px;border-radius:999px;background:#e8f3ee;color:#14532d;font-size:13px;font-weight:700}
-      #${MODAL_ID} .gs-request-summary,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary{display:flex;flex-wrap:wrap;align-items:stretch;justify-content:flex-start;gap:8px}
+      #${MODAL_ID} .gs-request-summary,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary{display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:flex-start;gap:8px}
       #${MODAL_ID} .gs-request-summary-item,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-item{flex:0 1 auto;width:max-content;max-width:min(320px,100%);min-width:0;padding:8px 9px 9px;border:1px solid #dbe2ec;border-radius:10px;background:#f7f9fc}
       #${MODAL_ID} .gs-request-summary-item.has-sheet-background,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-item.has-sheet-background{background:var(--gs-request-summary-sheet-bg,#f7f9fc);border-color:rgba(15,23,42,.16)}
       #${MODAL_ID} .gs-request-summary-header,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary-header{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:4px}
