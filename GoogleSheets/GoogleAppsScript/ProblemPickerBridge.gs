@@ -1077,6 +1077,12 @@ function _problemPickerBridgeSaveAiSearchResults_(payload) {
     });
     sh.getRange(PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW, 1, values.length, headerMap.lastColumn)
       .setValues(values);
+    _applyInfoEditSideEffects_(
+      sh,
+      PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW,
+      values.length,
+      { resetColors: false, showFormattingToast: false }
+    );
   }
 
   return {
