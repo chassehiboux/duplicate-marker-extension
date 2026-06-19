@@ -1,4 +1,4 @@
-﻿// StageTimer/timer_content.js
+// StageTimer/timer_content.js
 
 (function() {
     // 1. Определение базы
@@ -8,6 +8,7 @@
         if (h.startsWith("yuric.")) return "ЮРИЦ";
         if (h.startsWith("81.")) return "ЧЭС";
         if (h.includes("pyramid.vostok-electra.ru")) return "Основная";
+        if (h === "pyramid.nesko-nv.ru") return "Основная";
         return "Основная";
     }
 
@@ -93,7 +94,7 @@
     const EXTENSION_UI_SETTINGS_TITLE_CLASS = "dup-extension-ui-settings-title";
     const EXTENSION_UI_SETTINGS_DESCRIPTION_CLASS = "dup-extension-ui-settings-description";
     const EXTENSION_UI_SETTINGS_INPUT_ATTR = "data-dup-ui-setting";
-    const EXTENSION_UI_SETTINGS_HINT_TEXT = "Состояние сохраняется для pyramid.vostok-electra.ru и всех его поддоменов.";
+    const EXTENSION_UI_SETTINGS_HINT_TEXT = "Состояние сохраняется для доменов Пирамиды.";
     const EXTENSION_UI_GLOBAL_CONFIG = (() => {
         const rawConfig = window.PYRAMID_EXTENSION_UI_CONFIG && typeof window.PYRAMID_EXTENSION_UI_CONFIG === "object"
             ? window.PYRAMID_EXTENSION_UI_CONFIG
@@ -181,7 +182,10 @@
     let timerUiSettingsOverlayEl = null;
     let timerUiSettingsPanelEl = null;
     const rows10000TraceEnabled = (
-        window.location.hostname.indexOf("pyramid.vostok-electra.ru") !== -1
+        (
+            window.location.hostname.indexOf("pyramid.vostok-electra.ru") !== -1
+            || window.location.hostname === "pyramid.nesko-nv.ru"
+        )
         && ROWS10000_PATH_REGEX.test(window.location.pathname)
     );
     let rows10000TraceSeq = 0;

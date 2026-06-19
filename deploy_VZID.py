@@ -77,6 +77,7 @@ def create_minimal_manifest(version, target_browser='chrome'):
                 "matches": [
                     "*://pyramid.vostok-electra.ru/*",
                     "*://*.pyramid.vostok-electra.ru/*",
+                    "*://pyramid.nesko-nv.ru/*",
                     "*://pyramid-vostok.electra.ru/*",
                     "*://*.pyramid-vostok.electra.ru/*"
                 ],
@@ -94,6 +95,7 @@ def create_minimal_manifest(version, target_browser='chrome'):
                 "matches": [
                     "*://pyramid.vostok-electra.ru/*",
                     "*://*.pyramid.vostok-electra.ru/*",
+                    "*://pyramid.nesko-nv.ru/*",
                     "*://pyramid-vostok.electra.ru/*",
                     "*://*.pyramid-vostok.electra.ru/*"
                 ],
