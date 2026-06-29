@@ -1529,7 +1529,9 @@ function _problemPickerBridgeImportWssArchiveRows_(payload) {
       created: 0,
       updated: 0,
       skipped: 0,
-      failed: 0
+      failed: 0,
+      createdRows: [],
+      updatedRows: []
     };
   }
 
@@ -1548,6 +1550,8 @@ function _problemPickerBridgeImportWssArchiveRows_(payload) {
   let updated = 0;
   let skipped = 0;
   let failed = 0;
+  const createdRows = [];
+  const updatedRows = [];
 
   rows.forEach(function(sourceRow) {
     const wssId = String(sourceRow && sourceRow.wssId || '').trim();
@@ -1607,6 +1611,9 @@ function _problemPickerBridgeImportWssArchiveRows_(payload) {
   writePlan.forEach(function(item) {
     try {
       _problemPickerBridgeSetWssRowValues_(sh, item.row, headerMap, item.sourceRow, textLimit);
+      const changeInfo = _problemPickerBridgeBuildWssChangeInfo_(item);
+      if (item.type === 'create') createdRows.push(changeInfo);
+      if (item.type === 'update') updatedRows.push(changeInfo);
     } catch (error) {
       failed += 1;
       if (item.type === 'create') created = Math.max(0, created - 1);
@@ -1621,7 +1628,19 @@ function _problemPickerBridgeImportWssArchiveRows_(payload) {
     updated: updated,
     skipped: skipped,
     failed: failed,
+    createdRows: createdRows,
+    updatedRows: updatedRows,
     rowsCount: rows.length
+  };
+}
+
+function _problemPickerBridgeBuildWssChangeInfo_(item) {
+  const sourceRow = item && item.sourceRow ? item.sourceRow : {};
+  return {
+    type: item && item.type ? String(item.type) : '',
+    row: Number(item && item.row || 0),
+    wssId: String(sourceRow.wssId || ''),
+    lastParsedAt: String(sourceRow.lastParsedAt || '')
   };
 }
 

@@ -41,9 +41,11 @@
   const WSS_IMPORT_TEXT_LIMIT = 45000;
   const CHATGPT_MODE_SEARCH = 'search';
   const CHATGPT_MODE_QUESTION = 'question';
+  const CHATGPT_MODE_WSS_SEARCH = 'wss_search';
   const CHATGPT_ROW_ID_HEADER = '__row_id';
   const CHATGPT_SEARCH_FILE_NAME = 'zayavki-search.csv';
   const CHATGPT_QUESTION_FILE_NAME = 'zayavki-question.csv';
+  const WSS_CHATGPT_SEARCH_FILE_NAME = 'wss-search.csv';
   const SUPP_NOT_FOUND_INFO_TEXT = 'Не найдена заявка в СУПП. Проверьте вручную';
   const CHATGPT_SEARCH_VISIBLE_HEADERS = Object.freeze([
     'Дата заявки',
@@ -59,14 +61,43 @@
     CHATGPT_ROW_ID_HEADER,
     ...CHATGPT_SEARCH_VISIBLE_HEADERS
   ]);
+  const WSS_CHATGPT_VISIBLE_HEADERS = Object.freeze([
+    'WSS ID',
+    'Рег. номер',
+    'Краткое описание задачи',
+    'Содержание',
+    'Расширенная история решений',
+    'Доп. файлы',
+    'Дата регистрации',
+    'Этап',
+    'Статус',
+    'Заказчик',
+    'Ответственный',
+    'Комментарий',
+    'Номер заявки в СУПП',
+    'Состояние заявки в СУПП',
+    'Связанные задачи СУПП',
+    'last_parsed_at'
+  ]);
+  const WSS_CHATGPT_CSV_HEADERS = Object.freeze([
+    CHATGPT_ROW_ID_HEADER,
+    ...WSS_CHATGPT_VISIBLE_HEADERS
+  ]);
+  const WSS_CHATGPT_LONG_TEXT_HEADERS = Object.freeze({
+    'Содержание': 4000,
+    'Расширенная история решений': 3500,
+    'Доп. файлы': 2500,
+    'Комментарий': 1200
+  });
   const ROOT_ID = 'dup-google-sheets-problem-picker-root';
   const MODAL_ID = 'dup-google-sheets-problem-picker-modal';
   const NEW_RESPONSE_REVIEW_MODAL_ID = 'dup-google-sheets-new-response-review-modal';
   const CHATGPT_SEARCH_MODAL_ID = 'dup-google-sheets-chatgpt-search-modal';
   const WSS_IMPORT_MODAL_ID = 'dup-google-sheets-wss-import-modal';
+  const WSS_IMPORT_REVIEW_MODAL_ID = 'dup-google-sheets-wss-import-review-modal';
   const MENU_ID = 'dup-google-sheets-problem-picker-menu';
   const MENU_OVERLAY_ID = 'dup-google-sheets-problem-picker-menu-overlay';
-  const MENU_LAYOUT_VERSION = '2026-06-29-wss-1';
+  const MENU_LAYOUT_VERSION = '2026-06-29-wss-2';
   const MENU_BOUND_FLAG = '__dupGoogleSheetsMenuBound';
   const MENU_OVERLAY_BOUND_FLAG = '__dupGoogleSheetsMenuOverlayBound';
   const STYLE_ID = 'dup-google-sheets-problem-picker-style';
@@ -123,6 +154,7 @@
     mode: CHATGPT_MODE_SEARCH,
     searchQuery: '',
     questionQuery: '',
+    wssSearchQuery: '',
     statusText: 'Введите запрос и запустите поиск.',
     lastError: '',
     compactRowsCount: 0,
@@ -149,6 +181,14 @@
     },
     statusText: 'Выберите zip-архив выгрузки WSS.',
     lastError: ''
+  };
+
+  let wssImportReviewState = {
+    queue: [],
+    currentIndex: 0,
+    totalExpected: 0,
+    statusText: 'Новых или обновленных заявок WSS для просмотра нет.',
+    errorText: ''
   };
 
   let itilState = {
@@ -992,22 +1032,34 @@
   }
 
   function normalizeChatGptMode(mode) {
+    if (mode === CHATGPT_MODE_WSS_SEARCH) return CHATGPT_MODE_WSS_SEARCH;
     return mode === CHATGPT_MODE_QUESTION ? CHATGPT_MODE_QUESTION : CHATGPT_MODE_SEARCH;
   }
 
   function getChatGptModeDraft(mode) {
-    return normalizeChatGptMode(mode) === CHATGPT_MODE_QUESTION
-      ? String(chatGptSearchState.questionQuery || '')
-      : String(chatGptSearchState.searchQuery || '');
+    const normalizedMode = normalizeChatGptMode(mode);
+    if (normalizedMode === CHATGPT_MODE_QUESTION) return String(chatGptSearchState.questionQuery || '');
+    if (normalizedMode === CHATGPT_MODE_WSS_SEARCH) return String(chatGptSearchState.wssSearchQuery || '');
+    return String(chatGptSearchState.searchQuery || '');
   }
 
   function setChatGptModeDraft(mode, value) {
     const text = String(value || '');
-    if (normalizeChatGptMode(mode) === CHATGPT_MODE_QUESTION) {
+    const normalizedMode = normalizeChatGptMode(mode);
+    if (normalizedMode === CHATGPT_MODE_QUESTION) {
       chatGptSearchState.questionQuery = text;
       return;
     }
+    if (normalizedMode === CHATGPT_MODE_WSS_SEARCH) {
+      chatGptSearchState.wssSearchQuery = text;
+      return;
+    }
     chatGptSearchState.searchQuery = text;
+  }
+
+  function isChatGptOpenChatMode(mode) {
+    const normalizedMode = normalizeChatGptMode(mode);
+    return normalizedMode === CHATGPT_MODE_QUESTION || normalizedMode === CHATGPT_MODE_WSS_SEARCH;
   }
 
   function buildChatGptSearchPrompt(query) {
@@ -1074,8 +1126,67 @@
 Не используй markdown-таблицы. Можно использовать обычные абзацы и списки.`;
   }
 
+  function buildWssChatGptSearchPrompt(query) {
+    return `${String(query || '').trim()}
+
+Используй только данные из приложенного CSV-файла листа WSS. Не используй внешние знания, интернет, догадки или сведения, которых нет в CSV.
+
+Нужно найти заявки WSS, которые лучше всего соответствуют запросу пользователя. Ищи по смыслу, а не только по буквальному совпадению.
+
+Приоритет анализа:
+1. Главный источник смысла — столбцы «Краткое описание задачи» и «Содержание».
+2. Второй по важности источник — «Расширенная история решений».
+3. «Доп. файлы», «Комментарий», статусы, этапы, заказчик, ответственный и связанные задачи СУПП используй как дополнительный контекст.
+
+Обязательные правила:
+- отвечай только на основе CSV;
+- не придумывай факты, которых нет в заявках;
+- если точного совпадения нет, отдельно покажи частичные совпадения или прямо напиши, что подходящих заявок не найдено;
+- каждый найденный результат подтверждай WSS ID, рег. номером и короткой точной цитатой из CSV;
+- если несколько заявок похожи, отсортируй их от наиболее релевантной к менее релевантной;
+- не используй markdown-таблицы.
+
+Оформи ответ так:
+1. Лучшие совпадения
+2. Почему они подходят
+3. Подтверждающие цитаты
+4. Частичные или сомнительные совпадения
+5. Чего не хватает для уверенного вывода
+
+Для каждой заявки используй формат:
+- WSS ID: <номер>, рег. номер: <номер>
+- Статус/этап: ...
+- Почему подходит: ...
+- Цитата: ...`;
+  }
+
   function getChatGptModeConfig(mode) {
-    if (normalizeChatGptMode(mode) === CHATGPT_MODE_QUESTION) {
+    const normalizedMode = normalizeChatGptMode(mode);
+    if (normalizedMode === CHATGPT_MODE_WSS_SEARCH) {
+      return {
+        title: 'Поиск заявки WSS',
+        subtitle: 'Расширение само соберёт компактный CSV листа «WSS», откроет временный чат ChatGPT, прикрепит CSV и отправит поисковый запрос по архиву WSS.',
+        label: 'Введите запрос для поиска заявки WSS',
+        placeholder: 'Например: заявки по ошибкам публикации, распределению оплат или конкретному функционалу',
+        startText: 'Отправить в ChatGPT',
+        runningText: 'Отправляю…',
+        idleStatus: 'Введите запрос и откройте поиск WSS в ChatGPT.',
+        emptyQueryError: 'Введите запрос для поиска заявки WSS.',
+        collectStatus: 'Собираю компактный CSV листа «WSS»...',
+        openingStatus: 'Открываю вкладку ChatGPT, прикрепляю CSV WSS и отправляю запрос...',
+        successStatus: 'CSV WSS и поисковый промпт отправлены в ChatGPT. Продолжай работу в открытой вкладке чата.',
+        launcherSuccessStatus: 'Поиск по WSS отправлен в ChatGPT. Продолжай работу в открытой вкладке.',
+        errorFallback: 'Не удалось отправить поиск WSS в ChatGPT.',
+        promptBuilder: buildWssChatGptSearchPrompt,
+        fileName: WSS_CHATGPT_SEARCH_FILE_NAME,
+        sheetName: WSS_SHEET_NAME,
+        visibleHeaders: WSS_CHATGPT_VISIBLE_HEADERS,
+        csvHeaders: WSS_CHATGPT_CSV_HEADERS,
+        openInChat: true
+      };
+    }
+
+    if (normalizedMode === CHATGPT_MODE_QUESTION) {
       return {
         title: 'Задать вопрос по заявкам',
         subtitle: 'Расширение само соберёт компактный CSV листа «Заявки», откроет временный чат ChatGPT, прикрепит CSV и отправит вопрос вместе с исследовательским промптом. Дальше работа продолжится прямо во вкладке ChatGPT.',
@@ -1088,9 +1199,14 @@
         collectStatus: 'Собираю компактный CSV листа «Заявки»...',
         openingStatus: 'Открываю вкладку ChatGPT, прикрепляю CSV и отправляю вопрос...',
         successStatus: 'CSV, вопрос и исследовательский промпт отправлены в ChatGPT. Продолжай работу в открытой вкладке чата.',
+        launcherSuccessStatus: 'Вопрос по заявкам отправлен в ChatGPT. Продолжай работу в открытой вкладке.',
         errorFallback: 'Не удалось отправить вопрос в ChatGPT.',
         promptBuilder: buildChatGptQuestionPrompt,
-        fileName: CHATGPT_QUESTION_FILE_NAME
+        fileName: CHATGPT_QUESTION_FILE_NAME,
+        sheetName: CHATGPT_SEARCH_SHEET_NAME,
+        visibleHeaders: CHATGPT_SEARCH_VISIBLE_HEADERS,
+        csvHeaders: CHATGPT_SEARCH_CSV_HEADERS,
+        openInChat: true
       };
     }
 
@@ -1108,27 +1224,54 @@
       successStatus: '',
       errorFallback: 'Не удалось выполнить поиск через ChatGPT.',
       promptBuilder: buildChatGptSearchPrompt,
-      fileName: CHATGPT_SEARCH_FILE_NAME
+      fileName: CHATGPT_SEARCH_FILE_NAME,
+      sheetName: CHATGPT_SEARCH_SHEET_NAME,
+      visibleHeaders: CHATGPT_SEARCH_VISIBLE_HEADERS,
+      csvHeaders: CHATGPT_SEARCH_CSV_HEADERS,
+      openInChat: false
     };
   }
 
-  async function loadChatGptSearchCsv() {
-    const response = await fetch(getChatGptSearchCsvUrl(), { credentials: 'omit' });
-    if (!response.ok) throw new Error(`CSV-экспорт листа «${CHATGPT_SEARCH_SHEET_NAME}» вернул HTTP ${response.status}.`);
+  function normalizeChatGptCsvCell(header, value) {
+    const text = String(value == null ? '' : value)
+      .replace(/\r\n?/g, '\n')
+      .replace(/\u00a0/g, ' ')
+      .trim();
+    const limit = Number(WSS_CHATGPT_LONG_TEXT_HEADERS[header] || 0);
+    if (!limit || text.length <= limit) return text;
+    return text.slice(0, Math.max(0, limit - 19)).replace(/\s+$/g, '') + '\n[текст сокращен]';
+  }
+
+  async function loadChatGptSearchCsv(modeConfig) {
+    const config = modeConfig && typeof modeConfig === 'object'
+      ? modeConfig
+      : getChatGptModeConfig(CHATGPT_MODE_SEARCH);
+    const sheetName = String(config.sheetName || CHATGPT_SEARCH_SHEET_NAME);
+    const visibleHeaders = Array.isArray(config.visibleHeaders) && config.visibleHeaders.length
+      ? config.visibleHeaders
+      : CHATGPT_SEARCH_VISIBLE_HEADERS;
+    const csvHeaders = Array.isArray(config.csvHeaders) && config.csvHeaders.length
+      ? config.csvHeaders
+      : [CHATGPT_ROW_ID_HEADER, ...visibleHeaders];
+    const response = await fetch(getSheetCsvUrl(sheetName), { credentials: 'omit' });
+    if (!response.ok) throw new Error(`CSV-экспорт листа «${sheetName}» вернул HTTP ${response.status}.`);
 
     const rows = parseCsv(await response.text());
     const headers = rows[0] || [];
-    const columnIndexes = CHATGPT_SEARCH_VISIBLE_HEADERS.map((header) => headers.indexOf(header));
-    const missingHeaders = CHATGPT_SEARCH_VISIBLE_HEADERS.filter((header, index) => columnIndexes[index] < 0);
+    const columnIndexes = visibleHeaders.map((header) => headers.indexOf(header));
+    const missingHeaders = visibleHeaders.filter((header, index) => columnIndexes[index] < 0);
     if (missingHeaders.length) {
       throw new Error(`Не найдены колонки для поиска: ${missingHeaders.join(', ')}.`);
     }
 
-    const compactRows = [CHATGPT_SEARCH_CSV_HEADERS.slice()];
+    const compactRows = [csvHeaders.slice()];
     const rowMap = {};
     for (let index = 1; index < rows.length; index++) {
       const sourceRow = rows[index] || [];
-      const visibleRow = columnIndexes.map((columnIndex) => String(sourceRow[columnIndex] || ''));
+      const visibleRow = columnIndexes.map((columnIndex, headerIndex) => normalizeChatGptCsvCell(
+        visibleHeaders[headerIndex],
+        sourceRow[columnIndex]
+      ));
       if (!visibleRow.some((cell) => cell.trim())) continue;
 
       const rowId = index + 1;
@@ -1139,7 +1282,7 @@
     return {
       csvText: buildCsvText(compactRows),
       rowsCount: compactRows.length - 1,
-      headers: CHATGPT_SEARCH_VISIBLE_HEADERS.slice(),
+      headers: visibleHeaders.slice(),
       rowMap
     };
   }
@@ -2917,7 +3060,7 @@
     style.textContent = `
       #${ROOT_ID}{position:fixed;right:18px;bottom:58px;z-index:2147483640;display:flex;flex-direction:column;align-items:flex-end;gap:6px;font-family:"Segoe UI",Tahoma,sans-serif}
       #${ROOT_ID} .gs-problem-picker-actions{display:flex;gap:6px}
-      #${ROOT_ID} button,#${MODAL_ID} button,#${NEW_RESPONSE_REVIEW_MODAL_ID} button,#${CHATGPT_SEARCH_MODAL_ID} button,#${WSS_IMPORT_MODAL_ID} button{border:1px solid #b7c2d3;border-radius:7px;background:#fff;color:#162033;cursor:pointer;font:600 13px/1.2 "Segoe UI",Tahoma,sans-serif;padding:8px 12px}
+      #${ROOT_ID} button,#${MODAL_ID} button,#${NEW_RESPONSE_REVIEW_MODAL_ID} button,#${CHATGPT_SEARCH_MODAL_ID} button,#${WSS_IMPORT_MODAL_ID} button,#${WSS_IMPORT_REVIEW_MODAL_ID} button{border:1px solid #b7c2d3;border-radius:7px;background:#fff;color:#162033;cursor:pointer;font:600 13px/1.2 "Segoe UI",Tahoma,sans-serif;padding:8px 12px}
       #${ROOT_ID} .gs-problem-picker-open{border-color:#1155cc;background:#1155cc;color:#fff;box-shadow:0 8px 22px rgba(17,85,204,.24)}
       #${ROOT_ID} .gs-problem-picker-url{min-width:44px}
       #${ROOT_ID} .gs-problem-picker-status{max-width:360px;min-height:18px;padding:5px 8px;border-radius:6px;background:rgba(255,255,255,.94);color:#24513a;font-size:12px;box-shadow:0 6px 18px rgba(15,23,42,.12)}
@@ -2950,14 +3093,14 @@
       #${MENU_ID} .gs-problem-picker-itil-status,#${MENU_ID} .gs-problem-picker-supp-status,#${MENU_ID} .gs-problem-picker-new-response-status{min-height:18px;color:#24513a;font-size:13px;overflow-wrap:anywhere}
       #${MENU_ID} .gs-wss-import-menu-status{min-height:18px;color:#24513a;font-size:13px;overflow-wrap:anywhere}
       #${MENU_ID} .gs-problem-picker-chatgpt-note{color:#566176;font-size:13px;line-height:1.45}
-      #${ROOT_ID} button,#${MODAL_ID} button,#${NEW_RESPONSE_REVIEW_MODAL_ID} button,#${CHATGPT_SEARCH_MODAL_ID} button,#${WSS_IMPORT_MODAL_ID} button,#${MENU_ID} button{border:1px solid #b7c2d3;border-radius:7px;background:#fff;color:#162033;cursor:pointer;font:600 13px/1.2 "Segoe UI",Tahoma,sans-serif;padding:8px 12px}
+      #${ROOT_ID} button,#${MODAL_ID} button,#${NEW_RESPONSE_REVIEW_MODAL_ID} button,#${CHATGPT_SEARCH_MODAL_ID} button,#${WSS_IMPORT_MODAL_ID} button,#${WSS_IMPORT_REVIEW_MODAL_ID} button,#${MENU_ID} button{border:1px solid #b7c2d3;border-radius:7px;background:#fff;color:#162033;cursor:pointer;font:600 13px/1.2 "Segoe UI",Tahoma,sans-serif;padding:8px 12px}
       #${MENU_ID} button:disabled{opacity:.58;cursor:default}
-      #${MENU_ID} .gs-problem-picker-open,#${MENU_ID} .gs-problem-picker-chatgpt-search-open,#${MENU_ID} .gs-wss-import-open,#${MENU_ID} .gs-problem-picker-combined-start,#${MENU_ID} .gs-problem-picker-itil-start,#${MENU_ID} .gs-problem-picker-supp-start,#${MENU_ID} .gs-problem-picker-supp-test,#${MENU_ID} .gs-problem-picker-new-response-start{border-color:#1155cc;background:#1155cc;color:#fff;box-shadow:0 8px 22px rgba(17,85,204,.2)}
+      #${MENU_ID} .gs-problem-picker-open,#${MENU_ID} .gs-problem-picker-chatgpt-search-open,#${MENU_ID} .gs-wss-import-open,#${MENU_ID} .gs-wss-chatgpt-search-open,#${MENU_ID} .gs-problem-picker-combined-start,#${MENU_ID} .gs-problem-picker-itil-start,#${MENU_ID} .gs-problem-picker-supp-start,#${MENU_ID} .gs-problem-picker-supp-test,#${MENU_ID} .gs-problem-picker-new-response-start{border-color:#1155cc;background:#1155cc;color:#fff;box-shadow:0 8px 22px rgba(17,85,204,.2)}
       #${MENU_ID} .gs-problem-picker-new-response-history{border-color:#c9d7ef;background:#f4f8ff;color:#0f3f99}
       #${MENU_ID} .gs-problem-picker-combined-stop,#${MENU_ID} .gs-problem-picker-itil-stop,#${MENU_ID} .gs-problem-picker-supp-stop,#${MENU_ID} .gs-problem-picker-new-response-stop{border-color:#b3261e;color:#b3261e}
-      #${MODAL_ID},#${NEW_RESPONSE_REVIEW_MODAL_ID},#${WSS_IMPORT_MODAL_ID}{position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;box-sizing:border-box;padding:16px;overflow:hidden;background:rgba(17,24,39,.42);pointer-events:none;font-family:"Segoe UI",Tahoma,sans-serif}
+      #${MODAL_ID},#${NEW_RESPONSE_REVIEW_MODAL_ID},#${WSS_IMPORT_MODAL_ID},#${WSS_IMPORT_REVIEW_MODAL_ID}{position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;box-sizing:border-box;padding:16px;overflow:hidden;background:rgba(17,24,39,.42);pointer-events:none;font-family:"Segoe UI",Tahoma,sans-serif}
       #${CHATGPT_SEARCH_MODAL_ID}{position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;background:rgba(15,23,42,.48);pointer-events:none;font-family:"Segoe UI",Tahoma,sans-serif}
-      #${MODAL_ID}[hidden],#${NEW_RESPONSE_REVIEW_MODAL_ID}[hidden],#${CHATGPT_SEARCH_MODAL_ID}[hidden],#${WSS_IMPORT_MODAL_ID}[hidden],html.dup-ext-screenshot-mode #${ROOT_ID},html.dup-ext-screenshot-mode #${MODAL_ID},html.dup-ext-screenshot-mode #${NEW_RESPONSE_REVIEW_MODAL_ID},html.dup-ext-screenshot-mode #${CHATGPT_SEARCH_MODAL_ID},html.dup-ext-screenshot-mode #${WSS_IMPORT_MODAL_ID},html.dup-ext-screenshot-mode #${MENU_ID},html.dup-ext-screenshot-mode #${MENU_OVERLAY_ID}{display:none!important}
+      #${MODAL_ID}[hidden],#${NEW_RESPONSE_REVIEW_MODAL_ID}[hidden],#${CHATGPT_SEARCH_MODAL_ID}[hidden],#${WSS_IMPORT_MODAL_ID}[hidden],#${WSS_IMPORT_REVIEW_MODAL_ID}[hidden],html.dup-ext-screenshot-mode #${ROOT_ID},html.dup-ext-screenshot-mode #${MODAL_ID},html.dup-ext-screenshot-mode #${NEW_RESPONSE_REVIEW_MODAL_ID},html.dup-ext-screenshot-mode #${CHATGPT_SEARCH_MODAL_ID},html.dup-ext-screenshot-mode #${WSS_IMPORT_MODAL_ID},html.dup-ext-screenshot-mode #${WSS_IMPORT_REVIEW_MODAL_ID},html.dup-ext-screenshot-mode #${MENU_ID},html.dup-ext-screenshot-mode #${MENU_OVERLAY_ID}{display:none!important}
       #${MODAL_ID} .gs-problem-picker-layout{width:min(1840px,calc(100vw - 32px));height:min(880px,calc(100vh - 32px));max-height:100%;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 298px;gap:14px;align-items:stretch;overflow:hidden;pointer-events:auto}
       #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-layout{width:min(1540px,calc(100vw - 32px));height:min(880px,calc(100vh - 32px));max-height:100%;min-height:0;display:grid;grid-template-columns:1fr;align-items:stretch;overflow:hidden;pointer-events:auto}
       #${MODAL_ID} .gs-problem-picker-panel,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-panel{width:100%;height:100%;min-width:0;min-height:0;overflow:hidden;display:grid;grid-template-rows:auto auto auto minmax(0,1fr) auto;gap:14px;box-sizing:border-box;padding:22px;border:1px solid #d6dce8;border-radius:8px;background:#fbfcfe;color:#172033;box-shadow:0 24px 70px rgba(15,23,42,.26)}
@@ -3048,6 +3191,25 @@
       #${WSS_IMPORT_MODAL_ID} .gs-wss-import-status.is-error{color:#b3261e}
       #${WSS_IMPORT_MODAL_ID} .gs-wss-import-buttons{display:flex;flex-shrink:0;gap:10px}
       #${WSS_IMPORT_MODAL_ID} button:disabled{opacity:.58;cursor:default;box-shadow:none}
+      #${WSS_IMPORT_REVIEW_MODAL_ID} .gs-wss-review-panel{width:min(1280px,calc(100vw - 32px));height:min(820px,calc(100vh - 32px));min-height:0;display:grid;grid-template-rows:auto auto auto minmax(0,1fr) auto;gap:14px;box-sizing:border-box;padding:22px;border:1px solid #d6dce8;border-radius:8px;background:#fbfcfe;color:#172033;box-shadow:0 24px 70px rgba(15,23,42,.26);pointer-events:auto}
+      #${WSS_IMPORT_REVIEW_MODAL_ID} .gs-wss-review-header,#${WSS_IMPORT_REVIEW_MODAL_ID} .gs-wss-review-footer{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}
+      #${WSS_IMPORT_REVIEW_MODAL_ID} .gs-wss-review-title{font-size:22px;line-height:1.2;font-weight:700}
+      #${WSS_IMPORT_REVIEW_MODAL_ID} .gs-wss-review-meta,#${WSS_IMPORT_REVIEW_MODAL_ID} .gs-wss-review-message{color:#566176;font-size:13px;line-height:1.45;overflow-wrap:anywhere}
+      #${WSS_IMPORT_REVIEW_MODAL_ID} .gs-wss-review-message.is-error{color:#b3261e}
+      #${WSS_IMPORT_REVIEW_MODAL_ID} .gs-wss-review-close-x{width:34px;height:34px;padding:0;font-size:22px;line-height:1}
+      #${WSS_IMPORT_REVIEW_MODAL_ID} .gs-wss-review-progress{width:fit-content;padding:5px 10px;border-radius:999px;background:#e8f3ee;color:#14532d;font-size:13px;font-weight:700}
+      #${WSS_IMPORT_REVIEW_MODAL_ID} .gs-wss-review-summary{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+      #${WSS_IMPORT_REVIEW_MODAL_ID} .gs-wss-review-pill{padding:6px 10px;border-radius:999px;background:#eef5ff;color:#0f3f99;font-size:12px;font-weight:700;overflow-wrap:anywhere}
+      #${WSS_IMPORT_REVIEW_MODAL_ID} .gs-wss-review-pill.is-created{background:#e8f3ee;color:#14532d}
+      #${WSS_IMPORT_REVIEW_MODAL_ID} .gs-wss-review-pill.is-updated{background:#fff7e6;color:#8a5700}
+      #${WSS_IMPORT_REVIEW_MODAL_ID} .gs-wss-review-grid{min-width:0;min-height:0;overflow:hidden;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+      #${WSS_IMPORT_REVIEW_MODAL_ID} .gs-wss-review-wrap{min-width:0;min-height:0;overflow:hidden;display:grid;grid-template-rows:auto minmax(0,1fr);gap:8px}
+      #${WSS_IMPORT_REVIEW_MODAL_ID} .gs-wss-review-label{color:#4b5563;font-size:13px;font-weight:700}
+      #${WSS_IMPORT_REVIEW_MODAL_ID} .gs-wss-review-text{height:100%;max-height:100%;min-height:0;box-sizing:border-box;overflow:auto;white-space:pre-wrap;border:1px solid #d7dce6;border-left:6px solid #2d6cdf;border-radius:8px;background:#fff;padding:14px;color:#1f2937;font-size:14px;line-height:1.55}
+      #${WSS_IMPORT_REVIEW_MODAL_ID} .gs-wss-review-side{border-left-color:#2e7d32}
+      #${WSS_IMPORT_REVIEW_MODAL_ID} .gs-wss-review-footer{align-items:center;border-top:1px solid #e3e8f0;padding-top:14px}
+      #${WSS_IMPORT_REVIEW_MODAL_ID} .gs-wss-review-buttons{display:flex;flex-shrink:0;gap:10px}
+      #${WSS_IMPORT_REVIEW_MODAL_ID} button:disabled{opacity:.58;cursor:default;box-shadow:none}
       #${CHATGPT_SEARCH_MODAL_ID} .gs-chatgpt-search-card{width:min(1180px,100%);max-height:min(780px,calc(100vh - 32px));display:grid;grid-template-rows:auto auto auto auto;gap:16px;box-sizing:border-box;padding:22px;border:1px solid rgba(182,193,210,.92);border-radius:16px;background:linear-gradient(145deg,#fbfdff 0%,#f3f7ff 54%,#eef6f3 100%);color:#172033;box-shadow:0 28px 90px rgba(15,23,42,.28);pointer-events:auto}
       #${CHATGPT_SEARCH_MODAL_ID} .gs-chatgpt-search-header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
       #${CHATGPT_SEARCH_MODAL_ID} .gs-chatgpt-search-kicker{margin-bottom:5px;color:#49627b;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
@@ -3084,6 +3246,9 @@
         #${WSS_IMPORT_MODAL_ID}{align-items:flex-start;overflow:auto}
         #${WSS_IMPORT_MODAL_ID} .gs-wss-import-card{max-height:none;grid-template-rows:auto auto auto minmax(220px,1fr) auto}
         #${WSS_IMPORT_MODAL_ID} .gs-wss-import-file{grid-template-columns:1fr}
+        #${WSS_IMPORT_REVIEW_MODAL_ID}{align-items:flex-start;overflow:auto}
+        #${WSS_IMPORT_REVIEW_MODAL_ID} .gs-wss-review-panel{height:auto;min-height:min(760px,calc(100vh - 32px))}
+        #${WSS_IMPORT_REVIEW_MODAL_ID} .gs-wss-review-grid{grid-template-columns:1fr;grid-template-rows:repeat(2,minmax(240px,1fr))}
       }
     `;
     (document.head || document.documentElement).appendChild(style);
@@ -3341,7 +3506,8 @@
     if (!(menu instanceof HTMLElement)) return;
 
     const status = $('.gs-wss-import-menu-status', menu);
-    const button = $('.gs-wss-import-open', menu);
+    const importButton = $('.gs-wss-import-open', menu);
+    const searchButton = $('.gs-wss-chatgpt-search-open', menu);
     const imported = wssImportState.imported || {};
     const text = wssImportState.lastError
       || (wssImportState.isParsing ? 'Разбираю архив...'
@@ -3356,8 +3522,11 @@
       }
     }
 
-    if (button instanceof HTMLButtonElement) {
-      button.disabled = wssImportState.isParsing || wssImportState.isImporting;
+    if (importButton instanceof HTMLButtonElement) {
+      importButton.disabled = wssImportState.isParsing || wssImportState.isImporting;
+    }
+    if (searchButton instanceof HTMLButtonElement) {
+      searchButton.disabled = wssImportState.isParsing || wssImportState.isImporting;
     }
   }
 
@@ -3425,7 +3594,7 @@
         foundPill.textContent = `Найдено заявок: ${chatGptSearchState.foundCount}`;
         resultMeta.appendChild(foundPill);
       }
-      if (mode === CHATGPT_MODE_QUESTION && Number.isInteger(chatGptSearchState.chatTabId) && !chatGptSearchState.isRunning) {
+      if (isChatGptOpenChatMode(mode) && Number.isInteger(chatGptSearchState.chatTabId) && !chatGptSearchState.isRunning) {
         const chatPill = document.createElement('span');
         chatPill.className = 'gs-chatgpt-search-pill';
         chatPill.textContent = 'Чат ChatGPT подготовлен';
@@ -3515,6 +3684,7 @@
       lastError: '',
       compactRowsCount: 0,
       foundCount: 0,
+      chatTabId: null,
       sentPrompt: '',
       resultSheetId: null
     };
@@ -3634,6 +3804,7 @@
         <div class="gs-problem-picker-menu-section-title">Заявки WSS</div>
         <div class="gs-problem-picker-menu-actions">
           <button type="button" class="gs-wss-import-open">Загрузить архив</button>
+          <button type="button" class="gs-wss-chatgpt-search-open">Поиск заявки</button>
         </div>
         <div class="gs-wss-import-menu-status" aria-live="polite">Ожидание запуска.</div>
       </section>
@@ -3703,6 +3874,10 @@
         openWssImportModal();
         return;
       }
+      if (button.classList.contains('gs-wss-chatgpt-search-open')) {
+        openChatGptSearchModal(CHATGPT_MODE_WSS_SEARCH);
+        return;
+      }
       if (button.classList.contains('gs-problem-picker-itil-start')) {
         void startItilFill();
         return;
@@ -3765,7 +3940,8 @@
     const needsMenuRefresh = menu.dataset.layoutVersion !== MENU_LAYOUT_VERSION
       || !$('.gs-problem-picker-manual-toggle', menu)
       || !$('.gs-problem-picker-manual-panel', menu)
-      || !$('.gs-wss-import-open', menu);
+      || !$('.gs-wss-import-open', menu)
+      || !$('.gs-wss-chatgpt-search-open', menu);
     if (needsMenuRefresh) {
       menu.innerHTML = getMenuMarkup();
       menu.dataset.layoutVersion = MENU_LAYOUT_VERSION;
@@ -3826,6 +4002,7 @@
     const newResponseReviewModal = document.getElementById(NEW_RESPONSE_REVIEW_MODAL_ID);
     const chatGptSearchModal = document.getElementById(CHATGPT_SEARCH_MODAL_ID);
     const wssImportModal = document.getElementById(WSS_IMPORT_MODAL_ID);
+    const wssImportReviewModal = document.getElementById(WSS_IMPORT_REVIEW_MODAL_ID);
     if (menu instanceof HTMLElement && !menu.hidden) {
       event.preventDefault();
       closeMenu();
@@ -3844,6 +4021,11 @@
     if (wssImportModal instanceof HTMLElement && !wssImportModal.hidden) {
       event.preventDefault();
       closeWssImportModal();
+      return;
+    }
+    if (wssImportReviewModal instanceof HTMLElement && !wssImportReviewModal.hidden) {
+      event.preventDefault();
+      closeWssImportReviewModal();
     }
   }
 
@@ -3883,6 +4065,129 @@
       statusText: 'Выберите zip-архив выгрузки WSS.',
       lastError: '',
       ...(overrides || {})
+    };
+  }
+
+  function resetWssImportReviewState(overrides) {
+    wssImportReviewState = {
+      queue: [],
+      currentIndex: 0,
+      totalExpected: 0,
+      statusText: 'Новых или обновленных заявок WSS для просмотра нет.',
+      errorText: '',
+      ...(overrides || {})
+    };
+  }
+
+  function getWssImportReviewCurrentItem() {
+    return wssImportReviewState.queue[wssImportReviewState.currentIndex] || null;
+  }
+
+  function canGoBackInWssImportReview() {
+    return wssImportReviewState.currentIndex > 0;
+  }
+
+  function getWssReviewValue(item, header) {
+    const values = item && item.values && typeof item.values === 'object' ? item.values : {};
+    return String(values[header] || '').trim();
+  }
+
+  function formatWssReviewHistory(entries) {
+    return (Array.isArray(entries) ? entries : [])
+      .map((entry) => {
+        const date = normalizeWssText(entry && entry.date);
+        const user = normalizeWssText(entry && entry.user);
+        const notified = normalizeWssText(entry && entry.notified);
+        const solution = normalizeWssText(entry && entry.solution);
+        const comment = normalizeWssText(entry && entry.comment) || 'комментария нет';
+        const headerBase = [date, user].filter(Boolean).join(' / ');
+        const header = notified
+          ? (headerBase ? headerBase + ' → ' + notified : '→ ' + notified)
+          : headerBase;
+        return [header, solution, comment].filter(Boolean).join('\n');
+      })
+      .filter(Boolean)
+      .join('\n\n');
+  }
+
+  function formatWssReviewAttachments(entries) {
+    return (Array.isArray(entries) ? entries : [])
+      .map((entry) => {
+        const title = normalizeWssText(entry && entry.title);
+        const text = normalizeWssText(entry && entry.text);
+        return [title, text].filter(Boolean).join('\n');
+      })
+      .filter(Boolean)
+      .join('\n\n');
+  }
+
+  function buildWssReviewMainText(item) {
+    if (!item) return '';
+
+    const title = getWssReviewValue(item, 'Краткое описание задачи');
+    const content = getWssReviewValue(item, 'Содержание');
+    const comment = getWssReviewValue(item, 'Комментарий');
+    return [
+      title ? 'Краткое описание задачи:\n' + title : '',
+      content ? 'Содержание:\n' + content : '',
+      comment ? 'Комментарий:\n' + comment : ''
+    ].filter(Boolean).join('\n\n') || 'Основной текст заявки пустой.';
+  }
+
+  function buildWssReviewSideText(item) {
+    if (!item) return '';
+
+    const history = formatWssReviewHistory(item.historyEntries);
+    const attachments = formatWssReviewAttachments(item.attachmentEntries);
+    return [
+      history ? 'Расширенная история решений:\n' + history : '',
+      attachments ? 'Доп. файлы:\n' + attachments : ''
+    ].filter(Boolean).join('\n\n') || 'История решений и извлеченные тексты файлов отсутствуют.';
+  }
+
+  function buildWssImportReviewItem(sourceRow, changeInfo, type) {
+    const values = sourceRow && sourceRow.values && typeof sourceRow.values === 'object'
+      ? sourceRow.values
+      : {};
+    return {
+      type,
+      row: Number(changeInfo && changeInfo.row || 0),
+      wssId: String(changeInfo && changeInfo.wssId || sourceRow && sourceRow.wssId || '').trim(),
+      lastParsedAt: String(changeInfo && changeInfo.lastParsedAt || sourceRow && sourceRow.lastParsedAt || '').trim(),
+      values,
+      historyEntries: Array.isArray(sourceRow && sourceRow.historyEntries) ? sourceRow.historyEntries : [],
+      attachmentEntries: Array.isArray(sourceRow && sourceRow.attachmentEntries) ? sourceRow.attachmentEntries : []
+    };
+  }
+
+  function collectWssImportReviewRows(result, batch) {
+    const sourceByWssId = new Map();
+    (Array.isArray(batch) ? batch : []).forEach((row) => {
+      const wssId = String(row && row.wssId || '').trim();
+      if (wssId) sourceByWssId.set(wssId, row);
+    });
+
+    const items = [];
+    [
+      { rows: result && result.createdRows, type: 'created' },
+      { rows: result && result.updatedRows, type: 'updated' }
+    ].forEach((group) => {
+      (Array.isArray(group.rows) ? group.rows : []).forEach((changeInfo) => {
+        const wssId = String(changeInfo && changeInfo.wssId || '').trim();
+        const sourceRow = sourceByWssId.get(wssId);
+        if (!sourceRow) return;
+        items.push(buildWssImportReviewItem(sourceRow, changeInfo, group.type));
+      });
+    });
+
+    if (!items.length) return;
+
+    wssImportReviewState = {
+      ...wssImportReviewState,
+      queue: wssImportReviewState.queue.concat(items),
+      totalExpected: wssImportReviewState.totalExpected + items.length,
+      statusText: 'Показываю созданные и обновленные заявки WSS.',
+      errorText: ''
     };
   }
 
@@ -4174,7 +4479,151 @@
     renderWssImportModal();
   }
 
-  function mergeWssImportResult(result) {
+  function closeWssImportReviewModal() {
+    const modal = document.getElementById(WSS_IMPORT_REVIEW_MODAL_ID);
+    if (modal instanceof HTMLElement) modal.hidden = true;
+  }
+
+  function ensureWssImportReviewModal() {
+    ensureStyle();
+
+    const existing = document.getElementById(WSS_IMPORT_REVIEW_MODAL_ID);
+    if (existing instanceof HTMLElement) return existing;
+
+    const modal = document.createElement('div');
+    modal.id = WSS_IMPORT_REVIEW_MODAL_ID;
+    modal.hidden = true;
+    modal.innerHTML = `
+      <section class="gs-wss-review-panel" role="dialog" aria-modal="true" aria-label="Просмотр изменений WSS">
+        <header class="gs-wss-review-header">
+          <div>
+            <div class="gs-wss-review-title">Изменения WSS</div>
+            <div class="gs-wss-review-meta"></div>
+          </div>
+          <button type="button" class="gs-wss-review-close-x" aria-label="Закрыть">×</button>
+        </header>
+        <div class="gs-wss-review-progress"></div>
+        <div class="gs-wss-review-summary"></div>
+        <div class="gs-wss-review-grid">
+          <div class="gs-wss-review-wrap">
+            <div class="gs-wss-review-label">Карточка заявки</div>
+            <div class="gs-wss-review-text gs-wss-review-main"></div>
+          </div>
+          <div class="gs-wss-review-wrap">
+            <div class="gs-wss-review-label">История и файлы</div>
+            <div class="gs-wss-review-text gs-wss-review-side"></div>
+          </div>
+        </div>
+        <footer class="gs-wss-review-footer">
+          <div class="gs-wss-review-message" aria-live="polite"></div>
+          <div class="gs-wss-review-buttons">
+            <button type="button" class="gs-wss-review-close">Закрыть</button>
+            <button type="button" class="gs-wss-review-prev">Назад</button>
+            <button type="button" class="gs-wss-review-next">Дальше</button>
+          </div>
+        </footer>
+      </section>
+    `;
+
+    const close = () => closeWssImportReviewModal();
+    $('.gs-wss-review-close-x', modal)?.addEventListener('click', close, { capture: true });
+    $('.gs-wss-review-close', modal)?.addEventListener('click', close, { capture: true });
+    $('.gs-wss-review-prev', modal)?.addEventListener('click', () => {
+      if (!canGoBackInWssImportReview()) return;
+      wssImportReviewState = {
+        ...wssImportReviewState,
+        currentIndex: Math.max(0, wssImportReviewState.currentIndex - 1)
+      };
+      renderWssImportReviewModal();
+    }, { capture: true });
+    $('.gs-wss-review-next', modal)?.addEventListener('click', () => {
+      const total = wssImportReviewState.queue.length;
+      if (!total) return;
+      if (wssImportReviewState.currentIndex >= total - 1) {
+        close();
+        return;
+      }
+      wssImportReviewState = {
+        ...wssImportReviewState,
+        currentIndex: wssImportReviewState.currentIndex + 1
+      };
+      renderWssImportReviewModal();
+    }, { capture: true });
+
+    (document.body || document.documentElement).appendChild(modal);
+    return modal;
+  }
+
+  function appendWssReviewPill(container, text, className) {
+    if (!(container instanceof HTMLElement) || !text) return;
+    const pill = document.createElement('span');
+    pill.className = 'gs-wss-review-pill' + (className ? ' ' + className : '');
+    pill.textContent = text;
+    container.appendChild(pill);
+  }
+
+  function renderWssImportReviewModal() {
+    const modal = document.getElementById(WSS_IMPORT_REVIEW_MODAL_ID);
+    if (!(modal instanceof HTMLElement)) return;
+
+    const item = getWssImportReviewCurrentItem();
+    const meta = $('.gs-wss-review-meta', modal);
+    const progress = $('.gs-wss-review-progress', modal);
+    const summary = $('.gs-wss-review-summary', modal);
+    const main = $('.gs-wss-review-main', modal);
+    const side = $('.gs-wss-review-side', modal);
+    const message = $('.gs-wss-review-message', modal);
+    const prevButton = $('.gs-wss-review-prev', modal);
+    const nextButton = $('.gs-wss-review-next', modal);
+
+    if (meta instanceof HTMLElement) {
+      meta.textContent = `Лист: ${WSS_SHEET_NAME} · к просмотру: ${wssImportReviewState.totalExpected}`;
+    }
+    if (progress instanceof HTMLElement) {
+      progress.textContent = item
+        ? `Очередь просмотра: ${wssImportReviewState.currentIndex + 1}/${wssImportReviewState.queue.length}`
+        : 'Очередь просмотра: 0/0';
+    }
+    if (summary instanceof HTMLElement) {
+      summary.replaceChildren();
+      if (item) {
+        appendWssReviewPill(summary, item.type === 'created' ? 'Новая заявка' : 'Обновлена', item.type === 'created' ? 'is-created' : 'is-updated');
+        appendWssReviewPill(summary, item.wssId ? 'WSS ID ' + item.wssId : '');
+        appendWssReviewPill(summary, getWssReviewValue(item, 'Рег. номер'));
+        appendWssReviewPill(summary, getWssReviewValue(item, 'Статус'));
+        appendWssReviewPill(summary, getWssReviewValue(item, 'Этап'));
+        appendWssReviewPill(summary, item.row ? 'строка ' + item.row : '');
+        appendWssReviewPill(summary, item.lastParsedAt ? 'parsed ' + item.lastParsedAt : '');
+      }
+    }
+    if (main instanceof HTMLElement) {
+      main.textContent = item ? buildWssReviewMainText(item) : 'Созданных или обновленных WSS-заявок для просмотра нет.';
+    }
+    if (side instanceof HTMLElement) {
+      side.textContent = item ? buildWssReviewSideText(item) : '';
+    }
+    if (message instanceof HTMLElement) {
+      message.textContent = wssImportReviewState.errorText || wssImportReviewState.statusText || '';
+      message.classList.toggle('is-error', !!wssImportReviewState.errorText);
+    }
+    if (prevButton instanceof HTMLButtonElement) {
+      prevButton.disabled = !item || !canGoBackInWssImportReview();
+    }
+    if (nextButton instanceof HTMLButtonElement) {
+      nextButton.disabled = !item;
+      nextButton.textContent = item && wssImportReviewState.currentIndex >= wssImportReviewState.queue.length - 1
+        ? 'Закрыть'
+        : 'Дальше';
+    }
+  }
+
+  function openWssImportReviewModal() {
+    const modal = ensureWssImportReviewModal();
+    renderWssImportReviewModal();
+    modal.hidden = false;
+  }
+
+  function mergeWssImportResult(result, batch) {
     const imported = wssImportState.imported || {};
     wssImportState.imported = {
       created: Number(imported.created || 0) + Number(result && result.created || 0),
@@ -4182,6 +4631,7 @@
       skipped: Number(imported.skipped || 0) + Number(result && result.skipped || 0),
       failed: Number(imported.failed || 0) + Number(result && result.failed || 0)
     };
+    collectWssImportReviewRows(result, batch);
   }
 
   async function startWssImport() {
@@ -4198,6 +4648,9 @@
     }
 
     const totalBatches = Math.ceil(wssImportState.rows.length / WSS_IMPORT_BATCH_SIZE);
+    resetWssImportReviewState({
+      statusText: 'Жду завершения импорта WSS...'
+    });
     wssImportState = {
       ...wssImportState,
       isImporting: true,
@@ -4242,7 +4695,7 @@
           throw new Error(getRuntimeResponseError(response, 'bridge не импортировал пакет WSS'));
         }
 
-        mergeWssImportResult(getBridgeActionResult(response) || {});
+        mergeWssImportResult(getBridgeActionResult(response) || {}, batch);
       }
 
       const imported = wssImportState.imported || {};
@@ -4253,6 +4706,10 @@
         lastError: ''
       };
       activateSheetTabByName(WSS_SHEET_NAME);
+      if (wssImportReviewState.queue.length) {
+        closeWssImportModal();
+        openWssImportReviewModal();
+      }
     } catch (error) {
       wssImportState = {
         ...wssImportState,
@@ -4300,12 +4757,12 @@
     renderChatGptSearchModal();
 
     try {
-      const csv = await loadChatGptSearchCsv();
+      const csv = await loadChatGptSearchCsv(modeConfig);
       chatGptSearchState.compactRowsCount = csv.rowsCount;
       chatGptSearchState.statusText = modeConfig.openingStatus;
       renderChatGptSearchModal();
 
-      if (mode === CHATGPT_MODE_QUESTION) {
+      if (modeConfig.openInChat) {
         const response = await sendRuntimeMessage({
           action: CHATGPT_QUESTION_ACTION,
           data: {
@@ -4330,7 +4787,7 @@
           foundCount: 0,
           resultSheetId: null
         };
-        updateLauncherStatus('Вопрос по заявкам отправлен в ChatGPT. Продолжай работу в открытой вкладке.', false);
+        updateLauncherStatus(modeConfig.launcherSuccessStatus || modeConfig.successStatus, false);
         closeChatGptSearchModal();
         return;
       }
@@ -6097,6 +6554,7 @@
     const newResponseReviewModal = document.getElementById(NEW_RESPONSE_REVIEW_MODAL_ID);
     const chatGptSearchModal = document.getElementById(CHATGPT_SEARCH_MODAL_ID);
     const wssImportModal = document.getElementById(WSS_IMPORT_MODAL_ID);
+    const wssImportReviewModal = document.getElementById(WSS_IMPORT_REVIEW_MODAL_ID);
     const menu = document.getElementById(MENU_ID);
     const menuOverlay = document.getElementById(MENU_OVERLAY_ID);
 
@@ -6106,6 +6564,7 @@
       || (newResponseReviewModal && newResponseReviewModal.contains(target))
       || (chatGptSearchModal && chatGptSearchModal.contains(target))
       || (wssImportModal && wssImportModal.contains(target))
+      || (wssImportReviewModal && wssImportReviewModal.contains(target))
       || (menu && menu.contains(target))
       || (menuOverlay && menuOverlay.contains(target))
     );
