@@ -36,6 +36,9 @@
   const INITIATOR_HEADER = 'Инициатор';
   const CHATGPT_SEARCH_SHEET_NAME = 'Заявки';
   const CHATGPT_RESULT_SHEET_NAME = 'Поиск заявок (ИИ)';
+  const WSS_SHEET_NAME = 'WSS';
+  const WSS_IMPORT_BATCH_SIZE = 80;
+  const WSS_IMPORT_TEXT_LIMIT = 45000;
   const CHATGPT_MODE_SEARCH = 'search';
   const CHATGPT_MODE_QUESTION = 'question';
   const CHATGPT_ROW_ID_HEADER = '__row_id';
@@ -60,9 +63,10 @@
   const MODAL_ID = 'dup-google-sheets-problem-picker-modal';
   const NEW_RESPONSE_REVIEW_MODAL_ID = 'dup-google-sheets-new-response-review-modal';
   const CHATGPT_SEARCH_MODAL_ID = 'dup-google-sheets-chatgpt-search-modal';
+  const WSS_IMPORT_MODAL_ID = 'dup-google-sheets-wss-import-modal';
   const MENU_ID = 'dup-google-sheets-problem-picker-menu';
   const MENU_OVERLAY_ID = 'dup-google-sheets-problem-picker-menu-overlay';
-  const MENU_LAYOUT_VERSION = '2026-06-11-1';
+  const MENU_LAYOUT_VERSION = '2026-06-29-wss-1';
   const MENU_BOUND_FLAG = '__dupGoogleSheetsMenuBound';
   const MENU_OVERLAY_BOUND_FLAG = '__dupGoogleSheetsMenuOverlayBound';
   const STYLE_ID = 'dup-google-sheets-problem-picker-style';
@@ -126,6 +130,25 @@
     chatTabId: null,
     sentPrompt: '',
     resultSheetId: null
+  };
+
+  let wssImportState = {
+    fileName: '',
+    rows: [],
+    stats: null,
+    preview: null,
+    isParsing: false,
+    isImporting: false,
+    currentBatch: 0,
+    totalBatches: 0,
+    imported: {
+      created: 0,
+      updated: 0,
+      skipped: 0,
+      failed: 0
+    },
+    statusText: 'Выберите zip-архив выгрузки WSS.',
+    lastError: ''
   };
 
   let itilState = {
@@ -455,6 +478,509 @@
     return (rows || [])
       .map((row) => (row || []).map(stringifyCsvCell).join(','))
       .join('\r\n');
+  }
+
+  function escapeRegExp(value) {
+    return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  function getLittleEndianUint16(view, offset) {
+    return view.getUint16(offset, true);
+  }
+
+  function getLittleEndianUint32(view, offset) {
+    return view.getUint32(offset, true);
+  }
+
+  async function inflateRawZipBytes(bytes) {
+    if (typeof DecompressionStream !== 'function') {
+      throw new Error('Браузер не поддерживает DecompressionStream для распаковки zip.');
+    }
+
+    let stream;
+    try {
+      stream = new DecompressionStream('deflate-raw');
+    } catch (error) {
+      throw new Error('Браузер не поддерживает deflate-raw для zip-архивов.');
+    }
+
+    const inflatedStream = new Blob([bytes]).stream().pipeThrough(stream);
+    const inflated = await new Response(inflatedStream).arrayBuffer();
+    return new Uint8Array(inflated);
+  }
+
+  function decodeZipEntryName(bytes, isUtf8) {
+    const preferred = isUtf8 ? 'utf-8' : 'windows-1251';
+    try {
+      return new TextDecoder(preferred, { fatal: false }).decode(bytes);
+    } catch (_) {
+      return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+    }
+  }
+
+  async function readZipEntries(arrayBuffer) {
+    const source = arrayBuffer instanceof ArrayBuffer ? arrayBuffer : arrayBuffer.buffer;
+    const view = new DataView(source);
+    const bytes = new Uint8Array(source);
+    const minEocdOffset = Math.max(0, bytes.length - 22 - 65535);
+    let eocdOffset = -1;
+
+    for (let offset = bytes.length - 22; offset >= minEocdOffset; offset--) {
+      if (getLittleEndianUint32(view, offset) === 0x06054b50) {
+        eocdOffset = offset;
+        break;
+      }
+    }
+
+    if (eocdOffset < 0) throw new Error('Не найден центральный каталог zip.');
+
+    const entriesCount = getLittleEndianUint16(view, eocdOffset + 10);
+    let centralOffset = getLittleEndianUint32(view, eocdOffset + 16);
+    const entries = new Map();
+
+    for (let index = 0; index < entriesCount; index++) {
+      if (getLittleEndianUint32(view, centralOffset) !== 0x02014b50) {
+        throw new Error('Некорректная запись центрального каталога zip.');
+      }
+
+      const flags = getLittleEndianUint16(view, centralOffset + 8);
+      const method = getLittleEndianUint16(view, centralOffset + 10);
+      const compressedSize = getLittleEndianUint32(view, centralOffset + 20);
+      const uncompressedSize = getLittleEndianUint32(view, centralOffset + 24);
+      const nameLength = getLittleEndianUint16(view, centralOffset + 28);
+      const extraLength = getLittleEndianUint16(view, centralOffset + 30);
+      const commentLength = getLittleEndianUint16(view, centralOffset + 32);
+      const localHeaderOffset = getLittleEndianUint32(view, centralOffset + 42);
+      const nameBytes = bytes.slice(centralOffset + 46, centralOffset + 46 + nameLength);
+      const name = decodeZipEntryName(nameBytes, (flags & 0x0800) !== 0).replace(/\\/g, '/');
+
+      centralOffset += 46 + nameLength + extraLength + commentLength;
+      if (!name || name.endsWith('/')) continue;
+
+      if (getLittleEndianUint32(view, localHeaderOffset) !== 0x04034b50) {
+        throw new Error('Некорректный локальный заголовок zip для файла ' + name + '.');
+      }
+
+      const localNameLength = getLittleEndianUint16(view, localHeaderOffset + 26);
+      const localExtraLength = getLittleEndianUint16(view, localHeaderOffset + 28);
+      const dataOffset = localHeaderOffset + 30 + localNameLength + localExtraLength;
+      const compressed = bytes.slice(dataOffset, dataOffset + compressedSize);
+      let data;
+
+      if (method === 0) {
+        data = compressed;
+      } else if (method === 8) {
+        data = await inflateRawZipBytes(compressed);
+      } else {
+        throw new Error('Zip использует неподдержанный метод сжатия ' + method + ' для файла ' + name + '.');
+      }
+
+      if (uncompressedSize && data.length !== uncompressedSize) {
+        throw new Error('Размер распакованного файла не совпал для ' + name + '.');
+      }
+
+      entries.set(name, data);
+    }
+
+    return entries;
+  }
+
+  function decodeUtf8Text(bytes) {
+    try {
+      return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    } catch (_) {
+      try {
+        return new TextDecoder('windows-1251', { fatal: false }).decode(bytes);
+      } catch (error) {
+        return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+      }
+    }
+  }
+
+  function parseXmlDocument(xmlText, label) {
+    const documentXml = new DOMParser().parseFromString(String(xmlText || ''), 'application/xml');
+    const parserError = documentXml.querySelector('parsererror');
+    if (parserError) throw new Error('Не удалось прочитать XML: ' + label + '.');
+    return documentXml;
+  }
+
+  function getFirstZipEntry(entries, names) {
+    for (const name of names) {
+      if (entries.has(name)) return entries.get(name);
+    }
+    return null;
+  }
+
+  function getZipEntryText(entries, name) {
+    const data = entries.get(name);
+    return data ? decodeUtf8Text(data) : '';
+  }
+
+  function getXmlTextContent(node) {
+    return node ? String(node.textContent || '') : '';
+  }
+
+  function parseXlsxSharedStrings(entries) {
+    const xml = getZipEntryText(entries, 'xl/sharedStrings.xml');
+    if (!xml) return [];
+
+    const doc = parseXmlDocument(xml, 'sharedStrings.xml');
+    return Array.from(doc.getElementsByTagName('si')).map((si) => {
+      const textNodes = Array.from(si.getElementsByTagName('t'));
+      return textNodes.map(getXmlTextContent).join('');
+    });
+  }
+
+  function getXlsxSheetPath(entries, targetSheetName) {
+    const workbookXml = getZipEntryText(entries, 'xl/workbook.xml');
+    if (!workbookXml) return 'xl/worksheets/sheet1.xml';
+
+    const workbook = parseXmlDocument(workbookXml, 'workbook.xml');
+    const sheets = Array.from(workbook.getElementsByTagName('sheet'));
+    const targetSheet = sheets.find((sheet) => String(sheet.getAttribute('name') || '').trim() === targetSheetName)
+      || sheets[0];
+    if (!targetSheet) return 'xl/worksheets/sheet1.xml';
+
+    const relId = targetSheet.getAttribute('r:id') || targetSheet.getAttribute('id') || '';
+    if (!relId) return 'xl/worksheets/sheet1.xml';
+
+    const relsXml = getZipEntryText(entries, 'xl/_rels/workbook.xml.rels');
+    if (!relsXml) return 'xl/worksheets/sheet1.xml';
+
+    const rels = parseXmlDocument(relsXml, 'workbook.xml.rels');
+    const rel = Array.from(rels.getElementsByTagName('Relationship'))
+      .find((item) => String(item.getAttribute('Id') || '') === relId);
+    const target = rel ? String(rel.getAttribute('Target') || '').replace(/\\/g, '/') : '';
+    if (!target) return 'xl/worksheets/sheet1.xml';
+    if (target.startsWith('/')) return target.replace(/^\/+/, '');
+    if (target.startsWith('xl/')) return target;
+    return 'xl/' + target.replace(/^\/+/, '');
+  }
+
+  function getColumnIndexFromCellRef(cellRef) {
+    const letters = String(cellRef || '').match(/^[A-Z]+/i);
+    if (!letters) return 0;
+
+    let result = 0;
+    for (const letter of letters[0].toUpperCase()) {
+      result = result * 26 + (letter.charCodeAt(0) - 64);
+    }
+    return Math.max(0, result - 1);
+  }
+
+  async function parseXlsxRows(bytes, targetSheetName) {
+    const entries = await readZipEntries(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+    const sharedStrings = parseXlsxSharedStrings(entries);
+    const sheetPath = getXlsxSheetPath(entries, targetSheetName);
+    const sheetData = getFirstZipEntry(entries, [sheetPath, 'xl/worksheets/sheet1.xml']);
+    if (!sheetData) throw new Error('В status_index.xlsx не найден лист ' + targetSheetName + '.');
+
+    const sheet = parseXmlDocument(decodeUtf8Text(sheetData), sheetPath);
+    const rows = [];
+    Array.from(sheet.getElementsByTagName('row')).forEach((rowNode) => {
+      const row = [];
+      Array.from(rowNode.getElementsByTagName('c')).forEach((cellNode) => {
+        const cellRef = cellNode.getAttribute('r') || '';
+        const columnIndex = getColumnIndexFromCellRef(cellRef);
+        const cellType = cellNode.getAttribute('t') || '';
+        let value = '';
+
+        if (cellType === 'inlineStr') {
+          value = getXmlTextContent(cellNode.getElementsByTagName('t')[0]);
+        } else {
+          const rawValue = getXmlTextContent(cellNode.getElementsByTagName('v')[0]);
+          value = cellType === 's'
+            ? String(sharedStrings[Number(rawValue)] || '')
+            : String(rawValue || '');
+        }
+
+        row[columnIndex] = value;
+      });
+      rows.push(row.map((value) => String(value == null ? '' : value)));
+    });
+
+    return rows;
+  }
+
+  function normalizeWssText(value) {
+    return String(value == null ? '' : value)
+      .replace(/\r\n?/g, '\n')
+      .replace(/\u00a0/g, ' ')
+      .replace(/[ \t]+$/gm, '')
+      .replace(/^\n+|\n+$/g, '')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+
+  function normalizeWssCellValue(value) {
+    const text = normalizeWssText(value);
+    return text === '-' || text === '–' || text === '—' ? '' : text;
+  }
+
+  function decodeHtmlFragment(value) {
+    const textarea = document.createElement('textarea');
+    textarea.innerHTML = String(value || '');
+    return textarea.value;
+  }
+
+  function normalizeWssTableCell(value) {
+    return normalizeWssText(decodeHtmlFragment(String(value || '')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/\\\|/g, '|')));
+  }
+
+  function normalizeWssHeaderPart(value) {
+    return normalizeWssTableCell(value).replace(/\n+/g, ', ').trim();
+  }
+
+  function stripMarkdownFence(value) {
+    const text = String(value || '').trim();
+    const match = text.match(/^```(?:text)?\s*\n([\s\S]*?)\n```\s*$/i);
+    return match ? match[1] : text;
+  }
+
+  function extractWssMetaValue(markdown, label) {
+    const match = String(markdown || '').match(new RegExp('^-\\s+`' + escapeRegExp(label) + '`:\\s*(.*?)\\s*$', 'm'));
+    return match ? normalizeWssCellValue(match[1]) : '';
+  }
+
+  function extractWssHeadingBlock(markdown, level, label) {
+    const prefix = '#'.repeat(level);
+    const re = new RegExp('^' + prefix + '\\s+' + escapeRegExp(label) + '\\s*\\n([\\s\\S]*?)(?=^#{1,' + level + '}\\s+|\\Z)', 'm');
+    const match = String(markdown || '').match(re);
+    return match ? match[1].trim() : '';
+  }
+
+  function extractWssCardValue(markdown, label) {
+    return normalizeWssCellValue(stripMarkdownFence(extractWssHeadingBlock(markdown, 3, label)));
+  }
+
+  function splitMarkdownTableRow(line) {
+    const text = String(line || '').trim().replace(/^\|/, '').replace(/\|$/, '');
+    const cells = [];
+    let current = '';
+    let escaped = false;
+
+    for (const ch of text) {
+      if (escaped) {
+        current += ch;
+        escaped = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escaped = true;
+        current += ch;
+        continue;
+      }
+      if (ch === '|') {
+        cells.push(current.trim());
+        current = '';
+        continue;
+      }
+      current += ch;
+    }
+
+    cells.push(current.trim());
+    return cells;
+  }
+
+  function parseWssHistoryEntries(markdown) {
+    const section = extractWssHeadingBlock(markdown, 2, 'Расширенная история решений');
+    if (!section) return [];
+
+    return section.split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith('|'))
+      .filter((line) => !/^\|\s*-+/.test(line))
+      .filter((line) => !/^\|\s*Роль\s*\|/.test(line))
+      .map((line) => splitMarkdownTableRow(line))
+      .filter((cells) => cells.length >= 6)
+      .map((cells) => {
+        const role = normalizeWssHeaderPart(cells[0]);
+        const user = normalizeWssHeaderPart(cells[1]);
+        const solution = normalizeWssHeaderPart(cells[2]);
+        const date = normalizeWssHeaderPart(cells[3]);
+        const comment = normalizeWssTableCell(cells[4]) || 'Комментарий отсутствует';
+        const notified = normalizeWssHeaderPart(cells[5]);
+        return {
+          header: [role, user, solution, date, notified].filter(Boolean).join(' / '),
+          comment
+        };
+      })
+      .filter((entry) => entry.header || entry.comment);
+  }
+
+  function getWssAttachmentBlocks(markdown) {
+    const section = extractWssHeadingBlock(markdown, 2, 'Доп. файлы');
+    if (!section) return [];
+
+    const matches = [];
+    const re = /^###\s+Файл\s+(.+?)\s*$([\s\S]*?)(?=^###\s+Файл\s+|\Z)/gm;
+    let match;
+    while ((match = re.exec(section)) !== null) {
+      matches.push({
+        title: normalizeWssText(match[1]),
+        body: String(match[2] || '').trim()
+      });
+    }
+    return matches;
+  }
+
+  function extractWssAttachmentText(body) {
+    const textBlockMatch = String(body || '').match(/^####\s+.+?\s*\n```(?:text)?\s*\n([\s\S]*?)\n```/m);
+    return normalizeWssCellValue(textBlockMatch ? textBlockMatch[1] : '');
+  }
+
+  function parseWssAttachmentEntries(markdown) {
+    return getWssAttachmentBlocks(markdown)
+      .map((block) => {
+        const statusMatch = block.body.match(/^-+\s*Статус:\s*(.+?)\s*$/m) || block.body.match(/^-\s+Статус:\s*(.+?)\s*$/m);
+        const status = statusMatch ? normalizeWssText(statusMatch[1]).toLocaleLowerCase('ru-RU') : '';
+        if (status !== 'ок') return null;
+
+        const text = extractWssAttachmentText(block.body);
+        if (!text || /^Документ не содержит извлекаемого текста\.?$/i.test(text)) return null;
+
+        const fileName = normalizeWssText(block.title.replace(/^\d+\.\s*/, ''));
+        return {
+          title: fileName ? 'Файл ' + fileName : 'Файл',
+          text
+        };
+      })
+      .filter(Boolean);
+  }
+
+  function parseStatusIndexRows(rows) {
+    const headers = (rows[0] || []).map((value) => String(value || '').trim());
+    const headerMap = {};
+    headers.forEach((header, index) => {
+      if (header && !Object.prototype.hasOwnProperty.call(headerMap, header)) headerMap[header] = index;
+    });
+
+    ['wss_id', 'last_parsed_at'].forEach((header) => {
+      if (!Object.prototype.hasOwnProperty.call(headerMap, header)) {
+        throw new Error('В status_index.xlsx не найдена колонка ' + header + '.');
+      }
+    });
+
+    const byWssId = new Map();
+    rows.slice(1).forEach((row) => {
+      const wssId = String(row[headerMap.wss_id] || '').trim();
+      if (!wssId) return;
+      byWssId.set(wssId, {
+        wssId,
+        regNumber: String(row[headerMap.reg_number] || '').trim(),
+        lastParsedAt: String(row[headerMap.last_parsed_at] || '').trim(),
+        lastParseResult: Object.prototype.hasOwnProperty.call(headerMap, 'last_parse_result')
+          ? String(row[headerMap.last_parse_result] || '').trim()
+          : ''
+      });
+    });
+    return byWssId;
+  }
+
+  function parseWssMarkdownRow(markdown, indexEntry) {
+    const text = String(markdown || '').replace(/\r\n?/g, '\n');
+    const wssId = extractWssMetaValue(text, 'WSS ID');
+    if (!wssId) throw new Error('В md-файле не найден WSS ID.');
+
+    return {
+      wssId,
+      lastParsedAt: indexEntry && indexEntry.lastParsedAt ? indexEntry.lastParsedAt : '',
+      values: {
+        'WSS ID': wssId,
+        'Рег. номер': extractWssMetaValue(text, 'Рег. номер'),
+        'Краткое описание задачи': extractWssCardValue(text, 'Краткое описание задачи'),
+        'Содержание': extractWssCardValue(text, 'Содержание'),
+        'Дата регистрации': extractWssMetaValue(text, 'Дата регистрации'),
+        'Этап': extractWssMetaValue(text, 'Этап'),
+        'Статус': extractWssMetaValue(text, 'Статус'),
+        'Призано исполненным': extractWssMetaValue(text, 'Признано исполненным'),
+        'Заказчик': extractWssCardValue(text, 'Заказчик'),
+        'Ответственный': extractWssCardValue(text, 'Ответственный'),
+        'Плановое количество часов': extractWssCardValue(text, 'Плановое количество часов'),
+        'Исполнить до': extractWssCardValue(text, 'Исполнить до'),
+        'Комментарий': extractWssCardValue(text, 'Комментарий'),
+        'Номер заявки в СУПП': extractWssCardValue(text, 'Номер заявки в СУПП'),
+        'Состояние заявки в СУПП': extractWssCardValue(text, 'Состояние заявки в СУПП'),
+        'Связанные задачи СУПП': extractWssCardValue(text, 'Связанные задачи СУПП'),
+        'last_parsed_at': indexEntry && indexEntry.lastParsedAt ? indexEntry.lastParsedAt : ''
+      },
+      historyEntries: parseWssHistoryEntries(text),
+      attachmentEntries: parseWssAttachmentEntries(text)
+    };
+  }
+
+  async function buildWssArchiveRows(file) {
+    const archiveEntries = await readZipEntries(await file.arrayBuffer());
+    const statusIndexEntry = archiveEntries.get('status_index.xlsx')
+      || archiveEntries.get('Status_index.xlsx')
+      || archiveEntries.get('STATUS_INDEX.XLSX')
+      || Array.from(archiveEntries.entries()).find(([name]) => /(^|\/)status_index\.xlsx$/i.test(name))?.[1];
+    if (!statusIndexEntry) throw new Error('В архиве не найден status_index.xlsx.');
+
+    const statusRows = await parseXlsxRows(statusIndexEntry, 'status_index');
+    const indexByWssId = parseStatusIndexRows(statusRows);
+    const markdownEntries = Array.from(archiveEntries.entries())
+      .filter(([name]) => /\.md$/i.test(name))
+      .sort((left, right) => left[0].localeCompare(right[0], 'ru-RU'));
+
+    if (!markdownEntries.length) throw new Error('В архиве не найдены md-файлы заявок.');
+
+    const rows = [];
+    const errors = [];
+    const seen = new Set();
+    let skippedMissingIndex = 0;
+
+    markdownEntries.forEach(([name, data]) => {
+      try {
+        const markdown = decodeUtf8Text(data);
+        const wssId = extractWssMetaValue(markdown, 'WSS ID');
+        if (!wssId) throw new Error('не найден WSS ID');
+        if (seen.has(wssId)) throw new Error('дублирующийся WSS ID ' + wssId);
+        seen.add(wssId);
+
+        const indexEntry = indexByWssId.get(wssId);
+        if (!indexEntry) {
+          skippedMissingIndex += 1;
+          errors.push(name + ': WSS ID ' + wssId + ' отсутствует в status_index.xlsx');
+          return;
+        }
+
+        rows.push(parseWssMarkdownRow(markdown, indexEntry));
+      } catch (error) {
+        errors.push(name + ': ' + (error && error.message ? error.message : String(error)));
+      }
+    });
+
+    const indexMissingMarkdown = Array.from(indexByWssId.keys()).filter((wssId) => !seen.has(wssId));
+    const attachmentsCount = rows.reduce((sum, row) => sum + row.attachmentEntries.length, 0);
+    const historyEntriesCount = rows.reduce((sum, row) => sum + row.historyEntries.length, 0);
+    const longFieldsCount = rows.reduce((sum, row) => {
+      const content = String(row.values['Содержание'] || '');
+      const historyLength = row.historyEntries.reduce((total, entry) => total + String(entry.header || '').length + String(entry.comment || '').length + 2, 0);
+      const attachmentsLength = row.attachmentEntries.reduce((total, entry) => total + String(entry.title || '').length + String(entry.text || '').length + 2, 0);
+      return sum + (content.length > WSS_IMPORT_TEXT_LIMIT ? 1 : 0)
+        + (historyLength > WSS_IMPORT_TEXT_LIMIT ? 1 : 0)
+        + (attachmentsLength > WSS_IMPORT_TEXT_LIMIT ? 1 : 0);
+    }, 0);
+
+    return {
+      rows,
+      stats: {
+        fileName: file.name,
+        mdCount: markdownEntries.length,
+        statusIndexCount: indexByWssId.size,
+        readyCount: rows.length,
+        attachmentsCount,
+        historyEntriesCount,
+        longFieldsCount,
+        skippedMissingIndex,
+        indexMissingMarkdownCount: indexMissingMarkdown.length,
+        errors: errors.slice(0, 20),
+        errorsCount: errors.length
+      }
+    };
   }
 
   function normalizeChatGptMode(mode) {
@@ -2383,7 +2909,7 @@
     style.textContent = `
       #${ROOT_ID}{position:fixed;right:18px;bottom:58px;z-index:2147483640;display:flex;flex-direction:column;align-items:flex-end;gap:6px;font-family:"Segoe UI",Tahoma,sans-serif}
       #${ROOT_ID} .gs-problem-picker-actions{display:flex;gap:6px}
-      #${ROOT_ID} button,#${MODAL_ID} button,#${NEW_RESPONSE_REVIEW_MODAL_ID} button,#${CHATGPT_SEARCH_MODAL_ID} button{border:1px solid #b7c2d3;border-radius:7px;background:#fff;color:#162033;cursor:pointer;font:600 13px/1.2 "Segoe UI",Tahoma,sans-serif;padding:8px 12px}
+      #${ROOT_ID} button,#${MODAL_ID} button,#${NEW_RESPONSE_REVIEW_MODAL_ID} button,#${CHATGPT_SEARCH_MODAL_ID} button,#${WSS_IMPORT_MODAL_ID} button{border:1px solid #b7c2d3;border-radius:7px;background:#fff;color:#162033;cursor:pointer;font:600 13px/1.2 "Segoe UI",Tahoma,sans-serif;padding:8px 12px}
       #${ROOT_ID} .gs-problem-picker-open{border-color:#1155cc;background:#1155cc;color:#fff;box-shadow:0 8px 22px rgba(17,85,204,.24)}
       #${ROOT_ID} .gs-problem-picker-url{min-width:44px}
       #${ROOT_ID} .gs-problem-picker-status{max-width:360px;min-height:18px;padding:5px 8px;border-radius:6px;background:rgba(255,255,255,.94);color:#24513a;font-size:12px;box-shadow:0 6px 18px rgba(15,23,42,.12)}
@@ -2412,17 +2938,18 @@
       #${MENU_ID} .gs-problem-picker-manual-section:first-of-type{padding-top:0;border-top:0}
       #${MENU_ID} .gs-problem-picker-manual-section-title{font-size:13px;font-weight:700;color:#253044}
       #${MENU_ID} .gs-problem-picker-status{min-height:18px;color:#24513a;font-size:13px}
-      #${MENU_ID} .gs-problem-picker-status.is-error,#${MENU_ID} .gs-problem-picker-itil-status.is-error,#${MENU_ID} .gs-problem-picker-supp-status.is-error,#${MENU_ID} .gs-problem-picker-new-response-status.is-error{color:#b3261e}
+      #${MENU_ID} .gs-problem-picker-status.is-error,#${MENU_ID} .gs-problem-picker-itil-status.is-error,#${MENU_ID} .gs-problem-picker-supp-status.is-error,#${MENU_ID} .gs-problem-picker-new-response-status.is-error,#${MENU_ID} .gs-wss-import-menu-status.is-error{color:#b3261e}
       #${MENU_ID} .gs-problem-picker-itil-status,#${MENU_ID} .gs-problem-picker-supp-status,#${MENU_ID} .gs-problem-picker-new-response-status{min-height:18px;color:#24513a;font-size:13px;overflow-wrap:anywhere}
+      #${MENU_ID} .gs-wss-import-menu-status{min-height:18px;color:#24513a;font-size:13px;overflow-wrap:anywhere}
       #${MENU_ID} .gs-problem-picker-chatgpt-note{color:#566176;font-size:13px;line-height:1.45}
-      #${ROOT_ID} button,#${MODAL_ID} button,#${NEW_RESPONSE_REVIEW_MODAL_ID} button,#${CHATGPT_SEARCH_MODAL_ID} button,#${MENU_ID} button{border:1px solid #b7c2d3;border-radius:7px;background:#fff;color:#162033;cursor:pointer;font:600 13px/1.2 "Segoe UI",Tahoma,sans-serif;padding:8px 12px}
+      #${ROOT_ID} button,#${MODAL_ID} button,#${NEW_RESPONSE_REVIEW_MODAL_ID} button,#${CHATGPT_SEARCH_MODAL_ID} button,#${WSS_IMPORT_MODAL_ID} button,#${MENU_ID} button{border:1px solid #b7c2d3;border-radius:7px;background:#fff;color:#162033;cursor:pointer;font:600 13px/1.2 "Segoe UI",Tahoma,sans-serif;padding:8px 12px}
       #${MENU_ID} button:disabled{opacity:.58;cursor:default}
-      #${MENU_ID} .gs-problem-picker-open,#${MENU_ID} .gs-problem-picker-chatgpt-search-open,#${MENU_ID} .gs-problem-picker-combined-start,#${MENU_ID} .gs-problem-picker-itil-start,#${MENU_ID} .gs-problem-picker-supp-start,#${MENU_ID} .gs-problem-picker-supp-test,#${MENU_ID} .gs-problem-picker-new-response-start{border-color:#1155cc;background:#1155cc;color:#fff;box-shadow:0 8px 22px rgba(17,85,204,.2)}
+      #${MENU_ID} .gs-problem-picker-open,#${MENU_ID} .gs-problem-picker-chatgpt-search-open,#${MENU_ID} .gs-wss-import-open,#${MENU_ID} .gs-problem-picker-combined-start,#${MENU_ID} .gs-problem-picker-itil-start,#${MENU_ID} .gs-problem-picker-supp-start,#${MENU_ID} .gs-problem-picker-supp-test,#${MENU_ID} .gs-problem-picker-new-response-start{border-color:#1155cc;background:#1155cc;color:#fff;box-shadow:0 8px 22px rgba(17,85,204,.2)}
       #${MENU_ID} .gs-problem-picker-new-response-history{border-color:#c9d7ef;background:#f4f8ff;color:#0f3f99}
       #${MENU_ID} .gs-problem-picker-combined-stop,#${MENU_ID} .gs-problem-picker-itil-stop,#${MENU_ID} .gs-problem-picker-supp-stop,#${MENU_ID} .gs-problem-picker-new-response-stop{border-color:#b3261e;color:#b3261e}
-      #${MODAL_ID},#${NEW_RESPONSE_REVIEW_MODAL_ID}{position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;box-sizing:border-box;padding:16px;overflow:hidden;background:rgba(17,24,39,.42);pointer-events:none;font-family:"Segoe UI",Tahoma,sans-serif}
+      #${MODAL_ID},#${NEW_RESPONSE_REVIEW_MODAL_ID},#${WSS_IMPORT_MODAL_ID}{position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;box-sizing:border-box;padding:16px;overflow:hidden;background:rgba(17,24,39,.42);pointer-events:none;font-family:"Segoe UI",Tahoma,sans-serif}
       #${CHATGPT_SEARCH_MODAL_ID}{position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;background:rgba(15,23,42,.48);pointer-events:none;font-family:"Segoe UI",Tahoma,sans-serif}
-      #${MODAL_ID}[hidden],#${NEW_RESPONSE_REVIEW_MODAL_ID}[hidden],#${CHATGPT_SEARCH_MODAL_ID}[hidden],html.dup-ext-screenshot-mode #${ROOT_ID},html.dup-ext-screenshot-mode #${MODAL_ID},html.dup-ext-screenshot-mode #${NEW_RESPONSE_REVIEW_MODAL_ID},html.dup-ext-screenshot-mode #${CHATGPT_SEARCH_MODAL_ID},html.dup-ext-screenshot-mode #${MENU_ID},html.dup-ext-screenshot-mode #${MENU_OVERLAY_ID}{display:none!important}
+      #${MODAL_ID}[hidden],#${NEW_RESPONSE_REVIEW_MODAL_ID}[hidden],#${CHATGPT_SEARCH_MODAL_ID}[hidden],#${WSS_IMPORT_MODAL_ID}[hidden],html.dup-ext-screenshot-mode #${ROOT_ID},html.dup-ext-screenshot-mode #${MODAL_ID},html.dup-ext-screenshot-mode #${NEW_RESPONSE_REVIEW_MODAL_ID},html.dup-ext-screenshot-mode #${CHATGPT_SEARCH_MODAL_ID},html.dup-ext-screenshot-mode #${WSS_IMPORT_MODAL_ID},html.dup-ext-screenshot-mode #${MENU_ID},html.dup-ext-screenshot-mode #${MENU_OVERLAY_ID}{display:none!important}
       #${MODAL_ID} .gs-problem-picker-layout{width:min(1840px,calc(100vw - 32px));height:min(880px,calc(100vh - 32px));max-height:100%;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 298px;gap:14px;align-items:stretch;overflow:hidden;pointer-events:auto}
       #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-layout{width:min(1540px,calc(100vw - 32px));height:min(880px,calc(100vh - 32px));max-height:100%;min-height:0;display:grid;grid-template-columns:1fr;align-items:stretch;overflow:hidden;pointer-events:auto}
       #${MODAL_ID} .gs-problem-picker-panel,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-panel{width:100%;height:100%;min-width:0;min-height:0;overflow:hidden;display:grid;grid-template-rows:auto auto auto minmax(0,1fr) auto;gap:14px;box-sizing:border-box;padding:22px;border:1px solid #d6dce8;border-radius:8px;background:#fbfcfe;color:#172033;box-shadow:0 24px 70px rgba(15,23,42,.26)}
@@ -2499,6 +3026,20 @@
       #${MODAL_ID} .gs-problem-picker-category-button.is-selected{border-color:#2e7d32;box-shadow:0 0 0 2px rgba(46,125,50,.14),0 3px 10px rgba(15,23,42,.05)}
       #${MODAL_ID} .gs-problem-picker-category-button.is-selected:not(.is-default){background:#e9f6ee;color:#14532d}
       #${MODAL_ID} .gs-problem-picker-category-button:disabled{opacity:.58;cursor:default;box-shadow:none}
+      #${WSS_IMPORT_MODAL_ID} .gs-wss-import-card{width:min(760px,100%);max-height:min(760px,calc(100vh - 32px));display:grid;grid-template-rows:auto auto auto minmax(180px,1fr) auto;gap:14px;box-sizing:border-box;padding:22px;border:1px solid #d6dce8;border-radius:8px;background:#fbfcfe;color:#172033;box-shadow:0 24px 70px rgba(15,23,42,.26);pointer-events:auto}
+      #${WSS_IMPORT_MODAL_ID} .gs-wss-import-header,#${WSS_IMPORT_MODAL_ID} .gs-wss-import-footer{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}
+      #${WSS_IMPORT_MODAL_ID} .gs-wss-import-title{font-size:22px;line-height:1.2;font-weight:700}
+      #${WSS_IMPORT_MODAL_ID} .gs-wss-import-subtitle{margin-top:4px;color:#566176;font-size:13px}
+      #${WSS_IMPORT_MODAL_ID} .gs-wss-import-close-x{width:34px;height:34px;padding:0;font-size:22px;line-height:1}
+      #${WSS_IMPORT_MODAL_ID} .gs-wss-import-file{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;padding:12px;border:1px solid #dbe2ec;border-radius:8px;background:#f7f9fc}
+      #${WSS_IMPORT_MODAL_ID} .gs-wss-import-file-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#253044;font-size:13px;font-weight:700}
+      #${WSS_IMPORT_MODAL_ID} .gs-wss-import-choose,#${WSS_IMPORT_MODAL_ID} .gs-wss-import-start{border-color:#1155cc;background:#1155cc;color:#fff;box-shadow:0 8px 22px rgba(17,85,204,.2)}
+      #${WSS_IMPORT_MODAL_ID} .gs-wss-import-progress{width:fit-content;padding:5px 10px;border-radius:999px;background:#e8f3ee;color:#14532d;font-size:13px;font-weight:700}
+      #${WSS_IMPORT_MODAL_ID} .gs-wss-import-details{min-height:0;margin:0;overflow:auto;white-space:pre-wrap;border:1px solid #d7dce6;border-left:6px solid #2d6cdf;border-radius:8px;background:#fff;padding:14px;color:#1f2937;font:13px/1.5 Consolas,"Courier New",monospace}
+      #${WSS_IMPORT_MODAL_ID} .gs-wss-import-status{min-height:18px;color:#566176;font-size:13px;line-height:1.45;overflow-wrap:anywhere}
+      #${WSS_IMPORT_MODAL_ID} .gs-wss-import-status.is-error{color:#b3261e}
+      #${WSS_IMPORT_MODAL_ID} .gs-wss-import-buttons{display:flex;flex-shrink:0;gap:10px}
+      #${WSS_IMPORT_MODAL_ID} button:disabled{opacity:.58;cursor:default;box-shadow:none}
       #${CHATGPT_SEARCH_MODAL_ID} .gs-chatgpt-search-card{width:min(1180px,100%);max-height:min(780px,calc(100vh - 32px));display:grid;grid-template-rows:auto auto auto auto;gap:16px;box-sizing:border-box;padding:22px;border:1px solid rgba(182,193,210,.92);border-radius:16px;background:linear-gradient(145deg,#fbfdff 0%,#f3f7ff 54%,#eef6f3 100%);color:#172033;box-shadow:0 28px 90px rgba(15,23,42,.28);pointer-events:auto}
       #${CHATGPT_SEARCH_MODAL_ID} .gs-chatgpt-search-header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
       #${CHATGPT_SEARCH_MODAL_ID} .gs-chatgpt-search-kicker{margin-bottom:5px;color:#49627b;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
@@ -2532,6 +3073,9 @@
       @media (max-width:860px){
         #${CHATGPT_SEARCH_MODAL_ID}{align-items:flex-start;overflow:auto}
         #${CHATGPT_SEARCH_MODAL_ID} .gs-chatgpt-search-card{max-height:none;grid-template-rows:auto auto auto auto}
+        #${WSS_IMPORT_MODAL_ID}{align-items:flex-start;overflow:auto}
+        #${WSS_IMPORT_MODAL_ID} .gs-wss-import-card{max-height:none;grid-template-rows:auto auto auto minmax(220px,1fr) auto}
+        #${WSS_IMPORT_MODAL_ID} .gs-wss-import-file{grid-template-columns:1fr}
       }
     `;
     (document.head || document.documentElement).appendChild(style);
@@ -2782,6 +3326,31 @@
     if (stopButton instanceof HTMLButtonElement) stopButton.disabled = !newResponseState.isRunning || !!newResponseState.stopRequested;
     renderNewResponseReviewModal();
     renderCombinedFlowStatus();
+  }
+
+  function renderWssImportStatus() {
+    const menu = document.getElementById(MENU_ID);
+    if (!(menu instanceof HTMLElement)) return;
+
+    const status = $('.gs-wss-import-menu-status', menu);
+    const button = $('.gs-wss-import-open', menu);
+    const imported = wssImportState.imported || {};
+    const text = wssImportState.lastError
+      || (wssImportState.isParsing ? 'Разбираю архив...'
+        : (wssImportState.isImporting ? `Импорт: пакет ${wssImportState.currentBatch}/${wssImportState.totalBatches}`
+          : (wssImportState.statusText || 'Ожидание запуска.')));
+
+    if (status instanceof HTMLElement) {
+      status.textContent = text;
+      status.classList.toggle('is-error', !!wssImportState.lastError);
+      if (!wssImportState.lastError && !wssImportState.isParsing && !wssImportState.isImporting && (imported.created || imported.updated || imported.skipped)) {
+        status.textContent = `Последний импорт: создано ${Number(imported.created || 0)}, обновлено ${Number(imported.updated || 0)}, пропущено ${Number(imported.skipped || 0)}.`;
+      }
+    }
+
+    if (button instanceof HTMLButtonElement) {
+      button.disabled = wssImportState.isParsing || wssImportState.isImporting;
+    }
   }
 
   function setChatGptSearchStatus(text, isError) {
@@ -3054,6 +3623,14 @@
       </section>
 
       <section class="gs-problem-picker-menu-section">
+        <div class="gs-problem-picker-menu-section-title">Заявки WSS</div>
+        <div class="gs-problem-picker-menu-actions">
+          <button type="button" class="gs-wss-import-open">Загрузить архив</button>
+        </div>
+        <div class="gs-wss-import-menu-status" aria-live="polite">Ожидание запуска.</div>
+      </section>
+
+      <section class="gs-problem-picker-menu-section">
         <div class="gs-problem-picker-menu-section-title">ChatGPT по заявкам</div>
         <div class="gs-problem-picker-menu-actions">
           <button type="button" class="gs-problem-picker-chatgpt-search-open">Поиск заявки</button>
@@ -3112,6 +3689,10 @@
       }
       if (button.classList.contains('gs-problem-picker-chatgpt-question-open')) {
         openChatGptSearchModal(CHATGPT_MODE_QUESTION);
+        return;
+      }
+      if (button.classList.contains('gs-wss-import-open')) {
+        openWssImportModal();
         return;
       }
       if (button.classList.contains('gs-problem-picker-itil-start')) {
@@ -3175,7 +3756,8 @@
 
     const needsMenuRefresh = menu.dataset.layoutVersion !== MENU_LAYOUT_VERSION
       || !$('.gs-problem-picker-manual-toggle', menu)
-      || !$('.gs-problem-picker-manual-panel', menu);
+      || !$('.gs-problem-picker-manual-panel', menu)
+      || !$('.gs-wss-import-open', menu);
     if (needsMenuRefresh) {
       menu.innerHTML = getMenuMarkup();
       menu.dataset.layoutVersion = MENU_LAYOUT_VERSION;
@@ -3190,6 +3772,7 @@
     renderItilStatus();
     renderSuppStatus();
     renderNewResponseStatus();
+    renderWssImportStatus();
     return menu;
   }
 
@@ -3202,6 +3785,7 @@
     renderItilStatus();
     renderSuppStatus();
     renderNewResponseStatus();
+    renderWssImportStatus();
     updateLauncherStatus(menuStatusText, menuStatusIsError);
     return true;
   }
@@ -3228,11 +3812,12 @@
     toggleMenu();
   }
 
-function handleMenuEscape(event) {
+  function handleMenuEscape(event) {
     if (event.type !== 'keydown' || event.repeat || event.key !== 'Escape') return;
     const menu = document.getElementById(MENU_ID);
     const newResponseReviewModal = document.getElementById(NEW_RESPONSE_REVIEW_MODAL_ID);
     const chatGptSearchModal = document.getElementById(CHATGPT_SEARCH_MODAL_ID);
+    const wssImportModal = document.getElementById(WSS_IMPORT_MODAL_ID);
     if (menu instanceof HTMLElement && !menu.hidden) {
       event.preventDefault();
       closeMenu();
@@ -3246,6 +3831,11 @@ function handleMenuEscape(event) {
     if (newResponseReviewModal instanceof HTMLElement && !newResponseReviewModal.hidden) {
       event.preventDefault();
       closeNewResponseReviewModal();
+      return;
+    }
+    if (wssImportModal instanceof HTMLElement && !wssImportModal.hidden) {
+      event.preventDefault();
+      closeWssImportModal();
     }
   }
 
@@ -3259,6 +3849,412 @@ function handleMenuEscape(event) {
     const next = prompt('Вставь URL Apps Script bridge:', current);
     if (next === null) return;
     await saveBridgeUrl(next);
+  }
+
+  function closeWssImportModal() {
+    const modal = document.getElementById(WSS_IMPORT_MODAL_ID);
+    if (modal instanceof HTMLElement) modal.hidden = true;
+  }
+
+  function resetWssImportState(overrides) {
+    wssImportState = {
+      fileName: '',
+      rows: [],
+      stats: null,
+      preview: null,
+      isParsing: false,
+      isImporting: false,
+      currentBatch: 0,
+      totalBatches: 0,
+      imported: {
+        created: 0,
+        updated: 0,
+        skipped: 0,
+        failed: 0
+      },
+      statusText: 'Выберите zip-архив выгрузки WSS.',
+      lastError: '',
+      ...(overrides || {})
+    };
+  }
+
+  function normalizeWssTimestampForCompare(value) {
+    const text = String(value || '').trim();
+    let match = text.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?/);
+    if (match) {
+      return [
+        match[1],
+        match[2],
+        match[3],
+        String(match[4]).padStart(2, '0'),
+        match[5],
+        match[6] || '00'
+      ].join('');
+    }
+
+    match = text.match(/^(\d{2})\.(\d{2})\.(\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+    if (match) {
+      return [
+        match[3],
+        match[2],
+        match[1],
+        String(match[4]).padStart(2, '0'),
+        match[5],
+        match[6] || '00'
+      ].join('');
+    }
+
+    return text;
+  }
+
+  function compareWssParsedAt(left, right) {
+    const a = normalizeWssTimestampForCompare(left);
+    const b = normalizeWssTimestampForCompare(right);
+    if (!a && !b) return 0;
+    if (a && !b) return 1;
+    if (!a && b) return -1;
+    return a > b ? 1 : (a < b ? -1 : 0);
+  }
+
+  async function loadWssImportPreview(rows) {
+    await loadBridgeUrl();
+    if (!state.bridgeUrl) {
+      return {
+        newCount: 0,
+        updateCount: 0,
+        skipCount: 0,
+        existingCount: 0,
+        note: 'URL bridge не задан. Перед импортом задай его через кнопку «URL bridge».'
+      };
+    }
+
+    const response = await sendRuntimeMessage({
+      action: SAVE_ACTION,
+      data: {
+        bridgeUrl: state.bridgeUrl,
+        payload: {
+          action: 'getWssImportState',
+          spreadsheetId: CONFIG.spreadsheetId,
+          sheetName: WSS_SHEET_NAME
+        }
+      }
+    });
+
+    if (!response || response.success !== true) {
+      throw new Error(getRuntimeResponseError(response, 'bridge не вернул состояние листа WSS'));
+    }
+
+    const result = getBridgeActionResult(response) || {};
+    const existingByWssId = new Map();
+    (Array.isArray(result.rows) ? result.rows : []).forEach((item) => {
+      const wssId = String(item && item.wssId || '').trim();
+      if (!wssId) return;
+      existingByWssId.set(wssId, {
+        row: Number(item.row),
+        lastParsedAt: String(item.lastParsedAt || '').trim()
+      });
+    });
+
+    let newCount = 0;
+    let updateCount = 0;
+    let skipCount = 0;
+    (rows || []).forEach((row) => {
+      const existing = existingByWssId.get(String(row && row.wssId || '').trim());
+      if (!existing) {
+        newCount += 1;
+        return;
+      }
+      if (compareWssParsedAt(row.lastParsedAt, existing.lastParsedAt) > 0) updateCount += 1;
+      else skipCount += 1;
+    });
+
+    return {
+      newCount,
+      updateCount,
+      skipCount,
+      existingCount: existingByWssId.size,
+      sheetId: Number.isInteger(Number(result.sheetId)) ? Number(result.sheetId) : null,
+      note: ''
+    };
+  }
+
+  function renderWssImportModal() {
+    const modal = document.getElementById(WSS_IMPORT_MODAL_ID);
+    if (!(modal instanceof HTMLElement)) return;
+
+    const stats = wssImportState.stats || {};
+    const preview = wssImportState.preview || {};
+    const imported = wssImportState.imported || {};
+    const fileName = $('.gs-wss-import-file-name', modal);
+    const status = $('.gs-wss-import-status', modal);
+    const details = $('.gs-wss-import-details', modal);
+    const chooseButton = $('.gs-wss-import-choose', modal);
+    const startButton = $('.gs-wss-import-start', modal);
+    const progress = $('.gs-wss-import-progress', modal);
+
+    if (fileName instanceof HTMLElement) {
+      fileName.textContent = wssImportState.fileName || 'Файл не выбран';
+    }
+
+    if (status instanceof HTMLElement) {
+      status.textContent = wssImportState.lastError || wssImportState.statusText || '';
+      status.classList.toggle('is-error', !!wssImportState.lastError);
+    }
+
+    if (progress instanceof HTMLElement) {
+      progress.textContent = wssImportState.isImporting
+        ? `Пакет ${wssImportState.currentBatch}/${wssImportState.totalBatches}`
+        : (wssImportState.rows.length ? `Готово к отправке: ${wssImportState.rows.length}` : 'Ожидание архива');
+    }
+
+    if (details instanceof HTMLElement) {
+      const errorLines = Array.isArray(stats.errors) && stats.errors.length
+        ? '\nОшибки разбора:\n' + stats.errors.map((line) => '• ' + line).join('\n')
+        : '';
+      details.textContent = [
+        `MD-файлов: ${Number(stats.mdCount || 0)}`,
+        `Строк в status_index.xlsx: ${Number(stats.statusIndexCount || 0)}`,
+        `Готово к импорту: ${Number(stats.readyCount || 0)}`,
+        `Записей истории: ${Number(stats.historyEntriesCount || 0)}`,
+        `Вложений с текстом: ${Number(stats.attachmentsCount || 0)}`,
+        `Длинных блоков под сокращение: ${Number(stats.longFieldsCount || 0)}`,
+        `Нет записи в status_index: ${Number(stats.skippedMissingIndex || 0)}`,
+        `Есть в индексе, нет md: ${Number(stats.indexMissingMarkdownCount || 0)}`,
+        `Новых строк: ${Number(preview.newCount || 0)}`,
+        `Будет обновлено: ${Number(preview.updateCount || 0)}`,
+        `Будет пропущено как не свежее: ${Number(preview.skipCount || 0)}`,
+        `Создано: ${Number(imported.created || 0)}`,
+        `Обновлено: ${Number(imported.updated || 0)}`,
+        `Пропущено: ${Number(imported.skipped || 0)}`,
+        `Ошибок записи: ${Number(imported.failed || 0)}`
+      ].join('\n') + (preview.note ? '\n\n' + preview.note : '') + errorLines;
+    }
+
+    if (chooseButton instanceof HTMLButtonElement) {
+      chooseButton.disabled = wssImportState.isParsing || wssImportState.isImporting;
+    }
+
+    if (startButton instanceof HTMLButtonElement) {
+      startButton.disabled = wssImportState.isParsing
+        || wssImportState.isImporting
+        || !wssImportState.rows.length;
+    }
+
+    renderWssImportStatus();
+  }
+
+  function ensureWssImportModal() {
+    ensureStyle();
+
+    const existing = document.getElementById(WSS_IMPORT_MODAL_ID);
+    if (existing instanceof HTMLElement) return existing;
+
+    const modal = document.createElement('div');
+    modal.id = WSS_IMPORT_MODAL_ID;
+    modal.hidden = true;
+    modal.innerHTML = `
+      <section class="gs-wss-import-card" role="dialog" aria-modal="true" aria-label="Импорт заявок WSS">
+        <header class="gs-wss-import-header">
+          <div>
+            <div class="gs-wss-import-title">Заявки WSS</div>
+            <div class="gs-wss-import-subtitle">Загрузка архива на лист «${WSS_SHEET_NAME}»</div>
+          </div>
+          <button type="button" class="gs-wss-import-close-x" aria-label="Закрыть">×</button>
+        </header>
+        <div class="gs-wss-import-file">
+          <div class="gs-wss-import-file-name">Файл не выбран</div>
+          <input class="gs-wss-import-input" type="file" accept=".zip,application/zip,application/x-zip-compressed" hidden>
+          <button type="button" class="gs-wss-import-choose">Выбрать zip</button>
+        </div>
+        <div class="gs-wss-import-progress" aria-live="polite">Ожидание архива</div>
+        <pre class="gs-wss-import-details"></pre>
+        <footer class="gs-wss-import-footer">
+          <div class="gs-wss-import-status" aria-live="polite"></div>
+          <div class="gs-wss-import-buttons">
+            <button type="button" class="gs-wss-import-close">Закрыть</button>
+            <button type="button" class="gs-wss-import-start" disabled>Импортировать</button>
+          </div>
+        </footer>
+      </section>
+    `;
+
+    const close = () => closeWssImportModal();
+    $('.gs-wss-import-close-x', modal)?.addEventListener('click', close, { capture: true });
+    $('.gs-wss-import-close', modal)?.addEventListener('click', close, { capture: true });
+    $('.gs-wss-import-choose', modal)?.addEventListener('click', () => {
+      const input = $('.gs-wss-import-input', modal);
+      if (input instanceof HTMLInputElement) input.click();
+    }, { capture: true });
+    $('.gs-wss-import-input', modal)?.addEventListener('change', (event) => {
+      const input = event.target;
+      const file = input instanceof HTMLInputElement && input.files && input.files.length
+        ? input.files[0]
+        : null;
+      if (input instanceof HTMLInputElement) input.value = '';
+      if (file) void handleWssArchiveFile(file);
+    });
+    $('.gs-wss-import-start', modal)?.addEventListener('click', () => {
+      void startWssImport();
+    }, { capture: true });
+
+    (document.body || document.documentElement).appendChild(modal);
+    return modal;
+  }
+
+  function openWssImportModal() {
+    closeMenu();
+    const modal = ensureWssImportModal();
+    renderWssImportModal();
+    modal.hidden = false;
+  }
+
+  async function handleWssArchiveFile(file) {
+    const name = String(file && file.name || '').trim();
+    if (!/\.zip$/i.test(name)) {
+      resetWssImportState({
+        fileName: name || '',
+        lastError: 'Выберите файл .zip.'
+      });
+      renderWssImportModal();
+      return;
+    }
+
+    resetWssImportState({
+      fileName: name,
+      isParsing: true,
+      statusText: 'Разбираю архив...'
+    });
+    renderWssImportModal();
+
+    try {
+      const parsed = await buildWssArchiveRows(file);
+      let preview;
+      try {
+        preview = await loadWssImportPreview(parsed.rows);
+      } catch (previewError) {
+        preview = {
+          newCount: 0,
+          updateCount: 0,
+          skipCount: 0,
+          existingCount: 0,
+          note: 'Предпросмотр листа WSS не получен: ' + (previewError && previewError.message ? previewError.message : String(previewError))
+        };
+      }
+      wssImportState = {
+        ...wssImportState,
+        rows: parsed.rows,
+        stats: parsed.stats,
+        preview,
+        isParsing: false,
+        statusText: parsed.stats.errorsCount
+          ? `Архив разобран. Есть предупреждения: ${parsed.stats.errorsCount}.`
+          : 'Архив разобран. Можно импортировать.',
+        lastError: ''
+      };
+    } catch (error) {
+      wssImportState = {
+        ...wssImportState,
+        rows: [],
+        stats: null,
+        preview: null,
+        isParsing: false,
+        statusText: '',
+        lastError: error && error.message ? error.message : 'Не удалось разобрать архив WSS.'
+      };
+    }
+
+    renderWssImportModal();
+  }
+
+  function mergeWssImportResult(result) {
+    const imported = wssImportState.imported || {};
+    wssImportState.imported = {
+      created: Number(imported.created || 0) + Number(result && result.created || 0),
+      updated: Number(imported.updated || 0) + Number(result && result.updated || 0),
+      skipped: Number(imported.skipped || 0) + Number(result && result.skipped || 0),
+      failed: Number(imported.failed || 0) + Number(result && result.failed || 0)
+    };
+  }
+
+  async function startWssImport() {
+    if (wssImportState.isParsing || wssImportState.isImporting || !wssImportState.rows.length) return;
+
+    await loadBridgeUrl();
+    if (!state.bridgeUrl) {
+      wssImportState = {
+        ...wssImportState,
+        lastError: 'URL bridge не задан. Нажми F2, затем «URL bridge».'
+      };
+      renderWssImportModal();
+      return;
+    }
+
+    const totalBatches = Math.ceil(wssImportState.rows.length / WSS_IMPORT_BATCH_SIZE);
+    wssImportState = {
+      ...wssImportState,
+      isImporting: true,
+      currentBatch: 0,
+      totalBatches,
+      imported: {
+        created: 0,
+        updated: 0,
+        skipped: 0,
+        failed: 0
+      },
+      statusText: 'Отправляю заявки в bridge...',
+      lastError: ''
+    };
+    renderWssImportModal();
+
+    try {
+      for (let index = 0; index < totalBatches; index++) {
+        const batch = wssImportState.rows.slice(index * WSS_IMPORT_BATCH_SIZE, (index + 1) * WSS_IMPORT_BATCH_SIZE);
+        wssImportState = {
+          ...wssImportState,
+          currentBatch: index + 1,
+          statusText: `Отправляю пакет ${index + 1}/${totalBatches}...`
+        };
+        renderWssImportModal();
+
+        const response = await sendRuntimeMessage({
+          action: SAVE_ACTION,
+          data: {
+            bridgeUrl: state.bridgeUrl,
+            payload: {
+              action: 'importWssArchiveRows',
+              spreadsheetId: CONFIG.spreadsheetId,
+              sheetName: WSS_SHEET_NAME,
+              rows: batch,
+              textLimit: WSS_IMPORT_TEXT_LIMIT
+            }
+          }
+        });
+
+        if (!response || response.success !== true) {
+          throw new Error(getRuntimeResponseError(response, 'bridge не импортировал пакет WSS'));
+        }
+
+        mergeWssImportResult(getBridgeActionResult(response) || {});
+      }
+
+      const imported = wssImportState.imported || {};
+      wssImportState = {
+        ...wssImportState,
+        isImporting: false,
+        statusText: `Импорт завершен. Создано: ${Number(imported.created || 0)}, обновлено: ${Number(imported.updated || 0)}, пропущено: ${Number(imported.skipped || 0)}.`,
+        lastError: ''
+      };
+      activateSheetTabByName(WSS_SHEET_NAME);
+    } catch (error) {
+      wssImportState = {
+        ...wssImportState,
+        isImporting: false,
+        statusText: '',
+        lastError: error && error.message ? error.message : 'Не удалось импортировать архив WSS.'
+      };
+    }
+
+    renderWssImportModal();
   }
 
   async function startChatGptSearch() {
@@ -5092,6 +6088,7 @@ function handleMenuEscape(event) {
     const modal = document.getElementById(MODAL_ID);
     const newResponseReviewModal = document.getElementById(NEW_RESPONSE_REVIEW_MODAL_ID);
     const chatGptSearchModal = document.getElementById(CHATGPT_SEARCH_MODAL_ID);
+    const wssImportModal = document.getElementById(WSS_IMPORT_MODAL_ID);
     const menu = document.getElementById(MENU_ID);
     const menuOverlay = document.getElementById(MENU_OVERLAY_ID);
 
@@ -5100,6 +6097,7 @@ function handleMenuEscape(event) {
       || (modal && modal.contains(target))
       || (newResponseReviewModal && newResponseReviewModal.contains(target))
       || (chatGptSearchModal && chatGptSearchModal.contains(target))
+      || (wssImportModal && wssImportModal.contains(target))
       || (menu && menu.contains(target))
       || (menuOverlay && menuOverlay.contains(target))
     );

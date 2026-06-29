@@ -4,6 +4,30 @@ const PROBLEM_PICKER_BRIDGE_NEW_RESPONSE_GREEN = '#00ff00';
 const PROBLEM_PICKER_BRIDGE_AI_SEARCH_RESULT_SHEET = 'Поиск заявок (ИИ)';
 const PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_SHEET = 'Шаблон (Поиск заявок (ИИ))';
 const PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW = 2;
+const PROBLEM_PICKER_BRIDGE_WSS_SHEET = 'WSS';
+const PROBLEM_PICKER_BRIDGE_WSS_TEMPLATE_ROW = 2;
+const PROBLEM_PICKER_BRIDGE_WSS_TEXT_LIMIT = 45000;
+const PROBLEM_PICKER_BRIDGE_WSS_HEADERS = [
+  'WSS ID',
+  'Рег. номер',
+  'Краткое описание задачи',
+  'Содержание',
+  'Расширенная история решений',
+  'Доп. файлы',
+  'Дата регистрации',
+  'Этап',
+  'Статус',
+  'Призано исполненным',
+  'Заказчик',
+  'Ответственный',
+  'Плановое количество часов',
+  'Исполнить до',
+  'Комментарий',
+  'Номер заявки в СУПП',
+  'Состояние заявки в СУПП',
+  'Связанные задачи СУПП',
+  'last_parsed_at'
+];
 
 // Bridge больше не зависит от PROBLEM_OPTIONS из Code.gs.
 // Так меньше риск, что /exec работает с другим набором глобальных переменных.
@@ -47,6 +71,10 @@ function doPost(e) {
       result = _problemPickerBridgeResetInfoEditColors_(payload);
     } else if (payload.action === 'saveAiSearchResults') {
       result = _problemPickerBridgeSaveAiSearchResults_(payload);
+    } else if (payload.action === 'getWssImportState') {
+      result = _problemPickerBridgeGetWssImportState_(payload);
+    } else if (payload.action === 'importWssArchiveRows') {
+      result = _problemPickerBridgeImportWssArchiveRows_(payload);
     } else {
       throw new Error('Неизвестное действие bridge: ' + payload.action);
     }
@@ -1166,6 +1194,390 @@ function _problemPickerBridgeBuildAiSearchHeaderMap_(sh, sourceHeaders, rows) {
   return {
     lastColumn: templateHeaders.length,
     sourceIndexToTargetColumn: sourceIndexToTargetColumn
+  };
+}
+
+function _problemPickerBridgeGetWssSheet_(payload) {
+  const spreadsheetId = String(payload.spreadsheetId || '').trim();
+  if (spreadsheetId !== PROBLEM_PICKER_BRIDGE_SPREADSHEET_ID) {
+    throw new Error('Некорректная таблица: ' + spreadsheetId);
+  }
+
+  const sheetName = String(payload.sheetName || PROBLEM_PICKER_BRIDGE_WSS_SHEET).trim();
+  if (sheetName !== PROBLEM_PICKER_BRIDGE_WSS_SHEET) {
+    throw new Error('Некорректный лист WSS-импорта: ' + sheetName);
+  }
+
+  const ss = SpreadsheetApp.openById(PROBLEM_PICKER_BRIDGE_SPREADSHEET_ID);
+  const sh = ss.getSheetByName(sheetName);
+  if (!sh) {
+    throw new Error('Лист не найден: ' + sheetName);
+  }
+
+  return sh;
+}
+
+function _problemPickerBridgeGetWssHeaderMap_(sh) {
+  const headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getDisplayValues()[0].map(function(value) {
+    return String(value == null ? '' : value).trim();
+  });
+  const map = {};
+
+  headers.forEach(function(header, index) {
+    if (header && !map[header]) map[header] = index + 1;
+  });
+
+  const missing = PROBLEM_PICKER_BRIDGE_WSS_HEADERS.filter(function(header) {
+    return !map[header];
+  });
+  if (missing.length) {
+    throw new Error('На листе WSS не найдены колонки: ' + missing.join(', '));
+  }
+
+  return {
+    columns: map,
+    lastColumn: headers.length
+  };
+}
+
+function _problemPickerBridgeNormalizeWssTimestamp_(value) {
+  const text = String(value || '').trim();
+  let match = text.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  if (match) {
+    return [
+      match[1],
+      match[2],
+      match[3],
+      ('0' + match[4]).slice(-2),
+      match[5],
+      match[6] || '00'
+    ].join('');
+  }
+
+  match = text.match(/^(\d{2})\.(\d{2})\.(\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  if (match) {
+    return [
+      match[3],
+      match[2],
+      match[1],
+      ('0' + match[4]).slice(-2),
+      match[5],
+      match[6] || '00'
+    ].join('');
+  }
+
+  return text;
+}
+
+function _problemPickerBridgeCompareWssParsedAt_(incoming, existing) {
+  const left = _problemPickerBridgeNormalizeWssTimestamp_(incoming);
+  const right = _problemPickerBridgeNormalizeWssTimestamp_(existing);
+  if (!left && !right) return 0;
+  if (left && !right) return 1;
+  if (!left && right) return -1;
+  if (left > right) return 1;
+  if (left < right) return -1;
+  return 0;
+}
+
+function _problemPickerBridgeGetWssExistingRows_(sh, headerMap) {
+  const lastRow = sh.getLastRow();
+  const rows = {};
+  if (lastRow < 2) return rows;
+
+  const columns = headerMap.columns;
+  const colWss = columns['WSS ID'];
+  const colParsed = columns['last_parsed_at'];
+  const minColumn = Math.min(colWss, colParsed);
+  const maxColumn = Math.max(colWss, colParsed);
+  const values = sh.getRange(2, minColumn, lastRow - 1, maxColumn - minColumn + 1).getDisplayValues();
+
+  values.forEach(function(row, index) {
+    const wssId = String(row[colWss - minColumn] || '').trim();
+    if (!wssId) return;
+    rows[wssId] = {
+      row: index + 2,
+      lastParsedAt: String(row[colParsed - minColumn] || '').trim()
+    };
+  });
+
+  return rows;
+}
+
+function _problemPickerBridgeGetWssImportState_(payload) {
+  const sh = _problemPickerBridgeGetWssSheet_(payload);
+  const headerMap = _problemPickerBridgeGetWssHeaderMap_(sh);
+  const existing = _problemPickerBridgeGetWssExistingRows_(sh, headerMap);
+  const rows = Object.keys(existing).map(function(wssId) {
+    return {
+      wssId: wssId,
+      row: existing[wssId].row,
+      lastParsedAt: existing[wssId].lastParsedAt
+    };
+  });
+
+  return {
+    sheetName: sh.getName(),
+    sheetId: sh.getSheetId(),
+    rowsCount: rows.length,
+    rows: rows
+  };
+}
+
+function _problemPickerBridgeNormalizeWssText_(value) {
+  return String(value == null ? '' : value)
+    .replace(/\r\n?/g, '\n')
+    .replace(/\u00a0/g, ' ')
+    .replace(/[ \t]+$/gm, '')
+    .replace(/^\n+|\n+$/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function _problemPickerBridgeTruncateWssText_(value, limit) {
+  const text = _problemPickerBridgeNormalizeWssText_(value);
+  const maxLength = Math.max(1000, Number(limit) || PROBLEM_PICKER_BRIDGE_WSS_TEXT_LIMIT);
+  const marker = '\n\n[текст сокращен]';
+  if (text.length <= maxLength) return text;
+  return text.slice(0, Math.max(0, maxLength - marker.length)).replace(/\s+$/g, '') + marker;
+}
+
+function _problemPickerBridgeBuildWssRichTextFromSegments_(segments, limit) {
+  const maxLength = Math.max(1000, Number(limit) || PROBLEM_PICKER_BRIDGE_WSS_TEXT_LIMIT);
+  const marker = '\n\n[текст сокращен]';
+  const markerLength = marker.length;
+  const maxBeforeMarker = Math.max(0, maxLength - markerLength);
+  const normalStyle = SpreadsheetApp.newTextStyle()
+    .setBold(false)
+    .setFontSize(10)
+    .build();
+  const boldStyle = SpreadsheetApp.newTextStyle()
+    .setBold(true)
+    .setFontSize(10)
+    .build();
+  const textParts = [];
+  const boldRanges = [];
+  let length = 0;
+  let truncated = false;
+
+  (segments || []).forEach(function(segment) {
+    if (truncated) return;
+    const text = String(segment && segment.text != null ? segment.text : '');
+    if (!text) return;
+    const remaining = maxBeforeMarker - length;
+    if (remaining <= 0) {
+      truncated = true;
+      return;
+    }
+
+    const part = text.length > remaining ? text.slice(0, remaining) : text;
+    const start = length;
+    textParts.push(part);
+    length += part.length;
+    if (segment && segment.bold && part.length) {
+      boldRanges.push({ start: start, end: length });
+    }
+    if (part.length < text.length) truncated = true;
+  });
+
+  let fullText = textParts.join('').replace(/\s+$/g, '');
+  if (truncated) fullText += marker;
+  if (!fullText) return null;
+
+  const builder = SpreadsheetApp.newRichTextValue()
+    .setText(fullText)
+    .setTextStyle(0, fullText.length, normalStyle);
+
+  boldRanges.forEach(function(range) {
+    const start = Math.max(0, Math.min(range.start, fullText.length));
+    const end = Math.max(start, Math.min(range.end, fullText.length));
+    if (end > start) builder.setTextStyle(start, end, boldStyle);
+  });
+
+  return builder.build();
+}
+
+function _problemPickerBridgeBuildWssHistoryRichText_(entries, limit) {
+  const segments = [];
+  (Array.isArray(entries) ? entries : []).forEach(function(entry, index) {
+    const header = _problemPickerBridgeNormalizeWssText_(entry && entry.header);
+    const comment = _problemPickerBridgeNormalizeWssText_(entry && entry.comment) || 'Комментарий отсутствует';
+    if (!header && !comment) return;
+    if (index > 0) segments.push({ text: '\n\n', bold: false });
+    if (header) segments.push({ text: header + '\n', bold: true });
+    segments.push({ text: comment, bold: false });
+  });
+  return _problemPickerBridgeBuildWssRichTextFromSegments_(segments, limit);
+}
+
+function _problemPickerBridgeBuildWssAttachmentsRichText_(entries, limit) {
+  const segments = [];
+  (Array.isArray(entries) ? entries : []).forEach(function(entry, index) {
+    const title = _problemPickerBridgeNormalizeWssText_(entry && entry.title);
+    const text = _problemPickerBridgeNormalizeWssText_(entry && entry.text);
+    if (!title || !text) return;
+    if (index > 0) segments.push({ text: '\n\n', bold: false });
+    segments.push({ text: title + '\n', bold: true });
+    segments.push({ text: text, bold: false });
+  });
+  return _problemPickerBridgeBuildWssRichTextFromSegments_(segments, limit);
+}
+
+function _problemPickerBridgeCopyWssTemplateRows_(sh, startRow, count, lastColumn) {
+  if (count <= 0) return;
+  const templateRow = Math.min(PROBLEM_PICKER_BRIDGE_WSS_TEMPLATE_ROW, Math.max(1, sh.getLastRow()));
+  const templateRange = sh.getRange(templateRow, 1, 1, lastColumn);
+  templateRange.copyTo(sh.getRange(startRow, 1, count, lastColumn), { formatOnly: true });
+}
+
+function _problemPickerBridgeExpandWssConditionalFormatting_(sh, oldLastRow, newLastRow) {
+  if (newLastRow <= oldLastRow) return;
+  const rules = sh.getConditionalFormatRules();
+  if (!rules || !rules.length) return;
+
+  const updatedRules = rules.map(function(rule) {
+    const ranges = rule.getRanges();
+    let changed = false;
+    const nextRanges = ranges.map(function(range) {
+      const startRow = range.getRow();
+      const lastRow = range.getLastRow();
+      if (startRow <= oldLastRow && lastRow >= oldLastRow && lastRow < newLastRow) {
+        changed = true;
+        return sh.getRange(startRow, range.getColumn(), newLastRow - startRow + 1, range.getNumColumns());
+      }
+      return range;
+    });
+    return changed ? rule.copy().setRanges(nextRanges).build() : rule;
+  });
+
+  sh.setConditionalFormatRules(updatedRules);
+}
+
+function _problemPickerBridgeSetWssRowValues_(sh, rowNumber, headerMap, sourceRow, textLimit) {
+  const columns = headerMap.columns;
+  const valuesObject = sourceRow && sourceRow.values && typeof sourceRow.values === 'object'
+    ? sourceRow.values
+    : {};
+  const rowValues = Array(headerMap.lastColumn).fill('');
+
+  PROBLEM_PICKER_BRIDGE_WSS_HEADERS.forEach(function(header) {
+    const column = columns[header];
+    if (!column) return;
+    if (header === 'Расширенная история решений' || header === 'Доп. файлы') {
+      rowValues[column - 1] = '';
+      return;
+    }
+    rowValues[column - 1] = _problemPickerBridgeTruncateWssText_(valuesObject[header], textLimit);
+  });
+
+  sh.getRange(rowNumber, 1, 1, headerMap.lastColumn).setValues([rowValues]);
+
+  const historyColumn = columns['Расширенная история решений'];
+  const attachmentsColumn = columns['Доп. файлы'];
+  if (historyColumn) {
+    const historyRichText = _problemPickerBridgeBuildWssHistoryRichText_(sourceRow && sourceRow.historyEntries, textLimit);
+    if (historyRichText) sh.getRange(rowNumber, historyColumn).setRichTextValue(historyRichText);
+    else sh.getRange(rowNumber, historyColumn).setValue('');
+  }
+  if (attachmentsColumn) {
+    const attachmentsRichText = _problemPickerBridgeBuildWssAttachmentsRichText_(sourceRow && sourceRow.attachmentEntries, textLimit);
+    if (attachmentsRichText) sh.getRange(rowNumber, attachmentsColumn).setRichTextValue(attachmentsRichText);
+    else sh.getRange(rowNumber, attachmentsColumn).setValue('');
+  }
+}
+
+function _problemPickerBridgeImportWssArchiveRows_(payload) {
+  const sh = _problemPickerBridgeGetWssSheet_(payload);
+  const headerMap = _problemPickerBridgeGetWssHeaderMap_(sh);
+  const rows = Array.isArray(payload.rows) ? payload.rows : [];
+  const textLimit = Math.min(
+    PROBLEM_PICKER_BRIDGE_WSS_TEXT_LIMIT,
+    Math.max(1000, Number(payload.textLimit) || PROBLEM_PICKER_BRIDGE_WSS_TEXT_LIMIT)
+  );
+  if (!rows.length) {
+    return {
+      sheetName: sh.getName(),
+      sheetId: sh.getSheetId(),
+      created: 0,
+      updated: 0,
+      skipped: 0,
+      failed: 0
+    };
+  }
+
+  const oldLastRow = sh.getLastRow();
+  const existing = _problemPickerBridgeGetWssExistingRows_(sh, headerMap);
+  const writePlan = [];
+  let created = 0;
+  let updated = 0;
+  let skipped = 0;
+  let failed = 0;
+
+  rows.forEach(function(sourceRow) {
+    const wssId = String(sourceRow && sourceRow.wssId || '').trim();
+    const incomingParsedAt = String(sourceRow && sourceRow.lastParsedAt || '').trim();
+    if (!wssId) {
+      failed += 1;
+      return;
+    }
+
+    const existingRow = existing[wssId] || null;
+    if (existingRow && _problemPickerBridgeCompareWssParsedAt_(incomingParsedAt, existingRow.lastParsedAt) <= 0) {
+      skipped += 1;
+      return;
+    }
+
+    if (existingRow) {
+      writePlan.push({
+        type: 'update',
+        row: existingRow.row,
+        sourceRow: sourceRow
+      });
+      updated += 1;
+      return;
+    }
+
+    writePlan.push({
+      type: 'create',
+      row: 0,
+      sourceRow: sourceRow
+    });
+    created += 1;
+  });
+
+  const createItems = writePlan.filter(function(item) { return item.type === 'create'; });
+  if (createItems.length) {
+    sh.insertRowsAfter(Math.max(1, oldLastRow), createItems.length);
+    _problemPickerBridgeCopyWssTemplateRows_(sh, oldLastRow + 1, createItems.length, headerMap.lastColumn);
+    createItems.forEach(function(item, index) {
+      item.row = oldLastRow + 1 + index;
+      const wssId = String(item.sourceRow && item.sourceRow.wssId || '').trim();
+      existing[wssId] = {
+        row: item.row,
+        lastParsedAt: ''
+      };
+    });
+    _problemPickerBridgeExpandWssConditionalFormatting_(sh, oldLastRow, oldLastRow + createItems.length);
+  }
+
+  writePlan.forEach(function(item) {
+    try {
+      _problemPickerBridgeSetWssRowValues_(sh, item.row, headerMap, item.sourceRow, textLimit);
+    } catch (error) {
+      failed += 1;
+      if (item.type === 'create') created = Math.max(0, created - 1);
+      if (item.type === 'update') updated = Math.max(0, updated - 1);
+    }
+  });
+
+  return {
+    sheetName: sh.getName(),
+    sheetId: sh.getSheetId(),
+    created: created,
+    updated: updated,
+    skipped: skipped,
+    failed: failed,
+    rowsCount: rows.length
   };
 }
 
