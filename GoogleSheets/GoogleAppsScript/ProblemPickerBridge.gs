@@ -1425,9 +1425,21 @@ function _problemPickerBridgeBuildWssAttachmentsRichText_(entries, limit) {
 
 function _problemPickerBridgeCopyWssTemplateRows_(sh, startRow, count, lastColumn) {
   if (count <= 0) return;
-  const templateRow = Math.min(PROBLEM_PICKER_BRIDGE_WSS_TEMPLATE_ROW, Math.max(1, sh.getLastRow()));
+  const templateRow = PROBLEM_PICKER_BRIDGE_WSS_TEMPLATE_ROW;
   const templateRange = sh.getRange(templateRow, 1, 1, lastColumn);
+  if (startRow === templateRow) {
+    if (count > 1) {
+      templateRange.copyTo(sh.getRange(templateRow + 1, 1, count - 1, lastColumn), { formatOnly: true });
+    }
+    return;
+  }
   templateRange.copyTo(sh.getRange(startRow, 1, count, lastColumn), { formatOnly: true });
+}
+
+function _problemPickerBridgeEnsureWssRows_(sh, requiredLastRow) {
+  const targetLastRow = Number(requiredLastRow);
+  if (!Number.isInteger(targetLastRow) || targetLastRow <= sh.getMaxRows()) return;
+  sh.insertRowsAfter(sh.getMaxRows(), targetLastRow - sh.getMaxRows());
 }
 
 function _problemPickerBridgeExpandWssConditionalFormatting_(sh, oldLastRow, newLastRow) {
@@ -1507,6 +1519,14 @@ function _problemPickerBridgeImportWssArchiveRows_(payload) {
 
   const oldLastRow = sh.getLastRow();
   const existing = _problemPickerBridgeGetWssExistingRows_(sh, headerMap);
+  const existingRows = Object.keys(existing).map(function(wssId) {
+    return Number(existing[wssId] && existing[wssId].row || 0);
+  }).filter(function(row) {
+    return Number.isInteger(row) && row >= PROBLEM_PICKER_BRIDGE_WSS_TEMPLATE_ROW;
+  });
+  const maxExistingRow = existingRows.length
+    ? Math.max.apply(null, existingRows)
+    : 0;
   const writePlan = [];
   let created = 0;
   let updated = 0;
@@ -1547,17 +1567,25 @@ function _problemPickerBridgeImportWssArchiveRows_(payload) {
 
   const createItems = writePlan.filter(function(item) { return item.type === 'create'; });
   if (createItems.length) {
-    sh.insertRowsAfter(Math.max(1, oldLastRow), createItems.length);
-    _problemPickerBridgeCopyWssTemplateRows_(sh, oldLastRow + 1, createItems.length, headerMap.lastColumn);
+    const firstCreateRow = maxExistingRow
+      ? Math.max(oldLastRow, maxExistingRow) + 1
+      : PROBLEM_PICKER_BRIDGE_WSS_TEMPLATE_ROW;
+    const newLastRow = firstCreateRow + createItems.length - 1;
+    _problemPickerBridgeEnsureWssRows_(sh, newLastRow);
+    _problemPickerBridgeCopyWssTemplateRows_(sh, firstCreateRow, createItems.length, headerMap.lastColumn);
     createItems.forEach(function(item, index) {
-      item.row = oldLastRow + 1 + index;
+      item.row = firstCreateRow + index;
       const wssId = String(item.sourceRow && item.sourceRow.wssId || '').trim();
       existing[wssId] = {
         row: item.row,
         lastParsedAt: ''
       };
     });
-    _problemPickerBridgeExpandWssConditionalFormatting_(sh, oldLastRow, oldLastRow + createItems.length);
+    _problemPickerBridgeExpandWssConditionalFormatting_(
+      sh,
+      Math.max(oldLastRow, PROBLEM_PICKER_BRIDGE_WSS_TEMPLATE_ROW),
+      newLastRow
+    );
   }
 
   writePlan.forEach(function(item) {
