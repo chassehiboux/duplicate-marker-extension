@@ -796,18 +796,20 @@
       .map((line) => splitMarkdownTableRow(line))
       .filter((cells) => cells.length >= 6)
       .map((cells) => {
-        const role = normalizeWssHeaderPart(cells[0]);
         const user = normalizeWssHeaderPart(cells[1]);
         const solution = normalizeWssHeaderPart(cells[2]);
         const date = normalizeWssHeaderPart(cells[3]);
-        const comment = normalizeWssTableCell(cells[4]) || 'Комментарий отсутствует';
+        const comment = normalizeWssTableCell(cells[4]) || 'комментария нет';
         const notified = normalizeWssHeaderPart(cells[5]);
         return {
-          header: [role, user, solution, date, notified].filter(Boolean).join(' / '),
+          date,
+          user,
+          notified,
+          solution,
           comment
         };
       })
-      .filter((entry) => entry.header || entry.comment);
+      .filter((entry) => entry.date || entry.user || entry.notified || entry.solution || entry.comment);
   }
 
   function getWssAttachmentBlocks(markdown) {
@@ -958,7 +960,13 @@
     const historyEntriesCount = rows.reduce((sum, row) => sum + row.historyEntries.length, 0);
     const longFieldsCount = rows.reduce((sum, row) => {
       const content = String(row.values['Содержание'] || '');
-      const historyLength = row.historyEntries.reduce((total, entry) => total + String(entry.header || '').length + String(entry.comment || '').length + 2, 0);
+      const historyLength = row.historyEntries.reduce((total, entry) => total
+        + String(entry.date || '').length
+        + String(entry.user || '').length
+        + String(entry.notified || '').length
+        + String(entry.solution || '').length
+        + String(entry.comment || '').length
+        + 8, 0);
       const attachmentsLength = row.attachmentEntries.reduce((total, entry) => total + String(entry.title || '').length + String(entry.text || '').length + 2, 0);
       return sum + (content.length > WSS_IMPORT_TEXT_LIMIT ? 1 : 0)
         + (historyLength > WSS_IMPORT_TEXT_LIMIT ? 1 : 0)

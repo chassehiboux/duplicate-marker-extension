@@ -1355,8 +1355,12 @@ function _problemPickerBridgeBuildWssRichTextFromSegments_(segments, limit) {
     .setBold(true)
     .setFontSize(10)
     .build();
+  const historyHeaderStyle = SpreadsheetApp.newTextStyle()
+    .setBold(true)
+    .setFontSize(11)
+    .build();
   const textParts = [];
-  const boldRanges = [];
+  const styledRanges = [];
   let length = 0;
   let truncated = false;
 
@@ -1374,8 +1378,12 @@ function _problemPickerBridgeBuildWssRichTextFromSegments_(segments, limit) {
     const start = length;
     textParts.push(part);
     length += part.length;
-    if (segment && segment.bold && part.length) {
-      boldRanges.push({ start: start, end: length });
+    if (part.length) {
+      if (segment && segment.style === 'historyHeader') {
+        styledRanges.push({ start: start, end: length, style: historyHeaderStyle });
+      } else if (segment && segment.bold) {
+        styledRanges.push({ start: start, end: length, style: boldStyle });
+      }
     }
     if (part.length < text.length) truncated = true;
   });
@@ -1388,10 +1396,10 @@ function _problemPickerBridgeBuildWssRichTextFromSegments_(segments, limit) {
     .setText(fullText)
     .setTextStyle(0, fullText.length, normalStyle);
 
-  boldRanges.forEach(function(range) {
+  styledRanges.forEach(function(range) {
     const start = Math.max(0, Math.min(range.start, fullText.length));
     const end = Math.max(start, Math.min(range.end, fullText.length));
-    if (end > start) builder.setTextStyle(start, end, boldStyle);
+    if (end > start) builder.setTextStyle(start, end, range.style);
   });
 
   return builder.build();
@@ -1400,11 +1408,19 @@ function _problemPickerBridgeBuildWssRichTextFromSegments_(segments, limit) {
 function _problemPickerBridgeBuildWssHistoryRichText_(entries, limit) {
   const segments = [];
   (Array.isArray(entries) ? entries : []).forEach(function(entry, index) {
-    const header = _problemPickerBridgeNormalizeWssText_(entry && entry.header);
-    const comment = _problemPickerBridgeNormalizeWssText_(entry && entry.comment) || 'Комментарий отсутствует';
-    if (!header && !comment) return;
+    const date = _problemPickerBridgeNormalizeWssText_(entry && entry.date);
+    const user = _problemPickerBridgeNormalizeWssText_(entry && entry.user);
+    const notified = _problemPickerBridgeNormalizeWssText_(entry && entry.notified);
+    const solution = _problemPickerBridgeNormalizeWssText_(entry && entry.solution);
+    const comment = _problemPickerBridgeNormalizeWssText_(entry && entry.comment) || 'комментария нет';
+    const headerBase = [date, user].filter(function(value) { return !!value; }).join(' / ');
+    const header = notified
+      ? (headerBase ? headerBase + ' → ' + notified : '→ ' + notified)
+      : headerBase;
+    if (!header && !solution && !comment) return;
     if (index > 0) segments.push({ text: '\n\n', bold: false });
-    if (header) segments.push({ text: header + '\n', bold: true });
+    if (header) segments.push({ text: header + '\n', style: 'historyHeader' });
+    if (solution) segments.push({ text: solution + '\n', bold: true });
     segments.push({ text: comment, bold: false });
   });
   return _problemPickerBridgeBuildWssRichTextFromSegments_(segments, limit);
