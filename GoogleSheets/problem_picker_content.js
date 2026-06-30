@@ -36,9 +36,37 @@
   const INITIATOR_HEADER = 'Инициатор';
   const CHATGPT_SEARCH_SHEET_NAME = 'Заявки';
   const CHATGPT_RESULT_SHEET_NAME = 'Поиск заявок (ИИ)';
+  const ITIL_IMPORT_SHEET_NAME = 'ITIL';
+  const ITIL_IMPORT_START_ROW = 2003;
+  const ITIL_IMPORT_COLUMN_COUNT = 22;
+  const ITIL_IMPORT_BATCH_SIZE = 1000;
   const WSS_SHEET_NAME = 'WSS';
   const WSS_IMPORT_BATCH_SIZE = 80;
   const WSS_IMPORT_TEXT_LIMIT = 45000;
+  const ITIL_IMPORT_HEADERS = Object.freeze([
+    'Индекс картинки события',
+    'Статус порядок',
+    'Дата',
+    'Приоритет',
+    'Номер',
+    'Текущий этап',
+    'Наименование',
+    'Номер заявки в СУПП',
+    'Дата передачи заявки в СУПП',
+    'Состояние в СУПП',
+    'Дата состояния заявки СУПП',
+    'Инициатор',
+    'Текущий исполнитель',
+    'Комментарий исполнителя',
+    'Крайний срок устранения',
+    'Дата завершения',
+    'Массовый',
+    'Время перехода',
+    'Маршрут',
+    'Организация',
+    'Исполнитель в ПК СУПП',
+    'Последний исполнитель'
+  ]);
   const CHATGPT_MODE_SEARCH = 'search';
   const CHATGPT_MODE_QUESTION = 'question';
   const CHATGPT_MODE_WSS_SEARCH = 'wss_search';
@@ -93,11 +121,12 @@
   const MODAL_ID = 'dup-google-sheets-problem-picker-modal';
   const NEW_RESPONSE_REVIEW_MODAL_ID = 'dup-google-sheets-new-response-review-modal';
   const CHATGPT_SEARCH_MODAL_ID = 'dup-google-sheets-chatgpt-search-modal';
+  const ITIL_IMPORT_MODAL_ID = 'dup-google-sheets-itil-import-modal';
   const WSS_IMPORT_MODAL_ID = 'dup-google-sheets-wss-import-modal';
   const WSS_IMPORT_REVIEW_MODAL_ID = 'dup-google-sheets-wss-import-review-modal';
   const MENU_ID = 'dup-google-sheets-problem-picker-menu';
   const MENU_OVERLAY_ID = 'dup-google-sheets-problem-picker-menu-overlay';
-  const MENU_LAYOUT_VERSION = '2026-06-29-wss-2';
+  const MENU_LAYOUT_VERSION = '2026-06-30-itil-import-1';
   const MENU_BOUND_FLAG = '__dupGoogleSheetsMenuBound';
   const MENU_OVERLAY_BOUND_FLAG = '__dupGoogleSheetsMenuOverlayBound';
   const STYLE_ID = 'dup-google-sheets-problem-picker-style';
@@ -162,6 +191,18 @@
     chatTabId: null,
     sentPrompt: '',
     resultSheetId: null
+  };
+
+  let itilImportState = {
+    rawText: '',
+    headers: [],
+    tableRows: [],
+    isImporting: false,
+    currentBatch: 0,
+    totalBatches: 0,
+    insertedRowsCount: 0,
+    statusText: 'Вставьте таблицу из буфера обмена.',
+    lastError: ''
   };
 
   let wssImportState = {
@@ -3060,7 +3101,7 @@
     style.textContent = `
       #${ROOT_ID}{position:fixed;right:18px;bottom:58px;z-index:2147483640;display:flex;flex-direction:column;align-items:flex-end;gap:6px;font-family:"Segoe UI",Tahoma,sans-serif}
       #${ROOT_ID} .gs-problem-picker-actions{display:flex;gap:6px}
-      #${ROOT_ID} button,#${MODAL_ID} button,#${NEW_RESPONSE_REVIEW_MODAL_ID} button,#${CHATGPT_SEARCH_MODAL_ID} button,#${WSS_IMPORT_MODAL_ID} button,#${WSS_IMPORT_REVIEW_MODAL_ID} button{border:1px solid #b7c2d3;border-radius:7px;background:#fff;color:#162033;cursor:pointer;font:600 13px/1.2 "Segoe UI",Tahoma,sans-serif;padding:8px 12px}
+      #${ROOT_ID} button,#${MODAL_ID} button,#${NEW_RESPONSE_REVIEW_MODAL_ID} button,#${CHATGPT_SEARCH_MODAL_ID} button,#${ITIL_IMPORT_MODAL_ID} button,#${WSS_IMPORT_MODAL_ID} button,#${WSS_IMPORT_REVIEW_MODAL_ID} button{border:1px solid #b7c2d3;border-radius:7px;background:#fff;color:#162033;cursor:pointer;font:600 13px/1.2 "Segoe UI",Tahoma,sans-serif;padding:8px 12px}
       #${ROOT_ID} .gs-problem-picker-open{border-color:#1155cc;background:#1155cc;color:#fff;box-shadow:0 8px 22px rgba(17,85,204,.24)}
       #${ROOT_ID} .gs-problem-picker-url{min-width:44px}
       #${ROOT_ID} .gs-problem-picker-status{max-width:360px;min-height:18px;padding:5px 8px;border-radius:6px;background:rgba(255,255,255,.94);color:#24513a;font-size:12px;box-shadow:0 6px 18px rgba(15,23,42,.12)}
@@ -3089,18 +3130,19 @@
       #${MENU_ID} .gs-problem-picker-manual-section:first-of-type{padding-top:0;border-top:0}
       #${MENU_ID} .gs-problem-picker-manual-section-title{font-size:13px;font-weight:700;color:#253044}
       #${MENU_ID} .gs-problem-picker-status{min-height:18px;color:#24513a;font-size:13px}
-      #${MENU_ID} .gs-problem-picker-status.is-error,#${MENU_ID} .gs-problem-picker-itil-status.is-error,#${MENU_ID} .gs-problem-picker-supp-status.is-error,#${MENU_ID} .gs-problem-picker-new-response-status.is-error,#${MENU_ID} .gs-wss-import-menu-status.is-error{color:#b3261e}
+      #${MENU_ID} .gs-problem-picker-status.is-error,#${MENU_ID} .gs-problem-picker-itil-status.is-error,#${MENU_ID} .gs-problem-picker-supp-status.is-error,#${MENU_ID} .gs-problem-picker-new-response-status.is-error,#${MENU_ID} .gs-itil-import-menu-status.is-error,#${MENU_ID} .gs-wss-import-menu-status.is-error{color:#b3261e}
       #${MENU_ID} .gs-problem-picker-itil-status,#${MENU_ID} .gs-problem-picker-supp-status,#${MENU_ID} .gs-problem-picker-new-response-status{min-height:18px;color:#24513a;font-size:13px;overflow-wrap:anywhere}
+      #${MENU_ID} .gs-itil-import-menu-status{min-height:18px;color:#24513a;font-size:13px;overflow-wrap:anywhere}
       #${MENU_ID} .gs-wss-import-menu-status{min-height:18px;color:#24513a;font-size:13px;overflow-wrap:anywhere}
       #${MENU_ID} .gs-problem-picker-chatgpt-note{color:#566176;font-size:13px;line-height:1.45}
-      #${ROOT_ID} button,#${MODAL_ID} button,#${NEW_RESPONSE_REVIEW_MODAL_ID} button,#${CHATGPT_SEARCH_MODAL_ID} button,#${WSS_IMPORT_MODAL_ID} button,#${WSS_IMPORT_REVIEW_MODAL_ID} button,#${MENU_ID} button{border:1px solid #b7c2d3;border-radius:7px;background:#fff;color:#162033;cursor:pointer;font:600 13px/1.2 "Segoe UI",Tahoma,sans-serif;padding:8px 12px}
+      #${ROOT_ID} button,#${MODAL_ID} button,#${NEW_RESPONSE_REVIEW_MODAL_ID} button,#${CHATGPT_SEARCH_MODAL_ID} button,#${ITIL_IMPORT_MODAL_ID} button,#${WSS_IMPORT_MODAL_ID} button,#${WSS_IMPORT_REVIEW_MODAL_ID} button,#${MENU_ID} button{border:1px solid #b7c2d3;border-radius:7px;background:#fff;color:#162033;cursor:pointer;font:600 13px/1.2 "Segoe UI",Tahoma,sans-serif;padding:8px 12px}
       #${MENU_ID} button:disabled{opacity:.58;cursor:default}
-      #${MENU_ID} .gs-problem-picker-open,#${MENU_ID} .gs-problem-picker-chatgpt-search-open,#${MENU_ID} .gs-wss-import-open,#${MENU_ID} .gs-wss-chatgpt-search-open,#${MENU_ID} .gs-problem-picker-combined-start,#${MENU_ID} .gs-problem-picker-itil-start,#${MENU_ID} .gs-problem-picker-supp-start,#${MENU_ID} .gs-problem-picker-supp-test,#${MENU_ID} .gs-problem-picker-new-response-start{border-color:#1155cc;background:#1155cc;color:#fff;box-shadow:0 8px 22px rgba(17,85,204,.2)}
+      #${MENU_ID} .gs-problem-picker-open,#${MENU_ID} .gs-problem-picker-chatgpt-search-open,#${MENU_ID} .gs-itil-import-open,#${MENU_ID} .gs-wss-import-open,#${MENU_ID} .gs-wss-chatgpt-search-open,#${MENU_ID} .gs-problem-picker-combined-start,#${MENU_ID} .gs-problem-picker-itil-start,#${MENU_ID} .gs-problem-picker-supp-start,#${MENU_ID} .gs-problem-picker-supp-test,#${MENU_ID} .gs-problem-picker-new-response-start{border-color:#1155cc;background:#1155cc;color:#fff;box-shadow:0 8px 22px rgba(17,85,204,.2)}
       #${MENU_ID} .gs-problem-picker-new-response-history{border-color:#c9d7ef;background:#f4f8ff;color:#0f3f99}
       #${MENU_ID} .gs-problem-picker-combined-stop,#${MENU_ID} .gs-problem-picker-itil-stop,#${MENU_ID} .gs-problem-picker-supp-stop,#${MENU_ID} .gs-problem-picker-new-response-stop{border-color:#b3261e;color:#b3261e}
-      #${MODAL_ID},#${NEW_RESPONSE_REVIEW_MODAL_ID},#${WSS_IMPORT_MODAL_ID},#${WSS_IMPORT_REVIEW_MODAL_ID}{position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;box-sizing:border-box;padding:16px;overflow:hidden;background:rgba(17,24,39,.42);pointer-events:none;font-family:"Segoe UI",Tahoma,sans-serif}
+      #${MODAL_ID},#${NEW_RESPONSE_REVIEW_MODAL_ID},#${ITIL_IMPORT_MODAL_ID},#${WSS_IMPORT_MODAL_ID},#${WSS_IMPORT_REVIEW_MODAL_ID}{position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;box-sizing:border-box;padding:16px;overflow:hidden;background:rgba(17,24,39,.42);pointer-events:none;font-family:"Segoe UI",Tahoma,sans-serif}
       #${CHATGPT_SEARCH_MODAL_ID}{position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;background:rgba(15,23,42,.48);pointer-events:none;font-family:"Segoe UI",Tahoma,sans-serif}
-      #${MODAL_ID}[hidden],#${NEW_RESPONSE_REVIEW_MODAL_ID}[hidden],#${CHATGPT_SEARCH_MODAL_ID}[hidden],#${WSS_IMPORT_MODAL_ID}[hidden],#${WSS_IMPORT_REVIEW_MODAL_ID}[hidden],html.dup-ext-screenshot-mode #${ROOT_ID},html.dup-ext-screenshot-mode #${MODAL_ID},html.dup-ext-screenshot-mode #${NEW_RESPONSE_REVIEW_MODAL_ID},html.dup-ext-screenshot-mode #${CHATGPT_SEARCH_MODAL_ID},html.dup-ext-screenshot-mode #${WSS_IMPORT_MODAL_ID},html.dup-ext-screenshot-mode #${WSS_IMPORT_REVIEW_MODAL_ID},html.dup-ext-screenshot-mode #${MENU_ID},html.dup-ext-screenshot-mode #${MENU_OVERLAY_ID}{display:none!important}
+      #${MODAL_ID}[hidden],#${NEW_RESPONSE_REVIEW_MODAL_ID}[hidden],#${CHATGPT_SEARCH_MODAL_ID}[hidden],#${ITIL_IMPORT_MODAL_ID}[hidden],#${WSS_IMPORT_MODAL_ID}[hidden],#${WSS_IMPORT_REVIEW_MODAL_ID}[hidden],html.dup-ext-screenshot-mode #${ROOT_ID},html.dup-ext-screenshot-mode #${MODAL_ID},html.dup-ext-screenshot-mode #${NEW_RESPONSE_REVIEW_MODAL_ID},html.dup-ext-screenshot-mode #${CHATGPT_SEARCH_MODAL_ID},html.dup-ext-screenshot-mode #${ITIL_IMPORT_MODAL_ID},html.dup-ext-screenshot-mode #${WSS_IMPORT_MODAL_ID},html.dup-ext-screenshot-mode #${WSS_IMPORT_REVIEW_MODAL_ID},html.dup-ext-screenshot-mode #${MENU_ID},html.dup-ext-screenshot-mode #${MENU_OVERLAY_ID}{display:none!important}
       #${MODAL_ID} .gs-problem-picker-layout{width:min(1840px,calc(100vw - 32px));height:min(880px,calc(100vh - 32px));max-height:100%;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 298px;gap:14px;align-items:stretch;overflow:hidden;pointer-events:auto}
       #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-layout{width:min(1540px,calc(100vw - 32px));height:min(880px,calc(100vh - 32px));max-height:100%;min-height:0;display:grid;grid-template-columns:1fr;align-items:stretch;overflow:hidden;pointer-events:auto}
       #${MODAL_ID} .gs-problem-picker-panel,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-panel{width:100%;height:100%;min-width:0;min-height:0;overflow:hidden;display:grid;grid-template-rows:auto auto auto minmax(0,1fr) auto;gap:14px;box-sizing:border-box;padding:22px;border:1px solid #d6dce8;border-radius:8px;background:#fbfcfe;color:#172033;box-shadow:0 24px 70px rgba(15,23,42,.26)}
@@ -3177,6 +3219,20 @@
       #${MODAL_ID} .gs-problem-picker-category-button.is-selected{border-color:#2e7d32;box-shadow:0 0 0 2px rgba(46,125,50,.14),0 3px 10px rgba(15,23,42,.05)}
       #${MODAL_ID} .gs-problem-picker-category-button.is-selected:not(.is-default){background:#e9f6ee;color:#14532d}
       #${MODAL_ID} .gs-problem-picker-category-button:disabled{opacity:.58;cursor:default;box-shadow:none}
+      #${ITIL_IMPORT_MODAL_ID} .gs-itil-import-card{width:min(860px,100%);max-height:min(760px,calc(100vh - 32px));display:grid;grid-template-rows:auto auto minmax(240px,1fr) minmax(160px,1fr) auto;gap:14px;box-sizing:border-box;padding:22px;border:1px solid #d6dce8;border-radius:8px;background:#fbfcfe;color:#172033;box-shadow:0 24px 70px rgba(15,23,42,.26);pointer-events:auto}
+      #${ITIL_IMPORT_MODAL_ID} .gs-itil-import-header,#${ITIL_IMPORT_MODAL_ID} .gs-itil-import-footer{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}
+      #${ITIL_IMPORT_MODAL_ID} .gs-itil-import-title{font-size:22px;line-height:1.2;font-weight:700}
+      #${ITIL_IMPORT_MODAL_ID} .gs-itil-import-subtitle{margin-top:4px;color:#566176;font-size:13px;line-height:1.45}
+      #${ITIL_IMPORT_MODAL_ID} .gs-itil-import-close-x{width:34px;height:34px;padding:0;font-size:22px;line-height:1}
+      #${ITIL_IMPORT_MODAL_ID} .gs-itil-import-progress{width:fit-content;padding:5px 10px;border-radius:999px;background:#e8f3ee;color:#14532d;font-size:13px;font-weight:700}
+      #${ITIL_IMPORT_MODAL_ID} .gs-itil-import-input{width:100%;height:100%;min-height:240px;resize:none;box-sizing:border-box;border:1px solid #c8d2e1;border-radius:10px;background:#fff;color:#172033;font:13px/1.5 Consolas,"Courier New",monospace;padding:14px}
+      #${ITIL_IMPORT_MODAL_ID} .gs-itil-import-input:focus{outline:2px solid rgba(17,85,204,.18);border-color:#1155cc}
+      #${ITIL_IMPORT_MODAL_ID} .gs-itil-import-details{min-height:0;margin:0;overflow:auto;white-space:pre-wrap;border:1px solid #d7dce6;border-left:6px solid #2d6cdf;border-radius:8px;background:#fff;padding:14px;color:#1f2937;font:13px/1.5 Consolas,"Courier New",monospace}
+      #${ITIL_IMPORT_MODAL_ID} .gs-itil-import-status{min-height:18px;color:#566176;font-size:13px;line-height:1.45;overflow-wrap:anywhere}
+      #${ITIL_IMPORT_MODAL_ID} .gs-itil-import-status.is-error{color:#b3261e}
+      #${ITIL_IMPORT_MODAL_ID} .gs-itil-import-buttons{display:flex;flex-shrink:0;gap:10px}
+      #${ITIL_IMPORT_MODAL_ID} .gs-itil-import-start{border-color:#1155cc;background:#1155cc;color:#fff;box-shadow:0 8px 22px rgba(17,85,204,.2)}
+      #${ITIL_IMPORT_MODAL_ID} button:disabled{opacity:.58;cursor:default;box-shadow:none}
       #${WSS_IMPORT_MODAL_ID} .gs-wss-import-card{width:min(760px,100%);max-height:min(760px,calc(100vh - 32px));display:grid;grid-template-rows:auto auto auto minmax(180px,1fr) auto;gap:14px;box-sizing:border-box;padding:22px;border:1px solid #d6dce8;border-radius:8px;background:#fbfcfe;color:#172033;box-shadow:0 24px 70px rgba(15,23,42,.26);pointer-events:auto}
       #${WSS_IMPORT_MODAL_ID} .gs-wss-import-header,#${WSS_IMPORT_MODAL_ID} .gs-wss-import-footer{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}
       #${WSS_IMPORT_MODAL_ID} .gs-wss-import-title{font-size:22px;line-height:1.2;font-weight:700}
@@ -3243,6 +3299,8 @@
       @media (max-width:860px){
         #${CHATGPT_SEARCH_MODAL_ID}{align-items:flex-start;overflow:auto}
         #${CHATGPT_SEARCH_MODAL_ID} .gs-chatgpt-search-card{max-height:none;grid-template-rows:auto auto auto auto}
+        #${ITIL_IMPORT_MODAL_ID}{align-items:flex-start;overflow:auto}
+        #${ITIL_IMPORT_MODAL_ID} .gs-itil-import-card{max-height:none;grid-template-rows:auto auto minmax(260px,1fr) minmax(180px,1fr) auto}
         #${WSS_IMPORT_MODAL_ID}{align-items:flex-start;overflow:auto}
         #${WSS_IMPORT_MODAL_ID} .gs-wss-import-card{max-height:none;grid-template-rows:auto auto auto minmax(220px,1fr) auto}
         #${WSS_IMPORT_MODAL_ID} .gs-wss-import-file{grid-template-columns:1fr}
@@ -3530,6 +3588,31 @@
     }
   }
 
+  function getItilImportDataRowsCount() {
+    return Math.max(0, Number(itilImportState.tableRows && itilImportState.tableRows.length || 0) - 1);
+  }
+
+  function renderItilImportStatus() {
+    const menu = document.getElementById(MENU_ID);
+    if (!(menu instanceof HTMLElement)) return;
+
+    const status = $('.gs-itil-import-menu-status', menu);
+    const button = $('.gs-itil-import-open', menu);
+    const text = itilImportState.lastError
+      || (itilImportState.isImporting
+        ? `Загрузка: пакет ${itilImportState.currentBatch}/${itilImportState.totalBatches}`
+        : (itilImportState.statusText || 'Вставьте таблицу из буфера обмена.'));
+
+    if (status instanceof HTMLElement) {
+      status.textContent = text;
+      status.classList.toggle('is-error', !!itilImportState.lastError);
+    }
+
+    if (button instanceof HTMLButtonElement) {
+      button.disabled = itilImportState.isImporting;
+    }
+  }
+
   function setChatGptSearchStatus(text, isError) {
     chatGptSearchState.statusText = String(text || '');
     chatGptSearchState.lastError = isError ? String(text || '') : '';
@@ -3801,6 +3884,14 @@
       </section>
 
       <section class="gs-problem-picker-menu-section">
+        <div class="gs-problem-picker-menu-section-title">Заявки ITIL</div>
+        <div class="gs-problem-picker-menu-actions">
+          <button type="button" class="gs-itil-import-open">Загрузить таблицу</button>
+        </div>
+        <div class="gs-itil-import-menu-status" aria-live="polite">Вставьте таблицу из буфера обмена.</div>
+      </section>
+
+      <section class="gs-problem-picker-menu-section">
         <div class="gs-problem-picker-menu-section-title">Заявки WSS</div>
         <div class="gs-problem-picker-menu-actions">
           <button type="button" class="gs-wss-import-open">Загрузить архив</button>
@@ -3868,6 +3959,10 @@
       }
       if (button.classList.contains('gs-problem-picker-chatgpt-question-open')) {
         openChatGptSearchModal(CHATGPT_MODE_QUESTION);
+        return;
+      }
+      if (button.classList.contains('gs-itil-import-open')) {
+        openItilImportModal();
         return;
       }
       if (button.classList.contains('gs-wss-import-open')) {
@@ -3940,6 +4035,7 @@
     const needsMenuRefresh = menu.dataset.layoutVersion !== MENU_LAYOUT_VERSION
       || !$('.gs-problem-picker-manual-toggle', menu)
       || !$('.gs-problem-picker-manual-panel', menu)
+      || !$('.gs-itil-import-open', menu)
       || !$('.gs-wss-import-open', menu)
       || !$('.gs-wss-chatgpt-search-open', menu);
     if (needsMenuRefresh) {
@@ -3956,6 +4052,7 @@
     renderItilStatus();
     renderSuppStatus();
     renderNewResponseStatus();
+    renderItilImportStatus();
     renderWssImportStatus();
     return menu;
   }
@@ -3969,6 +4066,7 @@
     renderItilStatus();
     renderSuppStatus();
     renderNewResponseStatus();
+    renderItilImportStatus();
     renderWssImportStatus();
     updateLauncherStatus(menuStatusText, menuStatusIsError);
     return true;
@@ -4001,6 +4099,7 @@
     const menu = document.getElementById(MENU_ID);
     const newResponseReviewModal = document.getElementById(NEW_RESPONSE_REVIEW_MODAL_ID);
     const chatGptSearchModal = document.getElementById(CHATGPT_SEARCH_MODAL_ID);
+    const itilImportModal = document.getElementById(ITIL_IMPORT_MODAL_ID);
     const wssImportModal = document.getElementById(WSS_IMPORT_MODAL_ID);
     const wssImportReviewModal = document.getElementById(WSS_IMPORT_REVIEW_MODAL_ID);
     if (menu instanceof HTMLElement && !menu.hidden) {
@@ -4016,6 +4115,11 @@
     if (newResponseReviewModal instanceof HTMLElement && !newResponseReviewModal.hidden) {
       event.preventDefault();
       closeNewResponseReviewModal();
+      return;
+    }
+    if (itilImportModal instanceof HTMLElement && !itilImportModal.hidden) {
+      event.preventDefault();
+      closeItilImportModal();
       return;
     }
     if (wssImportModal instanceof HTMLElement && !wssImportModal.hidden) {
@@ -4039,6 +4143,351 @@
     const next = prompt('Вставь URL Apps Script bridge:', current);
     if (next === null) return;
     await saveBridgeUrl(next);
+  }
+
+  function closeItilImportModal() {
+    const modal = document.getElementById(ITIL_IMPORT_MODAL_ID);
+    if (modal instanceof HTMLElement) modal.hidden = true;
+  }
+
+  function resetItilImportState(overrides) {
+    itilImportState = {
+      rawText: '',
+      headers: [],
+      tableRows: [],
+      isImporting: false,
+      currentBatch: 0,
+      totalBatches: 0,
+      insertedRowsCount: 0,
+      statusText: 'Вставьте таблицу из буфера обмена.',
+      lastError: '',
+      ...(overrides || {})
+    };
+  }
+
+  function normalizeItilImportTableText(text) {
+    return String(text || '')
+      .replace(/^\uFEFF/, '')
+      .replace(/\r\n?/g, '\n');
+  }
+
+  function getItilImportHeaderMismatchText(headers) {
+    const mismatches = [];
+
+    for (let index = 0; index < ITIL_IMPORT_HEADERS.length; index++) {
+      const expected = ITIL_IMPORT_HEADERS[index];
+      const actual = String(headers[index] || '').trim();
+      if (actual === expected) continue;
+      mismatches.push(`${index + 1}. ожидалось «${expected}», получено «${actual || 'пусто'}»`);
+    }
+
+    return mismatches.join('\n');
+  }
+
+  function parseItilImportTableText(text) {
+    const normalized = normalizeItilImportTableText(text);
+    const lines = normalized.split('\n');
+
+    while (lines.length && !String(lines[0] || '').replace(/\t/g, '').trim()) lines.shift();
+    while (lines.length && !String(lines[lines.length - 1] || '').replace(/\t/g, '').trim()) lines.pop();
+
+    if (!lines.length) {
+      return {
+        headers: [],
+        tableRows: []
+      };
+    }
+
+    const tableRows = [];
+
+    lines.forEach((line, index) => {
+      const cells = String(line || '').split('\t');
+      const hasValues = cells.some((cell) => String(cell || '').trim() !== '');
+      if (!hasValues) return;
+      if (cells.length > ITIL_IMPORT_COLUMN_COUNT) {
+        throw new Error(`Строка ${index + 1} содержит ${cells.length} столбцов вместо ${ITIL_IMPORT_COLUMN_COUNT}.`);
+      }
+      while (cells.length < ITIL_IMPORT_COLUMN_COUNT) cells.push('');
+      tableRows.push(cells.map((cell) => String(cell == null ? '' : cell).replace(/\r/g, '')));
+    });
+
+    if (!tableRows.length) {
+      return {
+        headers: [],
+        tableRows: []
+      };
+    }
+
+    const headers = tableRows[0].map((cell) => String(cell || '').trim());
+    if (headers.length !== ITIL_IMPORT_COLUMN_COUNT) {
+      throw new Error(`Ожидалось ${ITIL_IMPORT_COLUMN_COUNT} заголовка, получено ${headers.length}.`);
+    }
+
+    const mismatchText = getItilImportHeaderMismatchText(headers);
+    if (mismatchText) {
+      throw new Error('Вставлена не та таблица или изменился порядок колонок.\n' + mismatchText);
+    }
+
+    if (tableRows.length < 2) {
+      throw new Error('После строки заголовков нет данных для загрузки.');
+    }
+
+    tableRows[0] = headers;
+
+    return {
+      headers,
+      tableRows
+    };
+  }
+
+  function buildItilImportDetailsText() {
+    if (!itilImportState.tableRows.length) {
+      return [
+        'Лист назначения: ITIL',
+        `Старт вставки: A${ITIL_IMPORT_START_ROW}`,
+        `Ожидается: ${ITIL_IMPORT_COLUMN_COUNT} столбца`,
+        '',
+        'Вставьте таблицу целиком, вместе с первой строкой заголовков.'
+      ].join('\n');
+    }
+
+    return [
+      `Лист назначения: ${ITIL_IMPORT_SHEET_NAME}`,
+      `Старт вставки: A${ITIL_IMPORT_START_ROW}`,
+      `Строк всего с заголовком: ${itilImportState.tableRows.length}`,
+      `Строк данных: ${getItilImportDataRowsCount()}`,
+      `Столбцов: ${itilImportState.headers.length}`,
+      `Пакетов: ${Math.ceil(itilImportState.tableRows.length / ITIL_IMPORT_BATCH_SIZE)}`,
+      '',
+      'Заголовки:',
+      ...itilImportState.headers.map((header, index) => `${index + 1}. ${header}`)
+    ].join('\n');
+  }
+
+  function renderItilImportModal() {
+    const modal = document.getElementById(ITIL_IMPORT_MODAL_ID);
+    if (!(modal instanceof HTMLElement)) return;
+
+    const input = $('.gs-itil-import-input', modal);
+    const progress = $('.gs-itil-import-progress', modal);
+    const details = $('.gs-itil-import-details', modal);
+    const status = $('.gs-itil-import-status', modal);
+    const clearButton = $('.gs-itil-import-clear', modal);
+    const startButton = $('.gs-itil-import-start', modal);
+
+    if (input instanceof HTMLTextAreaElement) {
+      if (input.value !== itilImportState.rawText) input.value = itilImportState.rawText;
+      input.disabled = itilImportState.isImporting;
+    }
+
+    if (progress instanceof HTMLElement) {
+      progress.textContent = itilImportState.isImporting
+        ? `Пакет ${itilImportState.currentBatch}/${itilImportState.totalBatches}`
+        : (itilImportState.tableRows.length
+          ? `Готово к вставке: ${getItilImportDataRowsCount()} строк данных`
+          : 'Ожидание вставки');
+    }
+
+    if (details instanceof HTMLElement) {
+      details.textContent = buildItilImportDetailsText();
+    }
+
+    if (status instanceof HTMLElement) {
+      status.textContent = itilImportState.lastError || itilImportState.statusText || '';
+      status.classList.toggle('is-error', !!itilImportState.lastError);
+    }
+
+    if (clearButton instanceof HTMLButtonElement) {
+      clearButton.disabled = itilImportState.isImporting || (!itilImportState.rawText && !itilImportState.tableRows.length);
+    }
+
+    if (startButton instanceof HTMLButtonElement) {
+      startButton.disabled = itilImportState.isImporting || itilImportState.tableRows.length < 2;
+    }
+
+    renderItilImportStatus();
+  }
+
+  function ensureItilImportModal() {
+    ensureStyle();
+
+    const existing = document.getElementById(ITIL_IMPORT_MODAL_ID);
+    if (existing instanceof HTMLElement) return existing;
+
+    const modal = document.createElement('div');
+    modal.id = ITIL_IMPORT_MODAL_ID;
+    modal.hidden = true;
+    modal.innerHTML = `
+      <section class="gs-itil-import-card" role="dialog" aria-modal="true" aria-label="Импорт таблицы ITIL">
+        <header class="gs-itil-import-header">
+          <div>
+            <div class="gs-itil-import-title">Заявки ITIL</div>
+            <div class="gs-itil-import-subtitle">Вставьте TSV-таблицу целиком. Расширение запишет значения на лист «${ITIL_IMPORT_SHEET_NAME}» начиная с ячейки A${ITIL_IMPORT_START_ROW}.</div>
+          </div>
+          <button type="button" class="gs-itil-import-close-x" aria-label="Закрыть">×</button>
+        </header>
+        <div class="gs-itil-import-progress" aria-live="polite">Ожидание вставки</div>
+        <textarea class="gs-itil-import-input" spellcheck="false" placeholder="Нажмите сюда и вставьте таблицу через Ctrl+V"></textarea>
+        <pre class="gs-itil-import-details"></pre>
+        <footer class="gs-itil-import-footer">
+          <div class="gs-itil-import-status" aria-live="polite"></div>
+          <div class="gs-itil-import-buttons">
+            <button type="button" class="gs-itil-import-close">Закрыть</button>
+            <button type="button" class="gs-itil-import-clear">Очистить</button>
+            <button type="button" class="gs-itil-import-start" disabled>Загрузить</button>
+          </div>
+        </footer>
+      </section>
+    `;
+
+    const close = () => closeItilImportModal();
+    $('.gs-itil-import-close-x', modal)?.addEventListener('click', close, { capture: true });
+    $('.gs-itil-import-close', modal)?.addEventListener('click', close, { capture: true });
+    $('.gs-itil-import-input', modal)?.addEventListener('input', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLTextAreaElement)) return;
+      setItilImportRawText(target.value);
+    });
+    $('.gs-itil-import-clear', modal)?.addEventListener('click', () => {
+      resetItilImportState({
+        insertedRowsCount: Number(itilImportState.insertedRowsCount || 0),
+        statusText: 'Вставьте таблицу из буфера обмена.'
+      });
+      renderItilImportModal();
+      const input = $('.gs-itil-import-input', modal);
+      if (input instanceof HTMLTextAreaElement) input.focus();
+    }, { capture: true });
+    $('.gs-itil-import-start', modal)?.addEventListener('click', () => {
+      void startItilImport();
+    }, { capture: true });
+
+    (document.body || document.documentElement).appendChild(modal);
+    return modal;
+  }
+
+  function openItilImportModal() {
+    closeMenu();
+    const modal = ensureItilImportModal();
+    renderItilImportModal();
+    modal.hidden = false;
+    requestAnimationFrame(() => {
+      const input = $('.gs-itil-import-input', modal);
+      if (input instanceof HTMLTextAreaElement) input.focus();
+    });
+  }
+
+  function setItilImportRawText(text) {
+    const rawText = String(text || '');
+
+    if (!normalizeItilImportTableText(rawText).replace(/\t/g, '').trim()) {
+      itilImportState = {
+        ...itilImportState,
+        rawText: '',
+        headers: [],
+        tableRows: [],
+        lastError: '',
+        statusText: 'Вставьте таблицу из буфера обмена.'
+      };
+      renderItilImportModal();
+      return;
+    }
+
+    try {
+      const parsed = parseItilImportTableText(rawText);
+      itilImportState = {
+        ...itilImportState,
+        rawText,
+        headers: parsed.headers,
+        tableRows: parsed.tableRows,
+        lastError: '',
+        statusText: `Готово к вставке: ${Math.max(0, parsed.tableRows.length - 1)} строк данных.`
+      };
+    } catch (error) {
+      itilImportState = {
+        ...itilImportState,
+        rawText,
+        headers: [],
+        tableRows: [],
+        statusText: '',
+        lastError: error && error.message ? error.message : 'Не удалось разобрать вставленную таблицу.'
+      };
+    }
+
+    renderItilImportModal();
+  }
+
+  async function startItilImport() {
+    if (itilImportState.isImporting || itilImportState.tableRows.length < 2) return;
+
+    await loadBridgeUrl();
+    if (!state.bridgeUrl) {
+      itilImportState = {
+        ...itilImportState,
+        lastError: 'URL bridge не задан. Нажми F2, затем «URL bridge».'
+      };
+      renderItilImportModal();
+      return;
+    }
+
+    const tableRows = clonePlainData(itilImportState.tableRows);
+    const totalBatches = Math.ceil(tableRows.length / ITIL_IMPORT_BATCH_SIZE);
+
+    itilImportState = {
+      ...itilImportState,
+      isImporting: true,
+      currentBatch: 0,
+      totalBatches,
+      statusText: 'Отправляю таблицу в bridge...',
+      lastError: ''
+    };
+    renderItilImportModal();
+
+    try {
+      for (let index = 0; index < totalBatches; index++) {
+        const batch = tableRows.slice(index * ITIL_IMPORT_BATCH_SIZE, (index + 1) * ITIL_IMPORT_BATCH_SIZE);
+        itilImportState = {
+          ...itilImportState,
+          currentBatch: index + 1,
+          statusText: `Отправляю пакет ${index + 1}/${totalBatches}...`
+        };
+        renderItilImportModal();
+
+        const response = await sendRuntimeMessage({
+          action: SAVE_ACTION,
+          data: {
+            bridgeUrl: state.bridgeUrl,
+            payload: {
+              action: 'importItilTableRows',
+              spreadsheetId: CONFIG.spreadsheetId,
+              sheetName: ITIL_IMPORT_SHEET_NAME,
+              startRow: ITIL_IMPORT_START_ROW + index * ITIL_IMPORT_BATCH_SIZE,
+              rows: batch
+            }
+          }
+        });
+
+        if (!response || response.success !== true) {
+          throw new Error(getRuntimeResponseError(response, 'bridge не вставил пакет ITIL'));
+        }
+      }
+
+      const insertedRowsCount = Math.max(0, tableRows.length - 1);
+      resetItilImportState({
+        insertedRowsCount,
+        statusText: `Таблица ITIL загружена: ${insertedRowsCount} строк данных.`
+      });
+      renderItilImportModal();
+      closeItilImportModal();
+      activateSheetTabByName(ITIL_IMPORT_SHEET_NAME);
+    } catch (error) {
+      itilImportState = {
+        ...itilImportState,
+        isImporting: false,
+        statusText: '',
+        lastError: error && error.message ? error.message : 'Не удалось загрузить таблицу ITIL.'
+      };
+      renderItilImportModal();
+    }
   }
 
   function closeWssImportModal() {
@@ -6553,6 +7002,7 @@
     const modal = document.getElementById(MODAL_ID);
     const newResponseReviewModal = document.getElementById(NEW_RESPONSE_REVIEW_MODAL_ID);
     const chatGptSearchModal = document.getElementById(CHATGPT_SEARCH_MODAL_ID);
+    const itilImportModal = document.getElementById(ITIL_IMPORT_MODAL_ID);
     const wssImportModal = document.getElementById(WSS_IMPORT_MODAL_ID);
     const wssImportReviewModal = document.getElementById(WSS_IMPORT_REVIEW_MODAL_ID);
     const menu = document.getElementById(MENU_ID);
@@ -6563,6 +7013,7 @@
       || (modal && modal.contains(target))
       || (newResponseReviewModal && newResponseReviewModal.contains(target))
       || (chatGptSearchModal && chatGptSearchModal.contains(target))
+      || (itilImportModal && itilImportModal.contains(target))
       || (wssImportModal && wssImportModal.contains(target))
       || (wssImportReviewModal && wssImportReviewModal.contains(target))
       || (menu && menu.contains(target))

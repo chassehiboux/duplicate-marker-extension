@@ -4,6 +4,33 @@ const PROBLEM_PICKER_BRIDGE_NEW_RESPONSE_GREEN = '#00ff00';
 const PROBLEM_PICKER_BRIDGE_AI_SEARCH_RESULT_SHEET = 'Поиск заявок (ИИ)';
 const PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_SHEET = 'Шаблон (Поиск заявок (ИИ))';
 const PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW = 2;
+const PROBLEM_PICKER_BRIDGE_ITIL_IMPORT_SHEET = 'ITIL';
+const PROBLEM_PICKER_BRIDGE_ITIL_IMPORT_START_ROW = 2003;
+const PROBLEM_PICKER_BRIDGE_ITIL_IMPORT_COLUMN_COUNT = 22;
+const PROBLEM_PICKER_BRIDGE_ITIL_IMPORT_HEADERS = [
+  'Индекс картинки события',
+  'Статус порядок',
+  'Дата',
+  'Приоритет',
+  'Номер',
+  'Текущий этап',
+  'Наименование',
+  'Номер заявки в СУПП',
+  'Дата передачи заявки в СУПП',
+  'Состояние в СУПП',
+  'Дата состояния заявки СУПП',
+  'Инициатор',
+  'Текущий исполнитель',
+  'Комментарий исполнителя',
+  'Крайний срок устранения',
+  'Дата завершения',
+  'Массовый',
+  'Время перехода',
+  'Маршрут',
+  'Организация',
+  'Исполнитель в ПК СУПП',
+  'Последний исполнитель'
+];
 const PROBLEM_PICKER_BRIDGE_WSS_SHEET = 'WSS';
 const PROBLEM_PICKER_BRIDGE_WSS_TEMPLATE_ROW = 2;
 const PROBLEM_PICKER_BRIDGE_WSS_TEXT_LIMIT = 45000;
@@ -71,6 +98,8 @@ function doPost(e) {
       result = _problemPickerBridgeResetInfoEditColors_(payload);
     } else if (payload.action === 'saveAiSearchResults') {
       result = _problemPickerBridgeSaveAiSearchResults_(payload);
+    } else if (payload.action === 'importItilTableRows') {
+      result = _problemPickerBridgeImportItilTableRows_(payload);
     } else if (payload.action === 'getWssImportState') {
       result = _problemPickerBridgeGetWssImportState_(payload);
     } else if (payload.action === 'importWssArchiveRows') {
@@ -1048,6 +1077,100 @@ function _problemPickerBridgeResetInfoEditColors_(payload) {
     sheetName: sheetName,
     rowsCount: validRows.length,
     rangesCount: ranges.length
+  };
+}
+
+function _problemPickerBridgeGetItilImportSheet_(payload) {
+  const spreadsheetId = String(payload.spreadsheetId || '').trim();
+  if (spreadsheetId !== PROBLEM_PICKER_BRIDGE_SPREADSHEET_ID) {
+    throw new Error('Некорректная таблица: ' + spreadsheetId);
+  }
+
+  const sheetName = String(payload.sheetName || PROBLEM_PICKER_BRIDGE_ITIL_IMPORT_SHEET).trim();
+  if (sheetName !== PROBLEM_PICKER_BRIDGE_ITIL_IMPORT_SHEET) {
+    throw new Error('Некорректный лист ITIL-импорта: ' + sheetName);
+  }
+
+  const ss = SpreadsheetApp.openById(PROBLEM_PICKER_BRIDGE_SPREADSHEET_ID);
+  const sh = ss.getSheetByName(sheetName);
+  if (!sh) {
+    throw new Error('Лист не найден: ' + sheetName);
+  }
+
+  return sh;
+}
+
+function _problemPickerBridgeNormalizeItilImportRows_(rows) {
+  const source = Array.isArray(rows) ? rows : [];
+  return source.map(function(row, index) {
+    if (!Array.isArray(row)) {
+      throw new Error('Строка ITIL-импорта ' + (index + 1) + ' имеет некорректный формат.');
+    }
+    if (row.length !== PROBLEM_PICKER_BRIDGE_ITIL_IMPORT_COLUMN_COUNT) {
+      throw new Error(
+        'Строка ITIL-импорта ' + (index + 1) +
+        ' содержит ' + row.length +
+        ' ячеек вместо ' + PROBLEM_PICKER_BRIDGE_ITIL_IMPORT_COLUMN_COUNT + '.'
+      );
+    }
+    return row.map(function(value) {
+      return String(value == null ? '' : value);
+    });
+  });
+}
+
+function _problemPickerBridgeValidateItilImportHeaderRow_(headerRow) {
+  const mismatches = [];
+
+  PROBLEM_PICKER_BRIDGE_ITIL_IMPORT_HEADERS.forEach(function(expected, index) {
+    const actual = String(headerRow[index] || '').trim();
+    if (actual === expected) return;
+    mismatches.push(
+      (index + 1) + '. ожидалось «' + expected + '», получено «' + (actual || 'пусто') + '»'
+    );
+  });
+
+  if (mismatches.length) {
+    throw new Error('В первой строке вставки неожиданные заголовки.\n' + mismatches.join('\n'));
+  }
+}
+
+function _problemPickerBridgeImportItilTableRows_(payload) {
+  const sh = _problemPickerBridgeGetItilImportSheet_(payload);
+  const startRow = Number(payload.startRow);
+
+  if (!Number.isInteger(startRow) || startRow < PROBLEM_PICKER_BRIDGE_ITIL_IMPORT_START_ROW) {
+    throw new Error('Некорректная стартовая строка ITIL-импорта: ' + payload.startRow);
+  }
+
+  const rows = _problemPickerBridgeNormalizeItilImportRows_(payload.rows);
+  if (!rows.length) {
+    return {
+      sheetName: sh.getName(),
+      sheetId: sh.getSheetId(),
+      writtenRows: 0,
+      startRow: startRow
+    };
+  }
+
+  if (startRow === PROBLEM_PICKER_BRIDGE_ITIL_IMPORT_START_ROW) {
+    _problemPickerBridgeValidateItilImportHeaderRow_(rows[0]);
+  }
+
+  const requiredLastRow = startRow + rows.length - 1;
+  if (requiredLastRow > sh.getMaxRows()) {
+    sh.insertRowsAfter(sh.getMaxRows(), requiredLastRow - sh.getMaxRows());
+  }
+
+  sh.getRange(startRow, 1, rows.length, PROBLEM_PICKER_BRIDGE_ITIL_IMPORT_COLUMN_COUNT)
+    .setValues(rows);
+
+  return {
+    sheetName: sh.getName(),
+    sheetId: sh.getSheetId(),
+    writtenRows: rows.length,
+    startRow: startRow,
+    endRow: requiredLastRow
   };
 }
 
