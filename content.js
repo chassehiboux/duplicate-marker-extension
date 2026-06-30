@@ -252,6 +252,8 @@
     { background: '#F4BECA' },
     { background: '#B8C1E6' }
   ];
+  const EPGU_REQUESTS_SUMMARY_BUTTON_ID = 'dup-epgu-summary-btn';
+  const EPGU_REQUESTS_SUMMARY_MODAL_ID = 'dup-epgu-summary-modal';
   const EPGU_REQUESTS_COLOR_RED = '#FFC9C9';
   const EPGU_REQUESTS_COLOR_GREEN = '#C8F2CC';
   const EPGU_REQUESTS_COLOR_YELLOW = '#FFF3B8';
@@ -345,6 +347,19 @@
         html.dup-ui-hide-epgu-fill-highlights .${EPGU_REQUESTS_FILL_CLASS} {
           background-color: transparent !important;
           outline: none !important;
+        }
+      `
+    },
+    {
+      key: 'epguSummaryTools',
+      storageKey: 'dup_ui_show_epgu_summary_tools',
+      label: 'Сводка ЕПГУ',
+      description: 'Кнопка ЕПГУ внизу списка и окно со статусами взыскателей за сегодня.',
+      hideClass: 'dup-ui-hide-epgu-summary-tools',
+      hideCss: `
+        html.dup-ui-hide-epgu-summary-tools #${EPGU_REQUESTS_SUMMARY_BUTTON_ID},
+        html.dup-ui-hide-epgu-summary-tools #${EPGU_REQUESTS_SUMMARY_MODAL_ID} {
+          display: none !important;
         }
       `
     },
@@ -5134,6 +5149,278 @@
     cell.style.outline = '';
   }
 
+  function normalizeEpguClaimantKey(value) {
+    const normalized = normalizeEpguRequestsCellText(value);
+    if (!normalized) return '';
+    const withoutPerson = normalized.replace(/\s*\([^)]*\)\s*$/, '').trim();
+    return withoutPerson || normalized;
+  }
+
+  function parseEpguCreateDateInfo(rawValue) {
+    const normalized = normalizeEpguRequestsCellText(rawValue);
+    const dayKey = normalizeCreateDateForDuplicate(normalized);
+    const match = normalized.match(/^(\d{2})-(\d{2})-(\d{4})(?:\s+(\d{2}):(\d{2})(?::(\d{2}))?)?$/);
+
+    if (!match) {
+      return {
+        rawText: normalized,
+        dayKey,
+        sortKey: '',
+        shortDateLabel: dayKey ? dayKey.slice(0, 5).replace('-', '.') : ''
+      };
+    }
+
+    const day = match[1];
+    const month = match[2];
+    const year = match[3];
+    const hour = match[4] || '00';
+    const minute = match[5] || '00';
+    const second = match[6] || '00';
+
+    return {
+      rawText: normalized,
+      dayKey: `${day}-${month}-${year}`,
+      sortKey: `${year}${month}${day}${hour}${minute}${second}`,
+      shortDateLabel: `${day}.${month}`
+    };
+  }
+
+  function getEpguTodayDateKey() {
+    const now = new Date();
+    const day = String(now.getDate()).padStart(2, '0');
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const year = String(now.getFullYear());
+    return `${day}-${month}-${year}`;
+  }
+
+  function formatEpguDateKeyForDisplay(dateKey) {
+    const normalized = String(dateKey || '').trim();
+    const match = normalized.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+    if (!match) return normalized;
+    return `${match[1]}.${match[2]}.${match[3]}`;
+  }
+
+  function resolveEpguStatusMeta(statusText) {
+    const normalized = normalizeEpguRequestsCellText(statusText);
+    const lower = normalized.toLowerCase();
+
+    if (lower === 'услуга оказана') {
+      return { color: EPGU_REQUESTS_COLOR_GREEN, rank: 4, label: normalized || 'Услуга оказана' };
+    }
+    if (lower === 'заявление получено ведомством') {
+      return { color: EPGU_REQUESTS_COLOR_TRANSITION, rank: 3, label: normalized || 'Заявление получено ведомством' };
+    }
+    if (lower === 'ошибка') {
+      return { color: EPGU_REQUESTS_COLOR_RED, rank: 1, label: normalized || 'Ошибка' };
+    }
+
+    return {
+      color: EPGU_REQUESTS_COLOR_YELLOW,
+      rank: normalized ? 2 : 0,
+      label: normalized || 'Нет статуса'
+    };
+  }
+
+  function isEpguEntryBetter(candidate, current) {
+    if (!current) return true;
+    if ((candidate.statusMeta.rank || 0) !== (current.statusMeta.rank || 0)) {
+      return (candidate.statusMeta.rank || 0) > (current.statusMeta.rank || 0);
+    }
+    if ((candidate.dateInfo.sortKey || '') !== (current.dateInfo.sortKey || '')) {
+      return (candidate.dateInfo.sortKey || '') > (current.dateInfo.sortKey || '');
+    }
+    return (candidate.rowIndex || 0) < (current.rowIndex || 0);
+  }
+
+  function collectEpguTodaySummaryItems() {
+    const rows = Array.from(document.querySelectorAll('#list tbody > tr.jqgrow'));
+    const todayDateKey = getEpguTodayDateKey();
+    const groups = new Map();
+
+    rows.forEach((row, rowIndex) => {
+      if (!(row instanceof HTMLElement)) return;
+
+      const claimantCell = row.querySelector('td[aria-describedby="list_Claimant"]');
+      const createDateCell = row.querySelector('td[aria-describedby="list_CreateDate"]');
+      const statusCell = row.querySelector('td[aria-describedby="list_StatusName"]');
+      if (!(claimantCell instanceof HTMLElement) || !(createDateCell instanceof HTMLElement)) return;
+
+      const claimantKey = normalizeEpguClaimantKey(getSmartValue(claimantCell));
+      const dateInfo = parseEpguCreateDateInfo(getSmartValue(createDateCell));
+      if (!claimantKey || dateInfo.dayKey !== todayDateKey) return;
+
+      const entry = {
+        rowIndex,
+        dateInfo,
+        statusMeta: resolveEpguStatusMeta(statusCell instanceof HTMLElement ? getSmartValue(statusCell) : '')
+      };
+
+      if (!groups.has(claimantKey)) {
+        groups.set(claimantKey, {
+          claimantKey,
+          count: 0,
+          bestEntry: null
+        });
+      }
+
+      const group = groups.get(claimantKey);
+      group.count += 1;
+      if (isEpguEntryBetter(entry, group.bestEntry)) {
+        group.bestEntry = entry;
+      }
+    });
+
+    const items = Array.from(groups.values()).filter((item) => item && item.bestEntry);
+    items.sort((left, right) => {
+      const rightRank = right.bestEntry && right.bestEntry.statusMeta ? Number(right.bestEntry.statusMeta.rank || 0) : 0;
+      const leftRank = left.bestEntry && left.bestEntry.statusMeta ? Number(left.bestEntry.statusMeta.rank || 0) : 0;
+      if (rightRank !== leftRank) return rightRank - leftRank;
+      return String(left.claimantKey || '').localeCompare(String(right.claimantKey || ''), 'ru');
+    });
+
+    return {
+      todayDateKey,
+      items
+    };
+  }
+
+  function renderEpguSummaryModal(modal) {
+    if (!(modal instanceof HTMLElement)) return;
+
+    const meta = modal.querySelector('.dup-epgu-summary-meta');
+    const list = modal.querySelector('.dup-epgu-summary-list');
+    if (!(meta instanceof HTMLElement) || !(list instanceof HTMLElement)) return;
+
+    const summary = collectEpguTodaySummaryItems();
+    const displayDate = formatEpguDateKeyForDisplay(summary.todayDateKey);
+    meta.textContent = summary.items.length
+      ? `Текущая страница. За ${displayDate}. Уникальных взыскателей: ${summary.items.length}.`
+      : `На текущей странице нет запросов за ${displayDate}.`;
+
+    list.textContent = '';
+    if (!summary.items.length) {
+      const empty = document.createElement('div');
+      empty.className = 'dup-epgu-summary-empty';
+      empty.textContent = 'За сегодня на текущей странице записей не найдено.';
+      list.appendChild(empty);
+      return;
+    }
+
+    summary.items.forEach((item, index) => {
+      const row = document.createElement('div');
+      row.className = 'dup-epgu-summary-item';
+      row.title = [
+        item.claimantKey,
+        `Лучший статус за ${displayDate}: ${item.bestEntry.statusMeta.label}`,
+        `Запросов за сегодня на странице: ${item.count}`,
+        item.bestEntry.dateInfo.rawText ? `Последний учтенный запрос: ${item.bestEntry.dateInfo.rawText}` : ''
+      ].filter(Boolean).join('\n');
+
+      const claimant = document.createElement('div');
+      claimant.className = 'dup-epgu-summary-claimant';
+      claimant.textContent = `${index + 1}. ${item.claimantKey}`;
+
+      const count = document.createElement('span');
+      count.className = 'dup-epgu-summary-count';
+      count.textContent = `${item.count} шт.`;
+      claimant.appendChild(count);
+
+      const status = document.createElement('span');
+      status.className = 'dup-epgu-summary-status';
+      status.textContent = item.bestEntry.statusMeta.label;
+      status.style.backgroundColor = item.bestEntry.statusMeta.color;
+      status.style.borderColor = item.bestEntry.statusMeta.color;
+
+      row.append(claimant, status);
+      list.appendChild(row);
+    });
+  }
+
+  function createEpguSummaryModal() {
+    const existing = document.getElementById(EPGU_REQUESTS_SUMMARY_MODAL_ID);
+    if (existing instanceof HTMLElement) return existing;
+
+    const modal = document.createElement('div');
+    modal.id = EPGU_REQUESTS_SUMMARY_MODAL_ID;
+    modal.className = 'dup-execution-analysis-modal dup-epgu-summary-modal';
+    modal.hidden = true;
+    modal.innerHTML = `
+      <div class="dup-execution-analysis-modal-panel dup-epgu-summary-panel" role="dialog" aria-modal="true" aria-label="Сводка ЕПГУ за сегодня">
+        <div class="dup-execution-analysis-modal-header">
+          <div class="dup-execution-analysis-modal-title">Сводка ЕПГУ</div>
+          <button type="button" class="dup-execution-analysis-modal-close" aria-label="Закрыть">×</button>
+        </div>
+        <div class="dup-epgu-summary-meta"></div>
+        <div class="dup-epgu-summary-list" role="list"></div>
+      </div>
+    `;
+
+    const close = () => { modal.hidden = true; };
+    modal.addEventListener('click', (event) => {
+      if (event.target === modal) close();
+    }, { capture: true });
+    modal.querySelector('.dup-execution-analysis-modal-close')?.addEventListener('click', close, { capture: true });
+
+    (document.body || document.documentElement).appendChild(modal);
+    return modal;
+  }
+
+  function openEpguSummaryModal() {
+    if (!isEpguRequestsPage()) return;
+    const modal = createEpguSummaryModal();
+    renderEpguSummaryModal(modal);
+    modal.hidden = false;
+  }
+
+  function ensureEpguSummaryButton() {
+    const host = document.querySelector('#pager_left .navtable');
+    if (!(host instanceof HTMLElement)) return null;
+
+    const existing = document.getElementById(EPGU_REQUESTS_SUMMARY_BUTTON_ID);
+    if (existing instanceof HTMLElement) {
+      if (existing.parentElement !== host) host.appendChild(existing);
+      return existing;
+    }
+
+    const button = document.createElement('div');
+    button.id = EPGU_REQUESTS_SUMMARY_BUTTON_ID;
+    button.className = 'btn btn-xs ui-pg-button';
+    button.tabIndex = 0;
+    button.setAttribute('role', 'button');
+    button.setAttribute('title', 'Сводка взыскателей за сегодня');
+    button.innerHTML = `
+      <div class="ui-pg-div">
+        <span class="fa fa-lg fa-fw fa-list-alt"></span>
+        <span class="ui-pg-button-text">ЕПГУ</span>
+      </div>
+    `;
+    button.addEventListener('click', () => {
+      openEpguSummaryModal();
+    }, { capture: true });
+    button.addEventListener('keydown', (event) => {
+      if (!event || (event.key !== 'Enter' && event.key !== ' ')) return;
+      event.preventDefault();
+      openEpguSummaryModal();
+    }, { capture: true });
+
+    host.appendChild(button);
+    return button;
+  }
+
+  function removeEpguSummaryUi() {
+    document.getElementById(EPGU_REQUESTS_SUMMARY_BUTTON_ID)?.remove();
+    document.getElementById(EPGU_REQUESTS_SUMMARY_MODAL_ID)?.remove();
+  }
+
+  function syncEpguSummaryUi() {
+    if (!isEpguRequestsPage()) {
+      removeEpguSummaryUi();
+      return;
+    }
+
+    ensureEpguSummaryButton();
+  }
+
   function applyEpguRequestsFillColor(cell, color) {
     if (!(cell instanceof HTMLElement)) return;
     cell.classList.add(EPGU_REQUESTS_FILL_CLASS);
@@ -5166,10 +5453,12 @@
   function applyEpguRequestsPermanentHighlights() {
     if (!isEpguRequestsPage()) {
       clearEpguRequestsHighlights();
+      removeEpguSummaryUi();
       return;
     }
 
     clearEpguRequestsHighlights();
+    syncEpguSummaryUi();
 
     const rows = Array.from(document.querySelectorAll('#list tbody > tr.jqgrow'));
     const duplicatePairs = new Map();

@@ -27,6 +27,8 @@
             epguDuplicateHighlights: null,
             // Подсветка заполненности и служебных отметок ЕПГУ.
             epguFillHighlights: null,
+            // Кнопка ЕПГУ внизу списка и модалка со сводкой за сегодня.
+            epguSummaryTools: null,
             // Основная панель таймера StageTimer.
             stageTimer: null,
             // Кнопка сворачивания/скрытия таймера.
