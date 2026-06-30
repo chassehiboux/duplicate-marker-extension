@@ -456,7 +456,7 @@ html.dup-ext-screenshot-mode [aria-label="Показать таймер"] {
 }
 
 .dup-epgu-summary-panel {
-    width: min(92vw, 640px);
+    width: min(94vw, 920px);
 }
 
 .dup-epgu-summary-meta {
@@ -466,21 +466,49 @@ html.dup-ext-screenshot-mode [aria-label="Показать таймер"] {
 }
 
 .dup-epgu-summary-list {
-    display: grid;
+    display: flex;
+    flex-direction: column;
     gap: 8px;
-    max-height: min(60vh, 420px);
+    max-height: min(72vh, 620px);
     overflow: auto;
 }
 
 .dup-epgu-summary-item {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 10px 12px;
+    flex-direction: column;
     border: 1px solid rgba(39, 64, 79, 0.14);
     border-radius: 8px;
     background: #ffffff;
+    overflow: hidden;
+}
+
+.dup-epgu-summary-toggle {
+    width: 100%;
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 12px;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.dup-epgu-summary-toggle:hover {
+    background: rgba(230, 238, 243, 0.42);
+}
+
+.dup-epgu-summary-toggle:focus-visible {
+    outline: 2px solid rgba(39, 64, 79, 0.38);
+    outline-offset: -2px;
+}
+
+.dup-epgu-summary-main {
+    min-width: 0;
+    display: grid;
+    gap: 6px;
 }
 
 .dup-epgu-summary-claimant {
@@ -495,11 +523,34 @@ html.dup-ext-screenshot-mode [aria-label="Показать таймер"] {
     overflow-wrap: anywhere;
 }
 
+.dup-epgu-summary-subline {
+    font-size: 12px;
+    line-height: 1.35;
+    color: #51656f;
+}
+
 .dup-epgu-summary-count {
     font-size: 11px;
     font-weight: 500;
     color: #51656f;
     white-space: nowrap;
+}
+
+.dup-epgu-summary-side {
+    min-width: 0;
+    flex: 1 1 380px;
+    display: grid;
+    gap: 6px;
+    justify-items: end;
+}
+
+.dup-epgu-summary-badges {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 6px;
+    max-width: 100%;
 }
 
 .dup-epgu-summary-status {
@@ -517,6 +568,102 @@ html.dup-ext-screenshot-mode [aria-label="Показать таймер"] {
     text-align: center;
 }
 
+.dup-epgu-summary-badge,
+.dup-epgu-summary-message {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 30px;
+    padding: 0 10px;
+    border: 1px solid transparent;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #10202a;
+    text-align: center;
+}
+
+.dup-epgu-summary-message {
+    max-width: min(52vw, 560px);
+    justify-content: flex-start;
+    align-items: flex-start;
+    background: #edf3f6;
+    border-color: rgba(39, 64, 79, 0.14);
+    padding-top: 6px;
+    padding-bottom: 6px;
+    line-height: 1.35;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+
+.dup-epgu-summary-chevron {
+    flex: none;
+    font-size: 16px;
+    line-height: 1;
+    color: #51656f;
+    transform: rotate(0deg);
+    transition: transform 0.15s ease;
+}
+
+.dup-epgu-summary-toggle[aria-expanded="true"] .dup-epgu-summary-chevron {
+    transform: rotate(180deg);
+}
+
+.dup-epgu-summary-details {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 0 12px 12px;
+    border-top: 1px solid rgba(39, 64, 79, 0.1);
+    background: linear-gradient(180deg, rgba(245, 249, 251, 0.78), rgba(255, 255, 255, 0.92));
+}
+
+.dup-epgu-summary-request {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 12px;
+    border: 1px solid rgba(39, 64, 79, 0.12);
+    border-radius: 8px;
+    background: #ffffff;
+}
+
+.dup-epgu-summary-request-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.dup-epgu-summary-request-date {
+    font-size: 13px;
+    font-weight: 700;
+    color: #10202a;
+}
+
+.dup-epgu-summary-request-ids,
+.dup-epgu-summary-request-meta {
+    font-size: 12px;
+    line-height: 1.35;
+    color: #51656f;
+}
+
+.dup-epgu-summary-request-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.dup-epgu-summary-request-message {
+    font-size: 12px;
+    line-height: 1.45;
+    color: #213843;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
 .dup-epgu-summary-empty {
     padding: 12px;
     border: 1px dashed rgba(39, 64, 79, 0.18);
@@ -528,13 +675,34 @@ html.dup-ext-screenshot-mode [aria-label="Показать таймер"] {
 }
 
 @media (max-width: 640px) {
-    .dup-epgu-summary-item {
-        align-items: flex-start;
+    .dup-epgu-summary-toggle,
+    .dup-epgu-summary-side,
+    .dup-epgu-summary-request-head {
         flex-direction: column;
+        align-items: flex-start;
     }
 
-    .dup-epgu-summary-status {
+    .dup-epgu-summary-side {
         width: 100%;
+        justify-items: stretch;
+    }
+
+    .dup-epgu-summary-badges,
+    .dup-epgu-summary-request-badges {
+        width: 100%;
+        justify-content: flex-start;
+    }
+
+    .dup-epgu-summary-status,
+    .dup-epgu-summary-badge,
+    .dup-epgu-summary-message {
+        width: 100%;
+    }
+
+    .dup-epgu-summary-message {
+        max-width: none;
+        white-space: normal;
+        text-overflow: clip;
     }
 }
 
