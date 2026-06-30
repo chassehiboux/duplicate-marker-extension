@@ -5259,41 +5259,24 @@
     rows.forEach((row, rowIndex) => {
       if (!(row instanceof HTMLElement)) return;
 
-      const idCell = row.querySelector('td[aria-describedby="list_Id"]');
       const claimantCell = row.querySelector('td[aria-describedby="list_Claimant"]');
-      const orderIdCell = row.querySelector('td[aria-describedby="list_OrderId"]');
       const createDateCell = row.querySelector('td[aria-describedby="list_CreateDate"]');
-      const lastCheckDateCell = row.querySelector('td[aria-describedby="list_LastCheckDate"]');
       const statusCell = row.querySelector('td[aria-describedby="list_StatusName"]');
       const messageCell = row.querySelector('td[aria-describedby="list_Message"]');
-      const fileRequestCell = row.querySelector('td[aria-describedby="list_FileRequest"]');
-      const processFileCell = row.querySelector('td[aria-describedby="list_ProcessFile"]');
       if (!(claimantCell instanceof HTMLElement) || !(createDateCell instanceof HTMLElement)) return;
 
-      const claimantText = getSmartValue(claimantCell);
       const claimantKey = normalizeEpguClaimantKey(getSmartValue(claimantCell));
       const dateInfo = parseEpguCreateDateInfo(getSmartValue(createDateCell));
       if (!claimantKey || dateInfo.dayKey !== todayDateKey) return;
 
       const statusText = statusCell instanceof HTMLElement ? getSmartValue(statusCell) : '';
       const messageText = messageCell instanceof HTMLElement ? normalizeEpguRequestsCellText(getSmartValue(messageCell)) : '';
-      const fileRequestText = fileRequestCell instanceof HTMLElement ? normalizeEpguRequestsCellText(getSmartValue(fileRequestCell)) : '';
-      const processFileText = processFileCell instanceof HTMLElement ? normalizeEpguRequestsCellText(getSmartValue(processFileCell)) : '';
       const entry = {
         rowIndex,
-        idText: idCell instanceof HTMLElement ? normalizeEpguRequestsCellText(getSmartValue(idCell)) : '',
-        claimantText: normalizeEpguRequestsCellText(claimantText),
         claimantKey,
-        orderIdText: orderIdCell instanceof HTMLElement ? normalizeEpguRequestsCellText(getSmartValue(orderIdCell)) : '',
         dateInfo,
-        lastCheckText: lastCheckDateCell instanceof HTMLElement ? normalizeEpguRequestsCellText(getSmartValue(lastCheckDateCell)) : '',
-        statusText: normalizeEpguRequestsCellText(statusText),
         statusMeta: resolveEpguStatusMeta(statusText),
-        messageText,
-        fileRequestText,
-        fileRequestColor: resolveEpguFileRequestColor(fileRequestText),
-        processFileText,
-        processFileColor: resolveEpguProcessFileColor(processFileText)
+        messageText
       };
 
       if (!groups.has(claimantKey)) {
@@ -5349,10 +5332,6 @@
       : `На текущей странице нет запросов за ${displayDate}.`;
 
     list.textContent = '';
-    list.style.display = 'flex';
-    list.style.flexDirection = 'column';
-    list.style.gap = '8px';
-    list.style.maxHeight = '72vh';
     if (!summary.items.length) {
       const empty = document.createElement('div');
       empty.className = 'dup-epgu-summary-empty';
@@ -5364,19 +5343,7 @@
     summary.items.forEach((item, index) => {
       const row = document.createElement('div');
       row.className = 'dup-epgu-summary-item';
-      row.style.display = 'flex';
-      row.style.flexDirection = 'column';
-
-      const toggle = document.createElement('button');
-      toggle.type = 'button';
-      toggle.className = 'dup-epgu-summary-toggle';
-      toggle.setAttribute('aria-expanded', 'false');
-      toggle.style.width = '100%';
-      toggle.style.display = 'flex';
-      toggle.style.alignItems = 'flex-start';
-      toggle.style.justifyContent = 'space-between';
-      toggle.style.gap = '12px';
-      toggle.title = [
+      row.title = [
         item.claimantKey,
         `Лучший статус за ${displayDate}: ${item.bestEntry.statusMeta.label}`,
         `Запросов за сегодня на странице: ${item.count}`,
@@ -5387,15 +5354,15 @@
       const main = document.createElement('div');
       main.className = 'dup-epgu-summary-main';
 
-      const claimant = document.createElement('div');
-      claimant.className = 'dup-epgu-summary-claimant';
-      claimant.textContent = `${index + 1}. ${item.claimantKey}`;
+      const claimantLine = document.createElement('div');
+      claimantLine.className = 'dup-epgu-summary-claimant';
+      claimantLine.textContent = `${index + 1}. ${item.claimantKey}`;
 
       const count = document.createElement('span');
       count.className = 'dup-epgu-summary-count';
       count.textContent = `${item.count} шт.`;
-      claimant.appendChild(count);
-      main.appendChild(claimant);
+      claimantLine.appendChild(count);
+      main.appendChild(claimantLine);
 
       const lastRequest = document.createElement('div');
       lastRequest.className = 'dup-epgu-summary-subline';
@@ -5404,125 +5371,25 @@
         : 'Дата запроса не указана';
       main.appendChild(lastRequest);
 
+      if (item.bestEntry.messageText) {
+        const messageLine = document.createElement('div');
+        messageLine.className = 'dup-epgu-summary-summary-message';
+        messageLine.textContent = `Сообщение: ${item.bestEntry.messageText}`;
+        messageLine.title = item.bestEntry.messageText;
+        main.appendChild(messageLine);
+      }
+
       const side = document.createElement('div');
       side.className = 'dup-epgu-summary-side';
-      side.style.minWidth = '0';
-      side.style.flex = '1 1 380px';
-      side.style.display = 'grid';
-      side.style.gap = '6px';
-      side.style.justifyItems = 'end';
-
-      const badges = document.createElement('div');
-      badges.className = 'dup-epgu-summary-badges';
-      badges.style.display = 'flex';
-      badges.style.flexWrap = 'wrap';
-      badges.style.justifyContent = 'flex-end';
-      badges.style.gap = '6px';
 
       const status = createEpguSummaryBadge(
         item.bestEntry.statusMeta.label,
         'dup-epgu-summary-status',
         item.bestEntry.statusMeta.color
       );
-      badges.appendChild(status);
 
-      if (item.bestEntry.messageText) {
-        const message = createEpguSummaryBadge(
-          `Сообщение: ${item.bestEntry.messageText}`,
-          'dup-epgu-summary-message'
-        );
-        message.title = item.bestEntry.messageText;
-        message.style.maxWidth = '560px';
-        message.style.whiteSpace = 'normal';
-        message.style.overflowWrap = 'anywhere';
-        message.style.alignItems = 'flex-start';
-        badges.appendChild(message);
-      }
-
-      const chevron = document.createElement('span');
-      chevron.className = 'dup-epgu-summary-chevron';
-      chevron.setAttribute('aria-hidden', 'true');
-      chevron.textContent = '▾';
-
-      side.append(badges, chevron);
-      toggle.append(main, side);
-
-      const details = document.createElement('div');
-      details.className = 'dup-epgu-summary-details';
-      details.hidden = true;
-      details.style.display = 'flex';
-      details.style.flexDirection = 'column';
-      details.style.gap = '8px';
-
-      item.entries.forEach((entry) => {
-        const request = document.createElement('div');
-        request.className = 'dup-epgu-summary-request';
-        request.style.display = 'flex';
-        request.style.flexDirection = 'column';
-        request.style.gap = '8px';
-
-        const requestHead = document.createElement('div');
-        requestHead.className = 'dup-epgu-summary-request-head';
-        requestHead.style.display = 'flex';
-        requestHead.style.alignItems = 'flex-start';
-        requestHead.style.justifyContent = 'space-between';
-        requestHead.style.flexWrap = 'wrap';
-        requestHead.style.gap = '10px';
-
-        const requestDate = document.createElement('div');
-        requestDate.className = 'dup-epgu-summary-request-date';
-        requestDate.textContent = formatEpguDateTimeForDisplay(entry.dateInfo.rawText) || 'Дата запроса не указана';
-
-        const requestIds = document.createElement('div');
-        requestIds.className = 'dup-epgu-summary-request-ids';
-        requestIds.textContent = `ID: ${entry.idText || '—'} • Номер заявки: ${entry.orderIdText || '—'}`;
-
-        requestHead.append(requestDate, requestIds);
-
-        const requestBadges = document.createElement('div');
-        requestBadges.className = 'dup-epgu-summary-request-badges';
-        requestBadges.style.display = 'flex';
-        requestBadges.style.flexWrap = 'wrap';
-        requestBadges.style.gap = '6px';
-        requestBadges.append(
-          createEpguSummaryBadge(
-            `Статус: ${entry.statusMeta.label}`,
-            'dup-epgu-summary-status',
-            entry.statusMeta.color
-          ),
-          createEpguSummaryBadge(
-            `Получить файл: ${entry.fileRequestText || '—'}`,
-            'dup-epgu-summary-badge',
-            entry.fileRequestColor
-          ),
-          createEpguSummaryBadge(
-            `Обработать файл: ${entry.processFileText || '—'}`,
-            'dup-epgu-summary-badge',
-            entry.processFileColor
-          )
-        );
-
-        const requestMeta = document.createElement('div');
-        requestMeta.className = 'dup-epgu-summary-request-meta';
-        requestMeta.textContent = `Дата последней проверки: ${formatEpguDateTimeForDisplay(entry.lastCheckText) || '—'}`;
-
-        const requestMessage = document.createElement('div');
-        requestMessage.className = 'dup-epgu-summary-request-message';
-        requestMessage.textContent = `Сообщение: ${entry.messageText || '—'}`;
-        requestMessage.style.whiteSpace = 'pre-wrap';
-        requestMessage.style.overflowWrap = 'anywhere';
-
-        request.append(requestHead, requestBadges, requestMeta, requestMessage);
-        details.appendChild(request);
-      });
-
-      toggle.addEventListener('click', () => {
-        const nextExpanded = toggle.getAttribute('aria-expanded') !== 'true';
-        toggle.setAttribute('aria-expanded', String(nextExpanded));
-        details.hidden = !nextExpanded;
-      }, { capture: true });
-
-      row.append(toggle, details);
+      side.appendChild(status);
+      row.append(main, side);
       list.appendChild(row);
     });
   }
