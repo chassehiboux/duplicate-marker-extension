@@ -39,7 +39,6 @@
   const ITIL_IMPORT_SHEET_NAME = 'ITIL';
   const ITIL_IMPORT_START_ROW = 2003;
   const ITIL_IMPORT_COLUMN_COUNT = 22;
-  const ITIL_IMPORT_BATCH_SIZE = 1000;
   const WSS_SHEET_NAME = 'WSS';
   const WSS_IMPORT_BATCH_SIZE = 80;
   const WSS_IMPORT_TEXT_LIMIT = 45000;
@@ -197,6 +196,7 @@
     rawText: '',
     headers: [],
     tableRows: [],
+    isParsing: false,
     isImporting: false,
     currentBatch: 0,
     totalBatches: 0,
@@ -204,6 +204,8 @@
     statusText: 'Вставьте таблицу из буфера обмена.',
     lastError: ''
   };
+  let itilImportParseTimer = 0;
+  let itilImportParseRunId = 0;
 
   let wssImportState = {
     fileName: '',
@@ -3599,9 +3601,11 @@
     const status = $('.gs-itil-import-menu-status', menu);
     const button = $('.gs-itil-import-open', menu);
     const text = itilImportState.lastError
-      || (itilImportState.isImporting
-        ? `Загрузка: пакет ${itilImportState.currentBatch}/${itilImportState.totalBatches}`
-        : (itilImportState.statusText || 'Вставьте таблицу из буфера обмена.'));
+      || (itilImportState.isParsing
+        ? 'Разбираю вставленную таблицу...'
+        : (itilImportState.isImporting
+          ? 'Загружаю таблицу в bridge...'
+          : (itilImportState.statusText || 'Вставьте таблицу из буфера обмена.')));
 
     if (status instanceof HTMLElement) {
       status.textContent = text;
@@ -3609,7 +3613,7 @@
     }
 
     if (button instanceof HTMLButtonElement) {
-      button.disabled = itilImportState.isImporting;
+      button.disabled = itilImportState.isParsing || itilImportState.isImporting;
     }
   }
 
@@ -4150,11 +4154,21 @@
     if (modal instanceof HTMLElement) modal.hidden = true;
   }
 
+  function cancelItilImportParse() {
+    if (itilImportParseTimer) {
+      clearTimeout(itilImportParseTimer);
+      itilImportParseTimer = 0;
+    }
+  }
+
   function resetItilImportState(overrides) {
+    cancelItilImportParse();
+    itilImportParseRunId += 1;
     itilImportState = {
       rawText: '',
       headers: [],
       tableRows: [],
+      isParsing: false,
       isImporting: false,
       currentBatch: 0,
       totalBatches: 0,
@@ -4257,7 +4271,7 @@
       `Строк всего с заголовком: ${itilImportState.tableRows.length}`,
       `Строк данных: ${getItilImportDataRowsCount()}`,
       `Столбцов: ${itilImportState.headers.length}`,
-      `Пакетов: ${Math.ceil(itilImportState.tableRows.length / ITIL_IMPORT_BATCH_SIZE)}`,
+      'Отправка: одним запросом',
       '',
       'Заголовки:',
       ...itilImportState.headers.map((header, index) => `${index + 1}. ${header}`)
@@ -4277,15 +4291,17 @@
 
     if (input instanceof HTMLTextAreaElement) {
       if (input.value !== itilImportState.rawText) input.value = itilImportState.rawText;
-      input.disabled = itilImportState.isImporting;
+      input.disabled = itilImportState.isParsing || itilImportState.isImporting;
     }
 
     if (progress instanceof HTMLElement) {
-      progress.textContent = itilImportState.isImporting
-        ? `Пакет ${itilImportState.currentBatch}/${itilImportState.totalBatches}`
+      progress.textContent = itilImportState.isParsing
+        ? 'Разбираю таблицу...'
+        : (itilImportState.isImporting
+          ? 'Отправляю таблицу...'
         : (itilImportState.tableRows.length
           ? `Готово к вставке: ${getItilImportDataRowsCount()} строк данных`
-          : 'Ожидание вставки');
+          : 'Ожидание вставки'));
     }
 
     if (details instanceof HTMLElement) {
@@ -4298,11 +4314,12 @@
     }
 
     if (clearButton instanceof HTMLButtonElement) {
-      clearButton.disabled = itilImportState.isImporting || (!itilImportState.rawText && !itilImportState.tableRows.length);
+      clearButton.disabled = (itilImportState.isParsing || itilImportState.isImporting)
+        || (!itilImportState.rawText && !itilImportState.tableRows.length);
     }
 
     if (startButton instanceof HTMLButtonElement) {
-      startButton.disabled = itilImportState.isImporting || itilImportState.tableRows.length < 2;
+      startButton.disabled = itilImportState.isParsing || itilImportState.isImporting || itilImportState.tableRows.length < 2;
     }
 
     renderItilImportStatus();
@@ -4343,10 +4360,21 @@
     const close = () => closeItilImportModal();
     $('.gs-itil-import-close-x', modal)?.addEventListener('click', close, { capture: true });
     $('.gs-itil-import-close', modal)?.addEventListener('click', close, { capture: true });
+    $('.gs-itil-import-input', modal)?.addEventListener('paste', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLTextAreaElement)) return;
+      const text = event.clipboardData && typeof event.clipboardData.getData === 'function'
+        ? event.clipboardData.getData('text/plain')
+        : '';
+      if (!text) return;
+      event.preventDefault();
+      target.value = text;
+      scheduleItilImportParse(text);
+    });
     $('.gs-itil-import-input', modal)?.addEventListener('input', (event) => {
       const target = event.target;
       if (!(target instanceof HTMLTextAreaElement)) return;
-      setItilImportRawText(target.value);
+      scheduleItilImportParse(target.value);
     });
     $('.gs-itil-import-clear', modal)?.addEventListener('click', () => {
       resetItilImportState({
@@ -4376,8 +4404,10 @@
     });
   }
 
-  function setItilImportRawText(text) {
+  function scheduleItilImportParse(text) {
     const rawText = String(text || '');
+    cancelItilImportParse();
+    const runId = ++itilImportParseRunId;
 
     if (!normalizeItilImportTableText(rawText).replace(/\t/g, '').trim()) {
       itilImportState = {
@@ -4385,6 +4415,7 @@
         rawText: '',
         headers: [],
         tableRows: [],
+        isParsing: false,
         lastError: '',
         statusText: 'Вставьте таблицу из буфера обмена.'
       };
@@ -4392,32 +4423,52 @@
       return;
     }
 
-    try {
-      const parsed = parseItilImportTableText(rawText);
-      itilImportState = {
-        ...itilImportState,
-        rawText,
-        headers: parsed.headers,
-        tableRows: parsed.tableRows,
-        lastError: '',
-        statusText: `Готово к вставке: ${Math.max(0, parsed.tableRows.length - 1)} строк данных.`
-      };
-    } catch (error) {
-      itilImportState = {
-        ...itilImportState,
-        rawText,
-        headers: [],
-        tableRows: [],
-        statusText: '',
-        lastError: error && error.message ? error.message : 'Не удалось разобрать вставленную таблицу.'
-      };
-    }
-
+    itilImportState = {
+      ...itilImportState,
+      rawText,
+      headers: [],
+      tableRows: [],
+      isParsing: true,
+      lastError: '',
+      statusText: 'Разбираю вставленную таблицу...'
+    };
     renderItilImportModal();
+
+    itilImportParseTimer = setTimeout(() => {
+      itilImportParseTimer = 0;
+      if (runId !== itilImportParseRunId) return;
+
+      try {
+        const parsed = parseItilImportTableText(rawText);
+        if (runId !== itilImportParseRunId) return;
+        itilImportState = {
+          ...itilImportState,
+          rawText,
+          headers: parsed.headers,
+          tableRows: parsed.tableRows,
+          isParsing: false,
+          lastError: '',
+          statusText: `Готово к вставке: ${Math.max(0, parsed.tableRows.length - 1)} строк данных.`
+        };
+      } catch (error) {
+        if (runId !== itilImportParseRunId) return;
+        itilImportState = {
+          ...itilImportState,
+          rawText,
+          headers: [],
+          tableRows: [],
+          isParsing: false,
+          statusText: '',
+          lastError: error && error.message ? error.message : 'Не удалось разобрать вставленную таблицу.'
+        };
+      }
+
+      renderItilImportModal();
+    }, 30);
   }
 
   async function startItilImport() {
-    if (itilImportState.isImporting || itilImportState.tableRows.length < 2) return;
+    if (itilImportState.isParsing || itilImportState.isImporting || itilImportState.tableRows.length < 2) return;
 
     await loadBridgeUrl();
     if (!state.bridgeUrl) {
@@ -4430,45 +4481,35 @@
     }
 
     const tableRows = clonePlainData(itilImportState.tableRows);
-    const totalBatches = Math.ceil(tableRows.length / ITIL_IMPORT_BATCH_SIZE);
 
     itilImportState = {
       ...itilImportState,
+      isParsing: false,
       isImporting: true,
-      currentBatch: 0,
-      totalBatches,
+      currentBatch: 1,
+      totalBatches: 1,
       statusText: 'Отправляю таблицу в bridge...',
       lastError: ''
     };
     renderItilImportModal();
 
     try {
-      for (let index = 0; index < totalBatches; index++) {
-        const batch = tableRows.slice(index * ITIL_IMPORT_BATCH_SIZE, (index + 1) * ITIL_IMPORT_BATCH_SIZE);
-        itilImportState = {
-          ...itilImportState,
-          currentBatch: index + 1,
-          statusText: `Отправляю пакет ${index + 1}/${totalBatches}...`
-        };
-        renderItilImportModal();
-
-        const response = await sendRuntimeMessage({
-          action: SAVE_ACTION,
-          data: {
-            bridgeUrl: state.bridgeUrl,
-            payload: {
-              action: 'importItilTableRows',
-              spreadsheetId: CONFIG.spreadsheetId,
-              sheetName: ITIL_IMPORT_SHEET_NAME,
-              startRow: ITIL_IMPORT_START_ROW + index * ITIL_IMPORT_BATCH_SIZE,
-              rows: batch
-            }
+      const response = await sendRuntimeMessage({
+        action: SAVE_ACTION,
+        data: {
+          bridgeUrl: state.bridgeUrl,
+          payload: {
+            action: 'importItilTableRows',
+            spreadsheetId: CONFIG.spreadsheetId,
+            sheetName: ITIL_IMPORT_SHEET_NAME,
+            startRow: ITIL_IMPORT_START_ROW,
+            rows: tableRows
           }
-        });
-
-        if (!response || response.success !== true) {
-          throw new Error(getRuntimeResponseError(response, 'bridge не вставил пакет ITIL'));
         }
+      });
+
+      if (!response || response.success !== true) {
+        throw new Error(getRuntimeResponseError(response, 'bridge не вставил таблицу ITIL'));
       }
 
       const insertedRowsCount = Math.max(0, tableRows.length - 1);
