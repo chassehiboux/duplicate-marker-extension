@@ -2814,6 +2814,12 @@
       : null;
   }
 
+  function getIdCardCheckNavToastElement(nav) {
+    return nav instanceof HTMLElement
+      ? nav.querySelector('.dup-id-card-check-toast')
+      : null;
+  }
+
   function getActiveIdCardCheckNavToast(nav) {
     if (!(nav instanceof HTMLElement)) return null;
     const state = idCardCheckNavToastState.get(nav);
@@ -2826,17 +2832,21 @@
 
   function renderIdCardCheckNavStatus(nav, fallbackText) {
     const status = getIdCardCheckNavStatusElement(nav);
-    if (!(status instanceof HTMLElement)) return;
+    const toast = getIdCardCheckNavToastElement(nav);
+    if (status instanceof HTMLElement) {
+      status.textContent = String(fallbackText || '').trim();
+    }
+    if (!(toast instanceof HTMLElement)) return;
 
     const toastState = getActiveIdCardCheckNavToast(nav);
     if (!toastState) {
-      status.textContent = fallbackText;
-      status.style.removeProperty('padding');
-      status.style.removeProperty('border-radius');
-      status.style.removeProperty('background');
-      status.style.removeProperty('color');
-      status.style.removeProperty('font-weight');
-      status.style.removeProperty('box-shadow');
+      toast.textContent = '';
+      toast.style.removeProperty('padding');
+      toast.style.removeProperty('border-radius');
+      toast.style.removeProperty('background');
+      toast.style.removeProperty('color');
+      toast.style.removeProperty('font-weight');
+      toast.style.removeProperty('box-shadow');
       return;
     }
 
@@ -2858,13 +2868,13 @@
             boxShadow: 'inset 0 0 0 1px rgba(30, 136, 229, 0.2)'
           };
 
-    status.textContent = toastState.message;
-    status.style.setProperty('padding', '4px 8px');
-    status.style.setProperty('border-radius', '8px');
-    status.style.setProperty('background', palette.background);
-    status.style.setProperty('color', palette.color);
-    status.style.setProperty('font-weight', '600');
-    status.style.setProperty('box-shadow', palette.boxShadow);
+    toast.textContent = toastState.message;
+    toast.style.setProperty('padding', '4px 8px');
+    toast.style.setProperty('border-radius', '8px');
+    toast.style.setProperty('background', palette.background);
+    toast.style.setProperty('color', palette.color);
+    toast.style.setProperty('font-weight', '600');
+    toast.style.setProperty('box-shadow', palette.boxShadow);
   }
 
   function setIdCardCheckNavToast(nav, message, tone = 'info', timeoutMs = ID_CARD_CHECK_NAV_TOAST_DURATION_MS) {
@@ -4043,6 +4053,7 @@
           </svg>
         </button>
         <span class="dup-id-card-check-status"></span>
+        <span class="dup-id-card-check-toast" aria-live="polite"></span>
       `;
       nav.querySelector('.dup-id-card-check-prev')?.addEventListener('click', () => {
         void navigateIdCardCheckToIndex(normalizeIdCardCheckState(idCardCheckState).currentIndex - 1);
@@ -4394,6 +4405,7 @@
         </svg>
       </button>
       <span class="dup-id-card-check-status"></span>
+      <span class="dup-id-card-check-toast" aria-live="polite"></span>
     `;
     nav.querySelector('.dup-id-card-check-prev')?.addEventListener('click', () => {
       navigateGridCardCheckToIndex(normalizeGridCardCheckState(gridCardCheckState).currentIndex - 1);

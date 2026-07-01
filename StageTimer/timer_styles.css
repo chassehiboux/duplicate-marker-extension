@@ -643,9 +643,22 @@ html.dup-ext-screenshot-mode [aria-label="Показать таймер"] {
 }
 
 .dup-id-card-check-status {
+    flex: 0 1 auto;
     min-width: 0;
     color: #465b66;
     overflow-wrap: anywhere;
+}
+
+.dup-id-card-check-toast {
+    display: none;
+    flex: 1 1 220px;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.dup-id-card-check-toast:not(:empty) {
+    display: inline-flex;
+    align-items: center;
 }
 
 .spring-card-modal .dup-grid-card-check-nav {
