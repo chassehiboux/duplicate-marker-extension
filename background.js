@@ -330,6 +330,25 @@ function createTabAsync(createProperties) {
     });
 }
 
+function getTabAsync(tabId) {
+    return new Promise((resolve, reject) => {
+        try {
+            chrome.tabs.get(tabId, (tab) => {
+                const runtimeError = chrome.runtime && chrome.runtime.lastError
+                    ? chrome.runtime.lastError.message
+                    : '';
+                if (runtimeError) {
+                    reject(new Error(runtimeError));
+                    return;
+                }
+                resolve(tab || null);
+            });
+        } catch (error) {
+            reject(error);
+        }
+    });
+}
+
 // --- Функция надежной отправки (POST + Retry) ---
 async function sendWithRetry(url, payload, retries = TELEMETRY_RETRIES) {
     for (let i = 0; i < retries; i++) {
