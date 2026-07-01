@@ -39,6 +39,7 @@ function createVzidToken() {
 const LOG_KEY = 'extension_logs'; // Ключ для хранения логов в chrome.storage
 const MAX_LOG_ENTRIES = 100; // Максимальное количество записей в логе
 const DEPARTMENT_CONTAINER_STORAGE_KEY = 'dup_department_container_cookie_stores_v1';
+const ID_CARD_CHECK_FAILED_RETURNS_SESSION_KEY = 'idCardCheckFailedReturnsByTab';
 const DEPARTMENT_CONTAINER_ICON = 'briefcase';
 
 const addLog = (message) => {
@@ -133,6 +134,34 @@ function chromeStorageSetAsync(values) {
     return new Promise((resolve) => {
         try {
             chrome.storage.local.set(values, () => resolve(true));
+        } catch (error) {
+            resolve(false);
+        }
+    });
+}
+
+function chromeSessionStorageGetAsync(keys) {
+    return new Promise((resolve) => {
+        try {
+            if (!chrome.storage || !chrome.storage.session || typeof chrome.storage.session.get !== 'function') {
+                resolve({});
+                return;
+            }
+            chrome.storage.session.get(keys, (result) => resolve(result || {}));
+        } catch (error) {
+            resolve({});
+        }
+    });
+}
+
+function chromeSessionStorageSetAsync(values) {
+    return new Promise((resolve) => {
+        try {
+            if (!chrome.storage || !chrome.storage.session || typeof chrome.storage.session.set !== 'function') {
+                resolve(false);
+                return;
+            }
+            chrome.storage.session.set(values, () => resolve(!chrome.runtime.lastError));
         } catch (error) {
             resolve(false);
         }
@@ -847,6 +876,110 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             return true;
         }
 
+        case 'ID_CARD_CHECK_SEND_TAB_MESSAGE': {
+            const data = request && request.data ? request.data : {};
+            const targetTabId = Number(data.tabId);
+            const timeoutMs = Math.max(1000, Number(data.timeoutMs) || 20000);
+            const startedAt = Date.now();
+            const retryOnNoReceiver = data.retryOnNoReceiver !== false;
+            const retryOnClosedChannel = data.retryOnClosedChannel === true;
+            const message = data.message && typeof data.message === 'object'
+                ? data.message
+                : null;
+
+            if (!Number.isInteger(targetTabId) || targetTabId <= 0) {
+                sendResponse({ success: false, error: 'NO_TARGET_TAB' });
+                return false;
+            }
+
+            if (!message) {
+                sendResponse({ success: false, error: 'EMPTY_TAB_MESSAGE' });
+                return false;
+            }
+
+            const shouldRetrySendMessage = (runtimeError) => {
+                const text = String(runtimeError || '').trim();
+                if (!text) return false;
+                if ((Date.now() - startedAt) >= timeoutMs) return false;
+                if (retryOnNoReceiver && (
+                    text.includes('Receiving end does not exist') ||
+                    text.includes('Could not establish connection')
+                )) {
+                    return true;
+                }
+                return retryOnClosedChannel &&
+                    text.includes('The message port closed before a response was received.');
+            };
+
+            const trySendMessage = () => {
+                chrome.tabs.sendMessage(targetTabId, message, (response) => {
+                    const runtimeError = chrome.runtime && chrome.runtime.lastError
+                        ? chrome.runtime.lastError.message
+                        : '';
+
+                    if (runtimeError) {
+                        if (shouldRetrySendMessage(runtimeError)) {
+                            setTimeout(trySendMessage, 150);
+                            return;
+                        }
+
+                        sendResponse({
+                            success: false,
+                            error: runtimeError || 'SEND_TAB_MESSAGE_FAILED'
+                        });
+                        return;
+                    }
+
+                    sendResponse({
+                        success: true,
+                        response: response || null
+                    });
+                });
+            };
+
+            trySendMessage();
+            return true;
+        }
+
+        case 'ID_CARD_CHECK_ACCUMULATE_FAILED_RETURN': {
+            (async () => {
+                const data = request && request.data ? request.data : {};
+                const targetTabId = Number(data.tabId);
+                const line = String(data.line || '').trim();
+
+                if (!Number.isInteger(targetTabId) || targetTabId <= 0) {
+                    sendResponse({ success: false, error: 'NO_TARGET_TAB' });
+                    return;
+                }
+
+                const stored = await chromeSessionStorageGetAsync(ID_CARD_CHECK_FAILED_RETURNS_SESSION_KEY);
+                const currentMap = stored && stored[ID_CARD_CHECK_FAILED_RETURNS_SESSION_KEY] && typeof stored[ID_CARD_CHECK_FAILED_RETURNS_SESSION_KEY] === 'object'
+                    ? stored[ID_CARD_CHECK_FAILED_RETURNS_SESSION_KEY]
+                    : {};
+                const currentEntries = Array.isArray(currentMap[targetTabId])
+                    ? currentMap[targetTabId].map((value) => String(value || '').trim()).filter(Boolean)
+                    : [];
+
+                if (line && !currentEntries.includes(line)) {
+                    currentEntries.push(line);
+                }
+
+                const nextMap = {
+                    ...currentMap,
+                    [targetTabId]: currentEntries
+                };
+                await chromeSessionStorageSetAsync({ [ID_CARD_CHECK_FAILED_RETURNS_SESSION_KEY]: nextMap });
+
+                sendResponse({
+                    success: true,
+                    entries: currentEntries,
+                    count: currentEntries.length,
+                    text: currentEntries.join('\n')
+                });
+            })();
+            return true;
+        }
+
         case 'EXECUTION_ANALYSIS_CLOSE_TAB': {
             const senderTabId = sender && sender.tab ? sender.tab.id : null;
             const data = request && request.data ? request.data : {};
@@ -1201,6 +1334,14 @@ chrome.tabs.onRemoved.addListener((tabId) => {
       delete currentPendingEditingActions[tabId];
       chrome.storage.session.set({ 'pendingEditingActions': currentPendingEditingActions });
     }
+  });
+  chrome.storage.session.get([ID_CARD_CHECK_FAILED_RETURNS_SESSION_KEY], (sessionResult) => {
+    const currentFailedReturns = sessionResult && sessionResult[ID_CARD_CHECK_FAILED_RETURNS_SESSION_KEY] && typeof sessionResult[ID_CARD_CHECK_FAILED_RETURNS_SESSION_KEY] === 'object'
+      ? sessionResult[ID_CARD_CHECK_FAILED_RETURNS_SESSION_KEY]
+      : {};
+    if (!currentFailedReturns[tabId]) return;
+    delete currentFailedReturns[tabId];
+    chrome.storage.session.set({ [ID_CARD_CHECK_FAILED_RETURNS_SESSION_KEY]: currentFailedReturns });
   });
 });
 

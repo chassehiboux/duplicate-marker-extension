@@ -58,6 +58,12 @@
   const ID_CARD_CHECK_CHOICE_DIALOG_ID = 'dup-id-card-check-choice-dialog';
   const ID_CARD_CHECK_ACTION_DIALOG_ID = 'dup-id-card-check-action-dialog';
   const ID_CARD_CHECK_NAV_ID = 'dup-id-card-check-nav';
+  const ID_CARD_CHECK_HELPER_IFRAME_ID = 'dup-id-card-check-helper-frame';
+  const ID_CARD_CHECK_RETURN_PREVIOUS_TM_ACTION = 'return-previous-tm';
+  const ID_CARD_CHECK_HISTORY_TRANSITION_PREFIX = 'Документ пришел с ';
+  const ID_CARD_CHECK_HELPER_TIMEOUT_MS = 15000;
+  const ID_CARD_CHECK_NAV_TOAST_DURATION_MS = 8000;
+  const ID_CARD_CHECK_TAB_MESSAGE_TIMEOUT_MS = 20000;
   const ID_CARD_CHECK_TAB_REBIND_TTL_MS = 10 * 60 * 1000;
   const GRID_CARD_CHECK_NAV_ID = 'dup-grid-card-check-nav';
   const GRID_CARD_CHECK_CHOICE_DIALOG_ID = 'dup-grid-card-check-choice-dialog';
@@ -661,6 +667,8 @@
   let gridCardCheckState = createEmptyGridCardCheckState();
   let gridCardCheckNavEl = null;
   let gridCardCheckNavObserver = null;
+  const idCardCheckNavToastState = new WeakMap();
+  let idCardCheckFailedReturnEntries = [];
   const allDuplicateSettingKeys = [
     'setting_highlight_mode', 'list_DebtID', 'list_AccAddress_AccountNumber',
     'list_Individual_FullName', 'list_CaseNumber', 'list_EDNumber',
@@ -891,6 +899,24 @@
     elements.forEach((element) => {
       showSuccessFeedback(element);
     });
+  }
+
+  async function writePlainTextToClipboard(text) {
+    const normalizedText = String(text || '');
+    if (!normalizedText.trim()) {
+      throw new Error('EMPTY_COPY_TEXT');
+    }
+
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      try {
+        await navigator.clipboard.writeText(normalizedText);
+        return;
+      } catch (error) {
+        // fallback to execCommand below
+      }
+    }
+
+    await writeStageJumpPlainTextToClipboardFallback(normalizedText);
   }
 
   function debounce(fn, delay) {
@@ -2332,6 +2358,11 @@
     return url.toString();
   }
 
+  function buildIdCardCheckHistoryUrl(edocId, origin = window.location.origin) {
+    const url = new URL(`/ovzid/fullcard/${encodeURIComponent(String(edocId || '').trim())}/action_history`, origin);
+    return url.toString();
+  }
+
   function buildIdCardCheckNavigationUrl(edocId) {
     const url = new URL(window.location.href);
     const targetId = encodeURIComponent(String(edocId || '').trim());
@@ -2382,21 +2413,85 @@
     return openIdCardCheckUrlInTab(targetUrl);
   }
 
-  async function openIdCardCheckUrlInTab(targetUrl) {
+  async function openIdCardCheckUrlInTabDetailed(targetUrl, options = {}) {
     const normalizedUrl = String(targetUrl || '').trim();
-    if (!normalizedUrl) return false;
+    if (!normalizedUrl) return { success: false, error: 'EMPTY_URL' };
 
     const response = await sendRuntimeMessage({
       action: 'ID_CARD_CHECK_OPEN_TAB',
       data: {
         url: normalizedUrl,
-        active: true
+        active: options && options.active === true
       }
     });
+
+    if (response && response.success === true && Number.isInteger(response.tabId)) {
+      return {
+        success: true,
+        tabId: response.tabId
+      };
+    }
+
+    return {
+      success: false,
+      error: response && response.error ? response.error : 'OPEN_TAB_FAILED'
+    };
+  }
+
+  async function openIdCardCheckUrlInTab(targetUrl) {
+    const normalizedUrl = String(targetUrl || '').trim();
+    if (!normalizedUrl) return false;
+
+    const response = await openIdCardCheckUrlInTabDetailed(normalizedUrl, { active: true });
     if (response && response.success === true) return true;
 
     const opened = window.open(normalizedUrl, '_blank', 'noopener');
     return !!opened;
+  }
+
+  async function sendIdCardCheckTabMessage(tabId, data, timeoutMs = ID_CARD_CHECK_TAB_MESSAGE_TIMEOUT_MS, options = {}) {
+    const targetTabId = Number(tabId);
+    if (!Number.isInteger(targetTabId) || targetTabId <= 0) {
+      throw new Error('Не удалось определить вкладку для действия по EdocID.');
+    }
+
+    const response = await sendRuntimeMessage({
+      action: 'ID_CARD_CHECK_SEND_TAB_MESSAGE',
+      data: {
+        tabId: targetTabId,
+        timeoutMs: Math.max(1000, Number(timeoutMs) || ID_CARD_CHECK_TAB_MESSAGE_TIMEOUT_MS),
+        retryOnNoReceiver: options.retryOnNoReceiver !== false,
+        retryOnClosedChannel: options.retryOnClosedChannel === true,
+        message: {
+          action: 'ID_CARD_CHECK_TAB_ACTION',
+          data: data && typeof data === 'object' ? data : {}
+        }
+      }
+    });
+
+    if (!response || response.success !== true) {
+      throw new Error(response && response.error ? response.error : 'Не удалось связаться со служебной вкладкой EdocID.');
+    }
+
+    const tabResponse = response.response && typeof response.response === 'object'
+      ? response.response
+      : null;
+    if (!tabResponse || tabResponse.success !== true) {
+      throw new Error(tabResponse && tabResponse.error ? tabResponse.error : 'Служебная вкладка EdocID не вернула результат.');
+    }
+
+    return tabResponse;
+  }
+
+  async function closeIdCardCheckAuxTab(tabId) {
+    const targetTabId = Number(tabId);
+    if (!Number.isInteger(targetTabId) || targetTabId <= 0) return false;
+
+    const response = await sendRuntimeMessage({
+      action: 'EXECUTION_ANALYSIS_CLOSE_TAB',
+      data: { tabId: targetTabId }
+    });
+    return !!(response && response.success === true);
   }
 
   function syncIdCardCheckCurrentActionButton(modal, edocId) {
@@ -2428,6 +2523,7 @@
         </div>
         <div class="dup-id-card-check-action-current"></div>
         <div class="dup-id-card-check-action-list">
+          <button type="button" class="dup-id-card-check-action-item" data-action="return-previous-tm">Вернуть на предыдущую ТМ</button>
           <button type="button" class="dup-id-card-check-action-item" data-action="edit-info">Редактирование информации</button>
           <button type="button" class="dup-id-card-check-action-item" data-action="execution-analysis">Анализ исполнения</button>
           <button type="button" class="dup-id-card-check-action-item" data-action="solidarity-type">Установить вид солидарности</button>
@@ -2451,6 +2547,10 @@
       const edocId = normalizeExecutionAnalysisText(modal.dataset.edocId);
       if (!actionKey || !edocId) return;
       close();
+      if (actionKey === ID_CARD_CHECK_RETURN_PREVIOUS_TM_ACTION) {
+        void returnIdCardCheckToPreviousTm(edocId, resolveIdCardCheckActionToastNav(modal));
+        return;
+      }
       if (actionKey === 'open-card-tab') {
         const cardUrl = normalizeExecutionAnalysisText(modal.dataset.iframeCardUrl);
         if (!cardUrl) return;
@@ -2585,6 +2685,7 @@
     const modal = createIdCardCheckActionDialog();
     attachIdCardCheckAnchoredDialog(modal, anchorEl);
     modal.dataset.edocId = normalizedEdocId;
+    modal.dataset.toastNavKind = getIdCardCheckActionToastNavKind(anchorEl);
     syncIdCardCheckOpenCardTabAction(modal, resolveIdCardCheckIframeCardUrl(anchorEl, normalizedEdocId));
     const current = modal.querySelector('.dup-id-card-check-action-current');
     if (current instanceof HTMLElement) {
@@ -2592,6 +2693,657 @@
     }
     modal.hidden = false;
     positionIdCardCheckAnchoredDialog(modal, anchorEl);
+  }
+
+  function getIdCardCheckActionToastNavKind(anchorEl = null) {
+    const nav = anchorEl instanceof HTMLElement
+      ? anchorEl.closest(`#${ID_CARD_CHECK_NAV_ID}, #${GRID_CARD_CHECK_NAV_ID}`)
+      : null;
+    if (!(nav instanceof HTMLElement)) return '';
+    if (nav.id === GRID_CARD_CHECK_NAV_ID) return 'grid';
+    if (nav.id === ID_CARD_CHECK_NAV_ID) return 'fullcard';
+    return '';
+  }
+
+  function resolveIdCardCheckActionToastNav(modal) {
+    if (!(modal instanceof HTMLElement)) return null;
+    const kind = String(modal.dataset.toastNavKind || '').trim();
+    if (kind === 'grid') return gridCardCheckNavEl instanceof HTMLElement ? gridCardCheckNavEl : null;
+    if (kind === 'fullcard') return idCardCheckNavEl instanceof HTMLElement ? idCardCheckNavEl : null;
+    return null;
+  }
+
+  function getIdCardCheckNavStatusElement(nav) {
+    return nav instanceof HTMLElement
+      ? nav.querySelector('.dup-id-card-check-status')
+      : null;
+  }
+
+  function getActiveIdCardCheckNavToast(nav) {
+    if (!(nav instanceof HTMLElement)) return null;
+    const state = idCardCheckNavToastState.get(nav);
+    if (!state) return null;
+    if (Number(state.expiresAt || 0) > Date.now()) return state;
+    if (state.timerId) clearTimeout(state.timerId);
+    idCardCheckNavToastState.delete(nav);
+    return null;
+  }
+
+  function renderIdCardCheckNavStatus(nav, fallbackText) {
+    const status = getIdCardCheckNavStatusElement(nav);
+    if (!(status instanceof HTMLElement)) return;
+
+    const toastState = getActiveIdCardCheckNavToast(nav);
+    if (!toastState) {
+      status.textContent = fallbackText;
+      status.style.removeProperty('padding');
+      status.style.removeProperty('border-radius');
+      status.style.removeProperty('background');
+      status.style.removeProperty('color');
+      status.style.removeProperty('font-weight');
+      status.style.removeProperty('box-shadow');
+      return;
+    }
+
+    const palette = toastState.tone === 'success'
+      ? {
+          background: 'rgba(46, 125, 50, 0.14)',
+          color: '#1b5e20',
+          boxShadow: 'inset 0 0 0 1px rgba(46, 125, 50, 0.24)'
+        }
+      : toastState.tone === 'error'
+        ? {
+            background: 'rgba(198, 40, 40, 0.14)',
+            color: '#b71c1c',
+            boxShadow: 'inset 0 0 0 1px rgba(198, 40, 40, 0.22)'
+          }
+        : {
+            background: 'rgba(30, 136, 229, 0.12)',
+            color: '#0d47a1',
+            boxShadow: 'inset 0 0 0 1px rgba(30, 136, 229, 0.2)'
+          };
+
+    status.textContent = toastState.message;
+    status.style.setProperty('padding', '4px 8px');
+    status.style.setProperty('border-radius', '8px');
+    status.style.setProperty('background', palette.background);
+    status.style.setProperty('color', palette.color);
+    status.style.setProperty('font-weight', '600');
+    status.style.setProperty('box-shadow', palette.boxShadow);
+  }
+
+  function setIdCardCheckNavToast(nav, message, tone = 'info', timeoutMs = ID_CARD_CHECK_NAV_TOAST_DURATION_MS) {
+    if (!(nav instanceof HTMLElement)) return;
+    const previous = idCardCheckNavToastState.get(nav);
+    if (previous && previous.timerId) clearTimeout(previous.timerId);
+
+    const safeTimeoutMs = Math.max(600, Number(timeoutMs) || ID_CARD_CHECK_NAV_TOAST_DURATION_MS);
+    const timerId = window.setTimeout(() => {
+      idCardCheckNavToastState.delete(nav);
+      if (nav === idCardCheckNavEl) {
+        updateIdCardCheckNavigationButtons();
+      } else if (nav === gridCardCheckNavEl) {
+        updateGridCardCheckNavigationButtons();
+      } else {
+        renderIdCardCheckNavStatus(nav, '');
+      }
+    }, safeTimeoutMs);
+
+    idCardCheckNavToastState.set(nav, {
+      message: String(message || '').trim(),
+      tone: tone === 'success' || tone === 'error' ? tone : 'info',
+      expiresAt: Date.now() + safeTimeoutMs,
+      timerId
+    });
+
+    renderIdCardCheckNavStatus(nav, '');
+  }
+
+  function createIdCardCheckHelperFrame() {
+    const existing = document.getElementById(ID_CARD_CHECK_HELPER_IFRAME_ID);
+    if (existing instanceof HTMLIFrameElement) {
+      existing.remove();
+    }
+
+    const iframe = document.createElement('iframe');
+    iframe.id = ID_CARD_CHECK_HELPER_IFRAME_ID;
+    iframe.setAttribute('aria-hidden', 'true');
+    iframe.tabIndex = -1;
+    iframe.style.position = 'fixed';
+    iframe.style.left = '-10000px';
+    iframe.style.top = '0';
+    iframe.style.width = '1px';
+    iframe.style.height = '1px';
+    iframe.style.opacity = '0';
+    iframe.style.pointerEvents = 'none';
+    iframe.style.border = '0';
+    (document.body || document.documentElement).appendChild(iframe);
+    return iframe;
+  }
+
+  function isIdCardCheckHelperLoginDocument(doc) {
+    if (!(doc instanceof Document)) return false;
+    const pathname = String(doc.location && doc.location.pathname ? doc.location.pathname : '').toLowerCase();
+    return pathname.includes('/login/');
+  }
+
+  function getIdCardCheckHelperDocumentSummary(doc, limit = 240) {
+    if (!(doc instanceof Document)) return '';
+    const text = normalizeExecutionAnalysisText(doc.body ? doc.body.textContent || '' : '');
+    return text.slice(0, Math.max(80, Number(limit) || 240));
+  }
+
+  function getIdCardCheckHelperFrameDocument(frame) {
+    if (!(frame instanceof HTMLIFrameElement)) return null;
+    try {
+      const doc = frame.contentDocument;
+      return doc instanceof Document ? doc : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function isIdCardCheckHelperDocumentReady(doc, targetUrl) {
+    if (!(doc instanceof Document)) return false;
+
+    const href = String(doc.location && doc.location.href ? doc.location.href : '').trim();
+    const readyState = String(doc.readyState || '').toLowerCase();
+    if (!href || href === 'about:blank') return false;
+    if (readyState === 'loading') return false;
+    if (isIdCardCheckHelperLoginDocument(doc)) return true;
+
+    try {
+      const expectedUrl = new URL(String(targetUrl || ''), window.location.href);
+      const actualUrl = new URL(href, window.location.href);
+      return actualUrl.origin === expectedUrl.origin && actualUrl.pathname === expectedUrl.pathname;
+    } catch (error) {
+      return true;
+    }
+  }
+
+  async function waitForIdCardCheckHelperFrameLoad(frame, targetUrl, timeoutMs = ID_CARD_CHECK_HELPER_TIMEOUT_MS, intervalMs = 120) {
+    if (!(frame instanceof HTMLIFrameElement)) {
+      throw new Error('Не удалось создать helper iframe.');
+    }
+
+    const safeTimeoutMs = Math.max(1000, Number(timeoutMs) || ID_CARD_CHECK_HELPER_TIMEOUT_MS);
+    const startedAt = Date.now();
+    let lastHref = '';
+    let lastReadyState = '';
+
+    while (Date.now() - startedAt <= safeTimeoutMs) {
+      const doc = getIdCardCheckHelperFrameDocument(frame);
+      if (doc instanceof Document) {
+        lastHref = String(doc.location && doc.location.href ? doc.location.href : '').trim() || lastHref;
+        lastReadyState = String(doc.readyState || '').toLowerCase() || lastReadyState;
+        if (isIdCardCheckHelperDocumentReady(doc, targetUrl)) {
+          return doc;
+        }
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, intervalMs));
+    }
+
+    const details = [lastHref ? `URL: ${lastHref}` : '', lastReadyState ? `readyState: ${lastReadyState}` : '']
+      .filter(Boolean)
+      .join(', ');
+    throw new Error(`Истек таймаут загрузки helper iframe${details ? ` (${details})` : ''}.`);
+  }
+
+  async function loadIdCardCheckHelperFrameDocument(frame, url, timeoutMs = ID_CARD_CHECK_HELPER_TIMEOUT_MS) {
+    const targetUrl = String(url || '').trim();
+    if (!(frame instanceof HTMLIFrameElement) || !targetUrl) {
+      throw new Error('Не удалось подготовить helper iframe.');
+    }
+    frame.src = targetUrl;
+    const doc = await waitForIdCardCheckHelperFrameLoad(frame, targetUrl, timeoutMs);
+    if (isIdCardCheckHelperLoginDocument(doc)) {
+      throw new Error('Сайт вернул страницу логина вместо целевой формы.');
+    }
+    return doc;
+  }
+
+  async function waitForIdCardCheckHelperFrameCondition(frame, predicate, timeoutMs = ID_CARD_CHECK_HELPER_TIMEOUT_MS, intervalMs = 120) {
+    const safeTimeoutMs = Math.max(1000, Number(timeoutMs) || ID_CARD_CHECK_HELPER_TIMEOUT_MS);
+    const startedAt = Date.now();
+
+    while (Date.now() - startedAt <= safeTimeoutMs) {
+      const doc = getIdCardCheckHelperFrameDocument(frame);
+      if (doc instanceof Document && predicate(doc)) return doc;
+      await new Promise((resolve) => window.setTimeout(resolve, intervalMs));
+    }
+
+    throw new Error('Истек таймаут ожидания результата helper iframe.');
+  }
+
+  function splitIdCardCheckTmValue(tmText) {
+    const normalizedText = String(tmText || '').trim();
+    const separatorIndex = normalizedText.indexOf('\\');
+    if (separatorIndex < 0) {
+      return {
+        tmText: normalizedText,
+        stage: normalizedText,
+        status: ''
+      };
+    }
+    return {
+      tmText: normalizedText,
+      stage: normalizedText.slice(0, separatorIndex).trim(),
+      status: normalizedText.slice(separatorIndex + 1).trim()
+    };
+  }
+
+  function formatIdCardCheckTm(stage, status) {
+    const normalizedStage = String(stage || '').trim();
+    const normalizedStatus = String(status || '').trim();
+    if (normalizedStage && normalizedStatus) return `${normalizedStage}\\${normalizedStatus}`;
+    return normalizedStage || normalizedStatus;
+  }
+
+  function collectIdCardCheckHistoryTransitionCandidates(actionText) {
+    const text = String(actionText || '').trim();
+    if (!text.startsWith(ID_CARD_CHECK_HISTORY_TRANSITION_PREFIX)) return [];
+
+    const body = text.slice(ID_CARD_CHECK_HISTORY_TRANSITION_PREFIX.length).trim();
+    const candidates = [];
+    const seen = new Set();
+    let searchIndex = 0;
+
+    while (searchIndex >= 0 && searchIndex < body.length) {
+      const separatorIndex = body.indexOf(' на ', searchIndex);
+      if (separatorIndex < 0) break;
+
+      const previousTm = body.slice(0, separatorIndex).trim();
+      const currentTm = body.slice(separatorIndex + 4).trim();
+      const previous = splitIdCardCheckTmValue(previousTm);
+      const current = splitIdCardCheckTmValue(currentTm);
+
+      if (previous.stage && previous.status && current.stage && current.status) {
+        const key = `${previous.tmText}|||${current.tmText}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          candidates.push({
+            previousTm: previous.tmText,
+            previousStage: previous.stage,
+            previousStatus: previous.status,
+            currentTm: current.tmText,
+            currentStage: current.stage,
+            currentStatus: current.status
+          });
+        }
+      }
+
+      searchIndex = separatorIndex + 4;
+    }
+
+    return candidates;
+  }
+
+  function getLatestIdCardCheckHistoryTransitionText(doc) {
+    if (!(doc instanceof Document)) return '';
+    const rows = Array.from(doc.querySelectorAll('table tbody tr'));
+    for (const row of rows) {
+      const cells = Array.from(row.querySelectorAll('td')).map((cell) => normalizeExecutionAnalysisText(cell.textContent || ''));
+      const rowKind = normalizeStageJumpText(cells[0] || '');
+      const actionText = String(cells[1] || '').trim();
+      if (rowKind !== normalizeStageJumpText('ИД')) continue;
+      if (!actionText.startsWith(ID_CARD_CHECK_HISTORY_TRANSITION_PREFIX)) continue;
+      return actionText;
+    }
+    return '';
+  }
+
+  function parseIdCardCheckEditedocStatusOptionText(text) {
+    const normalizedText = String(text || '').trim();
+    const separatorIndex = normalizedText.indexOf(' / ');
+    if (separatorIndex < 0) {
+      return {
+        text: normalizedText,
+        stage: normalizedText,
+        status: ''
+      };
+    }
+    return {
+      text: normalizedText,
+      stage: normalizedText.slice(0, separatorIndex).trim(),
+      status: normalizedText.slice(separatorIndex + 3).trim()
+    };
+  }
+
+  function collectIdCardCheckEditedocStatusOptions(doc) {
+    if (!(doc instanceof Document)) return [];
+    const select = doc.querySelector('select[name="StatusID"]');
+    if (!(select instanceof HTMLSelectElement)) return [];
+
+    return Array.from(select.options).map((option) => {
+      const parsed = parseIdCardCheckEditedocStatusOptionText(option.textContent || '');
+      return {
+        value: String(option.value || '').trim(),
+        text: parsed.text,
+        stage: parsed.stage,
+        status: parsed.status,
+        normalizedStage: normalizeStageJumpText(parsed.stage),
+        normalizedStatus: normalizeStageJumpText(parsed.status)
+      };
+    });
+  }
+
+  function findIdCardCheckEditedocStatusOption(options, stage, status) {
+    const normalizedStage = normalizeStageJumpText(stage);
+    const normalizedStatus = normalizeStageJumpText(status);
+    return (Array.isArray(options) ? options : []).find((option) => (
+      option &&
+      option.value &&
+      option.normalizedStage === normalizedStage &&
+      option.normalizedStatus === normalizedStatus
+    )) || null;
+  }
+
+  function resolveIdCardCheckPreviousTm(actionText, statusOptions) {
+    const candidates = collectIdCardCheckHistoryTransitionCandidates(actionText);
+    if (!candidates.length) return null;
+
+    for (const candidate of candidates) {
+      const matchedOption = findIdCardCheckEditedocStatusOption(
+        statusOptions,
+        candidate.previousStage,
+        candidate.previousStatus
+      );
+      if (!matchedOption) continue;
+      return {
+        ...candidate,
+        matchedOption
+      };
+    }
+
+    return {
+      ...candidates[0],
+      matchedOption: null
+    };
+  }
+
+  function getIdCardCheckEditedocStatusSelect(doc) {
+    const select = doc instanceof Document
+      ? doc.querySelector('select[name="StatusID"]')
+      : null;
+    return select instanceof HTMLSelectElement ? select : null;
+  }
+
+  function getIdCardCheckEditedocSubmitButton(doc) {
+    if (!(doc instanceof Document)) return null;
+    return Array.from(doc.querySelectorAll('button[type="submit"], button:not([type]), input[type="submit"]')).find((element) => {
+      if (!(element instanceof HTMLButtonElement) && !(element instanceof HTMLInputElement)) return false;
+      const text = normalizeStageJumpText(element.textContent || element.getAttribute('value') || '');
+      return text.includes(normalizeStageJumpText('Сохранить'));
+    }) || null;
+  }
+
+  function hasIdCardCheckEditedocSuccessMessage(doc) {
+    const text = normalizeStageJumpText(doc instanceof Document && doc.body ? doc.body.textContent || '' : '');
+    return text.includes(normalizeStageJumpText('Информация успешно обновлена')) &&
+      text.includes(normalizeStageJumpText('Вы можете закрыть это окно'));
+  }
+
+  function hasIdCardCheckEditedocTerminalError(doc) {
+    if (!(doc instanceof Document)) return false;
+    if (isIdCardCheckHelperLoginDocument(doc)) return true;
+    const text = normalizeExecutionAnalysisText(doc.body ? doc.body.textContent || '' : '');
+    return text.includes('ERROR EXCEPTION') || text.includes('No query results for model');
+  }
+
+  function isIdCardCheckHistoryUrl(urlValue, edocId = '') {
+    try {
+      const url = new URL(String(urlValue || ''), window.location.origin);
+      const pathname = String(url.pathname || '').toLowerCase();
+      if (!pathname.includes('/action_history')) return false;
+      const currentEdocId = normalizeExecutionAnalysisText(getIdCardCheckEdocIdFromPath(url.pathname));
+      if (!currentEdocId) return false;
+      const expectedEdocId = normalizeExecutionAnalysisText(edocId);
+      return !expectedEdocId || currentEdocId === expectedEdocId;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function getIdCardCheckCurrentHistoryDocument(edocId) {
+    const normalizedEdocId = normalizeExecutionAnalysisText(edocId);
+    if (isIdCardCheckHistoryUrl(window.location.href, normalizedEdocId)) {
+      return document;
+    }
+
+    const iframe = getGridCardCheckIframe();
+    if (!(iframe instanceof HTMLIFrameElement)) return null;
+    if (!isIdCardCheckHistoryUrl(getGridCardCheckIframeUrl(iframe), normalizedEdocId)) return null;
+
+    try {
+      const doc = iframe.contentDocument;
+      return doc instanceof Document ? doc : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  async function waitForIdCardCheckDocumentCondition(predicate, timeoutMs = ID_CARD_CHECK_TAB_MESSAGE_TIMEOUT_MS, intervalMs = 120) {
+    const safeTimeoutMs = Math.max(1000, Number(timeoutMs) || ID_CARD_CHECK_TAB_MESSAGE_TIMEOUT_MS);
+    const startedAt = Date.now();
+
+    while (Date.now() - startedAt <= safeTimeoutMs) {
+      if (predicate(document)) return document;
+      await new Promise((resolve) => window.setTimeout(resolve, intervalMs));
+    }
+
+    throw new Error('Истек таймаут ожидания результата вкладки EdocID.');
+  }
+
+  function triggerIdCardCheckEditedocReturn(doc, statusOptionValue) {
+    const select = getIdCardCheckEditedocStatusSelect(doc);
+    const submitButton = getIdCardCheckEditedocSubmitButton(doc);
+    const form = select instanceof HTMLSelectElement ? select.closest('form') : null;
+
+    if (!(select instanceof HTMLSelectElement) || !(form instanceof HTMLFormElement)) {
+      throw new Error('На форме editedoc не найдены нужные элементы.');
+    }
+
+    select.value = String(statusOptionValue || '').trim();
+    select.dispatchEvent(new Event('input', { bubbles: true }));
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+
+    if (typeof form.requestSubmit === 'function') {
+      form.requestSubmit(
+        submitButton instanceof HTMLButtonElement || submitButton instanceof HTMLInputElement
+          ? submitButton
+          : undefined
+      );
+    } else if (submitButton instanceof HTMLElement) {
+      submitButton.click();
+    } else {
+      form.submit();
+    }
+  }
+
+  function normalizeIdCardCheckFailedReturnLine(edocId, previousTmText) {
+    const normalizedEdocId = normalizeExecutionAnalysisText(edocId);
+    const normalizedTm = normalizeExecutionAnalysisText(previousTmText);
+    return normalizedEdocId && normalizedTm ? `${normalizedEdocId} – ${normalizedTm}` : '';
+  }
+
+  async function getIdCardCheckFailedReturnBufferTabId() {
+    const currentTabId = await getCurrentTabIdForExecutionAnalysis();
+    if (Number.isInteger(currentTabId) && currentTabId > 0) return currentTabId;
+    const state = normalizeIdCardCheckState(idCardCheckState);
+    return Number.isInteger(state.tabId) && state.tabId > 0 ? state.tabId : 0;
+  }
+
+  async function accumulateIdCardCheckFailedReturn(edocId, previousTmText) {
+    const line = normalizeIdCardCheckFailedReturnLine(edocId, previousTmText);
+    let entries = Array.isArray(idCardCheckFailedReturnEntries) ? [...idCardCheckFailedReturnEntries] : [];
+
+    if (!line) {
+      return {
+        line: '',
+        count: entries.length,
+        text: entries.join('\n')
+      };
+    }
+
+    try {
+      const bufferTabId = await getIdCardCheckFailedReturnBufferTabId();
+      if (bufferTabId > 0) {
+        const response = await sendRuntimeMessage({
+          action: 'ID_CARD_CHECK_ACCUMULATE_FAILED_RETURN',
+          data: {
+            tabId: bufferTabId,
+            line
+          }
+        });
+        if (response && response.success === true) {
+          entries = Array.isArray(response.entries)
+            ? response.entries.map((value) => normalizeExecutionAnalysisText(value)).filter(Boolean)
+            : entries;
+        }
+      }
+    } catch (error) {
+      // fall back to the current document buffer if session storage is unavailable
+    }
+
+    if (!entries.includes(line)) {
+      entries.push(line);
+    }
+    idCardCheckFailedReturnEntries = entries;
+
+    const joinedText = entries.join('\n');
+    try {
+      await writePlainTextToClipboard(joinedText);
+    } catch (error) {
+      // keep accumulated buffer even if clipboard is unavailable
+    }
+
+    return {
+      line,
+      count: entries.length,
+      text: joinedText
+    };
+  }
+
+  async function resolveIdCardCheckHistoryTransitionText(edocId) {
+    const normalizedEdocId = normalizeExecutionAnalysisText(edocId);
+    if (!normalizedEdocId) {
+      throw new Error('Не удалось определить EdocID для поиска предыдущей ТМ.');
+    }
+
+    const currentHistoryDoc = getIdCardCheckCurrentHistoryDocument(normalizedEdocId);
+    if (currentHistoryDoc instanceof Document) {
+      const transitionText = getLatestIdCardCheckHistoryTransitionText(currentHistoryDoc);
+      if (!transitionText) {
+        throw new Error(`Для EdocID ${normalizedEdocId} не найдена история перехода по ТМ.`);
+      }
+      return transitionText;
+    }
+
+    const historyTab = await openIdCardCheckUrlInTabDetailed(
+      buildIdCardCheckHistoryUrl(normalizedEdocId),
+      { active: false }
+    );
+    if (!historyTab.success || !Number.isInteger(historyTab.tabId)) {
+      throw new Error(historyTab.error || `Не удалось открыть Историю для EdocID ${normalizedEdocId}.`);
+    }
+
+    try {
+      const response = await sendIdCardCheckTabMessage(historyTab.tabId, {
+        kind: 'extract-history-transition',
+        edocId: normalizedEdocId
+      });
+      const transitionText = normalizeExecutionAnalysisText(response.transitionText);
+      if (!transitionText) {
+        throw new Error(`Для EdocID ${normalizedEdocId} не найдена история перехода по ТМ.`);
+      }
+      return transitionText;
+    } finally {
+      await closeIdCardCheckAuxTab(historyTab.tabId);
+    }
+  }
+
+  async function returnIdCardCheckToPreviousTm(edocId, toastNav = null) {
+    const normalizedEdocId = normalizeExecutionAnalysisText(edocId);
+    if (!normalizedEdocId) return false;
+
+    if (toastNav instanceof HTMLElement) {
+      setIdCardCheckNavToast(toastNav, `Возвращаю EdocID ${normalizedEdocId} на предыдущую ТМ...`, 'info', 20000);
+    }
+
+    try {
+      const transitionText = await resolveIdCardCheckHistoryTransitionText(normalizedEdocId);
+      const editTab = await openIdCardCheckUrlInTabDetailed(
+        buildIdCardCheckActionUrl('edit-info', normalizedEdocId),
+        { active: false }
+      );
+      if (!editTab.success || !Number.isInteger(editTab.tabId)) {
+        throw new Error(editTab.error || `Не удалось открыть форму editedoc для EdocID ${normalizedEdocId}.`);
+      }
+
+      let shouldCloseEditTab = true;
+
+      try {
+        const prepareResult = await sendIdCardCheckTabMessage(editTab.tabId, {
+          kind: 'prepare-editedoc-return',
+          edocId: normalizedEdocId,
+          transitionText
+        }, ID_CARD_CHECK_TAB_MESSAGE_TIMEOUT_MS, {
+          retryOnNoReceiver: true,
+          retryOnClosedChannel: false
+        });
+        const previousTmText = normalizeExecutionAnalysisText(prepareResult.previousTmText);
+
+        if (prepareResult.submitted !== true) {
+          await accumulateIdCardCheckFailedReturn(normalizedEdocId, previousTmText);
+          if (toastNav instanceof HTMLElement) {
+            setIdCardCheckNavToast(
+              toastNav,
+              `Не удалось вернуть EdocID ${normalizedEdocId} на предыдущую ТМ ${previousTmText}. Накопленный список скопирован в буфер обмена.`,
+              'error'
+            );
+          }
+          return false;
+        }
+
+        await new Promise((resolve) => window.setTimeout(resolve, 200));
+        await sendIdCardCheckTabMessage(editTab.tabId, {
+          kind: 'confirm-editedoc-return',
+          edocId: normalizedEdocId
+        }, ID_CARD_CHECK_TAB_MESSAGE_TIMEOUT_MS + 10000, {
+          retryOnNoReceiver: true,
+          retryOnClosedChannel: true
+        });
+
+        if (toastNav instanceof HTMLElement) {
+          setIdCardCheckNavToast(
+            toastNav,
+            `EdocID ${normalizedEdocId} был возвращен на ТМ ${previousTmText}.`,
+            'success'
+          );
+        }
+        return true;
+      } catch (error) {
+        shouldCloseEditTab = false;
+        throw error;
+      } finally {
+        if (shouldCloseEditTab) {
+          await closeIdCardCheckAuxTab(editTab.tabId);
+        }
+      }
+    } catch (error) {
+      const message = error && error.message ? error.message : String(error);
+      if (toastNav instanceof HTMLElement) {
+        setIdCardCheckNavToast(
+          toastNav,
+          `Не удалось вернуть EdocID ${normalizedEdocId}: ${message}`,
+          'error',
+          12000
+        );
+      } else {
+        window.alert(`Не удалось вернуть EdocID ${normalizedEdocId}: ${message}`);
+      }
+      return false;
+    }
   }
 
   async function isCurrentIdCardCheckManagedTab() {
@@ -2704,11 +3456,12 @@
     if (status instanceof HTMLElement) {
       const currentEdocId = state.edocIds[state.currentIndex] || '';
       const pathEdocId = getIdCardCheckEdocIdFromPath();
-      status.textContent = pathEdocId && !state.edocIds.includes(pathEdocId)
+      const fallbackText = pathEdocId && !state.edocIds.includes(pathEdocId)
         ? `Вне списка: ${pathEdocId}`
         : currentEdocId
           ? `${state.currentIndex + 1}/${state.edocIds.length}: ${currentEdocId}`
           : 'Список не загружен';
+      renderIdCardCheckNavStatus(idCardCheckNavEl, fallbackText);
     }
     syncIdCardCheckCurrentActionButton(idCardCheckNavEl, getIdCardCheckCurrentEdocId());
   }
@@ -3184,11 +3937,12 @@
       const iframe = getGridCardCheckIframe();
       const iframeEdocId = getEdocIdFromFullcardUrl(getGridCardCheckIframeUrl(iframe)) ||
         normalizeExecutionAnalysisText(iframe && iframe.dataset ? iframe.dataset.dupGridCardEdocId : '');
-      status.textContent = iframeEdocId && !state.edocIds.includes(iframeEdocId)
+      const fallbackText = iframeEdocId && !state.edocIds.includes(iframeEdocId)
         ? `Вне списка: ${iframeEdocId}`
         : currentEdocId
           ? `${state.currentIndex + 1}/${state.edocIds.length}: ${currentEdocId}`
           : 'Список пуст';
+      renderIdCardCheckNavStatus(gridCardCheckNavEl, fallbackText);
     }
     syncIdCardCheckCurrentActionButton(gridCardCheckNavEl, getGridCardCheckCurrentEdocId());
   }
@@ -4118,6 +4872,10 @@
       html.${SCREENSHOT_MODE_CLASS} .seasonal-theme-settings-overlay,
       html.${SCREENSHOT_MODE_CLASS} .seasonal-theme-settings-panel,
       html.${SCREENSHOT_MODE_CLASS} .seasonal-theme-settings-element,
+      html.${SCREENSHOT_MODE_CLASS} .dup-id-card-check-modal,
+      html.${SCREENSHOT_MODE_CLASS} .dup-grid-card-check-modal,
+      html.${SCREENSHOT_MODE_CLASS} #${ID_CARD_CHECK_NAV_ID},
+      html.${SCREENSHOT_MODE_CLASS} #${GRID_CARD_CHECK_NAV_ID},
       html.${SCREENSHOT_MODE_CLASS} .my-super-btn,
       html.${SCREENSHOT_MODE_CLASS} #batch-inn-check-btn,
       html.${SCREENSHOT_MODE_CLASS} #inn-toast-container,
@@ -6314,6 +7072,102 @@
     }
     rememberStageTimerMessage(action, message.data || {});
     return false;
+  });
+
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (!message || message.action !== 'ID_CARD_CHECK_TAB_ACTION') {
+      return false;
+    }
+
+    (async () => {
+      try {
+        const data = message && message.data && typeof message.data === 'object'
+          ? message.data
+          : {};
+        const kind = String(data.kind || '').trim();
+        const normalizedEdocId = normalizeExecutionAnalysisText(data.edocId);
+
+        if (kind === 'extract-history-transition') {
+          if (!isIdCardCheckHistoryUrl(window.location.href, normalizedEdocId)) {
+            throw new Error(`Во вкладке EdocID ${normalizedEdocId} не открыта История.`);
+          }
+
+          const transitionText = getLatestIdCardCheckHistoryTransitionText(document);
+          if (!transitionText) {
+            throw new Error(`Для EdocID ${normalizedEdocId} не найдена история перехода по ТМ.`);
+          }
+
+          sendResponse({
+            success: true,
+            transitionText
+          });
+          return;
+        }
+
+        if (kind === 'prepare-editedoc-return') {
+          const transitionText = normalizeExecutionAnalysisText(data.transitionText);
+          const statusOptions = collectIdCardCheckEditedocStatusOptions(document);
+          if (!statusOptions.length) {
+            throw new Error('На форме editedoc не найден dropdown со стадиями/статусами.');
+          }
+
+          const previousTm = resolveIdCardCheckPreviousTm(transitionText, statusOptions);
+          if (!previousTm) {
+            throw new Error(`Не удалось разобрать предыдущую ТМ из action_history: ${transitionText}`);
+          }
+
+          const previousTmText = formatIdCardCheckTm(previousTm.previousStage, previousTm.previousStatus);
+          if (!previousTm.matchedOption) {
+            sendResponse({
+              success: true,
+              submitted: false,
+              previousTmText
+            });
+            return;
+          }
+
+          sendResponse({
+            success: true,
+            submitted: true,
+            previousTmText
+          });
+          window.setTimeout(() => {
+            try {
+              triggerIdCardCheckEditedocReturn(document, previousTm.matchedOption.value);
+            } catch (error) {
+              console.error('Не удалось отправить форму editedoc для возврата на предыдущую ТМ.', error);
+            }
+          }, 0);
+          return;
+        }
+
+        if (kind === 'confirm-editedoc-return') {
+          const resultDoc = await waitForIdCardCheckDocumentCondition(
+            (currentDoc) => hasIdCardCheckEditedocSuccessMessage(currentDoc) || hasIdCardCheckEditedocTerminalError(currentDoc),
+            ID_CARD_CHECK_TAB_MESSAGE_TIMEOUT_MS + 10000
+          );
+
+          if (isIdCardCheckHelperLoginDocument(resultDoc)) {
+            throw new Error('Сайт вернул страницу логина вместо подтверждения сохранения.');
+          }
+          if (!hasIdCardCheckEditedocSuccessMessage(resultDoc)) {
+            throw new Error(`Форма editedoc не подтвердила сохранение: ${getIdCardCheckHelperDocumentSummary(resultDoc)}`);
+          }
+
+          sendResponse({ success: true });
+          return;
+        }
+
+        throw new Error(`Неизвестное действие вкладки EdocID: ${kind || 'empty'}`);
+      } catch (error) {
+        sendResponse({
+          success: false,
+          error: error && error.message ? error.message : String(error)
+        });
+      }
+    })();
+
+    return true;
   });
 
   function isStageJumpSourcePage() {
