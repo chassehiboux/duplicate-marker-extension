@@ -502,20 +502,27 @@ async function prepareIdCardCheckEditedocReturnAsync(tabId, edocId, transitionTe
                         stage: parsed.stage,
                         status: parsed.status,
                         normalizedStage: normalizeStageText(parsed.stage),
-                        normalizedStatus: normalizeStageText(parsed.status)
+                        normalizedStatus: normalizeStageText(parsed.status),
+                        selected: option.selected === true
                     };
                 });
             };
-            const findStatusOption = (options, stage, status) => {
-                const normalizedStage = normalizeStageText(stage);
-                const normalizedStatus = normalizeStageText(status);
-                return (Array.isArray(options) ? options : []).find((option) => (
+            const isStatusOptionMatch = (option, stage, status) => (
+                !!(
                     option &&
                     option.value &&
-                    option.normalizedStage === normalizedStage &&
-                    option.normalizedStatus === normalizedStatus
+                    option.normalizedStage === normalizeStageText(stage) &&
+                    option.normalizedStatus === normalizeStageText(status)
+                )
+            );
+            const findStatusOption = (options, stage, status) => {
+                return (Array.isArray(options) ? options : []).find((option) => (
+                    isStatusOptionMatch(option, stage, status)
                 )) || null;
             };
+            const getSelectedCurrentOption = (options) => (
+                (Array.isArray(options) ? options : []).find((option) => option && option.selected) || null
+            );
             const getSubmitButton = () => Array.from(document.querySelectorAll('button[type="submit"], button:not([type]), input[type="submit"]')).find((element) => {
                 if (!(element instanceof HTMLButtonElement) && !(element instanceof HTMLInputElement)) return false;
                 const text = normalizeStageText(element.textContent || element.getAttribute('value') || '');
@@ -574,21 +581,23 @@ async function prepareIdCardCheckEditedocReturnAsync(tabId, edocId, transitionTe
                 };
             }
 
-            let resolvedPreviousTm = null;
-            for (const candidate of candidates) {
-                const matchedOption = findStatusOption(statusOptions, candidate.previousStage, candidate.previousStatus);
-                const resolvedCandidate = {
-                    ...candidate,
-                    matchedOption
-                };
-                if (!resolvedPreviousTm) {
-                    resolvedPreviousTm = resolvedCandidate;
-                }
-                if (matchedOption) {
-                    resolvedPreviousTm = resolvedCandidate;
-                    break;
-                }
-            }
+            const selectedCurrentOption = getSelectedCurrentOption(statusOptions);
+            const resolvedCandidates = candidates.map((candidate) => ({
+                ...candidate,
+                matchedOption: findStatusOption(statusOptions, candidate.previousStage, candidate.previousStatus),
+                currentMatchesSelected: !!selectedCurrentOption && isStatusOptionMatch(
+                    selectedCurrentOption,
+                    candidate.currentStage,
+                    candidate.currentStatus
+                )
+            }));
+            const resolvedPreviousTm = resolvedCandidates.find((candidate) => (
+                candidate.currentMatchesSelected && candidate.matchedOption
+            )) || resolvedCandidates.find((candidate) => (
+                candidate.currentMatchesSelected
+            )) || resolvedCandidates.find((candidate) => (
+                candidate.matchedOption
+            )) || resolvedCandidates[0] || null;
 
             const previousTmText = formatTm(
                 resolvedPreviousTm && resolvedPreviousTm.previousStage,

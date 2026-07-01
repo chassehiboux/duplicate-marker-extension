@@ -60,6 +60,9 @@
   const ID_CARD_CHECK_NAV_ID = 'dup-id-card-check-nav';
   const ID_CARD_CHECK_HELPER_IFRAME_ID = 'dup-id-card-check-helper-frame';
   const ID_CARD_CHECK_RETURN_PREVIOUS_TM_ACTION = 'return-previous-tm';
+  const ID_CARD_CHECK_RETURN_PREVIOUS_TM_AND_NEXT_ACTION = 'return-previous-tm-and-next';
+  const ID_CARD_CHECK_RETURN_PREVIOUS_TM_ALL_ACTION = 'return-previous-tm-all';
+  const ID_CARD_CHECK_AUTO_RETURN_SESSION_KEY = 'dup_id_card_check_auto_return_v1';
   const ID_CARD_CHECK_HISTORY_TRANSITION_PREFIX = 'Документ пришел с ';
   const ID_CARD_CHECK_HELPER_TIMEOUT_MS = 15000;
   const ID_CARD_CHECK_NAV_TOAST_DURATION_MS = 8000;
@@ -668,6 +671,7 @@
   let gridCardCheckNavEl = null;
   let gridCardCheckNavObserver = null;
   const idCardCheckNavToastState = new WeakMap();
+  let idCardCheckAutoReturnResumePending = false;
   let idCardCheckFailedReturnEntries = [];
   const allDuplicateSettingKeys = [
     'setting_highlight_mode', 'list_DebtID', 'list_AccAddress_AccountNumber',
@@ -2341,7 +2345,70 @@
     idCardCheckState = normalizeIdCardCheckState(stored[ID_CARD_CHECK_STORAGE_KEY]);
     await syncIdCardCheckStateWithCurrentUrl();
     syncIdCardCheckNavigation();
+    void maybeResumeIdCardCheckAutoReturn();
     return idCardCheckState;
+  }
+
+  function createEmptyIdCardCheckAutoReturnState() {
+    return {
+      version: 1,
+      active: false,
+      mode: '',
+      navKind: '',
+      totalCount: 0,
+      processedCount: 0,
+      failedCount: 0,
+      lastStartedEdocId: '',
+      startedAt: 0
+    };
+  }
+
+  function normalizeIdCardCheckAutoReturnState(rawState) {
+    const raw = rawState && typeof rawState === 'object' ? rawState : {};
+    const mode = String(raw.mode || '').trim();
+    const navKind = String(raw.navKind || '').trim();
+    const totalCount = Math.max(0, Number.parseInt(String(raw.totalCount || 0), 10) || 0);
+    const processedCount = Math.max(0, Number.parseInt(String(raw.processedCount || 0), 10) || 0);
+    const failedCount = Math.max(0, Number.parseInt(String(raw.failedCount || 0), 10) || 0);
+    return {
+      version: 1,
+      active: raw.active === true && mode === 'all' && navKind === 'fullcard',
+      mode: mode === 'all' ? mode : '',
+      navKind: navKind === 'fullcard' ? navKind : '',
+      totalCount: totalCount,
+      processedCount: Math.min(processedCount, totalCount || processedCount),
+      failedCount: Math.min(failedCount, totalCount || failedCount),
+      lastStartedEdocId: normalizeExecutionAnalysisText(raw.lastStartedEdocId),
+      startedAt: Number(raw.startedAt || 0) || 0
+    };
+  }
+
+  function loadIdCardCheckAutoReturnState() {
+    try {
+      const raw = window.sessionStorage.getItem(ID_CARD_CHECK_AUTO_RETURN_SESSION_KEY);
+      if (!raw) return createEmptyIdCardCheckAutoReturnState();
+      return normalizeIdCardCheckAutoReturnState(JSON.parse(raw));
+    } catch (error) {
+      return createEmptyIdCardCheckAutoReturnState();
+    }
+  }
+
+  function persistIdCardCheckAutoReturnState(nextState) {
+    const normalized = normalizeIdCardCheckAutoReturnState(nextState);
+    try {
+      if (!normalized.active) {
+        window.sessionStorage.removeItem(ID_CARD_CHECK_AUTO_RETURN_SESSION_KEY);
+      } else {
+        window.sessionStorage.setItem(ID_CARD_CHECK_AUTO_RETURN_SESSION_KEY, JSON.stringify(normalized));
+      }
+    } catch (error) {
+      // ignore session storage write failures
+    }
+    return normalized;
+  }
+
+  function clearIdCardCheckAutoReturnState() {
+    return persistIdCardCheckAutoReturnState(createEmptyIdCardCheckAutoReturnState());
   }
 
   function isIdCardCheckFullcardPath(pathname = window.location.pathname) {
@@ -2523,12 +2590,14 @@
         </div>
         <div class="dup-id-card-check-action-current"></div>
         <div class="dup-id-card-check-action-list">
-          <button type="button" class="dup-id-card-check-action-item" data-action="return-previous-tm">Вернуть на предыдущую ТМ</button>
           <button type="button" class="dup-id-card-check-action-item" data-action="edit-info">Редактирование информации</button>
           <button type="button" class="dup-id-card-check-action-item" data-action="execution-analysis">Анализ исполнения</button>
           <button type="button" class="dup-id-card-check-action-item" data-action="solidarity-type">Установить вид солидарности</button>
           <button type="button" class="dup-id-card-check-action-item" data-action="markers-ovzid">Маркировка ВЗИД</button>
           <button type="button" class="dup-id-card-check-action-item" data-action="open-card-tab" disabled>Открыть карточку в отдельной вкладке</button>
+          <button type="button" class="dup-id-card-check-action-item" data-action="return-previous-tm">Вернуть на предыдущую ТМ</button>
+          <button type="button" class="dup-id-card-check-action-item" data-action="return-previous-tm-and-next">Вернуть на предыдущую ТМ (и перейди к следующему EdocID)</button>
+          <button type="button" class="dup-id-card-check-action-item" data-action="return-previous-tm-all">Вернуть на предыдущую ТМ все EdocID</button>
         </div>
       </div>
     `;
@@ -2548,7 +2617,25 @@
       if (!actionKey || !edocId) return;
       close();
       if (actionKey === ID_CARD_CHECK_RETURN_PREVIOUS_TM_ACTION) {
-        void returnIdCardCheckToPreviousTm(edocId, resolveIdCardCheckActionToastNav(modal));
+        void returnIdCardCheckToPreviousTm(edocId, {
+          toastNav: resolveIdCardCheckActionToastNav(modal)
+        });
+        return;
+      }
+      if (actionKey === ID_CARD_CHECK_RETURN_PREVIOUS_TM_AND_NEXT_ACTION) {
+        void returnIdCardCheckToPreviousTmAndMoveNext(
+          edocId,
+          getIdCardCheckActionNavKind(modal),
+          resolveIdCardCheckActionToastNav(modal)
+        );
+        return;
+      }
+      if (actionKey === ID_CARD_CHECK_RETURN_PREVIOUS_TM_ALL_ACTION) {
+        void returnIdCardCheckToPreviousTmForAllEdocIds(
+          edocId,
+          getIdCardCheckActionNavKind(modal),
+          resolveIdCardCheckActionToastNav(modal)
+        );
         return;
       }
       if (actionKey === 'open-card-tab') {
@@ -2703,6 +2790,14 @@
     if (nav.id === GRID_CARD_CHECK_NAV_ID) return 'grid';
     if (nav.id === ID_CARD_CHECK_NAV_ID) return 'fullcard';
     return '';
+  }
+
+  function getIdCardCheckActionNavKind(modal) {
+    const storedKind = modal instanceof HTMLElement
+      ? normalizeExecutionAnalysisText(modal.dataset.toastNavKind)
+      : '';
+    if (storedKind === 'grid' || storedKind === 'fullcard') return storedKind;
+    return isIdCardCheckFullcardPath() ? 'fullcard' : '';
   }
 
   function resolveIdCardCheckActionToastNav(modal) {
@@ -3022,43 +3117,62 @@
         stage: parsed.stage,
         status: parsed.status,
         normalizedStage: normalizeStageJumpText(parsed.stage),
-        normalizedStatus: normalizeStageJumpText(parsed.status)
+        normalizedStatus: normalizeStageJumpText(parsed.status),
+        selected: option.selected === true
       };
     });
   }
 
-  function findIdCardCheckEditedocStatusOption(options, stage, status) {
-    const normalizedStage = normalizeStageJumpText(stage);
-    const normalizedStatus = normalizeStageJumpText(status);
-    return (Array.isArray(options) ? options : []).find((option) => (
+  function isIdCardCheckEditedocStatusOptionMatch(option, stage, status) {
+    return !!(
       option &&
       option.value &&
-      option.normalizedStage === normalizedStage &&
-      option.normalizedStatus === normalizedStatus
+      option.normalizedStage === normalizeStageJumpText(stage) &&
+      option.normalizedStatus === normalizeStageJumpText(status)
+    );
+  }
+
+  function findIdCardCheckEditedocStatusOption(options, stage, status) {
+    return (Array.isArray(options) ? options : []).find((option) => (
+      isIdCardCheckEditedocStatusOptionMatch(option, stage, status)
     )) || null;
+  }
+
+  function getSelectedIdCardCheckEditedocStatusOption(options) {
+    return (Array.isArray(options) ? options : []).find((option) => option && option.selected) || null;
   }
 
   function resolveIdCardCheckPreviousTm(actionText, statusOptions) {
     const candidates = collectIdCardCheckHistoryTransitionCandidates(actionText);
     if (!candidates.length) return null;
 
-    for (const candidate of candidates) {
-      const matchedOption = findIdCardCheckEditedocStatusOption(
+    const selectedCurrentOption = getSelectedIdCardCheckEditedocStatusOption(statusOptions);
+    const resolvedCandidates = candidates.map((candidate) => ({
+      ...candidate,
+      matchedOption: findIdCardCheckEditedocStatusOption(
         statusOptions,
         candidate.previousStage,
         candidate.previousStatus
-      );
-      if (!matchedOption) continue;
-      return {
-        ...candidate,
-        matchedOption
-      };
-    }
+      ),
+      currentMatchesSelected: !!selectedCurrentOption && isIdCardCheckEditedocStatusOptionMatch(
+        selectedCurrentOption,
+        candidate.currentStage,
+        candidate.currentStatus
+      )
+    }));
 
-    return {
-      ...candidates[0],
-      matchedOption: null
-    };
+    const selectedMatchedCandidate = resolvedCandidates.find((candidate) => (
+      candidate.currentMatchesSelected && candidate.matchedOption
+    ));
+    if (selectedMatchedCandidate) return selectedMatchedCandidate;
+
+    const selectedFallbackCandidate = resolvedCandidates.find((candidate) => candidate.currentMatchesSelected);
+    if (selectedFallbackCandidate) return selectedFallbackCandidate;
+
+    const matchedCandidate = resolvedCandidates.find((candidate) => candidate.matchedOption);
+    if (matchedCandidate) return matchedCandidate;
+
+    return resolvedCandidates[0] || null;
   }
 
   function getIdCardCheckEditedocStatusSelect(doc) {
@@ -3269,9 +3383,11 @@
     }
   }
 
-  async function returnIdCardCheckToPreviousTm(edocId, toastNav = null) {
+  async function returnIdCardCheckToPreviousTm(edocId, options = {}) {
     const normalizedEdocId = normalizeExecutionAnalysisText(edocId);
     if (!normalizedEdocId) return false;
+    const toastNav = options && options.toastNav instanceof HTMLElement ? options.toastNav : null;
+    const keepEditTabOpenOnError = options && options.keepEditTabOpenOnError !== false;
 
     if (toastNav instanceof HTMLElement) {
       setIdCardCheckNavToast(toastNav, `Возвращаю EdocID ${normalizedEdocId} на предыдущую ТМ...`, 'info', 20000);
@@ -3338,7 +3454,7 @@
         }
         return true;
       } catch (error) {
-        shouldCloseEditTab = false;
+        shouldCloseEditTab = !keepEditTabOpenOnError;
         throw error;
       } finally {
         if (shouldCloseEditTab) {
@@ -3359,6 +3475,184 @@
       }
       return false;
     }
+  }
+
+  function getIdCardCheckStateForNavKind(navKind) {
+    if (navKind === 'grid') return normalizeGridCardCheckState(gridCardCheckState);
+    if (navKind === 'fullcard') return normalizeIdCardCheckState(idCardCheckState);
+    return { edocIds: [], currentIndex: 0 };
+  }
+
+  function hasNextIdCardCheckEdocId(navKind) {
+    const state = getIdCardCheckStateForNavKind(navKind);
+    return state.currentIndex >= 0 && state.currentIndex < state.edocIds.length - 1;
+  }
+
+  async function navigateIdCardCheckToNextByKind(navKind) {
+    if (!hasNextIdCardCheckEdocId(navKind)) return false;
+    const state = getIdCardCheckStateForNavKind(navKind);
+    const nextIndex = state.currentIndex + 1;
+    if (navKind === 'grid') {
+      navigateGridCardCheckToIndex(nextIndex);
+      return true;
+    }
+    if (navKind === 'fullcard') {
+      await navigateIdCardCheckToIndex(nextIndex);
+      return true;
+    }
+    return false;
+  }
+
+  function buildIdCardCheckAutoReturnSummary(processedCount, failedCount, totalCount) {
+    const processed = Math.max(0, Number(processedCount) || 0);
+    const failed = Math.max(0, Number(failedCount) || 0);
+    const total = Math.max(processed, Number(totalCount) || 0);
+    if (failed > 0) {
+      return `Возврат по списку завершен: обработано ${processed} из ${total}, не удалось ${failed}.`;
+    }
+    return `Возврат по списку завершен: обработано ${processed} из ${total}.`;
+  }
+
+  async function returnIdCardCheckToPreviousTmAndMoveNext(edocId, navKind, toastNav = null) {
+    const normalizedKind = navKind === 'grid' || navKind === 'fullcard' ? navKind : '';
+    const success = await returnIdCardCheckToPreviousTm(edocId, {
+      toastNav
+    });
+    if (!success) return false;
+    if (!normalizedKind) return true;
+    await navigateIdCardCheckToNextByKind(normalizedKind);
+    return true;
+  }
+
+  async function processIdCardCheckAutoReturnAllStep(toastNav = null) {
+    const autoState = loadIdCardCheckAutoReturnState();
+    if (!autoState.active || autoState.mode !== 'all' || autoState.navKind !== 'fullcard') return false;
+
+    const state = normalizeIdCardCheckState(idCardCheckState);
+    if (!state.edocIds.length) {
+      clearIdCardCheckAutoReturnState();
+      return false;
+    }
+
+    const currentEdocId = normalizeExecutionAnalysisText(state.edocIds[state.currentIndex]);
+    const pageEdocId = getIdCardCheckCurrentEdocId();
+    if (!currentEdocId || pageEdocId !== currentEdocId) return false;
+
+    persistIdCardCheckAutoReturnState({
+      ...autoState,
+      lastStartedEdocId: currentEdocId
+    });
+
+    const success = await returnIdCardCheckToPreviousTm(currentEdocId, {
+      toastNav
+    });
+    const nextProcessedCount = autoState.processedCount + 1;
+    const nextFailedCount = autoState.failedCount + (success ? 0 : 1);
+    const hasNext = state.currentIndex < state.edocIds.length - 1;
+
+    if (!hasNext) {
+      clearIdCardCheckAutoReturnState();
+      if (toastNav instanceof HTMLElement) {
+        setIdCardCheckNavToast(
+          toastNav,
+          buildIdCardCheckAutoReturnSummary(nextProcessedCount, nextFailedCount, autoState.totalCount),
+          nextFailedCount > 0 ? 'error' : 'success',
+          12000
+        );
+      }
+      return success;
+    }
+
+    persistIdCardCheckAutoReturnState({
+      ...autoState,
+      active: true,
+      mode: 'all',
+      navKind: 'fullcard',
+      totalCount: autoState.totalCount,
+      processedCount: nextProcessedCount,
+      failedCount: nextFailedCount,
+      lastStartedEdocId: currentEdocId,
+      startedAt: autoState.startedAt || Date.now()
+    });
+    await navigateIdCardCheckToIndex(state.currentIndex + 1);
+    return success;
+  }
+
+  async function maybeResumeIdCardCheckAutoReturn() {
+    if (idCardCheckAutoReturnResumePending) return false;
+    const autoState = loadIdCardCheckAutoReturnState();
+    if (!autoState.active || autoState.mode !== 'all' || autoState.navKind !== 'fullcard') return false;
+    if (!isIdCardCheckFullcardPath()) return false;
+
+    const state = normalizeIdCardCheckState(idCardCheckState);
+    const currentEdocId = getIdCardCheckCurrentEdocId();
+    const expectedEdocId = normalizeExecutionAnalysisText(state.edocIds[state.currentIndex]);
+    if (!currentEdocId || !expectedEdocId || currentEdocId !== expectedEdocId) return false;
+    if (autoState.lastStartedEdocId === currentEdocId) return false;
+
+    idCardCheckAutoReturnResumePending = true;
+    try {
+      await processIdCardCheckAutoReturnAllStep(idCardCheckNavEl instanceof HTMLElement ? idCardCheckNavEl : null);
+      return true;
+    } finally {
+      idCardCheckAutoReturnResumePending = false;
+    }
+  }
+
+  async function returnIdCardCheckToPreviousTmForAllGridEdocIds(toastNav = null) {
+    const state = normalizeGridCardCheckState(gridCardCheckState);
+    if (!state.edocIds.length) return false;
+
+    let processedCount = 0;
+    let failedCount = 0;
+    for (let index = state.currentIndex; index < state.edocIds.length; index++) {
+      const edocId = normalizeExecutionAnalysisText(state.edocIds[index]);
+      if (!edocId) continue;
+      if (index !== state.currentIndex) {
+        navigateGridCardCheckToIndex(index);
+        await new Promise((resolve) => window.setTimeout(resolve, 60));
+      }
+      const success = await returnIdCardCheckToPreviousTm(edocId, {
+        toastNav
+      });
+      processedCount += 1;
+      if (!success) failedCount += 1;
+    }
+
+    if (toastNav instanceof HTMLElement) {
+      setIdCardCheckNavToast(
+        toastNav,
+        buildIdCardCheckAutoReturnSummary(processedCount, failedCount, state.edocIds.length - state.currentIndex),
+        failedCount > 0 ? 'error' : 'success',
+        12000
+      );
+    }
+    return failedCount === 0;
+  }
+
+  async function returnIdCardCheckToPreviousTmForAllEdocIds(edocId, navKind, toastNav = null) {
+    const normalizedEdocId = normalizeExecutionAnalysisText(edocId);
+    const normalizedKind = navKind === 'grid' || navKind === 'fullcard' ? navKind : '';
+    if (!normalizedEdocId || !normalizedKind) return false;
+
+    if (normalizedKind === 'grid') {
+      return returnIdCardCheckToPreviousTmForAllGridEdocIds(toastNav);
+    }
+
+    const state = normalizeIdCardCheckState(idCardCheckState);
+    if (!state.edocIds.length) return false;
+    const totalCount = Math.max(0, state.edocIds.length - state.currentIndex);
+    persistIdCardCheckAutoReturnState({
+      active: true,
+      mode: 'all',
+      navKind: 'fullcard',
+      totalCount,
+      processedCount: 0,
+      failedCount: 0,
+      lastStartedEdocId: '',
+      startedAt: Date.now()
+    });
+    return processIdCardCheckAutoReturnAllStep(toastNav);
   }
 
   async function isCurrentIdCardCheckManagedTab() {
