@@ -3248,10 +3248,17 @@
     }
 
     try {
-      const response = await sendIdCardCheckTabMessage(historyTab.tabId, {
-        kind: 'extract-history-transition',
-        edocId: normalizedEdocId
+      const response = await sendRuntimeMessage({
+        action: 'ID_CARD_CHECK_EXTRACT_HISTORY_TRANSITION',
+        data: {
+          tabId: historyTab.tabId,
+          edocId: normalizedEdocId,
+          timeoutMs: ID_CARD_CHECK_TAB_MESSAGE_TIMEOUT_MS
+        }
       });
+      if (!response || response.success !== true) {
+        throw new Error(response && response.error ? response.error : `Для EdocID ${normalizedEdocId} не удалось прочитать Историю.`);
+      }
       const transitionText = normalizeExecutionAnalysisText(response.transitionText);
       if (!transitionText) {
         throw new Error(`Для EdocID ${normalizedEdocId} не найдена история перехода по ТМ.`);

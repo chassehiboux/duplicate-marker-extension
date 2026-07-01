@@ -168,6 +168,27 @@ function chromeSessionStorageSetAsync(values) {
     });
 }
 
+function delayAsync(timeoutMs) {
+    return new Promise((resolve) => setTimeout(resolve, timeoutMs));
+}
+
+async function waitForTabCompleteAsync(tabId, timeoutMs = 15000) {
+    const safeTimeoutMs = Math.max(1000, Number(timeoutMs) || 15000);
+    const startedAt = Date.now();
+
+    while ((Date.now() - startedAt) <= safeTimeoutMs) {
+        try {
+            const tab = await getTabAsync(tabId);
+            if (tab && tab.status === 'complete') return tab;
+        } catch (error) {
+            // tab may still be initializing, keep waiting until timeout
+        }
+        await delayAsync(150);
+    }
+
+    return getTabAsync(tabId);
+}
+
 function getDupSyncStore() {
     return globalThis.__dupSupabaseSync || null;
 }
@@ -976,6 +997,123 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     count: currentEntries.length,
                     text: currentEntries.join('\n')
                 });
+            })();
+            return true;
+        }
+
+        case 'ID_CARD_CHECK_EXTRACT_HISTORY_TRANSITION': {
+            (async () => {
+                const data = request && request.data ? request.data : {};
+                const targetTabId = Number(data.tabId);
+                const targetEdocId = String(data.edocId || '').trim();
+                const timeoutMs = Math.max(1000, Number(data.timeoutMs) || 20000);
+
+                if (!Number.isInteger(targetTabId) || targetTabId <= 0) {
+                    sendResponse({ success: false, error: 'NO_TARGET_TAB' });
+                    return;
+                }
+
+                try {
+                    await waitForTabCompleteAsync(targetTabId, Math.min(timeoutMs, 15000));
+                    chrome.scripting.executeScript(
+                        {
+                            target: { tabId: targetTabId },
+                            func: async (expectedEdocId, maxWaitMs) => {
+                                const prefix = 'Документ пришел с ';
+
+                                const normalizeText = (value) => String(value || '')
+                                    .replace(/\s+/g, ' ')
+                                    .trim();
+
+                                const normalizeCompareText = (value) => normalizeText(value).toLowerCase();
+
+                                const getEdocIdFromPath = (pathname) => {
+                                    const match = String(pathname || '').match(/^\/ovzid\/fullcard\/([^/]+)(?:\/.*)?$/i);
+                                    return match ? decodeURIComponent(match[1]) : '';
+                                };
+
+                                const isHistoryLocation = () => {
+                                    const pathname = String(window.location.pathname || '').toLowerCase();
+                                    if (!pathname.includes('/action_history')) return false;
+                                    const currentEdocId = normalizeText(getEdocIdFromPath(window.location.pathname));
+                                    return !expectedEdocId || currentEdocId === normalizeText(expectedEdocId);
+                                };
+
+                                const getLatestTransitionText = () => {
+                                    const rows = Array.from(document.querySelectorAll('table tbody tr'));
+                                    for (const row of rows) {
+                                        const cells = Array.from(row.querySelectorAll('td')).map((cell) => normalizeText(cell.textContent || ''));
+                                        const rowKind = normalizeCompareText(cells[0] || '');
+                                        const actionText = String(cells[1] || '').trim();
+                                        if (rowKind !== normalizeCompareText('ИД')) continue;
+                                        if (!actionText.startsWith(prefix)) continue;
+                                        return actionText;
+                                    }
+                                    return '';
+                                };
+
+                                const getDocumentSummary = () => {
+                                    const title = normalizeText(document.title || '');
+                                    const href = normalizeText(window.location.href || '');
+                                    const bodyText = normalizeText((document.body && document.body.textContent) ? document.body.textContent : '').slice(0, 200);
+                                    return [title ? `title=${title}` : '', href ? `url=${href}` : '', bodyText ? `body=${bodyText}` : '']
+                                        .filter(Boolean)
+                                        .join(', ');
+                                };
+
+                                const startedAt = Date.now();
+                                while ((Date.now() - startedAt) <= Math.max(1000, Number(maxWaitMs) || 20000)) {
+                                    if (isHistoryLocation()) {
+                                        const transitionText = getLatestTransitionText();
+                                        if (transitionText) {
+                                            return { success: true, transitionText };
+                                        }
+                                    }
+
+                                    await new Promise((resolve) => window.setTimeout(resolve, 150));
+                                }
+
+                                return {
+                                    success: false,
+                                    error: isHistoryLocation()
+                                        ? `Для EdocID ${normalizeText(expectedEdocId)} не найдена история перехода по ТМ. ${getDocumentSummary()}`
+                                        : `Во вкладке EdocID ${normalizeText(expectedEdocId)} не открыта История. ${getDocumentSummary()}`
+                                };
+                            },
+                            args: [targetEdocId, timeoutMs]
+                        },
+                        (results) => {
+                            if (chrome.runtime.lastError) {
+                                sendResponse({
+                                    success: false,
+                                    error: chrome.runtime.lastError.message || 'EXECUTE_SCRIPT_FAILED'
+                                });
+                                return;
+                            }
+
+                            const result = Array.isArray(results) && results[0]
+                                ? results[0].result
+                                : null;
+                            if (!result || result.success !== true) {
+                                sendResponse({
+                                    success: false,
+                                    error: result && result.error ? result.error : 'HISTORY_TRANSITION_NOT_FOUND'
+                                });
+                                return;
+                            }
+
+                            sendResponse({
+                                success: true,
+                                transitionText: String(result.transitionText || '').trim()
+                            });
+                        }
+                    );
+                } catch (error) {
+                    sendResponse({
+                        success: false,
+                        error: error && error.message ? error.message : 'HISTORY_EXTRACT_FAILED'
+                    });
+                }
             })();
             return true;
         }
