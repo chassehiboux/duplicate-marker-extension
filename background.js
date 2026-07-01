@@ -349,6 +349,393 @@ function getTabAsync(tabId) {
     });
 }
 
+function executeScriptInTabAsync(tabId, func, args = [], options = {}) {
+    return new Promise((resolve, reject) => {
+        try {
+            const request = {
+                target: { tabId: Number(tabId) },
+                func,
+                args: Array.isArray(args) ? args : []
+            };
+            if (options && options.world) {
+                request.world = options.world;
+            }
+
+            chrome.scripting.executeScript(request, (results) => {
+                const runtimeError = chrome.runtime && chrome.runtime.lastError
+                    ? chrome.runtime.lastError.message
+                    : '';
+                if (runtimeError) {
+                    reject(new Error(runtimeError));
+                    return;
+                }
+                resolve(Array.isArray(results) && results[0] ? results[0].result : null);
+            });
+        } catch (error) {
+            reject(error);
+        }
+    });
+}
+
+async function prepareIdCardCheckEditedocReturnAsync(tabId, edocId, transitionText, timeoutMs = 20000) {
+    await waitForTabCompleteAsync(tabId, Math.min(Math.max(1000, Number(timeoutMs) || 20000), 15000));
+
+    const result = await executeScriptInTabAsync(
+        tabId,
+        (expectedEdocId, actionText) => {
+            const HISTORY_PREFIX = 'Документ пришел с ';
+
+            const normalizeText = (value) => String(value === undefined || value === null ? '' : value).trim();
+            const normalizeStageText = (value) => String(value || '')
+                .toLowerCase()
+                .replace(/ё/g, 'е')
+                .replace(/[,.;:!?()"`'«»\[\]{}]/g, ' ')
+                .replace(/\bоконченые\b/g, 'оконченные')
+                .replace(/\bвовзращенн/g, 'возвращенн')
+                .replace(/\bвозвращеные\b/g, 'возвращенные')
+                .replace(/\s+/g, ' ')
+                .trim();
+            const formatTm = (stage, status) => {
+                const normalizedStage = normalizeText(stage);
+                const normalizedStatus = normalizeText(status);
+                if (normalizedStage && normalizedStatus) return `${normalizedStage}\\${normalizedStatus}`;
+                return normalizedStage || normalizedStatus;
+            };
+            const splitTmValue = (tmText) => {
+                const normalizedTmText = normalizeText(tmText);
+                const separatorIndex = normalizedTmText.indexOf('\\');
+                if (separatorIndex < 0) {
+                    return {
+                        tmText: normalizedTmText,
+                        stage: normalizedTmText,
+                        status: ''
+                    };
+                }
+                return {
+                    tmText: normalizedTmText,
+                    stage: normalizedTmText.slice(0, separatorIndex).trim(),
+                    status: normalizedTmText.slice(separatorIndex + 1).trim()
+                };
+            };
+            const parseOptionText = (text) => {
+                const normalizedOptionText = normalizeText(text);
+                const separatorIndex = normalizedOptionText.indexOf(' / ');
+                if (separatorIndex < 0) {
+                    return {
+                        text: normalizedOptionText,
+                        stage: normalizedOptionText,
+                        status: ''
+                    };
+                }
+                return {
+                    text: normalizedOptionText,
+                    stage: normalizedOptionText.slice(0, separatorIndex).trim(),
+                    status: normalizedOptionText.slice(separatorIndex + 3).trim()
+                };
+            };
+            const collectTransitionCandidates = (text) => {
+                const normalizedActionText = normalizeText(text);
+                if (!normalizedActionText.startsWith(HISTORY_PREFIX)) return [];
+
+                const body = normalizedActionText.slice(HISTORY_PREFIX.length).trim();
+                const candidates = [];
+                const seen = new Set();
+                let searchIndex = 0;
+
+                while (searchIndex >= 0 && searchIndex < body.length) {
+                    const separatorIndex = body.indexOf(' на ', searchIndex);
+                    if (separatorIndex < 0) break;
+
+                    const previousTm = body.slice(0, separatorIndex).trim();
+                    const currentTm = body.slice(separatorIndex + 4).trim();
+                    const previous = splitTmValue(previousTm);
+                    const current = splitTmValue(currentTm);
+                    if (previous.stage && previous.status && current.stage && current.status) {
+                        const key = `${previous.tmText}|||${current.tmText}`;
+                        if (!seen.has(key)) {
+                            seen.add(key);
+                            candidates.push({
+                                previousTm: previous.tmText,
+                                previousStage: previous.stage,
+                                previousStatus: previous.status,
+                                currentTm: current.tmText,
+                                currentStage: current.stage,
+                                currentStatus: current.status
+                            });
+                        }
+                    }
+
+                    searchIndex = separatorIndex + 4;
+                }
+
+                return candidates;
+            };
+            const getEditedocEdocId = () => {
+                try {
+                    return normalizeText(new URL(window.location.href).searchParams.get('edocid'));
+                } catch (error) {
+                    return '';
+                }
+            };
+            const getDocumentSummary = () => {
+                const title = normalizeText(document.title || '');
+                const href = normalizeText(window.location.href || '');
+                const bodyText = normalizeText((document.body && document.body.textContent) ? document.body.textContent : '').slice(0, 240);
+                return [title ? `title=${title}` : '', href ? `url=${href}` : '', bodyText ? `body=${bodyText}` : '']
+                    .filter(Boolean)
+                    .join(', ');
+            };
+            const isEditedocLocation = () => {
+                const pathname = String(window.location.pathname || '').toLowerCase();
+                if (!pathname.includes('/ovzid/actions/editedoc')) return false;
+                const currentEdocId = getEditedocEdocId();
+                return !normalizeText(expectedEdocId) || currentEdocId === normalizeText(expectedEdocId);
+            };
+            const collectStatusOptions = () => {
+                const select = document.querySelector('select[name="StatusID"]');
+                if (!(select instanceof HTMLSelectElement)) return [];
+                return Array.from(select.options).map((option) => {
+                    const parsed = parseOptionText(option.textContent || '');
+                    return {
+                        value: normalizeText(option.value),
+                        text: parsed.text,
+                        stage: parsed.stage,
+                        status: parsed.status,
+                        normalizedStage: normalizeStageText(parsed.stage),
+                        normalizedStatus: normalizeStageText(parsed.status)
+                    };
+                });
+            };
+            const findStatusOption = (options, stage, status) => {
+                const normalizedStage = normalizeStageText(stage);
+                const normalizedStatus = normalizeStageText(status);
+                return (Array.isArray(options) ? options : []).find((option) => (
+                    option &&
+                    option.value &&
+                    option.normalizedStage === normalizedStage &&
+                    option.normalizedStatus === normalizedStatus
+                )) || null;
+            };
+            const getSubmitButton = () => Array.from(document.querySelectorAll('button[type="submit"], button:not([type]), input[type="submit"]')).find((element) => {
+                if (!(element instanceof HTMLButtonElement) && !(element instanceof HTMLInputElement)) return false;
+                const text = normalizeStageText(element.textContent || element.getAttribute('value') || '');
+                return text.includes(normalizeStageText('Сохранить'));
+            }) || null;
+            const triggerReturn = (statusOptionValue) => {
+                const select = document.querySelector('select[name="StatusID"]');
+                const submitButton = getSubmitButton();
+                const form = select instanceof HTMLSelectElement ? select.closest('form') : null;
+
+                if (!(select instanceof HTMLSelectElement) || !(form instanceof HTMLFormElement)) {
+                    throw new Error('На форме editedoc не найдены нужные элементы.');
+                }
+
+                select.value = normalizeText(statusOptionValue);
+                select.dispatchEvent(new Event('input', { bubbles: true }));
+                select.dispatchEvent(new Event('change', { bubbles: true }));
+
+                if (typeof form.requestSubmit === 'function') {
+                    form.requestSubmit(
+                        submitButton instanceof HTMLButtonElement || submitButton instanceof HTMLInputElement
+                            ? submitButton
+                            : undefined
+                    );
+                    return;
+                }
+
+                if (submitButton instanceof HTMLButtonElement || submitButton instanceof HTMLInputElement) {
+                    submitButton.click();
+                    return;
+                }
+
+                form.submit();
+            };
+
+            if (!isEditedocLocation()) {
+                return {
+                    success: false,
+                    error: `Во вкладке EdocID ${normalizeText(expectedEdocId)} не открыта форма editedoc. ${getDocumentSummary()}`
+                };
+            }
+
+            const statusOptions = collectStatusOptions();
+            if (!statusOptions.length) {
+                return {
+                    success: false,
+                    error: 'На форме editedoc не найден dropdown со стадиями/статусами.'
+                };
+            }
+
+            const candidates = collectTransitionCandidates(actionText);
+            if (!candidates.length) {
+                return {
+                    success: false,
+                    error: `Не удалось разобрать предыдущую ТМ из action_history: ${normalizeText(actionText)}`
+                };
+            }
+
+            let resolvedPreviousTm = null;
+            for (const candidate of candidates) {
+                const matchedOption = findStatusOption(statusOptions, candidate.previousStage, candidate.previousStatus);
+                const resolvedCandidate = {
+                    ...candidate,
+                    matchedOption
+                };
+                if (!resolvedPreviousTm) {
+                    resolvedPreviousTm = resolvedCandidate;
+                }
+                if (matchedOption) {
+                    resolvedPreviousTm = resolvedCandidate;
+                    break;
+                }
+            }
+
+            const previousTmText = formatTm(
+                resolvedPreviousTm && resolvedPreviousTm.previousStage,
+                resolvedPreviousTm && resolvedPreviousTm.previousStatus
+            );
+            if (!resolvedPreviousTm || !resolvedPreviousTm.matchedOption) {
+                return {
+                    success: true,
+                    submitted: false,
+                    previousTmText
+                };
+            }
+
+            window.setTimeout(() => {
+                try {
+                    triggerReturn(resolvedPreviousTm.matchedOption.value);
+                } catch (error) {
+                    console.error('Не удалось отправить форму editedoc для возврата на предыдущую ТМ.', error);
+                }
+            }, 0);
+
+            return {
+                success: true,
+                submitted: true,
+                previousTmText
+            };
+        },
+        [edocId, transitionText]
+    );
+
+    if (!result || result.success !== true) {
+        throw new Error(result && result.error ? result.error : `Не удалось подготовить editedoc для EdocID ${String(edocId || '').trim()}.`);
+    }
+    return result;
+}
+
+async function confirmIdCardCheckEditedocReturnAsync(tabId, edocId, timeoutMs = 30000) {
+    const safeTimeoutMs = Math.max(1000, Number(timeoutMs) || 30000);
+    const startedAt = Date.now();
+    let lastSummary = '';
+
+    while ((Date.now() - startedAt) <= safeTimeoutMs) {
+        try {
+            await waitForTabCompleteAsync(tabId, Math.min(5000, Math.max(1000, safeTimeoutMs - (Date.now() - startedAt))));
+        } catch (error) {
+            // tab may be navigating between checks
+        }
+
+        const result = await executeScriptInTabAsync(
+            tabId,
+            (expectedEdocId) => {
+                const normalizeText = (value) => String(value === undefined || value === null ? '' : value).trim();
+                const normalizeStageText = (value) => String(value || '')
+                    .toLowerCase()
+                    .replace(/ё/g, 'е')
+                    .replace(/[,.;:!?()"`'«»\[\]{}]/g, ' ')
+                    .replace(/\bоконченые\b/g, 'оконченные')
+                    .replace(/\bвовзращенн/g, 'возвращенн')
+                    .replace(/\bвозвращеные\b/g, 'возвращенные')
+                    .replace(/\s+/g, ' ')
+                    .trim();
+                const getDocumentSummary = () => {
+                    const title = normalizeText(document.title || '');
+                    const href = normalizeText(window.location.href || '');
+                    const bodyText = normalizeText((document.body && document.body.textContent) ? document.body.textContent : '').slice(0, 240);
+                    return [title ? `title=${title}` : '', href ? `url=${href}` : '', bodyText ? `body=${bodyText}` : '']
+                        .filter(Boolean)
+                        .join(', ');
+                };
+                const isLoginDocument = () => {
+                    const pathname = String(window.location.pathname || '').toLowerCase();
+                    return pathname.includes('/login/');
+                };
+                const getEditedocEdocId = () => {
+                    try {
+                        return normalizeText(new URL(window.location.href).searchParams.get('edocid'));
+                    } catch (error) {
+                        return '';
+                    }
+                };
+                const isEditedocLocation = () => {
+                    const pathname = String(window.location.pathname || '').toLowerCase();
+                    if (!pathname.includes('/ovzid/actions/editedoc')) return false;
+                    const currentEdocId = getEditedocEdocId();
+                    return !normalizeText(expectedEdocId) || currentEdocId === normalizeText(expectedEdocId);
+                };
+
+                if (String(document.readyState || '').toLowerCase() === 'loading') {
+                    return { state: 'pending', summary: getDocumentSummary() };
+                }
+
+                if (isLoginDocument()) {
+                    return {
+                        state: 'error',
+                        error: 'Сайт вернул страницу логина вместо подтверждения сохранения.',
+                        summary: getDocumentSummary()
+                    };
+                }
+
+                const normalizedBodyText = normalizeStageText(document.body ? document.body.textContent || '' : '');
+                if (
+                    normalizedBodyText.includes(normalizeStageText('Информация успешно обновлена')) &&
+                    normalizedBodyText.includes(normalizeStageText('Вы можете закрыть это окно'))
+                ) {
+                    return { state: 'success', summary: getDocumentSummary() };
+                }
+
+                const rawBodyText = normalizeText(document.body ? document.body.textContent || '' : '');
+                if (rawBodyText.includes('ERROR EXCEPTION') || rawBodyText.includes('No query results for model')) {
+                    return {
+                        state: 'error',
+                        error: `Форма editedoc не подтвердила сохранение: ${getDocumentSummary()}`,
+                        summary: getDocumentSummary()
+                    };
+                }
+
+                if (!isEditedocLocation()) {
+                    return { state: 'pending', summary: getDocumentSummary() };
+                }
+
+                return { state: 'pending', summary: getDocumentSummary() };
+            },
+            [edocId]
+        );
+
+        if (result && typeof result.summary === 'string' && result.summary.trim()) {
+            lastSummary = result.summary.trim();
+        }
+
+        if (result && result.state === 'success') {
+            return true;
+        }
+
+        if (result && result.state === 'error') {
+            throw new Error(result.error || `Форма editedoc не подтвердила сохранение для EdocID ${String(edocId || '').trim()}.`);
+        }
+
+        await delayAsync(200);
+    }
+
+    throw new Error(
+        lastSummary
+            ? `Форма editedoc не подтвердила сохранение: ${lastSummary}`
+            : `Истек таймаут ожидания подтверждения editedoc для EdocID ${String(edocId || '').trim()}.`
+    );
+}
+
 // --- Функция надежной отправки (POST + Retry) ---
 async function sendWithRetry(url, payload, retries = TELEMETRY_RETRIES) {
     for (let i = 0; i < retries; i++) {
@@ -1131,6 +1518,66 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     sendResponse({
                         success: false,
                         error: error && error.message ? error.message : 'HISTORY_EXTRACT_FAILED'
+                    });
+                }
+            })();
+            return true;
+        }
+
+        case 'ID_CARD_CHECK_PREPARE_EDITEDOC_RETURN': {
+            (async () => {
+                const data = request && request.data ? request.data : {};
+                const targetTabId = Number(data.tabId);
+                const targetEdocId = String(data.edocId || '').trim();
+                const transitionText = String(data.transitionText || '').trim();
+                const timeoutMs = Math.max(1000, Number(data.timeoutMs) || 20000);
+
+                if (!Number.isInteger(targetTabId) || targetTabId <= 0) {
+                    sendResponse({ success: false, error: 'NO_TARGET_TAB' });
+                    return;
+                }
+
+                try {
+                    const result = await prepareIdCardCheckEditedocReturnAsync(
+                        targetTabId,
+                        targetEdocId,
+                        transitionText,
+                        timeoutMs
+                    );
+                    sendResponse({
+                        success: true,
+                        submitted: result && result.submitted === true,
+                        previousTmText: String(result && result.previousTmText || '').trim()
+                    });
+                } catch (error) {
+                    sendResponse({
+                        success: false,
+                        error: error && error.message ? error.message : 'EDITEDOC_PREPARE_FAILED'
+                    });
+                }
+            })();
+            return true;
+        }
+
+        case 'ID_CARD_CHECK_CONFIRM_EDITEDOC_RETURN': {
+            (async () => {
+                const data = request && request.data ? request.data : {};
+                const targetTabId = Number(data.tabId);
+                const targetEdocId = String(data.edocId || '').trim();
+                const timeoutMs = Math.max(1000, Number(data.timeoutMs) || 30000);
+
+                if (!Number.isInteger(targetTabId) || targetTabId <= 0) {
+                    sendResponse({ success: false, error: 'NO_TARGET_TAB' });
+                    return;
+                }
+
+                try {
+                    await confirmIdCardCheckEditedocReturnAsync(targetTabId, targetEdocId, timeoutMs);
+                    sendResponse({ success: true });
+                } catch (error) {
+                    sendResponse({
+                        success: false,
+                        error: error && error.message ? error.message : 'EDITEDOC_CONFIRM_FAILED'
                     });
                 }
             })();

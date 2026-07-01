@@ -3290,14 +3290,18 @@
       let shouldCloseEditTab = true;
 
       try {
-        const prepareResult = await sendIdCardCheckTabMessage(editTab.tabId, {
-          kind: 'prepare-editedoc-return',
-          edocId: normalizedEdocId,
-          transitionText
-        }, ID_CARD_CHECK_TAB_MESSAGE_TIMEOUT_MS, {
-          retryOnNoReceiver: true,
-          retryOnClosedChannel: false
+        const prepareResult = await sendRuntimeMessage({
+          action: 'ID_CARD_CHECK_PREPARE_EDITEDOC_RETURN',
+          data: {
+            tabId: editTab.tabId,
+            edocId: normalizedEdocId,
+            transitionText,
+            timeoutMs: ID_CARD_CHECK_TAB_MESSAGE_TIMEOUT_MS
+          }
         });
+        if (!prepareResult || prepareResult.success !== true) {
+          throw new Error(prepareResult && prepareResult.error ? prepareResult.error : `Не удалось подготовить editedoc для EdocID ${normalizedEdocId}.`);
+        }
         const previousTmText = normalizeExecutionAnalysisText(prepareResult.previousTmText);
 
         if (prepareResult.submitted !== true) {
@@ -3313,13 +3317,17 @@
         }
 
         await new Promise((resolve) => window.setTimeout(resolve, 200));
-        await sendIdCardCheckTabMessage(editTab.tabId, {
-          kind: 'confirm-editedoc-return',
-          edocId: normalizedEdocId
-        }, ID_CARD_CHECK_TAB_MESSAGE_TIMEOUT_MS + 10000, {
-          retryOnNoReceiver: true,
-          retryOnClosedChannel: true
+        const confirmResult = await sendRuntimeMessage({
+          action: 'ID_CARD_CHECK_CONFIRM_EDITEDOC_RETURN',
+          data: {
+            tabId: editTab.tabId,
+            edocId: normalizedEdocId,
+            timeoutMs: ID_CARD_CHECK_TAB_MESSAGE_TIMEOUT_MS + 10000
+          }
         });
+        if (!confirmResult || confirmResult.success !== true) {
+          throw new Error(confirmResult && confirmResult.error ? confirmResult.error : `Форма editedoc не подтвердила сохранение для EdocID ${normalizedEdocId}.`);
+        }
 
         if (toastNav instanceof HTMLElement) {
           setIdCardCheckNavToast(
