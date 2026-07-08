@@ -61,6 +61,7 @@
   const ID_CARD_CHECK_HELPER_IFRAME_ID = 'dup-id-card-check-helper-frame';
   const ID_CARD_CHECK_RETURN_PREVIOUS_TM_ACTION = 'return-previous-tm';
   const ID_CARD_CHECK_RETURN_PREVIOUS_TM_ALL_ACTION = 'return-previous-tm-all';
+  const ID_CARD_CHECK_SESSION_CACHE_KEY = 'dup_id_card_check_nav_state_v1';
   const ID_CARD_CHECK_AUTO_RETURN_SESSION_KEY = 'dup_id_card_check_auto_return_v1';
   const ID_CARD_CHECK_HISTORY_TRANSITION_PREFIX = 'Документ пришел с ';
   const ID_CARD_CHECK_HELPER_TIMEOUT_MS = 15000;
@@ -2330,12 +2331,58 @@
     };
   }
 
+  function loadIdCardCheckSessionCache() {
+    try {
+      const raw = window.sessionStorage.getItem(ID_CARD_CHECK_SESSION_CACHE_KEY);
+      if (!raw) return createEmptyIdCardCheckState();
+      return normalizeIdCardCheckState(JSON.parse(raw));
+    } catch (error) {
+      try {
+        window.sessionStorage.removeItem(ID_CARD_CHECK_SESSION_CACHE_KEY);
+      } catch (removeError) {
+        // ignore session storage cleanup failures
+      }
+      return createEmptyIdCardCheckState();
+    }
+  }
+
+  function persistIdCardCheckSessionCache(nextState) {
+    const normalized = normalizeIdCardCheckState(nextState);
+    try {
+      if (!normalized.edocIds.length) {
+        window.sessionStorage.removeItem(ID_CARD_CHECK_SESSION_CACHE_KEY);
+      } else {
+        window.sessionStorage.setItem(ID_CARD_CHECK_SESSION_CACHE_KEY, JSON.stringify(normalized));
+      }
+    } catch (error) {
+      // ignore session storage write failures
+    }
+    return normalized;
+  }
+
+  function hydrateIdCardCheckStateFromSessionCache() {
+    const cached = loadIdCardCheckSessionCache();
+    if (!cached.edocIds.length) return false;
+    if (!isIdCardCheckFullcardPath()) return false;
+
+    const currentEdocId = getIdCardCheckEdocIdFromPath();
+    if (!currentEdocId) return false;
+    const currentIndex = cached.edocIds.indexOf(currentEdocId);
+
+    idCardCheckState = {
+      ...cached,
+      currentIndex: currentIndex >= 0 ? currentIndex : cached.currentIndex
+    };
+    return true;
+  }
+
   async function persistIdCardCheckState(nextState) {
     const normalized = normalizeIdCardCheckState({
       ...nextState,
       updatedAt: Date.now()
     });
     idCardCheckState = normalized;
+    persistIdCardCheckSessionCache(normalized);
     await chromeStorageSet({ [ID_CARD_CHECK_STORAGE_KEY]: normalized });
     syncIdCardCheckNavigation();
     return normalized;
@@ -2345,6 +2392,7 @@
     const stored = await chromeStorageGet(ID_CARD_CHECK_STORAGE_KEY);
     idCardCheckState = normalizeIdCardCheckState(stored[ID_CARD_CHECK_STORAGE_KEY]);
     await syncIdCardCheckStateWithCurrentUrl();
+    persistIdCardCheckSessionCache(idCardCheckState);
     syncIdCardCheckNavigation();
     void maybeResumeIdCardCheckAutoReturn();
     return idCardCheckState;
@@ -3625,6 +3673,13 @@
     return tabId > 0 && idCardCheckState.tabId > 0 && tabId === idCardCheckState.tabId;
   }
 
+  function canKeepIdCardCheckUnboundNavigation(state) {
+    const normalized = normalizeIdCardCheckState(state);
+    if (normalized.tabId > 0) return false;
+    const currentEdocId = getIdCardCheckEdocIdFromPath();
+    return !!currentEdocId && normalized.edocIds.includes(currentEdocId);
+  }
+
   async function syncIdCardCheckStateWithCurrentUrl() {
     const state = normalizeIdCardCheckState(idCardCheckState);
     if (!state.edocIds.length || !isIdCardCheckFullcardPath()) return state;
@@ -3634,7 +3689,24 @@
     if (currentIndex < 0) return state;
 
     const tabId = await getCurrentTabIdForExecutionAnalysis();
-    if (tabId <= 0) return state;
+    if (tabId <= 0) {
+      if (currentIndex === state.currentIndex) return state;
+      const nextState = normalizeIdCardCheckState({
+        ...state,
+        currentIndex
+      });
+      idCardCheckState = nextState;
+      persistIdCardCheckSessionCache(nextState);
+      return nextState;
+    }
+
+    if (state.tabId <= 0) {
+      return persistIdCardCheckState({
+        ...state,
+        tabId,
+        currentIndex
+      });
+    }
 
     const isManagedTab = state.tabId > 0 && tabId === state.tabId;
     if (!isManagedTab) {
@@ -3832,6 +3904,12 @@
 
       if (textarea instanceof HTMLTextAreaElement) textarea.value = '';
       close();
+      const pendingState = await persistIdCardCheckState({
+        version: 1,
+        tabId: 0,
+        edocIds: ids,
+        currentIndex: 0
+      });
       const response = await sendRuntimeMessage({
         action: 'ID_CARD_CHECK_OPEN_TAB',
         data: {
@@ -3845,9 +3923,8 @@
       }
 
       await persistIdCardCheckState({
-        version: 1,
+        ...pendingState,
         tabId: response.tabId,
-        edocIds: ids,
         currentIndex: 0
       });
     }, { capture: true });
@@ -3965,7 +4042,26 @@
     return block;
   }
 
-  async function syncIdCardCheckNavigation() {
+  function wireIdCardCheckNavigationEvents(nav) {
+    if (!(nav instanceof HTMLElement)) return;
+    if (nav.dataset.dupIdCardCheckContentReady === '1') return;
+    nav.querySelector('.dup-id-card-check-prev')?.addEventListener('click', () => {
+      void navigateIdCardCheckToIndex(normalizeIdCardCheckState(idCardCheckState).currentIndex - 1);
+    }, { capture: true });
+    nav.querySelector('.dup-id-card-check-choice')?.addEventListener('click', (event) => {
+      openIdCardCheckChoiceDialog(event.currentTarget);
+    }, { capture: true });
+    nav.querySelector('.dup-id-card-check-current-actions')?.addEventListener('click', (event) => {
+      openIdCardCheckActionDialog(getIdCardCheckCurrentEdocId(), event.currentTarget);
+    }, { capture: true });
+    nav.querySelector('.dup-id-card-check-next')?.addEventListener('click', () => {
+      void navigateIdCardCheckToIndex(normalizeIdCardCheckState(idCardCheckState).currentIndex + 1);
+    }, { capture: true });
+    nav.dataset.dupIdCardCheckContentReady = '1';
+  }
+
+  async function syncIdCardCheckNavigation(options = {}) {
+    const verifyManagedTab = !options || options.verifyManagedTab !== false;
     const state = normalizeIdCardCheckState(idCardCheckState);
     if (
       !isPyramidExtensionPage() ||
@@ -3977,13 +4073,18 @@
       return;
     }
 
-    if (!(await isCurrentIdCardCheckManagedTab())) {
+    if (
+      verifyManagedTab &&
+      !(await isCurrentIdCardCheckManagedTab()) &&
+      !canKeepIdCardCheckUnboundNavigation(state)
+    ) {
       removeIdCardCheckNavigation();
       return;
     }
 
     if (!(idCardCheckNavEl instanceof HTMLElement)) {
-      const nav = document.createElement('div');
+      const existingNav = document.getElementById(ID_CARD_CHECK_NAV_ID);
+      const nav = existingNav instanceof HTMLElement ? existingNav : document.createElement('div');
       nav.id = ID_CARD_CHECK_NAV_ID;
       nav.className = 'dup-id-card-check-nav';
       nav.innerHTML = `
@@ -4010,21 +4111,10 @@
         <span class="dup-id-card-check-status"></span>
         <span class="dup-id-card-check-toast" aria-live="polite"></span>
       `;
-      nav.querySelector('.dup-id-card-check-prev')?.addEventListener('click', () => {
-        void navigateIdCardCheckToIndex(normalizeIdCardCheckState(idCardCheckState).currentIndex - 1);
-      }, { capture: true });
-      nav.querySelector('.dup-id-card-check-choice')?.addEventListener('click', (event) => {
-        openIdCardCheckChoiceDialog(event.currentTarget);
-      }, { capture: true });
-      nav.querySelector('.dup-id-card-check-current-actions')?.addEventListener('click', (event) => {
-        openIdCardCheckActionDialog(getIdCardCheckCurrentEdocId(), event.currentTarget);
-      }, { capture: true });
-      nav.querySelector('.dup-id-card-check-next')?.addEventListener('click', () => {
-        void navigateIdCardCheckToIndex(normalizeIdCardCheckState(idCardCheckState).currentIndex + 1);
-      }, { capture: true });
       idCardCheckNavEl = nav;
     }
 
+    wireIdCardCheckNavigationEvents(idCardCheckNavEl);
     if (!ensureIdCardCheckNavigationAttached(idCardCheckNavEl)) return;
     updateIdCardCheckNavigationButtons();
   }
@@ -4035,6 +4125,9 @@
 
   function initIdCardCheckNavigation() {
     if (!isPyramidExtensionPage()) return;
+    if (hydrateIdCardCheckStateFromSessionCache()) {
+      void syncIdCardCheckNavigation({ verifyManagedTab: false });
+    }
     void loadIdCardCheckState();
 
     if (!idCardCheckNavObserver) {
@@ -6725,8 +6818,11 @@
 
       if (key === ID_CARD_CHECK_STORAGE_KEY) {
         idCardCheckState = normalizeIdCardCheckState(changes[key].newValue);
-        void syncIdCardCheckStateWithCurrentUrl();
-        void syncIdCardCheckNavigation();
+        persistIdCardCheckSessionCache(idCardCheckState);
+        void syncIdCardCheckStateWithCurrentUrl().then(() => {
+          persistIdCardCheckSessionCache(idCardCheckState);
+          return syncIdCardCheckNavigation();
+        });
       }
     }
     if (highlightSettingsChanged) {

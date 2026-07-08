@@ -116,6 +116,7 @@
       ],
       "js": [
         "extension_ui_config.js",
+        "id_card_check_nav_bootstrap.js",
         "StageTimer/timer_content.js"
       ],
       "run_at": "document_start",

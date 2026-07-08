@@ -35,6 +35,7 @@ ROOT_FILES = [
     'background.js',
     'content.js',
     'extension_ui_config.js',
+    'id_card_check_nav_bootstrap.js',
     'popup.html',
     'popup.js',
     'version.json',
