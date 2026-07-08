@@ -60,7 +60,6 @@
   const ID_CARD_CHECK_NAV_ID = 'dup-id-card-check-nav';
   const ID_CARD_CHECK_HELPER_IFRAME_ID = 'dup-id-card-check-helper-frame';
   const ID_CARD_CHECK_RETURN_PREVIOUS_TM_ACTION = 'return-previous-tm';
-  const ID_CARD_CHECK_RETURN_PREVIOUS_TM_AND_NEXT_ACTION = 'return-previous-tm-and-next';
   const ID_CARD_CHECK_RETURN_PREVIOUS_TM_ALL_ACTION = 'return-previous-tm-all';
   const ID_CARD_CHECK_AUTO_RETURN_SESSION_KEY = 'dup_id_card_check_auto_return_v1';
   const ID_CARD_CHECK_HISTORY_TRANSITION_PREFIX = 'Документ пришел с ';
@@ -2598,7 +2597,6 @@
           <button type="button" class="dup-id-card-check-action-item" data-action="markers-ovzid">Маркировка ВЗИД</button>
           <button type="button" class="dup-id-card-check-action-item" data-action="open-card-tab" disabled>Открыть карточку в отдельной вкладке</button>
           <button type="button" class="dup-id-card-check-action-item" data-action="return-previous-tm">Вернуть на предыдущую ТМ</button>
-          <button type="button" class="dup-id-card-check-action-item" data-action="return-previous-tm-and-next">Вернуть на предыдущую ТМ (и перейди к следующему EdocID)</button>
           <button type="button" class="dup-id-card-check-action-item" data-action="return-previous-tm-all">Вернуть на предыдущую ТМ все EdocID</button>
         </div>
       </div>
@@ -2622,14 +2620,6 @@
         void returnIdCardCheckToPreviousTm(edocId, {
           toastNav: resolveIdCardCheckActionToastNav(modal)
         });
-        return;
-      }
-      if (actionKey === ID_CARD_CHECK_RETURN_PREVIOUS_TM_AND_NEXT_ACTION) {
-        void returnIdCardCheckToPreviousTmAndMoveNext(
-          edocId,
-          getIdCardCheckActionNavKind(modal),
-          resolveIdCardCheckActionToastNav(modal)
-        );
         return;
       }
       if (actionKey === ID_CARD_CHECK_RETURN_PREVIOUS_TM_ALL_ACTION) {
@@ -3489,32 +3479,6 @@
     }
   }
 
-  function getIdCardCheckStateForNavKind(navKind) {
-    if (navKind === 'grid') return normalizeGridCardCheckState(gridCardCheckState);
-    if (navKind === 'fullcard') return normalizeIdCardCheckState(idCardCheckState);
-    return { edocIds: [], currentIndex: 0 };
-  }
-
-  function hasNextIdCardCheckEdocId(navKind) {
-    const state = getIdCardCheckStateForNavKind(navKind);
-    return state.currentIndex >= 0 && state.currentIndex < state.edocIds.length - 1;
-  }
-
-  async function navigateIdCardCheckToNextByKind(navKind) {
-    if (!hasNextIdCardCheckEdocId(navKind)) return false;
-    const state = getIdCardCheckStateForNavKind(navKind);
-    const nextIndex = state.currentIndex + 1;
-    if (navKind === 'grid') {
-      navigateGridCardCheckToIndex(nextIndex);
-      return true;
-    }
-    if (navKind === 'fullcard') {
-      await navigateIdCardCheckToIndex(nextIndex);
-      return true;
-    }
-    return false;
-  }
-
   function buildIdCardCheckAutoReturnSummary(processedCount, failedCount, totalCount) {
     const processed = Math.max(0, Number(processedCount) || 0);
     const failed = Math.max(0, Number(failedCount) || 0);
@@ -3523,17 +3487,6 @@
       return `Возврат по списку завершен: обработано ${processed} из ${total}, не удалось ${failed}.`;
     }
     return `Возврат по списку завершен: обработано ${processed} из ${total}.`;
-  }
-
-  async function returnIdCardCheckToPreviousTmAndMoveNext(edocId, navKind, toastNav = null) {
-    const normalizedKind = navKind === 'grid' || navKind === 'fullcard' ? navKind : '';
-    const success = await returnIdCardCheckToPreviousTm(edocId, {
-      toastNav
-    });
-    if (!success) return false;
-    if (!normalizedKind) return true;
-    await navigateIdCardCheckToNextByKind(normalizedKind);
-    return true;
   }
 
   async function processIdCardCheckAutoReturnAllStep(toastNav = null) {
