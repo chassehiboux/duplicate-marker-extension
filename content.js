@@ -25,7 +25,7 @@
   const STAGE_JUMP_HASH_KEY = 'dup_stage_jump_debtid';
   const STAGE_JUMP_BUTTON_CLASS = 'dup-stage-jump-btn';
   const STAGE_JUMP_BUTTON_LABEL = '↔';
-  const STAGE_JUMP_BUTTON_TEXT = 'Перейти на стадию ИД';
+  const STAGE_JUMP_BUTTON_TEXT = 'Быстрые действия по ИД';
   const STAGE_JUMP_BUTTON_MARK_ATTR = 'data-dup-stage-jump-btn';
   const STAGE_JUMP_STYLE_ID = 'dup-stage-jump-style';
   const STAGE_JUMP_COLUMN_ARIA = 'list_dupStageJump';
@@ -39,10 +39,10 @@
   const STAGE_JUMP_MENU_ITEM_CLASS = 'dup-stage-jump-menu-item';
   const STAGE_JUMP_MENU_ACTION_ATTR = 'data-dup-stage-jump-action';
   const STAGE_JUMP_MENU_ACTION_SLOWSEARCH = 'to_slowsearch';
-  const STAGE_JUMP_MENU_ACTION_STAGE = 'to_stage';
+  const STAGE_JUMP_MENU_ACTION_ALL_RECORDS = 'to_all_records';
   const STAGE_JUMP_MENU_ACTION_COPY_INFO = 'copy_info';
   const STAGE_JUMP_MENU_ITEM_SLOWSEARCH_TEXT = 'Переход в Глобальный поиск';
-  const STAGE_JUMP_MENU_ITEM_STAGE_TEXT = 'Переход к ИД на стадии';
+  const STAGE_JUMP_MENU_ITEM_ALL_RECORDS_TEXT = 'Переход в ОВЗИД: все доступные записи';
   const STAGE_JUMP_MENU_ITEM_COPY_INFO_TEXT = 'Скопировать инфо об ИД';
   const EXECUTION_ANALYSIS_PATH = '/ovzid/actions/execution-analysis';
   const EXECUTION_ANALYSIS_BLANK_PATH = '/pages/blank';
@@ -7544,7 +7544,7 @@
 
   function isStageJumpSourcePage() {
     const pathname = String(window.location.pathname || '');
-    return pathname.includes('/ovzid/status/all');
+    return pathname.includes('/ovzid/status/') || pathname.includes('/ovzid/stage/');
   }
 
   function isSlowsearchSourcePage() {
@@ -8452,7 +8452,7 @@
 
       window.open(nextUrl.toString(), '_blank', 'noopener');
     } catch (error) {
-      console.warn('Не удалось открыть страницу для перехода на стадию ИД.', error);
+      console.warn('Не удалось открыть страницу для действия StageJump.', error);
     }
   }
 
@@ -8664,19 +8664,6 @@
   function executeStageJumpMenuAction(action, anchorButton) {
     if (!anchorButton) return;
     const debtId = String(anchorButton.dataset.debtId || '').trim();
-    if (!debtId) return;
-
-    if (action === STAGE_JUMP_MENU_ACTION_SLOWSEARCH) {
-      openStageJumpTarget(STAGE_JUMP_SLOWSEARCH_PATH, debtId);
-      return;
-    }
-
-    if (action === STAGE_JUMP_MENU_ACTION_STAGE) {
-      const targetUrl = String(anchorButton.dataset.targetUrl || '').trim();
-      if (!targetUrl) return;
-      openStageJumpTarget(targetUrl, debtId);
-      return;
-    }
 
     if (action === STAGE_JUMP_MENU_ACTION_COPY_INFO) {
       const copyInfoSummary = collectStageJumpCopyInfoTargets(anchorButton);
@@ -8693,6 +8680,18 @@
           console.warn('[StageJump] Не удалось скопировать информацию об ИД.', error);
           window.alert('Не удалось скопировать информацию об ИД в буфер обмена.');
         });
+      return;
+    }
+
+    if (!debtId) return;
+
+    if (action === STAGE_JUMP_MENU_ACTION_SLOWSEARCH) {
+      openStageJumpTarget(STAGE_JUMP_SLOWSEARCH_PATH, debtId);
+      return;
+    }
+
+    if (action === STAGE_JUMP_MENU_ACTION_ALL_RECORDS) {
+      openStageJumpTarget(SLOWSEARCH_TARGET_PATH, debtId);
       return;
     }
 
@@ -8728,7 +8727,7 @@
     menu.innerHTML = [
       `<button type="button" class="${STAGE_JUMP_MENU_ITEM_CLASS}" ${STAGE_JUMP_MENU_ACTION_ATTR}="${STAGE_JUMP_MENU_ACTION_COPY_INFO}">${STAGE_JUMP_MENU_ITEM_COPY_INFO_TEXT} (0)</button>`,
       `<button type="button" class="${STAGE_JUMP_MENU_ITEM_CLASS}" ${STAGE_JUMP_MENU_ACTION_ATTR}="${STAGE_JUMP_MENU_ACTION_SLOWSEARCH}">${STAGE_JUMP_MENU_ITEM_SLOWSEARCH_TEXT}</button>`,
-      `<button type="button" class="${STAGE_JUMP_MENU_ITEM_CLASS}" ${STAGE_JUMP_MENU_ACTION_ATTR}="${STAGE_JUMP_MENU_ACTION_STAGE}">${STAGE_JUMP_MENU_ITEM_STAGE_TEXT}</button>`
+      `<button type="button" class="${STAGE_JUMP_MENU_ITEM_CLASS}" ${STAGE_JUMP_MENU_ACTION_ATTR}="${STAGE_JUMP_MENU_ACTION_ALL_RECORDS}">${STAGE_JUMP_MENU_ITEM_ALL_RECORDS_TEXT}</button>`
     ].join('');
 
     menu.addEventListener('click', (event) => {
@@ -8772,18 +8771,20 @@
     const menu = ensureStageJumpActionMenu();
     if (!menu || !anchorButton) return;
 
-    const stageItem = menu.querySelector(`.${STAGE_JUMP_MENU_ITEM_CLASS}[${STAGE_JUMP_MENU_ACTION_ATTR}="${STAGE_JUMP_MENU_ACTION_STAGE}"]`);
+    const slowsearchItem = menu.querySelector(`.${STAGE_JUMP_MENU_ITEM_CLASS}[${STAGE_JUMP_MENU_ACTION_ATTR}="${STAGE_JUMP_MENU_ACTION_SLOWSEARCH}"]`);
+    const allRecordsItem = menu.querySelector(`.${STAGE_JUMP_MENU_ITEM_CLASS}[${STAGE_JUMP_MENU_ACTION_ATTR}="${STAGE_JUMP_MENU_ACTION_ALL_RECORDS}"]`);
     const copyInfoItem = menu.querySelector(`.${STAGE_JUMP_MENU_ITEM_CLASS}[${STAGE_JUMP_MENU_ACTION_ATTR}="${STAGE_JUMP_MENU_ACTION_COPY_INFO}"]`);
     const copyInfoSummary = collectStageJumpCopyInfoTargets(anchorButton);
-    const hasStageTarget = String(anchorButton.dataset.targetUrl || '').trim().length > 0;
-    if (stageItem instanceof HTMLButtonElement) {
-      stageItem.disabled = !hasStageTarget;
-      if (!hasStageTarget) {
-        stageItem.title = 'Маршрут стадии/статуса не найден в статической карте ВЗИД.';
+    const hasDebtId = String(anchorButton.dataset.debtId || '').trim().length > 0;
+    [slowsearchItem, allRecordsItem].forEach((item) => {
+      if (!(item instanceof HTMLButtonElement)) return;
+      item.disabled = !hasDebtId;
+      if (!hasDebtId) {
+        item.title = 'Не удалось определить DebtID строки.';
       } else {
-        stageItem.removeAttribute('title');
+        item.removeAttribute('title');
       }
-    }
+    });
     if (copyInfoItem instanceof HTMLButtonElement) {
       const copyCount = copyInfoSummary.targets.length;
       copyInfoItem.textContent = `${STAGE_JUMP_MENU_ITEM_COPY_INFO_TEXT} (${copyCount})`;
@@ -8816,8 +8817,6 @@
       event.preventDefault();
       event.stopPropagation();
 
-      const debtId = String(button.dataset.debtId || '');
-      if (!debtId) return;
       toggleStageJumpActionMenu(button);
     });
     return button;
@@ -8828,12 +8827,10 @@
 
     ensureStageJumpStyle();
     cleanupLegacyStageJumpColumn();
-    const menuIndex = getStageJumpMenuIndex();
 
     const openButtons = Array.from(
       document.querySelectorAll('.ui-inline-open, [title="Открыть карточку"], [data-original-title="Открыть карточку"]')
     ).filter((btn, index, arr) => btn.offsetParent !== null && arr.indexOf(btn) === index);
-    const resolvedTargetCache = new Map();
 
     openButtons.forEach((openButton) => {
       const row = openButton.closest('tr');
@@ -8860,48 +8857,32 @@
 
       const debtId = getRowCellTextByAria(row, 'list_DebtID');
       const edocId = getRowCellTextByAria(row, 'list_EDocID') || getRowCellTextByAria(row, 'list_EdocID');
-      const stageName = getRowCellTextByAria(row, 'list_CaseStageName');
-      const statusName = getRowCellTextByAria(row, 'list_CaseStatusName');
-      const cacheKey = `${stageName}|||${statusName}`;
-
-      let target = resolvedTargetCache.get(cacheKey);
-      if (target === undefined) {
-        target = menuIndex ? resolveStageJumpTarget(stageName, statusName, menuIndex) : null;
-        resolvedTargetCache.set(cacheKey, target || null);
-      }
+      jumpButton.classList.remove('is-disabled');
 
       if (debtId) {
-        jumpButton.classList.remove('is-disabled');
         jumpButton.dataset.debtId = debtId;
         if (edocId) {
           jumpButton.dataset.edocId = edocId;
         } else {
           delete jumpButton.dataset.edocId;
         }
-        if (target) {
-          jumpButton.dataset.targetUrl = target.href;
-          jumpButton.title = [
-            `DebtID: ${debtId}`,
-            'Выберите действие:',
-            `1) ${STAGE_JUMP_MENU_ITEM_SLOWSEARCH_TEXT}`,
-            `2) ${STAGE_JUMP_MENU_ITEM_STAGE_TEXT}`,
-            `Маршрут: ${target.pathText || target.path.join(' > ')}`
-          ].join('\n');
-        } else {
-          delete jumpButton.dataset.targetUrl;
-          jumpButton.title = [
-            `DebtID: ${debtId}`,
-            'Выберите действие:',
-            `1) ${STAGE_JUMP_MENU_ITEM_SLOWSEARCH_TEXT}`,
-            `2) ${STAGE_JUMP_MENU_ITEM_STAGE_TEXT} (недоступен: маршрут не найден)`
-          ].join('\n');
-        }
+        jumpButton.title = [
+          `DebtID: ${debtId}`,
+          'Выберите действие:',
+          `1) ${STAGE_JUMP_MENU_ITEM_COPY_INFO_TEXT}`,
+          `2) ${STAGE_JUMP_MENU_ITEM_SLOWSEARCH_TEXT}`,
+          `3) ${STAGE_JUMP_MENU_ITEM_ALL_RECORDS_TEXT}`
+        ].join('\n');
       } else {
-        jumpButton.classList.add('is-disabled');
-        delete jumpButton.dataset.targetUrl;
         delete jumpButton.dataset.debtId;
         delete jumpButton.dataset.edocId;
-        jumpButton.title = 'Не удалось определить DebtID строки.';
+        jumpButton.title = [
+          'DebtID не найден. Доступно копирование информации об ИД.',
+          'Выберите действие:',
+          `1) ${STAGE_JUMP_MENU_ITEM_COPY_INFO_TEXT}`,
+          `2) ${STAGE_JUMP_MENU_ITEM_SLOWSEARCH_TEXT} (недоступен: DebtID не найден)`,
+          `3) ${STAGE_JUMP_MENU_ITEM_ALL_RECORDS_TEXT} (недоступен: DebtID не найден)`
+        ].join('\n');
       }
 
     });
@@ -8911,8 +8892,6 @@
 
   function initStageJumpButtons() {
     if (!isStageJumpSourcePage()) return;
-
-    stageJumpCachedMenuIndex = buildStageJumpMenuIndex(STAGE_JUMP_STATIC_MENU_LINKS);
 
     updateStageJumpButtons();
     const gridRoot = document.getElementById('gview_list') || document.body;
