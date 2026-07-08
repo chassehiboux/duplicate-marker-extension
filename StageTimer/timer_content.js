@@ -8,7 +8,7 @@
         if (h.startsWith("yuric.")) return "ЮРИЦ";
         if (h.startsWith("81.")) return "ЧЭС";
         if (h.includes("pyramid.vostok-electra.ru")) return "Основная";
-        if (h === "pyramid.nesko-nv.ru") return "Основная";
+        if (h === "pyramid.nesko-nv.ru" || h.endsWith(".pyramid.nesko-nv.ru")) return "Основная";
         return "Основная";
     }
 
@@ -185,6 +185,7 @@
         (
             window.location.hostname.indexOf("pyramid.vostok-electra.ru") !== -1
             || window.location.hostname === "pyramid.nesko-nv.ru"
+            || window.location.hostname.endsWith(".pyramid.nesko-nv.ru")
         )
         && ROWS10000_PATH_REGEX.test(window.location.pathname)
     );

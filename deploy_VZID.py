@@ -78,6 +78,7 @@ def create_minimal_manifest(version, target_browser='chrome'):
                     "*://pyramid.vostok-electra.ru/*",
                     "*://*.pyramid.vostok-electra.ru/*",
                     "*://pyramid.nesko-nv.ru/*",
+                    "*://*.pyramid.nesko-nv.ru/*",
                     "*://pyramid-vostok.electra.ru/*",
                     "*://*.pyramid-vostok.electra.ru/*"
                 ],
@@ -96,6 +97,7 @@ def create_minimal_manifest(version, target_browser='chrome'):
                     "*://pyramid.vostok-electra.ru/*",
                     "*://*.pyramid.vostok-electra.ru/*",
                     "*://pyramid.nesko-nv.ru/*",
+                    "*://*.pyramid.nesko-nv.ru/*",
                     "*://pyramid-vostok.electra.ru/*",
                     "*://*.pyramid-vostok.electra.ru/*"
                 ],

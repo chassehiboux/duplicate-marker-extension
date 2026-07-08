@@ -91,6 +91,8 @@
       "matches": [
         "*://pyramid.vostok-electra.ru/*",
         "*://*.pyramid.vostok-electra.ru/*",
+        "*://pyramid.nesko-nv.ru/*",
+        "*://*.pyramid.nesko-nv.ru/*",
         "*://pyramid-vostok.electra.ru/*",
         "*://*.pyramid-vostok.electra.ru/*"
       ],
@@ -105,6 +107,7 @@
         "*://pyramid.vostok-electra.ru/*",
         "*://*.pyramid.vostok-electra.ru/*",
         "*://pyramid.nesko-nv.ru/*",
+        "*://*.pyramid.nesko-nv.ru/*",
         "*://pyramid-vostok.electra.ru/*",
         "*://*.pyramid-vostok.electra.ru/*"
       ],
@@ -121,7 +124,9 @@
     {
       "matches": [
         "*://pyramid.vostok-electra.ru/*",
-        "*://*.pyramid.vostok-electra.ru/*"
+        "*://*.pyramid.vostok-electra.ru/*",
+        "*://pyramid.nesko-nv.ru/*",
+        "*://*.pyramid.nesko-nv.ru/*"
       ],
       "css": [
         "PyramidNewYear/pyramid_theme_settings.css",
