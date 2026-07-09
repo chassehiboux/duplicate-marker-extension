@@ -153,13 +153,23 @@
   function cleanAllClassesForColumn(columnId, thElement) {
     removeClasses(thElement);
     handleFirstRow(thElement.cellIndex, false, false);
-    document.querySelectorAll(`[aria-describedby="${columnId}"]`).forEach(el => removeClasses(el));
+    getManagedCellsForColumn(columnId, thElement).forEach(el => removeClasses(el));
   }
 
   function applyClassesForColumn(columnId, thElement, shouldBeHidden) {
     setClasses(thElement, shouldBeHidden);
     handleFirstRow(thElement.cellIndex, true, shouldBeHidden);
-    document.querySelectorAll(`[aria-describedby="${columnId}"]`).forEach(el => setClasses(el, shouldBeHidden));
+    getManagedCellsForColumn(columnId, thElement).forEach(el => setClasses(el, shouldBeHidden));
+  }
+
+  function getManagedCellsForColumn(columnId, thElement) {
+    const headerIndex = thElement?.cellIndex;
+    const gridRoot = thElement?.closest('.ui-jqgrid') || document;
+    return Array.from(gridRoot.querySelectorAll(`[aria-describedby="${columnId}"]`)).filter(el => {
+      if (!el.matches('th, td')) return false;
+      if (headerIndex === -1 || typeof el.cellIndex !== 'number') return true;
+      return el.cellIndex === headerIndex;
+    });
   }
 
   function setClasses(el, hidden) {
