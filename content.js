@@ -41,6 +41,7 @@
   const STAGE_JUMP_MENU_ACTION_SLOWSEARCH = 'to_slowsearch';
   const STAGE_JUMP_MENU_ACTION_ALL_RECORDS = 'to_all_records';
   const STAGE_JUMP_MENU_ACTION_COPY_INFO = 'copy_info';
+  const STAGE_JUMP_REESTR_RETURN_TO_PU_TM_LABEL = 'Реестр возврата ИД в ОРДЗ/ПУ';
   const STAGE_JUMP_MENU_ITEM_SLOWSEARCH_TEXT = 'Переход в Глобальный поиск';
   const STAGE_JUMP_MENU_ITEM_ALL_RECORDS_TEXT = 'Переход в ОВЗИД: все доступные записи';
   const STAGE_JUMP_MENU_ITEM_COPY_INFO_TEXT = 'Скопировать инфо об ИД';
@@ -418,7 +419,7 @@
       key: 'stageJumpButtons',
       storageKey: 'dup_ui_show_stage_jump_buttons',
       label: 'Кнопки StageJump',
-      description: 'Кнопки и меню переходов/копирования StageJump в списках.',
+      description: 'Кнопки и меню переходов/копирования StageJump в списках и реестре возврата ИД.',
       hideClass: 'dup-ui-hide-stage-jump-buttons',
       hideCss: `
         html.dup-ui-hide-stage-jump-buttons .${STAGE_JUMP_BUTTON_CLASS},
@@ -7544,7 +7545,11 @@
 
   function isStageJumpSourcePage() {
     const pathname = String(window.location.pathname || '');
-    return pathname.includes('/ovzid/status/') || pathname.includes('/ovzid/stage/');
+    return (
+      pathname.includes('/ovzid/status/') ||
+      pathname.includes('/ovzid/stage/') ||
+      pathname.includes('/ovzid/ReestrReturnToPU')
+    );
   }
 
   function isSlowsearchSourcePage() {
@@ -8559,11 +8564,26 @@
       if (!(row instanceof HTMLTableRowElement)) return;
 
       const debtId = getRowCellTextByAria(row, 'list_DebtID');
-      const edocId = getRowCellTextByAria(row, 'list_EDocID') || getRowCellTextByAria(row, 'list_EdocID');
+      const edocId = (
+        getRowCellTextByAria(row, 'list_EDocID') ||
+        getRowCellTextByAria(row, 'list_EdocID') ||
+        String(row.id || '').trim()
+      );
       const accountNumber = getRowCellTextByAria(row, 'list_AccAddress_AccountNumber');
       const edNumber = getRowCellTextByAria(row, 'list_EDNumber');
       const fullName = getRowCellTextByAria(row, 'list_Individual_FullName');
-      const stageName = getRowCellTextByAria(row, 'list_CaseStageName');
+      const departmentName = (
+        getRowCellTextByAria(row, 'list_DepartmentName') ||
+        getRowCellTextByAria(row, 'list_Departmentname') ||
+        getRowCellTextByAria(row, 'list_Territory') ||
+        currentDepartmentName
+      );
+      const stageName = (
+        getRowCellTextByAria(row, 'list_CaseStageName') ||
+        (window.location.pathname.includes('/ovzid/ReestrReturnToPU')
+          ? STAGE_JUMP_REESTR_RETURN_TO_PU_TM_LABEL
+          : '')
+      );
       const statusName = getRowCellTextByAria(row, 'list_CaseStatusName');
       const dedupeKey = String(row.id || '').trim() || [debtId, edocId, accountNumber, fullName].join('::');
       if (seen.has(dedupeKey)) return;
@@ -8579,7 +8599,7 @@
         fullName,
         stageName,
         statusName,
-        departmentName: currentDepartmentName
+        departmentName
       });
     });
 
