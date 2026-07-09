@@ -11,6 +11,10 @@
 
   const HIDDEN_CLASS = 'jqgrid-ext-force-hidden';
   const VISIBLE_CLASS = 'jqgrid-ext-force-visible';
+  const COMPACT_WIDTH_PRESETS = {
+    list_DebtID: 90,
+    list_EDocID: 90
+  };
 
   // Столбцы, которые ВСЕГДА в списке (даже если скрыты сайтом)
   const FORCE_INCLUDE_IDS = [
@@ -31,8 +35,11 @@
   // Состояние (локальное для этой вкладки/страницы)
   let state = {
     isEnabled: false,
-    hiddenColumns: []
+    hiddenColumns: [],
+    columnWidths: {}
   };
+  let pendingResizeHeader = null;
+  const widthCaptureTimers = new Map();
 
   // --- 1. CSS СТИЛИ (UI + ЛОГИКА) ---
   const style = document.createElement('style');
@@ -147,6 +154,7 @@
 
       const shouldBeHidden = state.hiddenColumns.includes(columnId);
       applyClassesForColumn(columnId, th, shouldBeHidden);
+      applyWidthForColumn(columnId, th, shouldBeHidden);
     });
   }
 
@@ -170,6 +178,100 @@
       if (headerIndex === -1 || typeof el.cellIndex !== 'number') return true;
       return el.cellIndex === headerIndex;
     });
+  }
+
+  function getFirstRowCellByIndex(headerIndex) {
+    if (headerIndex === -1) return null;
+    return document.querySelector(`.ui-jqgrid-btable tr.jqgfirstrow > td:nth-child(${headerIndex + 1})`);
+  }
+
+  function getStoredColumnWidth(columnId) {
+    const width = Number(state.columnWidths?.[columnId]);
+    return Number.isFinite(width) && width > 0 ? width : null;
+  }
+
+  function resolveColumnWidth(columnId, shouldBeHidden) {
+    const storedWidth = getStoredColumnWidth(columnId);
+    if (storedWidth) return storedWidth;
+    if (!shouldBeHidden && Object.prototype.hasOwnProperty.call(COMPACT_WIDTH_PRESETS, columnId)) {
+      return COMPACT_WIDTH_PRESETS[columnId];
+    }
+    return null;
+  }
+
+  function shouldPersistColumnWidth(columnId) {
+    return Object.prototype.hasOwnProperty.call(COMPACT_WIDTH_PRESETS, columnId) || getStoredColumnWidth(columnId) !== null;
+  }
+
+  function setElementWidth(el, widthPx) {
+    if (!el) return;
+    const widthValue = `${widthPx}px`;
+    el.style.setProperty('width', widthValue, 'important');
+    el.style.setProperty('min-width', widthValue, 'important');
+    el.style.setProperty('max-width', widthValue, 'important');
+  }
+
+  function applyWidthToColumnElements(columnId, thElement, width) {
+    setElementWidth(thElement, width);
+    setElementWidth(getFirstRowCellByIndex(thElement.cellIndex), width);
+    getManagedCellsForColumn(columnId, thElement).forEach(el => setElementWidth(el, width));
+  }
+
+  function applyWidthForColumn(columnId, thElement, shouldBeHidden) {
+    const width = resolveColumnWidth(columnId, shouldBeHidden);
+    if (!width) return;
+
+    applyWidthToColumnElements(columnId, thElement, width);
+    requestAnimationFrame(() => {
+      if (!thElement?.isConnected) return;
+      applyWidthToColumnElements(columnId, thElement, width);
+    });
+  }
+
+  function captureColumnWidth(thElement) {
+    if (!thElement || !thElement.id || isColumnBlacklisted(thElement)) return;
+    const width = Math.round(thElement.getBoundingClientRect().width);
+    if (!Number.isFinite(width) || width <= 0) return;
+
+    if (!state.columnWidths) state.columnWidths = {};
+    if (state.columnWidths[thElement.id] === width) return;
+
+    state.columnWidths[thElement.id] = width;
+    saveState();
+  }
+
+  function scheduleColumnWidthCapture(thElement) {
+    if (!thElement?.id || !state.isEnabled || !shouldPersistColumnWidth(thElement.id)) return;
+
+    const columnId = thElement.id;
+    const existingTimer = widthCaptureTimers.get(columnId);
+    if (existingTimer) clearTimeout(existingTimer);
+
+    const timer = setTimeout(() => {
+      widthCaptureTimers.delete(columnId);
+      if (!thElement.isConnected) return;
+      captureColumnWidth(thElement);
+    }, 80);
+
+    widthCaptureTimers.set(columnId, timer);
+  }
+
+  function handleResizeStart(event) {
+    const handle = event.target?.closest?.('.ui-jqgrid-resize');
+    if (!handle) return;
+
+    const thElement = handle.closest('th[id^="list_"]');
+    if (!thElement || isColumnBlacklisted(thElement)) return;
+
+    pendingResizeHeader = thElement;
+  }
+
+  function handleResizeEnd() {
+    if (!pendingResizeHeader) return;
+
+    const thElement = pendingResizeHeader;
+    pendingResizeHeader = null;
+    setTimeout(() => captureColumnWidth(thElement), 0);
   }
 
   function setClasses(el, hidden) {
@@ -390,12 +492,20 @@
         state = data[STORAGE_KEY];
     } else {
         // Дефолт
-        state = { isEnabled: false, hiddenColumns: [] };
+        state = { isEnabled: false, hiddenColumns: [], columnWidths: {} };
     }
+    normalizeState();
     
     // Применяем загруженное состояние
     if (state.isEnabled) {
         applyColumnState();
+    }
+  }
+
+  function normalizeState() {
+    if (!Array.isArray(state.hiddenColumns)) state.hiddenColumns = [];
+    if (!state.columnWidths || typeof state.columnWidths !== 'object' || Array.isArray(state.columnWidths)) {
+      state.columnWidths = {};
     }
   }
 
@@ -432,5 +542,19 @@
     if (!document.getElementById('jqgrid-manager-btn')) createUI();
   });
   observer.observe(document.body, { childList: true, subtree: true });
+
+  const widthObserver = new MutationObserver(mutations => {
+    mutations.forEach(mutation => {
+      const thElement = mutation.target;
+      if (!(thElement instanceof HTMLElement)) return;
+      if (!thElement.matches('.ui-jqgrid-htable .ui-th-column[id^="list_"]')) return;
+      if (isColumnBlacklisted(thElement)) return;
+      scheduleColumnWidthCapture(thElement);
+    });
+  });
+  widthObserver.observe(document.body, { attributes: true, subtree: true, attributeFilter: ['style'] });
+
+  document.addEventListener('mousedown', handleResizeStart, true);
+  document.addEventListener('mouseup', handleResizeEnd, true);
 
 })();
