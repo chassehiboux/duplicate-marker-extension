@@ -125,7 +125,7 @@
   const WSS_IMPORT_REVIEW_MODAL_ID = 'dup-google-sheets-wss-import-review-modal';
   const MENU_ID = 'dup-google-sheets-problem-picker-menu';
   const MENU_OVERLAY_ID = 'dup-google-sheets-problem-picker-menu-overlay';
-  const MENU_LAYOUT_VERSION = '2026-06-30-itil-import-1';
+  const MENU_LAYOUT_VERSION = '2026-08-06-new-response-inbox-1';
   const MENU_BOUND_FLAG = '__dupGoogleSheetsMenuBound';
   const MENU_OVERLAY_BOUND_FLAG = '__dupGoogleSheetsMenuOverlayBound';
   const STYLE_ID = 'dup-google-sheets-problem-picker-style';
@@ -292,6 +292,7 @@
       currentIndex: 0,
       totalExpected: 0,
       isProcessing: false,
+      isAcknowledging: false,
       statusText: 'Ожидание запуска.',
       errorText: '',
       sourceSheetName: ''
@@ -299,7 +300,11 @@
   }
 
   let newResponseReviewState = createNewResponseReviewState();
-  let lastNewResponseReviewSnapshot = null;
+  let newResponseInboxState = {
+    unreadCount: 0,
+    isLoading: false,
+    lastError: ''
+  };
   let combinedFlowState = {
     queue: [],
     currentIndex: 0,
@@ -2263,54 +2268,132 @@
     return newResponseReviewState.queue[newResponseReviewState.currentIndex] || null;
   }
 
-  function canGoBackInNewResponseReview() {
-    return newResponseReviewState.currentIndex > 0;
+  function hasNewResponseReviewHistory() {
+    return newResponseInboxState.unreadCount > 0
+      || (Array.isArray(newResponseReviewState.queue) && newResponseReviewState.queue.length > 0);
   }
 
-  function persistNewResponseReviewSnapshot() {
-    if (newResponseReviewState.isProcessing) return;
-
-    const queue = clonePlainData(newResponseReviewState.queue || []);
-    const maxIndex = Math.max(0, queue.length - 1);
-    const rawIndex = Number(newResponseReviewState.currentIndex) || 0;
-    const currentIndex = queue.length ? Math.min(Math.max(0, rawIndex), maxIndex) : 0;
-
-    lastNewResponseReviewSnapshot = {
-      queue,
-      currentIndex,
-      totalExpected: Math.max(0, Number(newResponseReviewState.totalExpected) || 0),
-      statusText: String(newResponseReviewState.statusText || ''),
-      errorText: String(newResponseReviewState.errorText || ''),
-      sourceSheetName: String(newResponseReviewState.sourceSheetName || '')
+  function buildNewResponseReviewItemFromInbox(item) {
+    const beforeInfo = String(item && item.beforeInfo || '').trim();
+    const afterInfo = String(item && item.afterInfo || '').trim();
+    return {
+      eventId: String(item && item.eventId || '').trim(),
+      createdAt: String(item && item.createdAt || '').trim(),
+      sourceSheetName: String(item && item.sourceSheetName || '').trim(),
+      row: Number(item && item.row || 0),
+      mode: String(item && item.mode || '').trim(),
+      date: String(item && item.date || '').trim(),
+      status: String(item && item.status || '').trim(),
+      statusBackgroundColor: normalizeSheetBackgroundColor(item && item.statusBackgroundColor),
+      currentStage: String(item && item.currentStage || '').trim(),
+      currentStageBackgroundColor: normalizeSheetBackgroundColor(item && item.currentStageBackgroundColor),
+      initiator: String(item && item.initiator || '').trim(),
+      initiatorBackgroundColor: normalizeSheetBackgroundColor(item && item.initiatorBackgroundColor),
+      itilNumber: String(item && item.itilNumber || '').trim(),
+      suppValue: String(item && item.suppValue || '').trim(),
+      suppNumbers: Array.isArray(item && item.suppNumbers)
+        ? item.suppNumbers.map((value) => String(value || '').trim()).filter(Boolean)
+        : extractSuppNumbers(String(item && item.suppValue || '')),
+      text: String(item && item.text || '').trim(),
+      beforeInfo,
+      afterInfo,
+      infoBlocks: buildInfoBlockDiff(beforeInfo, afterInfo)
     };
   }
 
-  function hasNewResponseReviewHistory() {
-    return !!lastNewResponseReviewSnapshot;
+  async function loadNewResponseInbox(options) {
+    const settings = options && typeof options === 'object' ? options : {};
+    const summaryOnly = settings.summaryOnly === true;
+    newResponseInboxState = {
+      ...newResponseInboxState,
+      isLoading: true,
+      lastError: ''
+    };
+    renderNewResponseStatus();
+
+    try {
+      await loadBridgeUrl();
+      if (!state.bridgeUrl) throw new Error('URL bridge не задан.');
+
+      const response = await sendRuntimeMessage({
+        action: SAVE_ACTION,
+        data: {
+          bridgeUrl: state.bridgeUrl,
+          payload: {
+            action: 'getNewResponseInbox',
+            spreadsheetId: CONFIG.spreadsheetId,
+            summaryOnly
+          }
+        }
+      });
+      if (!response || response.success !== true) {
+        throw new Error(getRuntimeResponseError(response, 'bridge не вернул очередь непрочитанных ответов'));
+      }
+
+      const bridgeResult = getBridgeActionResult(response);
+      const unreadCount = Math.max(0, Number(bridgeResult && bridgeResult.itemsCount) || 0);
+      newResponseInboxState = {
+        ...newResponseInboxState,
+        unreadCount,
+        lastError: ''
+      };
+
+      if (!summaryOnly) {
+        const queue = (bridgeResult && Array.isArray(bridgeResult.items) ? bridgeResult.items : [])
+          .map(buildNewResponseReviewItemFromInbox)
+          .filter((item) => !!item.eventId);
+        newResponseReviewState = createNewResponseReviewState({
+          queue,
+          currentIndex: 0,
+          totalExpected: queue.length,
+          statusText: queue.length
+            ? 'Показываю непрочитанные новые ответы.'
+            : 'Непрочитанных новых ответов нет.',
+          sourceSheetName: ''
+        });
+        renderNewResponseReviewModal();
+      }
+
+      return true;
+    } catch (error) {
+      const message = error && error.message ? error.message : 'Не удалось загрузить непрочитанные новые ответы.';
+      newResponseInboxState = {
+        ...newResponseInboxState,
+        lastError: message
+      };
+      if (!summaryOnly) {
+        newResponseReviewState = {
+          ...newResponseReviewState,
+          errorText: message,
+          isProcessing: false
+        };
+        renderNewResponseReviewModal();
+      }
+      return false;
+    } finally {
+      newResponseInboxState = {
+        ...newResponseInboxState,
+        isLoading: false
+      };
+      renderNewResponseStatus();
+    }
   }
 
-  function openLastNewResponseReviewHistory() {
-    if (!hasNewResponseReviewHistory()) {
-      updateLauncherStatus('История новых ответов в этой сессии ещё не сохранена.', true);
+  function refreshNewResponseInboxSummary() {
+    return loadNewResponseInbox({ summaryOnly: true });
+  }
+
+  async function openLastNewResponseReviewHistory() {
+    closeMenu();
+    const loaded = await loadNewResponseInbox({ summaryOnly: false });
+    if (!loaded) {
+      openNewResponseReviewModal();
       return;
     }
-
-    const snapshot = lastNewResponseReviewSnapshot;
-    const queue = clonePlainData(snapshot.queue || []);
-    const maxIndex = Math.max(0, queue.length - 1);
-    const rawIndex = Number(snapshot.currentIndex) || 0;
-    const currentIndex = queue.length ? Math.min(Math.max(0, rawIndex), maxIndex) : 0;
-
-    newResponseReviewState = createNewResponseReviewState({
-      queue,
-      currentIndex,
-      totalExpected: Math.max(0, Number(snapshot.totalExpected) || 0),
-      statusText: String(snapshot.statusText || ''),
-      errorText: String(snapshot.errorText || ''),
-      sourceSheetName: String(snapshot.sourceSheetName || '')
-    });
-
-    closeMenu();
+    if (!newResponseReviewState.queue.length) {
+      updateLauncherStatus('Непрочитанных новых ответов нет.', false);
+      return;
+    }
     openNewResponseReviewModal();
   }
 
@@ -2736,6 +2819,8 @@
       : buildItilInfoText(payload.solutionText);
 
     return {
+      eventId: '',
+      sourceSheetName: String(newResponseState.sheetName || '').trim(),
       row: Number(item && item.row),
       date: String(item && item.date || '').trim(),
       status: String(item && item.status || '').trim(),
@@ -2751,6 +2836,25 @@
       beforeInfo: String(item && item.info || '').trim(),
       afterInfo,
       infoBlocks: buildInfoBlockDiff(item && item.info, afterInfo)
+    };
+  }
+
+  function buildNewResponseReviewSnapshot(reviewItem) {
+    const item = reviewItem && typeof reviewItem === 'object' ? reviewItem : {};
+    return {
+      date: String(item.date || ''),
+      status: String(item.status || ''),
+      statusBackgroundColor: normalizeSheetBackgroundColor(item.statusBackgroundColor),
+      currentStage: String(item.currentStage || ''),
+      currentStageBackgroundColor: normalizeSheetBackgroundColor(item.currentStageBackgroundColor),
+      initiator: String(item.initiator || ''),
+      initiatorBackgroundColor: normalizeSheetBackgroundColor(item.initiatorBackgroundColor),
+      text: String(item.text || ''),
+      itilNumber: String(item.itilNumber || ''),
+      suppValue: String(item.suppValue || ''),
+      suppNumbers: getItemSuppNumbers(item),
+      beforeInfo: String(item.beforeInfo || ''),
+      afterInfo: String(item.afterInfo || '')
     };
   }
 
@@ -3550,10 +3654,16 @@
     }
     if (startButton instanceof HTMLButtonElement) startButton.disabled = newResponseState.isRunning || itilState.isRunning || suppState.isRunning || combinedFlowState.isRunning;
     if (historyButton instanceof HTMLButtonElement) {
+      const visibleUnreadCount = Math.max(
+        Math.max(0, Number(newResponseInboxState.unreadCount) || 0),
+        newResponseReviewState.isProcessing ? 0 : newResponseReviewState.queue.length
+      );
+      historyButton.textContent = `Непрочитанные (${visibleUnreadCount})`;
       historyButton.disabled = newResponseState.isRunning
         || itilState.isRunning
         || suppState.isRunning
         || combinedFlowState.isRunning
+        || newResponseInboxState.isLoading
         || !hasNewResponseReviewHistory();
     }
     if (stopButton instanceof HTMLButtonElement) stopButton.disabled = !newResponseState.isRunning || !!newResponseState.stopRequested;
@@ -3805,7 +3915,7 @@
         <div class="gs-problem-picker-menu-actions">
           <button type="button" class="gs-problem-picker-combined-start">Старт</button>
           <button type="button" class="gs-problem-picker-combined-stop" disabled>Стоп</button>
-          <button type="button" class="gs-problem-picker-new-response-history" disabled>История</button>
+          <button type="button" class="gs-problem-picker-new-response-history" disabled>Непрочитанные (0)</button>
           <button type="button" class="gs-problem-picker-manual-toggle" aria-expanded="false" aria-label="Показать ручные действия">▼</button>
           <button type="button" class="gs-problem-picker-url">URL bridge</button>
         </div>
@@ -4002,7 +4112,7 @@
         return;
       }
       if (button.classList.contains('gs-problem-picker-new-response-history')) {
-        openLastNewResponseReviewHistory();
+        void openLastNewResponseReviewHistory();
         return;
       }
       if (button.classList.contains('gs-problem-picker-new-response-stop')) {
@@ -4073,6 +4183,7 @@
     renderItilImportStatus();
     renderWssImportStatus();
     updateLauncherStatus(menuStatusText, menuStatusIsError);
+    void refreshNewResponseInboxSummary();
     return true;
   }
 
@@ -5553,8 +5664,78 @@
 
   function closeNewResponseReviewModal() {
     const modal = document.getElementById(NEW_RESPONSE_REVIEW_MODAL_ID);
-    persistNewResponseReviewSnapshot();
     if (modal instanceof HTMLElement) modal.hidden = true;
+  }
+
+  async function acknowledgeCurrentNewResponseReviewItem() {
+    const item = getNewResponseReviewCurrentItem();
+    if (!item || newResponseReviewState.isProcessing || newResponseReviewState.isAcknowledging) return;
+
+    const eventId = String(item.eventId || '').trim();
+    if (!eventId) {
+      newResponseReviewState = {
+        ...newResponseReviewState,
+        errorText: 'У карточки нет постоянного идентификатора. Обновите Apps Script bridge и повторите поиск.'
+      };
+      renderNewResponseReviewModal();
+      return;
+    }
+
+    newResponseReviewState = {
+      ...newResponseReviewState,
+      isAcknowledging: true,
+      errorText: '',
+      statusText: 'Удаляю прочитанную карточку...'
+    };
+    renderNewResponseReviewModal();
+
+    try {
+      await loadBridgeUrl();
+      if (!state.bridgeUrl) throw new Error('URL bridge не задан.');
+      const response = await sendRuntimeMessage({
+        action: SAVE_ACTION,
+        data: {
+          bridgeUrl: state.bridgeUrl,
+          payload: {
+            action: 'deleteNewResponseInboxItem',
+            spreadsheetId: CONFIG.spreadsheetId,
+            eventId
+          }
+        }
+      });
+      if (!response || response.success !== true) {
+        throw new Error(getRuntimeResponseError(response, 'bridge не удалил прочитанную карточку'));
+      }
+
+      const bridgeResult = getBridgeActionResult(response);
+      const queue = newResponseReviewState.queue.filter((entry) => String(entry && entry.eventId || '') !== eventId);
+      const currentIndex = queue.length
+        ? Math.min(newResponseReviewState.currentIndex, queue.length - 1)
+        : 0;
+      newResponseInboxState = {
+        ...newResponseInboxState,
+        unreadCount: Math.max(0, Number(bridgeResult && bridgeResult.remainingCount) || 0),
+        lastError: ''
+      };
+      newResponseReviewState = createNewResponseReviewState({
+        queue,
+        currentIndex,
+        totalExpected: queue.length,
+        statusText: queue.length
+          ? 'Карточка удалена. Показываю следующий непрочитанный ответ.'
+          : 'Непрочитанных новых ответов нет.'
+      });
+      renderNewResponseReviewModal();
+      renderNewResponseStatus();
+      if (!queue.length) closeNewResponseReviewModal();
+    } catch (error) {
+      newResponseReviewState = {
+        ...newResponseReviewState,
+        isAcknowledging: false,
+        errorText: error && error.message ? error.message : 'Не удалось удалить прочитанную карточку.'
+      };
+      renderNewResponseReviewModal();
+    }
   }
 
   function ensureNewResponseReviewModal() {
@@ -5592,8 +5773,7 @@
             <div class="gs-new-response-review-message" aria-live="polite"></div>
             <div class="gs-new-response-review-buttons">
               <button type="button" class="gs-new-response-review-close">Закрыть</button>
-              <button type="button" class="gs-new-response-review-prev">Назад</button>
-              <button type="button" class="gs-new-response-review-next">Дальше</button>
+              <button type="button" class="gs-new-response-review-next">Прочитано и дальше</button>
             </div>
           </footer>
         </section>
@@ -5606,29 +5786,8 @@
 
     $('.gs-new-response-review-close-x', modal)?.addEventListener('click', close, { capture: true });
     $('.gs-new-response-review-close', modal)?.addEventListener('click', close, { capture: true });
-    $('.gs-new-response-review-prev', modal)?.addEventListener('click', () => {
-      if (!canGoBackInNewResponseReview() || newResponseReviewState.isProcessing) return;
-
-      newResponseReviewState = {
-        ...newResponseReviewState,
-        currentIndex: Math.max(0, newResponseReviewState.currentIndex - 1)
-      };
-      renderNewResponseReviewModal();
-    }, { capture: true });
     $('.gs-new-response-review-next', modal)?.addEventListener('click', () => {
-      const total = newResponseReviewState.queue.length;
-      if (!total || newResponseReviewState.isProcessing) return;
-
-      if (newResponseReviewState.currentIndex >= total - 1) {
-        close();
-        return;
-      }
-
-      newResponseReviewState = {
-        ...newResponseReviewState,
-        currentIndex: newResponseReviewState.currentIndex + 1
-      };
-      renderNewResponseReviewModal();
+      void acknowledgeCurrentNewResponseReviewItem();
     }, { capture: true });
 
     (document.body || document.documentElement).appendChild(modal);
@@ -5646,11 +5805,10 @@
     const text = $('.gs-new-response-review-text', modal);
     const info = $('.gs-new-response-review-info', modal);
     const message = $('.gs-new-response-review-message', modal);
-    const prevButton = $('.gs-new-response-review-prev', modal);
     const nextButton = $('.gs-new-response-review-next', modal);
 
     if (meta instanceof HTMLElement) {
-      meta.textContent = `Лист: ${newResponseReviewState.sourceSheetName || newResponseState.sheetName || 'не выбран'} · строк найдено: ${newResponseReviewState.totalExpected}`;
+      meta.textContent = `Лист: ${item && item.sourceSheetName ? item.sourceSheetName : (newResponseReviewState.sourceSheetName || newResponseState.sheetName || 'не выбран')} · непрочитано: ${newResponseReviewState.queue.length}`;
     }
 
     if (progress instanceof HTMLElement) {
@@ -5687,18 +5845,14 @@
       message.classList.toggle('is-error', !!newResponseReviewState.errorText);
     }
 
-    if (prevButton instanceof HTMLButtonElement) {
-      prevButton.disabled = newResponseReviewState.isProcessing || !item || !canGoBackInNewResponseReview();
-    }
-
     if (nextButton instanceof HTMLButtonElement) {
-      nextButton.disabled = newResponseReviewState.isProcessing || !item;
+      nextButton.disabled = newResponseReviewState.isProcessing
+        || newResponseReviewState.isAcknowledging
+        || !item;
       nextButton.textContent = item && newResponseReviewState.currentIndex >= newResponseReviewState.queue.length - 1
-        ? 'Закрыть'
-        : 'Дальше';
+        ? 'Прочитано и закрыть'
+        : 'Прочитано и дальше';
     }
-
-    persistNewResponseReviewSnapshot();
   }
 
   function openNewResponseReviewModal() {
@@ -5874,7 +6028,8 @@
 
       return {
         success: true,
-        row: targetRow
+        row: targetRow,
+        bridgeResult: getBridgeActionResult(response)
       };
     }).catch((error) => ({
       success: false,
@@ -5909,11 +6064,25 @@
       ? `строка ${row}, ${formatSuppRequestLabel(item)}`
       : `строка ${row}, ITIL ${item && item.itilNumber ? item.itilNumber : ''}`;
     const reviewItem = buildNewResponseReviewItem(item, result);
-    const tracked = createBridgeSaveTracker(result && result.bridgePayload, row, label)
-      .then((saveResult) => ({
-        ...saveResult,
-        reviewItem
-      }));
+    const bridgePayload = result && result.bridgePayload && typeof result.bridgePayload === 'object'
+      ? {
+        ...result.bridgePayload,
+        reviewSnapshot: buildNewResponseReviewSnapshot(reviewItem)
+      }
+      : null;
+    const tracked = createBridgeSaveTracker(bridgePayload, row, label)
+      .then((saveResult) => {
+        const bridgeResult = saveResult && saveResult.bridgeResult && typeof saveResult.bridgeResult === 'object'
+          ? saveResult.bridgeResult
+          : {};
+        return {
+          ...saveResult,
+          reviewItem: {
+            ...reviewItem,
+            eventId: String(bridgeResult.reviewEventId || '').trim()
+          }
+        };
+      });
     newResponseState = {
       ...newResponseState,
       pendingBridgeSaves: [...(newResponseState.pendingBridgeSaves || []), tracked]
@@ -5968,6 +6137,10 @@
 
   function finishNewResponseReview(results, totalExpected, statusText, errorText) {
     const queue = buildNewResponseReviewQueue(results);
+    newResponseInboxState = {
+      ...newResponseInboxState,
+      unreadCount: Math.max(newResponseInboxState.unreadCount, queue.length)
+    };
     newResponseReviewState = createNewResponseReviewState({
       queue,
       currentIndex: 0,
@@ -5980,12 +6153,14 @@
       sourceSheetName: newResponseState.sheetName || ''
     });
     renderNewResponseReviewModal();
+    void loadNewResponseInbox({ summaryOnly: false });
   }
 
   function shouldAutoOpenNewResponseReview() {
     return !!(
       newResponseState.isRunning
       || newResponseState.lastError
+      || newResponseInboxState.unreadCount > 0
       || newResponseReviewState.totalExpected > 0
       || newResponseReviewState.queue.length > 0
     );
@@ -6836,6 +7011,8 @@
           isProcessing: false,
           sourceSheetName: newResponseState.sheetName || newResponseReviewState.sourceSheetName
         };
+        await loadNewResponseInbox({ summaryOnly: false });
+        if (runId !== newResponseRunId) return;
         if (openReviewOnStart) renderNewResponseReviewModal();
         return;
       }
@@ -7138,7 +7315,7 @@
     installAutoOpenListeners();
     document.addEventListener('keydown', handleMenuHotkey, true);
     document.addEventListener('keydown', handleMenuEscape, true);
-    void loadBridgeUrl();
+    void loadBridgeUrl().then(() => refreshNewResponseInboxSummary());
   }
 
   chrome.runtime.onMessage.addListener((request) => {

@@ -1,6 +1,30 @@
 const PROBLEM_PICKER_BRIDGE_SPREADSHEET_ID = '1A7bsMpcMegLvTIpdRBa06TD5RxGi64Cw3goYydbujNo';
 const PROBLEM_PICKER_BRIDGE_ALLOWED_SHEETS = ['Заявки', 'Заявки (наши)'];
 const PROBLEM_PICKER_BRIDGE_NEW_RESPONSE_GREEN = '#00ff00';
+const PROBLEM_PICKER_BRIDGE_NEW_RESPONSE_INBOX_SHEET = 'Служебные новые ответы';
+const PROBLEM_PICKER_BRIDGE_NEW_RESPONSE_INBOX_PENDING = 'pending';
+const PROBLEM_PICKER_BRIDGE_NEW_RESPONSE_INBOX_UNREAD = 'unread';
+const PROBLEM_PICKER_BRIDGE_NEW_RESPONSE_INBOX_HEADERS = [
+  'event_id',
+  'state',
+  'created_at',
+  'source_sheet',
+  'source_row',
+  'mode',
+  'itil_number',
+  'supp_value',
+  'supp_numbers_json',
+  'request_date',
+  'request_status',
+  'status_background',
+  'current_stage',
+  'stage_background',
+  'initiator',
+  'initiator_background',
+  'request_text',
+  'before_info',
+  'after_info'
+];
 const PROBLEM_PICKER_BRIDGE_AI_SEARCH_RESULT_SHEET = 'Поиск заявок (ИИ)';
 const PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_SHEET = 'Шаблон (Поиск заявок (ИИ))';
 const PROBLEM_PICKER_BRIDGE_AI_SEARCH_TEMPLATE_ROW = 2;
@@ -88,6 +112,10 @@ function doPost(e) {
       result = _problemPickerBridgeSaveSuppData_(payload);
     } else if (payload.action === 'getNewResponseRows') {
       result = _problemPickerBridgeGetNewResponseRows_(payload);
+    } else if (payload.action === 'getNewResponseInbox') {
+      result = _problemPickerBridgeGetNewResponseInbox_(payload);
+    } else if (payload.action === 'deleteNewResponseInboxItem') {
+      result = _problemPickerBridgeDeleteNewResponseInboxItem_(payload);
     } else if (payload.action === 'getInitiatorBackgrounds') {
       result = _problemPickerBridgeGetInitiatorBackgrounds_(payload);
     } else if (payload.action === 'saveItilInfoData') {
@@ -229,6 +257,365 @@ function _problemPickerBridgeResetRowColors_(sh, row, colResp, colSupp) {
   if (ranges.length) sh.getRangeList(ranges).setBackground('#f5f5f5');
 }
 
+function _problemPickerBridgeEnsureNewResponseInboxSheet_(ss) {
+  let sh = ss.getSheetByName(PROBLEM_PICKER_BRIDGE_NEW_RESPONSE_INBOX_SHEET);
+  const headers = PROBLEM_PICKER_BRIDGE_NEW_RESPONSE_INBOX_HEADERS;
+
+  if (!sh) {
+    sh = ss.insertSheet(PROBLEM_PICKER_BRIDGE_NEW_RESPONSE_INBOX_SHEET);
+  }
+
+  if (sh.getMaxColumns() < headers.length) {
+    sh.insertColumnsAfter(sh.getMaxColumns(), headers.length - sh.getMaxColumns());
+  }
+
+  if (sh.getLastRow() < 1) {
+    sh.getRange(1, 1, 1, headers.length).setValues([headers]);
+    sh.setFrozenRows(1);
+  } else {
+    const actualHeaders = sh.getRange(1, 1, 1, headers.length).getDisplayValues()[0];
+    const mismatches = [];
+    headers.forEach(function(expected, index) {
+      const actual = String(actualHeaders[index] || '').trim();
+      if (actual !== expected) {
+        mismatches.push((index + 1) + ': ожидалось «' + expected + '», получено «' + (actual || 'пусто') + '»');
+      }
+    });
+    if (mismatches.length) {
+      throw new Error(
+        'Повреждены заголовки системного листа «' + PROBLEM_PICKER_BRIDGE_NEW_RESPONSE_INBOX_SHEET + '».\n' +
+        mismatches.join('\n')
+      );
+    }
+  }
+
+  if (!sh.isSheetHidden()) sh.hideSheet();
+  return sh;
+}
+
+function _problemPickerBridgeNewResponseInboxHeaderMap_() {
+  const map = {};
+  PROBLEM_PICKER_BRIDGE_NEW_RESPONSE_INBOX_HEADERS.forEach(function(header, index) {
+    map[header] = index + 1;
+  });
+  return map;
+}
+
+function _problemPickerBridgeComputeNewResponseEventId_(parts) {
+  const source = (parts || []).map(function(value) {
+    return String(value == null ? '' : value).replace(/\r\n?/g, '\n');
+  }).join('\n\u241e\n');
+  const digest = Utilities.computeDigest(
+    Utilities.DigestAlgorithm.SHA_256,
+    source,
+    Utilities.Charset.UTF_8
+  );
+  return digest.map(function(value) {
+    const normalized = value < 0 ? value + 256 : value;
+    return ('0' + normalized.toString(16)).slice(-2);
+  }).join('');
+}
+
+function _problemPickerBridgeParseInboxSuppNumbers_(value) {
+  try {
+    const parsed = JSON.parse(String(value || '[]'));
+    return _problemPickerBridgeNormalizeSuppNumbersList_(parsed);
+  } catch (error) {
+    return [];
+  }
+}
+
+function _problemPickerBridgeNormalizeInboxComparisonText_(value) {
+  return String(value == null ? '' : value)
+    .replace(/\r\n?/g, '\n')
+    .trim();
+}
+
+function _problemPickerBridgeBuildNewResponseInboxRecord_(options) {
+  const data = options && typeof options === 'object' ? options : {};
+  const snapshot = data.snapshot && typeof data.snapshot === 'object' ? data.snapshot : {};
+  const suppNumbers = _problemPickerBridgeNormalizeSuppNumbersList_(data.suppNumbers || snapshot.suppNumbers || []);
+  const itilNumber = String(data.itilNumber || snapshot.itilNumber || '');
+  const suppValue = String(data.suppValue || snapshot.suppValue || '');
+  const hasSnapshotBeforeInfo = Object.prototype.hasOwnProperty.call(snapshot, 'beforeInfo');
+  const hasSnapshotAfterInfo = Object.prototype.hasOwnProperty.call(snapshot, 'afterInfo');
+  const beforeInfo = String(
+    hasSnapshotBeforeInfo ? snapshot.beforeInfo : (data.beforeInfo == null ? '' : data.beforeInfo)
+  ).replace(/\r\n?/g, '\n').trim();
+  const afterInfo = String(
+    hasSnapshotAfterInfo ? snapshot.afterInfo : (data.afterInfo == null ? '' : data.afterInfo)
+  ).replace(/\r\n?/g, '\n').trim();
+  const eventId = _problemPickerBridgeComputeNewResponseEventId_([
+    data.sheetName,
+    data.row,
+    data.mode,
+    itilNumber,
+    suppValue,
+    suppNumbers.join('\n'),
+    beforeInfo,
+    afterInfo
+  ]);
+
+  return {
+    eventId: eventId,
+    values: [
+      eventId,
+      PROBLEM_PICKER_BRIDGE_NEW_RESPONSE_INBOX_PENDING,
+      new Date().toISOString(),
+      String(data.sheetName || ''),
+      Number(data.row || 0),
+      String(data.mode || ''),
+      itilNumber,
+      suppValue,
+      JSON.stringify(suppNumbers),
+      String(snapshot.date || ''),
+      String(snapshot.status || ''),
+      _problemPickerBridgeNormalizeCssColor_(snapshot.statusBackgroundColor),
+      String(snapshot.currentStage || ''),
+      _problemPickerBridgeNormalizeCssColor_(snapshot.currentStageBackgroundColor),
+      String(snapshot.initiator || ''),
+      _problemPickerBridgeNormalizeCssColor_(snapshot.initiatorBackgroundColor),
+      String(snapshot.text || ''),
+      beforeInfo,
+      afterInfo
+    ]
+  };
+}
+
+function _problemPickerBridgeFindNewResponseInboxEvent_(sh, eventId) {
+  const lastRow = sh.getLastRow();
+  if (lastRow < 2) return null;
+
+  const values = sh.getRange(2, 1, lastRow - 1, 2).getDisplayValues();
+  for (let index = 0; index < values.length; index++) {
+    if (String(values[index][0] || '') === eventId) {
+      return {
+        row: index + 2,
+        state: String(values[index][1] || '')
+      };
+    }
+  }
+  return null;
+}
+
+function _problemPickerBridgeAppendNewResponseInboxRecord_(sh, record) {
+  const existing = _problemPickerBridgeFindNewResponseInboxEvent_(sh, record.eventId);
+  if (existing) {
+    return {
+      eventId: record.eventId,
+      row: existing.row,
+      created: false
+    };
+  }
+
+  const row = Math.max(2, sh.getLastRow() + 1);
+  if (row > sh.getMaxRows()) {
+    sh.insertRowsAfter(sh.getMaxRows(), row - sh.getMaxRows());
+  }
+  const safeValues = record.values.map(function(value) {
+    const text = typeof value === 'string' ? value : null;
+    return text && text.charAt(0) === '=' ? "'" + text : value;
+  });
+  sh.getRange(row, 1, 1, safeValues.length).setValues([safeValues]);
+  return {
+    eventId: record.eventId,
+    row: row,
+    created: true
+  };
+}
+
+function _problemPickerBridgeCommitNewResponseInfo_(options) {
+  const data = options && typeof options === 'object' ? options : {};
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+
+  try {
+    const inbox = _problemPickerBridgeEnsureNewResponseInboxSheet_(data.ss);
+    const beforeInfo = data.sh.getRange(data.row, data.colInfo).getDisplayValue();
+    const afterInfo = data.infoRichText.getText();
+    const record = _problemPickerBridgeBuildNewResponseInboxRecord_({
+      snapshot: data.payload && data.payload.reviewSnapshot,
+      sheetName: data.sh.getName(),
+      row: data.row,
+      mode: data.mode,
+      itilNumber: data.itilNumber,
+      suppValue: data.suppValue,
+      suppNumbers: data.suppNumbers,
+      beforeInfo: beforeInfo,
+      afterInfo: afterInfo
+    });
+    const inboxItem = _problemPickerBridgeAppendNewResponseInboxRecord_(inbox, record);
+
+    data.sh.getRange(data.row, data.colInfo).setRichTextValue(data.infoRichText);
+    _problemPickerBridgeResetRowColors_(data.sh, data.row, data.colResp, data.colSupp);
+
+    const headerMap = _problemPickerBridgeNewResponseInboxHeaderMap_();
+    inbox.getRange(inboxItem.row, headerMap.state).setValue(PROBLEM_PICKER_BRIDGE_NEW_RESPONSE_INBOX_UNREAD);
+
+    return {
+      eventId: inboxItem.eventId,
+      created: inboxItem.created
+    };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function _problemPickerBridgeExtractItilSolutionFromInboxInfo_(value) {
+  const text = String(value == null ? '' : value).replace(/\r\n?/g, '\n').trim();
+  if (text === 'ИТИЛ') return '';
+  if (text.indexOf('ИТИЛ\n') === 0) return text.slice('ИТИЛ'.length).replace(/^\n+/, '');
+  return text;
+}
+
+function _problemPickerBridgeRecoverPendingNewResponseInbox_(ss) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+
+  try {
+    const inbox = _problemPickerBridgeEnsureNewResponseInboxSheet_(ss);
+    const lastRow = inbox.getLastRow();
+    if (lastRow < 2) return;
+
+    const headerMap = _problemPickerBridgeNewResponseInboxHeaderMap_();
+    const values = inbox.getRange(
+      2,
+      1,
+      lastRow - 1,
+      PROBLEM_PICKER_BRIDGE_NEW_RESPONSE_INBOX_HEADERS.length
+    ).getDisplayValues();
+
+    values.forEach(function(rowValues, index) {
+      if (String(rowValues[headerMap.state - 1] || '') !== PROBLEM_PICKER_BRIDGE_NEW_RESPONSE_INBOX_PENDING) return;
+
+      const inboxRow = index + 2;
+      try {
+        const sheetName = String(rowValues[headerMap.source_sheet - 1] || '').trim();
+        const sourceRow = Number(rowValues[headerMap.source_row - 1]);
+        const mode = String(rowValues[headerMap.mode - 1] || '').trim();
+        const beforeInfo = String(rowValues[headerMap.before_info - 1] || '');
+        const afterInfo = String(rowValues[headerMap.after_info - 1] || '');
+        const sh = PROBLEM_PICKER_BRIDGE_ALLOWED_SHEETS.indexOf(sheetName) !== -1
+          ? ss.getSheetByName(sheetName)
+          : null;
+
+        if (sh && Number.isInteger(sourceRow) && sourceRow >= 2 && sourceRow <= sh.getLastRow()) {
+          const colInfo = getColByHeader(sh, INFO_HEADER);
+          const colSupp = getColByHeader(sh, 'Номер СУПП (последний)');
+          const colResp = getColByHeader(sh, 'Пришел новый ответ');
+          const currentInfo = colInfo ? sh.getRange(sourceRow, colInfo).getDisplayValue() : '';
+          const normalizedCurrent = _problemPickerBridgeNormalizeInboxComparisonText_(currentInfo);
+          const normalizedBefore = _problemPickerBridgeNormalizeInboxComparisonText_(beforeInfo);
+          const normalizedAfter = _problemPickerBridgeNormalizeInboxComparisonText_(afterInfo);
+
+          if (colInfo && normalizedCurrent === normalizedBefore) {
+            const richText = mode === 'itil'
+              ? _problemPickerBridgeBuildItilInfoRichText_(_problemPickerBridgeExtractItilSolutionFromInboxInfo_(afterInfo))
+              : _problemPickerBridgeBuildSuppInfoRichText_(
+                _problemPickerBridgeParseInboxSuppNumbers_(rowValues[headerMap.supp_numbers_json - 1]),
+                afterInfo
+              );
+            sh.getRange(sourceRow, colInfo).setRichTextValue(richText);
+            _problemPickerBridgeResetRowColors_(sh, sourceRow, colResp, colSupp);
+          } else if (colInfo && normalizedCurrent === normalizedAfter) {
+            _problemPickerBridgeResetRowColors_(sh, sourceRow, colResp, colSupp);
+          }
+        }
+      } catch (error) {
+        // Снимок ответа уже сохранён. Оставляем его доступным для просмотра,
+        // даже если исходная строка успела измениться или исчезнуть.
+      } finally {
+        inbox.getRange(inboxRow, headerMap.state).setValue(PROBLEM_PICKER_BRIDGE_NEW_RESPONSE_INBOX_UNREAD);
+      }
+    });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function _problemPickerBridgeReadNewResponseInboxItems_(sh) {
+  const lastRow = sh.getLastRow();
+  if (lastRow < 2) return [];
+
+  const headerMap = _problemPickerBridgeNewResponseInboxHeaderMap_();
+  const values = sh.getRange(
+    2,
+    1,
+    lastRow - 1,
+    PROBLEM_PICKER_BRIDGE_NEW_RESPONSE_INBOX_HEADERS.length
+  ).getDisplayValues();
+
+  return values.filter(function(rowValues) {
+    return String(rowValues[headerMap.state - 1] || '') === PROBLEM_PICKER_BRIDGE_NEW_RESPONSE_INBOX_UNREAD;
+  }).map(function(rowValues) {
+    return {
+      eventId: String(rowValues[headerMap.event_id - 1] || ''),
+      createdAt: String(rowValues[headerMap.created_at - 1] || ''),
+      sourceSheetName: String(rowValues[headerMap.source_sheet - 1] || ''),
+      row: Number(rowValues[headerMap.source_row - 1] || 0),
+      mode: String(rowValues[headerMap.mode - 1] || ''),
+      itilNumber: String(rowValues[headerMap.itil_number - 1] || ''),
+      suppValue: String(rowValues[headerMap.supp_value - 1] || ''),
+      suppNumbers: _problemPickerBridgeParseInboxSuppNumbers_(rowValues[headerMap.supp_numbers_json - 1]),
+      date: String(rowValues[headerMap.request_date - 1] || ''),
+      status: String(rowValues[headerMap.request_status - 1] || ''),
+      statusBackgroundColor: String(rowValues[headerMap.status_background - 1] || ''),
+      currentStage: String(rowValues[headerMap.current_stage - 1] || ''),
+      currentStageBackgroundColor: String(rowValues[headerMap.stage_background - 1] || ''),
+      initiator: String(rowValues[headerMap.initiator - 1] || ''),
+      initiatorBackgroundColor: String(rowValues[headerMap.initiator_background - 1] || ''),
+      text: String(rowValues[headerMap.request_text - 1] || ''),
+      beforeInfo: String(rowValues[headerMap.before_info - 1] || ''),
+      afterInfo: String(rowValues[headerMap.after_info - 1] || '')
+    };
+  });
+}
+
+function _problemPickerBridgeValidateNewResponseInboxPayload_(payload) {
+  const spreadsheetId = String(payload.spreadsheetId || '').trim();
+  if (spreadsheetId !== PROBLEM_PICKER_BRIDGE_SPREADSHEET_ID) {
+    throw new Error('Некорректная таблица: ' + spreadsheetId);
+  }
+}
+
+function _problemPickerBridgeGetNewResponseInbox_(payload) {
+  _problemPickerBridgeValidateNewResponseInboxPayload_(payload);
+  const ss = SpreadsheetApp.openById(PROBLEM_PICKER_BRIDGE_SPREADSHEET_ID);
+  _problemPickerBridgeRecoverPendingNewResponseInbox_(ss);
+  const sh = _problemPickerBridgeEnsureNewResponseInboxSheet_(ss);
+  const items = _problemPickerBridgeReadNewResponseInboxItems_(sh);
+
+  return {
+    sheetName: sh.getName(),
+    itemsCount: items.length,
+    items: payload.summaryOnly ? [] : items
+  };
+}
+
+function _problemPickerBridgeDeleteNewResponseInboxItem_(payload) {
+  _problemPickerBridgeValidateNewResponseInboxPayload_(payload);
+  const eventId = String(payload.eventId || '').trim();
+  if (!eventId) throw new Error('Не передан идентификатор непрочитанного ответа.');
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const ss = SpreadsheetApp.openById(PROBLEM_PICKER_BRIDGE_SPREADSHEET_ID);
+    const sh = _problemPickerBridgeEnsureNewResponseInboxSheet_(ss);
+    const existing = _problemPickerBridgeFindNewResponseInboxEvent_(sh, eventId);
+    if (existing) sh.deleteRow(existing.row);
+    const remainingCount = _problemPickerBridgeReadNewResponseInboxItems_(sh).length;
+
+    return {
+      eventId: eventId,
+      deleted: !!existing,
+      remainingCount: remainingCount
+    };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 function _problemPickerBridgeGetNewResponseRows_(payload) {
   const spreadsheetId = String(payload.spreadsheetId || '').trim();
 
@@ -243,6 +630,7 @@ function _problemPickerBridgeGetNewResponseRows_(payload) {
   }
 
   const ss = SpreadsheetApp.openById(PROBLEM_PICKER_BRIDGE_SPREADSHEET_ID);
+  _problemPickerBridgeRecoverPendingNewResponseInbox_(ss);
   const sh = ss.getSheetByName(sheetName);
 
   if (!sh) {
@@ -699,19 +1087,28 @@ function _problemPickerBridgeSaveItilInfoData_(payload) {
   }
 
   const infoRichText = _problemPickerBridgeBuildItilInfoRichText_(solutionText);
-  sh.getRange(row, colInfo).setRichTextValue(infoRichText);
-  _problemPickerBridgeResetRowColors_(
-    sh,
-    row,
-    _problemPickerBridgeOptionalColumn_(payload, 'response', sh, 'Пришел новый ответ'),
-    colSupp
-  );
+  const reviewCommit = _problemPickerBridgeCommitNewResponseInfo_({
+    ss: ss,
+    sh: sh,
+    row: row,
+    mode: 'itil',
+    itilNumber: itilNumber,
+    suppValue: rowSupp,
+    suppNumbers: [],
+    colInfo: colInfo,
+    colResp: _problemPickerBridgeOptionalColumn_(payload, 'response', sh, 'Пришел новый ответ'),
+    colSupp: colSupp,
+    infoRichText: infoRichText,
+    payload: payload
+  });
 
   return {
     sheetName: sheetName,
     row: row,
     itilNumber: itilNumber,
-    solutionTextLength: solutionText.length
+    solutionTextLength: solutionText.length,
+    reviewEventId: reviewCommit.eventId,
+    reviewEventCreated: reviewCommit.created
   };
 }
 
@@ -923,20 +1320,29 @@ function _problemPickerBridgeSaveSuppInfoData_(payload) {
   }
 
   const infoRichText = _problemPickerBridgeBuildSuppInfoRichText_(suppNumbers, infoText);
-  sh.getRange(row, colInfo).setRichTextValue(infoRichText);
-  _problemPickerBridgeResetRowColors_(
-    sh,
-    row,
-    _problemPickerBridgeOptionalColumn_(payload, 'response', sh, 'Пришел новый ответ'),
-    colSupp
-  );
+  const reviewCommit = _problemPickerBridgeCommitNewResponseInfo_({
+    ss: ss,
+    sh: sh,
+    row: row,
+    mode: 'supp',
+    itilNumber: '',
+    suppValue: rowSupp,
+    suppNumbers: suppNumbers,
+    colInfo: colInfo,
+    colResp: _problemPickerBridgeOptionalColumn_(payload, 'response', sh, 'Пришел новый ответ'),
+    colSupp: colSupp,
+    infoRichText: infoRichText,
+    payload: payload
+  });
 
   return {
     sheetName: sheetName,
     row: row,
     suppNumber: suppNumber,
     suppNumbers: suppNumbers,
-    infoTextLength: infoRichText.getText().length
+    infoTextLength: infoRichText.getText().length,
+    reviewEventId: reviewCommit.eventId,
+    reviewEventCreated: reviewCommit.created
   };
 }
 
