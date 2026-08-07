@@ -540,6 +540,11 @@ html.dup-ext-screenshot-mode [aria-label="Показать таймер"] {
     line-height: 1.45;
 }
 
+.dup-epgu-database-status[hidden],
+.dup-epgu-retry-exhausted[hidden] {
+    display: none !important;
+}
+
 .dup-epgu-database-status.is-error {
     color: #a12f2f;
     font-weight: 700;
@@ -819,6 +824,83 @@ html.dup-ext-screenshot-mode [aria-label="Показать таймер"] {
     color: #9e2c2c;
 }
 
+.dup-epgu-retry-exhausted {
+    display: grid;
+    grid-template-columns: 36px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border: 1px solid rgba(186, 119, 15, 0.32);
+    border-left: 4px solid #ba770f;
+    border-radius: 7px;
+    background: #fff8e8;
+    color: #493312;
+    box-shadow: 0 5px 14px rgba(86, 57, 12, 0.08);
+}
+
+.dup-epgu-retry-exhausted-mark {
+    display: inline-flex;
+    width: 32px;
+    height: 32px;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: rgba(186, 119, 15, 0.13);
+    color: #8e5907;
+    font-size: 20px;
+    font-weight: 800;
+}
+
+.dup-epgu-retry-exhausted-content {
+    min-width: 0;
+}
+
+.dup-epgu-retry-exhausted-title {
+    margin-bottom: 2px;
+    color: #493312;
+    font-size: 12px;
+    font-weight: 800;
+}
+
+.dup-epgu-retry-exhausted-message {
+    color: #6f511f;
+    font-size: 12px;
+    line-height: 1.4;
+}
+
+.dup-epgu-retry-exhausted-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.dup-epgu-retry-exhausted-actions button {
+    min-width: 58px;
+    min-height: 32px !important;
+    padding: 0 12px !important;
+    border-radius: 4px !important;
+    font-size: 12px !important;
+    font-weight: 700 !important;
+}
+
+.dup-epgu-retry-exhausted-no {
+    border-color: #8a989e !important;
+    background: #fff !important;
+    color: #314b57 !important;
+}
+
+.dup-epgu-retry-exhausted-yes {
+    border-color: #176b5b !important;
+    background: #176b5b !important;
+    color: #fff !important;
+}
+
+.dup-epgu-retry-exhausted-no:focus-visible,
+.dup-epgu-retry-exhausted-yes:focus-visible {
+    outline: 2px solid #294f60;
+    outline-offset: 2px;
+}
+
 .dup-epgu-retry-actions {
     justify-content: flex-end;
     padding-top: 10px;
@@ -860,6 +942,15 @@ html.dup-ext-screenshot-mode [aria-label="Показать таймер"] {
 
     .dup-epgu-summary-retry-button {
         width: 100%;
+    }
+
+    .dup-epgu-retry-exhausted {
+        grid-template-columns: 36px minmax(0, 1fr);
+    }
+
+    .dup-epgu-retry-exhausted-actions {
+        grid-column: 1 / -1;
+        justify-content: flex-end;
     }
 }
 

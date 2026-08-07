@@ -269,9 +269,9 @@
   const EPGU_REQUESTS_SUMMARY_REOPEN_STORAGE_KEY = 'dup_epgu_summary_reopen_once_v1';
   const EPGU_REQUESTS_SUMMARY_REOPEN_TTL_MS = 2 * 60 * 1000;
   const EPGU_REQUESTS_DATABASES = Object.freeze([
-    { depid: '39', label: 'Курган', departmentName: 'Курган' },
-    { depid: '66', label: 'Основная', departmentName: 'Тюмень и Тюменский участок (АСРН)' },
-    { depid: '70', label: 'ЮРИЦ', departmentName: 'ООО "ЮРИЦ"' }
+    { depid: '39', label: 'Курган', host: 'kgn.pyramid.vostok-electra.ru' },
+    { depid: '66', label: 'Основная', host: 'pyramid.vostok-electra.ru' },
+    { depid: '70', label: 'ЮРИЦ', host: 'yuric.pyramid.vostok-electra.ru' }
   ]);
   const EPGU_REQUESTS_FORM_PATH_PART = '/ovzid/epgurequests/form';
   const EPGU_REQUESTS_CREATE_BUTTON_ID = 'fromsbrfbutton';
@@ -6831,6 +6831,102 @@
     }
   }
 
+  function resetEpguUsedPairKeysForTarget(usedPairKeys, target) {
+    if (!(usedPairKeys instanceof Set) || !target || !target.claimantComparisonKey) return;
+    const prefix = `${target.claimantComparisonKey}\u241f`;
+    Array.from(usedPairKeys).forEach((pairKey) => {
+      if (String(pairKey || '').startsWith(prefix)) usedPairKeys.delete(pairKey);
+    });
+  }
+
+  function askEpguRestartClaimantNames(modal, target) {
+    const prompt = modal instanceof HTMLElement
+      ? modal.querySelector('.dup-epgu-retry-exhausted')
+      : null;
+    const message = prompt instanceof HTMLElement
+      ? prompt.querySelector('.dup-epgu-retry-exhausted-message')
+      : null;
+    const yesButton = prompt instanceof HTMLElement
+      ? prompt.querySelector('.dup-epgu-retry-exhausted-yes')
+      : null;
+    const noButton = prompt instanceof HTMLElement
+      ? prompt.querySelector('.dup-epgu-retry-exhausted-no')
+      : null;
+    if (
+      !(prompt instanceof HTMLElement) ||
+      !(message instanceof HTMLElement) ||
+      !(yesButton instanceof HTMLButtonElement) ||
+      !(noButton instanceof HTMLButtonElement)
+    ) {
+      return Promise.resolve(false);
+    }
+
+    message.textContent = `Для взыскателя «${target.claimantKey}» ФИО закончились. Хотите начать заново с первого ФИО?`;
+    prompt.hidden = false;
+    yesButton.disabled = false;
+    noButton.disabled = false;
+
+    return new Promise((resolve) => {
+      const finish = (restart) => {
+        yesButton.removeEventListener('click', handleYes, true);
+        noButton.removeEventListener('click', handleNo, true);
+        prompt.hidden = true;
+        resolve(restart);
+      };
+      const handleYes = () => finish(true);
+      const handleNo = () => finish(false);
+      yesButton.addEventListener('click', handleYes, { capture: true, once: true });
+      noButton.addEventListener('click', handleNo, { capture: true, once: true });
+      noButton.focus();
+    });
+  }
+
+  function isEpguRequestsGridLoading() {
+    const loading = document.getElementById('load_list');
+    if (!(loading instanceof HTMLElement)) return false;
+    const style = window.getComputedStyle(loading);
+    return !loading.hidden && style.display !== 'none' && style.visibility !== 'hidden';
+  }
+
+  async function refreshEpguRequestsGrid() {
+    const refreshButton = document.getElementById('refresh_list');
+    if (!(refreshButton instanceof HTMLElement)) return false;
+
+    refreshButton.click();
+    const startedAt = Date.now();
+    const timeoutMs = 20000;
+    let sawLoading = isEpguRequestsGridLoading();
+
+    while (Date.now() - startedAt < timeoutMs) {
+      await waitEpguRetryDelay(160);
+      const isLoading = isEpguRequestsGridLoading();
+      if (isLoading) sawLoading = true;
+      if (!isLoading && (sawLoading || Date.now() - startedAt >= 900)) return true;
+    }
+
+    return false;
+  }
+
+  async function returnEpguRetryToSummary(modal, refreshGrid) {
+    if (!(modal instanceof HTMLElement)) return;
+    modal.hidden = true;
+    const summaryModal = createEpguSummaryModal();
+    renderEpguSummaryModal(summaryModal);
+    summaryModal.hidden = false;
+
+    if (!refreshGrid) return;
+
+    const summaryMeta = summaryModal.querySelector('.dup-epgu-summary-meta');
+    if (summaryMeta instanceof HTMLElement) {
+      summaryMeta.textContent = 'Запросы созданы. Обновляем таблицу…';
+    }
+    await refreshEpguRequestsGrid();
+
+    if (!summaryModal.isConnected) return;
+    renderEpguSummaryModal(summaryModal);
+    summaryModal.hidden = false;
+  }
+
   function renderEpguRetrySelection(modal) {
     const state = getEpguRetryModalState(modal);
     if (!state) return;
@@ -6908,6 +7004,7 @@
     const title = modal.querySelector('.dup-execution-analysis-modal-title');
     const selectionMeta = modal.querySelector('.dup-epgu-retry-selection-meta');
     const notice = modal.querySelector('.dup-epgu-retry-notice');
+    const exhaustedPrompt = modal.querySelector('.dup-epgu-retry-exhausted');
     const cancelButton = modal.querySelector('.dup-epgu-retry-cancel');
     const startButton = modal.querySelector('.dup-epgu-retry-start');
     const closeButton = modal.querySelector('.dup-execution-analysis-modal-close');
@@ -6916,6 +7013,7 @@
       notice.textContent = 'Не закрывайте страницу: запросы отправляются строго по одному.';
       notice.classList.remove('is-error');
     }
+    if (exhaustedPrompt instanceof HTMLElement) exhaustedPrompt.hidden = true;
 
     const usedPairKeys = new Set();
     state.summary.items.forEach((item) => {
@@ -6923,9 +7021,11 @@
       item.usedPairKeys.forEach((key) => usedPairKeys.add(key));
     });
 
+    const restartedClaimants = new Set();
     let successCount = 0;
     let skippedCount = 0;
     let failedTarget = null;
+    let stoppedByChoice = false;
 
     for (let index = 0; index < selectedTargets.length; index += 1) {
       const target = selectedTargets[index];
@@ -6934,46 +7034,80 @@
       }
       setEpguRetryTargetProgress(modal, target, 'running', 'Открываем системную форму и подбираем новое ФИО…');
 
-      try {
-        const candidate = await sendEpguRetryRequestForTarget(target, usedPairKeys);
-        usedPairKeys.add(candidate.pairComparisonKey);
-        successCount += 1;
-        setEpguRetryTargetProgress(modal, target, 'success', `Запрос создан: ${candidate.fullText}.`);
-      } catch (error) {
-        if (error && error.code === 'EPGU_NO_UNUSED_PERSON') {
-          skippedCount += 1;
-          setEpguRetryTargetProgress(modal, target, 'skipped', error.message);
-          continue;
+      let targetFinished = false;
+      while (!targetFinished) {
+        try {
+          const candidate = await sendEpguRetryRequestForTarget(target, usedPairKeys);
+          usedPairKeys.add(candidate.pairComparisonKey);
+          successCount += 1;
+          setEpguRetryTargetProgress(modal, target, 'success', `Запрос создан: ${candidate.fullText}.`);
+          targetFinished = true;
+        } catch (error) {
+          if (
+            error &&
+            error.code === 'EPGU_NO_UNUSED_PERSON' &&
+            !restartedClaimants.has(target.claimantComparisonKey)
+          ) {
+            const restartNames = await askEpguRestartClaimantNames(modal, target);
+            if (!restartNames) {
+              skippedCount += 1;
+              stoppedByChoice = true;
+              setEpguRetryTargetProgress(
+                modal,
+                target,
+                'skipped',
+                'ФИО закончились. Повторный цикл не запущен.'
+              );
+              targetFinished = true;
+              break;
+            }
+
+            restartedClaimants.add(target.claimantComparisonKey);
+            resetEpguUsedPairKeysForTarget(usedPairKeys, target);
+            setEpguRetryTargetProgress(
+              modal,
+              target,
+              'running',
+              'Учёт ФИО сброшен. Начинаем заново с первого ФИО…'
+            );
+            continue;
+          }
+
+          failedTarget = target;
+          setEpguRetryTargetProgress(
+            modal,
+            target,
+            'error',
+            error && error.message ? error.message : 'Неизвестная ошибка отправки.'
+          );
+          targetFinished = true;
         }
-
-        failedTarget = target;
-        setEpguRetryTargetProgress(
-          modal,
-          target,
-          'error',
-          error && error.message ? error.message : 'Неизвестная ошибка отправки.'
-        );
-        break;
       }
-    }
 
-    if (successCount > 0) {
-      document.getElementById('refresh_list')?.click();
+      if (failedTarget || stoppedByChoice) break;
     }
 
     state.running = false;
     epguRetryBatchRunning = false;
     modal.dataset.running = 'false';
+
+    if (!failedTarget) {
+      if (selectionMeta instanceof HTMLElement) {
+        selectionMeta.textContent = stoppedByChoice
+          ? `Остановлено пользователем. Успешно: ${successCount}, пропущено: ${skippedCount}.`
+          : `Готово. Успешно: ${successCount}, пропущено: ${skippedCount}.`;
+      }
+      await returnEpguRetryToSummary(modal, successCount > 0);
+      return;
+    }
+
+    if (successCount > 0) await refreshEpguRequestsGrid();
     if (selectionMeta instanceof HTMLElement) {
-      selectionMeta.textContent = failedTarget
-        ? `Пакет остановлен на взыскателе «${failedTarget.claimantKey}». Успешно: ${successCount}, пропущено: ${skippedCount}.`
-        : `Готово. Успешно: ${successCount}, пропущено: ${skippedCount}.`;
+      selectionMeta.textContent = `Пакет остановлен на взыскателе «${failedTarget.claimantKey}». Успешно: ${successCount}, пропущено: ${skippedCount}.`;
     }
     if (notice instanceof HTMLElement) {
-      notice.textContent = failedTarget
-        ? 'Следующие взыскатели не обрабатывались. Закройте окно, проверьте причину и запустите повторно.'
-        : 'Пакет завершён. Грид обновляется.';
-      notice.classList.toggle('is-error', !!failedTarget);
+      notice.textContent = 'Следующие взыскатели не обрабатывались. Закройте окно, проверьте причину и запустите повторно.';
+      notice.classList.add('is-error');
     }
     if (cancelButton instanceof HTMLButtonElement) {
       cancelButton.disabled = false;
@@ -7009,6 +7143,17 @@
         <div class="dup-epgu-retry-selection-meta"></div>
         <div class="dup-epgu-retry-list" role="group" aria-label="Неуспешные взыскатели"></div>
         <div class="dup-epgu-retry-notice" aria-live="polite"></div>
+        <div class="dup-epgu-retry-exhausted" role="alertdialog" aria-labelledby="dup-epgu-retry-exhausted-title" hidden>
+          <div class="dup-epgu-retry-exhausted-mark" aria-hidden="true">↻</div>
+          <div class="dup-epgu-retry-exhausted-content">
+            <div id="dup-epgu-retry-exhausted-title" class="dup-epgu-retry-exhausted-title">ФИО закончились</div>
+            <div class="dup-epgu-retry-exhausted-message"></div>
+          </div>
+          <div class="dup-epgu-retry-exhausted-actions">
+            <button type="button" class="dup-epgu-retry-exhausted-no">Нет</button>
+            <button type="button" class="dup-epgu-retry-exhausted-yes">Да</button>
+          </div>
+        </div>
         <div class="dup-execution-analysis-modal-actions dup-epgu-retry-actions">
           <button type="button" class="dup-epgu-retry-cancel">Отмена</button>
           <button type="button" class="dup-epgu-retry-start">Отправить запросы</button>
@@ -7076,6 +7221,7 @@
 
     const title = modal.querySelector('.dup-execution-analysis-modal-title');
     const notice = modal.querySelector('.dup-epgu-retry-notice');
+    const exhaustedPrompt = modal.querySelector('.dup-epgu-retry-exhausted');
     const cancelButton = modal.querySelector('.dup-epgu-retry-cancel');
     const startButton = modal.querySelector('.dup-epgu-retry-start');
     modal.querySelectorAll('button, input').forEach((element) => {
@@ -7086,6 +7232,7 @@
       notice.textContent = '';
       notice.classList.remove('is-error');
     }
+    if (exhaustedPrompt instanceof HTMLElement) exhaustedPrompt.hidden = true;
     if (cancelButton instanceof HTMLButtonElement) cancelButton.textContent = 'Отмена';
     if (startButton instanceof HTMLButtonElement) startButton.hidden = false;
 
@@ -7106,13 +7253,9 @@
     )) || null;
   }
 
-  function getActiveEpguDepartmentLink() {
-    const activeLink = document.querySelector(`${SLOWSEARCH_CITIES_LINK_SELECTOR}.active`);
-    return activeLink instanceof HTMLAnchorElement ? activeLink : null;
-  }
-
-  function getActiveEpguDepartmentDepid() {
-    return getDepartmentLinkDepid(getActiveEpguDepartmentLink());
+  function getActiveEpguDatabase() {
+    const currentHost = normalizeDepartmentContainerHost(window.location.hostname);
+    return EPGU_REQUESTS_DATABASES.find((database) => database.host === currentHost) || null;
   }
 
   function setEpguSummaryReopenPending(value) {
@@ -7145,39 +7288,31 @@
     if (!(modal instanceof HTMLElement)) return;
     const switcher = modal.querySelector('.dup-epgu-database-switcher');
     const status = modal.querySelector('.dup-epgu-database-status');
-    if (!(switcher instanceof HTMLElement) || !(status instanceof HTMLElement)) return;
+    if (!(switcher instanceof HTMLElement)) return;
 
-    const activeLink = getActiveEpguDepartmentLink();
-    const activeDepid = getDepartmentLinkDepid(activeLink);
-    const activeDatabase = getEpguDatabaseConfig(activeDepid);
+    const activeDatabase = getActiveEpguDatabase();
     const isSwitching = modal.dataset.databaseSwitching === 'true';
 
     switcher.querySelectorAll('.dup-epgu-database-button').forEach((button) => {
       if (!(button instanceof HTMLButtonElement)) return;
-      const isActive = button.dataset.depid === activeDepid;
+      const isActive = !!activeDatabase && button.dataset.depid === activeDatabase.depid;
       button.classList.toggle('is-active', isActive);
       button.disabled = isSwitching || isActive;
       button.setAttribute('aria-pressed', isActive ? 'true' : 'false');
     });
 
-    if (isSwitching) return;
-    status.classList.remove('is-error');
-    if (activeDatabase) {
-      status.textContent = `Открыта база «${activeDatabase.label}»: ${activeDatabase.departmentName}.`;
-      return;
+    if (!isSwitching && status instanceof HTMLElement) {
+      status.textContent = '';
+      status.hidden = true;
+      status.classList.remove('is-error');
     }
-
-    const currentDepartmentName = normalizeEpguRequestsCellText(activeLink && activeLink.textContent);
-    status.textContent = currentDepartmentName
-      ? `Текущий департамент: ${currentDepartmentName}. Выберите базу для проверки.`
-      : 'Выберите базу для проверки запросов.';
   }
 
   async function switchEpguRequestsDatabase(modal, depid) {
     if (!(modal instanceof HTMLElement) || modal.dataset.databaseSwitching === 'true') return false;
     const database = getEpguDatabaseConfig(depid);
     if (!database) return false;
-    if (getActiveEpguDepartmentDepid() === database.depid) return true;
+    if (getActiveEpguDatabase() === database) return true;
 
     const status = modal.querySelector('.dup-epgu-database-status');
     const targetLink = findEpguDatabaseDepartmentLink(database.depid);
@@ -7185,6 +7320,7 @@
     if (!(targetLink instanceof HTMLAnchorElement) || !targetUrl) {
       if (status instanceof HTMLElement) {
         status.textContent = `Не найден штатный пункт базы «${database.label}». Откройте dropdown департаментов и повторите.`;
+        status.hidden = false;
         status.classList.add('is-error');
       }
       return false;
@@ -7196,9 +7332,10 @@
     } catch (error) {
       targetHost = '';
     }
-    if (!targetHost) {
+    if (!targetHost || targetHost !== database.host) {
       if (status instanceof HTMLElement) {
         status.textContent = `У базы «${database.label}» некорректная ссылка перехода.`;
+        status.hidden = false;
         status.classList.add('is-error');
       }
       return false;
@@ -7210,6 +7347,7 @@
     });
     if (status instanceof HTMLElement) {
       status.textContent = `Переходим в базу «${database.label}»…`;
+      status.hidden = false;
       status.classList.remove('is-error');
     }
 
@@ -7223,6 +7361,7 @@
       renderEpguDatabaseSwitcher(modal);
       if (status instanceof HTMLElement) {
         status.textContent = 'Не удалось подготовить автоматическое открытие сводки после перехода.';
+        status.hidden = false;
         status.classList.add('is-error');
       }
       return false;
@@ -7238,6 +7377,7 @@
         renderEpguDatabaseSwitcher(modal);
         if (status instanceof HTMLElement) {
           status.textContent = `База «${database.label}» открыта в отдельной вкладке.`;
+          status.hidden = false;
           status.classList.remove('is-error');
         }
       }, 2500);
@@ -7248,6 +7388,7 @@
       renderEpguDatabaseSwitcher(modal);
       if (status instanceof HTMLElement) {
         status.textContent = `Не удалось перейти в базу «${database.label}».`;
+        status.hidden = false;
         status.classList.add('is-error');
       }
       return false;
@@ -7282,17 +7423,15 @@
         const gridIsLoading = loading instanceof HTMLElement &&
           window.getComputedStyle(loading).display !== 'none' &&
           window.getComputedStyle(loading).visibility !== 'hidden';
-        const targetIsActive = getActiveEpguDepartmentDepid() === targetDepid;
 
         if (
           currentHost === targetHost &&
-          targetIsActive &&
           summaryButton instanceof HTMLElement &&
           grid instanceof HTMLElement &&
           !gridIsLoading
         ) {
           void clearEpguSummaryReopenPending().then(() => {
-            if (isEpguRequestsPage() && getActiveEpguDepartmentDepid() === targetDepid) {
+            if (isEpguRequestsPage() && normalizeDepartmentContainerHost(window.location.hostname) === targetHost) {
               openEpguSummaryModal();
             }
           });
@@ -7418,7 +7557,7 @@
             <button type="button" class="dup-epgu-database-button" data-depid="66">Основная</button>
             <button type="button" class="dup-epgu-database-button" data-depid="70">ЮРИЦ</button>
           </div>
-          <div class="dup-epgu-database-status" aria-live="polite"></div>
+          <div class="dup-epgu-database-status" aria-live="polite" hidden></div>
         </div>
         <div class="dup-epgu-summary-meta"></div>
         <div class="dup-epgu-summary-list" role="list"></div>
