@@ -30,6 +30,7 @@
   const SUPP_NUMBER_HEADER = 'Номер СУПП (последний)';
   const ITIL_INFO_HEADER = 'Информация из СУПП/ITIL';
   const NEW_RESPONSE_HEADER = 'Пришел новый ответ';
+  const FAVORITE_HEADER = 'Избранное';
   const REQUEST_DATE_HEADER = 'Дата заявки';
   const REQUEST_STATUS_HEADER = 'Статус заявки';
   const CURRENT_STAGE_HEADER = 'Текущий этап';
@@ -1664,6 +1665,7 @@
     const initiatorColumnIndex = headers.indexOf(INITIATOR_HEADER);
     const itilColumnIndex = headers.indexOf(ITIL_NUMBER_HEADER);
     const suppColumnIndex = headers.indexOf(SUPP_NUMBER_HEADER);
+    const favoriteColumnIndex = headers.indexOf(FAVORITE_HEADER);
     if (
       textColumnIndex < 0 ||
       infoColumnIndex < 0 ||
@@ -1672,9 +1674,10 @@
       statusColumnIndex < 0 ||
       initiatorColumnIndex < 0 ||
       itilColumnIndex < 0 ||
-      suppColumnIndex < 0
+      suppColumnIndex < 0 ||
+      favoriteColumnIndex < 0
     ) {
-      throw new Error('Не найдены колонки «Дата заявки», «Статус заявки», «Инициатор», «Номер ITIL», «Номер СУПП (последний)», «Текст заявки», «Информация из СУПП/ITIL» или «Проблемы».');
+      throw new Error('Не найдены колонки «Дата заявки», «Статус заявки», «Инициатор», «Номер ITIL», «Номер СУПП (последний)», «Текст заявки», «Информация из СУПП/ITIL», «Проблемы» или «Избранное».');
     }
 
     const queue = [];
@@ -1696,7 +1699,9 @@
           initiator: String(row[initiatorColumnIndex] || '').trim(),
           itilNumber: String(row[itilColumnIndex] || '').trim(),
           suppValue,
-          suppNumbers: extractSuppNumbers(suppValue)
+          suppNumbers: extractSuppNumbers(suppValue),
+          favorite: isFavoriteCellValue(row[favoriteColumnIndex]),
+          favoriteAvailable: true
         });
       }
     }
@@ -1730,7 +1735,8 @@
         status: statusColumnIndex + 1,
         initiator: initiatorColumnIndex + 1,
         itil: itilColumnIndex + 1,
-        supp: suppColumnIndex + 1
+        supp: suppColumnIndex + 1,
+        favorite: favoriteColumnIndex + 1
       },
       isLoading: false,
       savedSelections: {}
@@ -1804,6 +1810,10 @@
     return text === '–' || text === '—' || text === '-';
   }
 
+  function isFavoriteCellValue(value) {
+    return String(value == null ? '' : value).trim().toLowerCase() === 'да';
+  }
+
   function extractSuppNumbers(value) {
     const lines = String(value || '')
       .replace(/\r\n?/g, '\n')
@@ -1860,11 +1870,12 @@
       itil: headers.indexOf(ITIL_NUMBER_HEADER),
       supp: headers.indexOf(SUPP_NUMBER_HEADER),
       text: headers.indexOf(TEXT_HEADER),
-      info: headers.indexOf(ITIL_INFO_HEADER)
+      info: headers.indexOf(ITIL_INFO_HEADER),
+      favorite: headers.indexOf(FAVORITE_HEADER)
     };
 
-    if ([indexes.date, indexes.status, indexes.initiator, indexes.itil, indexes.supp, indexes.text, indexes.info].some((index) => index < 0)) {
-      throw new Error('Не найдены колонки «Дата заявки», «Статус заявки», «Инициатор», «Номер ITIL», «Номер СУПП (последний)», «Текст заявки» или «Информация из СУПП/ITIL».');
+    if ([indexes.date, indexes.status, indexes.initiator, indexes.itil, indexes.supp, indexes.text, indexes.info, indexes.favorite].some((index) => index < 0)) {
+      throw new Error('Не найдены колонки «Дата заявки», «Статус заявки», «Инициатор», «Номер ITIL», «Номер СУПП (последний)», «Текст заявки», «Информация из СУПП/ITIL» или «Избранное».');
     }
 
     const byRow = new Map();
@@ -1881,7 +1892,9 @@
           suppValue: String(row[indexes.supp] || '').trim(),
           suppNumbers: extractSuppNumbers(row[indexes.supp]),
           text: String(row[indexes.text] || '').trim(),
-          info: String(row[indexes.info] || '').trim()
+          info: String(row[indexes.info] || '').trim(),
+          favorite: isFavoriteCellValue(row[indexes.favorite]),
+          favoriteAvailable: true
         });
     }
 
@@ -2268,6 +2281,103 @@
     return newResponseReviewState.queue[newResponseReviewState.currentIndex] || null;
   }
 
+  function renderFavoriteControl(modal, item, buttonSelector, layoutSelector) {
+    if (!(modal instanceof HTMLElement)) return;
+
+    const button = $(buttonSelector, modal);
+    const layout = $(layoutSelector, modal);
+    const isFavorite = !!(item && item.favorite);
+    const isSaving = !!(item && item.favoriteSaving);
+    const isAvailable = !!item && item.favoriteAvailable !== false && !!state.bridgeUrl;
+
+    if (layout instanceof HTMLElement) {
+      layout.classList.toggle('is-favorite', isFavorite);
+    }
+
+    if (!(button instanceof HTMLButtonElement)) return;
+    button.textContent = isFavorite ? '★' : '☆';
+    button.classList.toggle('is-active', isFavorite);
+    button.classList.toggle('is-saving', isSaving);
+    button.disabled = !isAvailable || isSaving;
+    button.setAttribute('aria-pressed', isFavorite ? 'true' : 'false');
+
+    if (!item) {
+      button.setAttribute('aria-label', 'Нет текущей заявки для избранного');
+      button.title = 'Нет текущей заявки';
+    } else if (!state.bridgeUrl) {
+      button.setAttribute('aria-label', 'URL bridge не задан');
+      button.title = 'Нажми F2, затем «URL bridge» и задай Apps Script bridge.';
+    } else if (item.favoriteAvailable === false) {
+      button.setAttribute('aria-label', 'Избранное для этой заявки недоступно');
+      button.title = 'Обновите Apps Script bridge и проверьте исходную строку заявки.';
+    } else if (isSaving) {
+      button.setAttribute('aria-label', 'Сохраняю состояние избранного');
+      button.title = 'Сохраняю...';
+    } else if (isFavorite) {
+      button.setAttribute('aria-label', 'Убрать заявку из избранного');
+      button.title = 'Убрать из избранного';
+    } else {
+      button.setAttribute('aria-label', 'Добавить заявку в избранное');
+      button.title = 'Добавить в избранное';
+    }
+  }
+
+  async function toggleFavoriteItem(item, sheetName, render) {
+    if (!item || item.favoriteSaving || item.favoriteAvailable === false) return;
+
+    item.favoriteSaving = true;
+    item.favoriteError = '';
+    if (typeof render === 'function') render();
+
+    try {
+      await loadBridgeUrl();
+      if (!state.bridgeUrl) throw new Error('URL bridge не задан. Нажми F2, затем «URL bridge».');
+
+      const nextFavorite = !item.favorite;
+      const response = await sendRuntimeMessage({
+        action: SAVE_ACTION,
+        data: {
+          bridgeUrl: state.bridgeUrl,
+          payload: {
+            action: 'setFavoriteState',
+            spreadsheetId: CONFIG.spreadsheetId,
+            sheetName: String(sheetName || '').trim(),
+            row: Number(item.row),
+            isFavorite: nextFavorite,
+            expectedItilNumber: String(item.itilNumber || ''),
+            expectedSuppValue: String(item.suppValue || ''),
+            expectedRequestText: String(item.text || ''),
+            expectedCleanRequestText: processRequestText(item && item.text ? item.text : '')
+          }
+        }
+      });
+      if (!response || response.success !== true) {
+        throw new Error(getRuntimeResponseError(response, 'bridge не сохранил состояние избранного'));
+      }
+
+      const bridgeResult = getBridgeActionResult(response);
+      item.favorite = bridgeResult && typeof bridgeResult.favorite === 'boolean'
+        ? bridgeResult.favorite
+        : nextFavorite;
+    } catch (error) {
+      item.favoriteError = error && error.message
+        ? error.message
+        : 'Не удалось сохранить состояние избранного.';
+    } finally {
+      item.favoriteSaving = false;
+      if (typeof render === 'function') render();
+    }
+  }
+
+  function toggleCurrentClassificationFavorite() {
+    return toggleFavoriteItem(getCurrentItem(), state.sheetName, renderModal);
+  }
+
+  function toggleCurrentNewResponseFavorite() {
+    const item = getNewResponseReviewCurrentItem();
+    return toggleFavoriteItem(item, item && item.sourceSheetName, renderNewResponseReviewModal);
+  }
+
   function hasNewResponseReviewHistory() {
     return newResponseInboxState.unreadCount > 0
       || (Array.isArray(newResponseReviewState.queue) && newResponseReviewState.queue.length > 0);
@@ -2297,7 +2407,9 @@
       text: String(item && item.text || '').trim(),
       beforeInfo,
       afterInfo,
-      infoBlocks: buildInfoBlockDiff(beforeInfo, afterInfo)
+      infoBlocks: buildInfoBlockDiff(beforeInfo, afterInfo),
+      favorite: !!(item && item.favorite),
+      favoriteAvailable: !!(item && item.favoriteAvailable === true)
     };
   }
 
@@ -2835,7 +2947,9 @@
       text: String(item && item.text || '').trim(),
       beforeInfo: String(item && item.info || '').trim(),
       afterInfo,
-      infoBlocks: buildInfoBlockDiff(item && item.info, afterInfo)
+      infoBlocks: buildInfoBlockDiff(item && item.info, afterInfo),
+      favorite: !!(item && item.favorite),
+      favoriteAvailable: item && item.favoriteAvailable !== false
     };
   }
 
@@ -3260,6 +3374,14 @@
       #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-meta,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-message{color:#566176;font-size:13px}
       #${MODAL_ID} .gs-problem-picker-close-x{width:34px;height:34px;padding:0;font-size:22px;line-height:1}
       #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-close-x{width:34px;height:34px;padding:0;font-size:22px;line-height:1}
+      #${MODAL_ID} .gs-modal-header-actions,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-modal-header-actions{display:flex;align-items:center;gap:8px;flex:none}
+      #${MODAL_ID} .gs-favorite-toggle,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-favorite-toggle{width:34px;height:34px;display:grid;place-items:center;padding:0;border-color:#d5c89b;background:#fffdf5;color:#806b2a;font-size:23px;line-height:1;box-shadow:none;transition:background-color .16s ease,border-color .16s ease,color .16s ease,box-shadow .16s ease,transform .16s ease}
+      #${MODAL_ID} .gs-favorite-toggle:hover:not(:disabled),#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-favorite-toggle:hover:not(:disabled),#${MODAL_ID} .gs-favorite-toggle:focus-visible,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-favorite-toggle:focus-visible{border-color:#d39b00;background:#fff4bd;color:#8a5b00;outline:2px solid rgba(211,155,0,.2);outline-offset:2px;transform:translateY(-1px)}
+      #${MODAL_ID} .gs-favorite-toggle.is-active,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-favorite-toggle.is-active{border-color:#d69e00;background:#fbbc04;color:#674600;box-shadow:0 7px 18px rgba(180,125,0,.24)}
+      #${MODAL_ID} .gs-favorite-toggle:disabled,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-favorite-toggle:disabled{opacity:.56;cursor:default;transform:none}
+      #${MODAL_ID} .gs-problem-picker-panel,#${MODAL_ID} .gs-problem-picker-category-rail,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-panel{transition:background .2s ease,border-color .2s ease,box-shadow .2s ease}
+      #${MODAL_ID} .gs-problem-picker-layout.is-favorite .gs-problem-picker-panel,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-layout.is-favorite .gs-new-response-review-panel{border-color:#e2c55d;background:linear-gradient(145deg,#fffef8 0%,#fff8d7 100%);box-shadow:0 24px 70px rgba(116,79,0,.3),inset 0 0 0 1px rgba(251,188,4,.1)}
+      #${MODAL_ID} .gs-problem-picker-layout.is-favorite .gs-problem-picker-category-rail{border-color:#e2c55d;background:linear-gradient(155deg,#fffdf5 0%,#fff3bf 100%);box-shadow:0 24px 70px rgba(116,79,0,.22),inset 0 0 0 1px rgba(251,188,4,.08)}
       #${MODAL_ID} .gs-problem-picker-progress{width:fit-content;padding:5px 10px;border-radius:999px;background:#e8f3ee;color:#14532d;font-size:13px;font-weight:700}
       #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-progress{width:fit-content;padding:5px 10px;border-radius:999px;background:#e8f3ee;color:#14532d;font-size:13px;font-weight:700}
       #${MODAL_ID} .gs-request-summary,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-request-summary{display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:flex-start;gap:8px}
@@ -5509,7 +5631,10 @@
               <div class="gs-problem-picker-title">Классификация проблемы</div>
               <div class="gs-problem-picker-meta"></div>
             </div>
-            <button type="button" class="gs-problem-picker-close-x" aria-label="Закрыть">×</button>
+            <div class="gs-modal-header-actions">
+              <button type="button" class="gs-favorite-toggle gs-problem-picker-favorite" aria-label="Добавить заявку в избранное" aria-pressed="false" title="Добавить в избранное">☆</button>
+              <button type="button" class="gs-problem-picker-close-x" aria-label="Закрыть">×</button>
+            </div>
           </header>
           <div class="gs-problem-picker-progress"></div>
           <div class="gs-request-summary"></div>
@@ -5560,6 +5685,9 @@
     };
 
     $('.gs-problem-picker-back', modal)?.addEventListener('click', goToPreviousClassificationItem, { capture: true });
+    $('.gs-problem-picker-favorite', modal)?.addEventListener('click', () => {
+      void toggleCurrentClassificationFavorite();
+    }, { capture: true });
     $('.gs-problem-picker-close-x', modal)?.addEventListener('click', close, { capture: true });
     $('.gs-problem-picker-close', modal)?.addEventListener('click', close, { capture: true });
 
@@ -5594,6 +5722,8 @@
     const info = $('.gs-problem-picker-info', modal);
     const backButton = $('.gs-problem-picker-back', modal);
     const categoryButtons = getCategoryButtons(modal);
+
+    renderFavoriteControl(modal, item, '.gs-problem-picker-favorite', '.gs-problem-picker-layout');
 
     const pending = state.pendingSaveCount ? ` · в фоне: ${state.pendingSaveCount}` : '';
     const failed = state.failedSaveCount ? ` · ошибок: ${state.failedSaveCount}` : '';
@@ -5642,7 +5772,11 @@
       backButton.disabled = !canGoBackInClassification();
     }
 
-    if (!state.bridgeUrl) {
+    if (item && item.favoriteError) {
+      setModalMessage(item.favoriteError, true);
+    } else if (item && item.favoriteSaving) {
+      setModalMessage(item.favorite ? 'Убираю заявку из избранного...' : 'Добавляю заявку в избранное...', false);
+    } else if (!state.bridgeUrl) {
       setModalMessage('URL bridge не задан. Нажми F2, затем «URL bridge».', true);
     } else if (state.failedSaveCount) {
       setModalMessage(state.lastBackgroundError || `Есть ошибки фонового сохранения: ${state.failedSaveCount}.`, true);
@@ -5755,7 +5889,10 @@
               <div class="gs-new-response-review-title">Новые ответы</div>
               <div class="gs-new-response-review-meta"></div>
             </div>
-            <button type="button" class="gs-new-response-review-close-x" aria-label="Закрыть">×</button>
+            <div class="gs-modal-header-actions">
+              <button type="button" class="gs-favorite-toggle gs-new-response-review-favorite" aria-label="Добавить заявку в избранное" aria-pressed="false" title="Добавить в избранное">☆</button>
+              <button type="button" class="gs-new-response-review-close-x" aria-label="Закрыть">×</button>
+            </div>
           </header>
           <div class="gs-new-response-review-progress"></div>
           <div class="gs-request-summary"></div>
@@ -5786,6 +5923,9 @@
 
     $('.gs-new-response-review-close-x', modal)?.addEventListener('click', close, { capture: true });
     $('.gs-new-response-review-close', modal)?.addEventListener('click', close, { capture: true });
+    $('.gs-new-response-review-favorite', modal)?.addEventListener('click', () => {
+      void toggleCurrentNewResponseFavorite();
+    }, { capture: true });
     $('.gs-new-response-review-next', modal)?.addEventListener('click', () => {
       void acknowledgeCurrentNewResponseReviewItem();
     }, { capture: true });
@@ -5806,6 +5946,8 @@
     const info = $('.gs-new-response-review-info', modal);
     const message = $('.gs-new-response-review-message', modal);
     const nextButton = $('.gs-new-response-review-next', modal);
+
+    renderFavoriteControl(modal, item, '.gs-new-response-review-favorite', '.gs-new-response-review-layout');
 
     if (meta instanceof HTMLElement) {
       meta.textContent = `Лист: ${item && item.sourceSheetName ? item.sourceSheetName : (newResponseReviewState.sourceSheetName || newResponseState.sheetName || 'не выбран')} · непрочитано: ${newResponseReviewState.queue.length}`;
@@ -5839,10 +5981,14 @@
     }
 
     if (message instanceof HTMLElement) {
-      message.textContent = newResponseReviewState.errorText
+      message.textContent = (item && item.favoriteError)
+        || (item && item.favoriteSaving
+          ? (item.favorite ? 'Убираю заявку из избранного...' : 'Добавляю заявку в избранное...')
+          : '')
+        || newResponseReviewState.errorText
         || (newResponseReviewState.isProcessing ? (newResponseState.statusText || newResponseReviewState.statusText) : newResponseReviewState.statusText)
         || '';
-      message.classList.toggle('is-error', !!newResponseReviewState.errorText);
+      message.classList.toggle('is-error', !!(item && item.favoriteError) || !!newResponseReviewState.errorText);
     }
 
     if (nextButton instanceof HTMLButtonElement) {

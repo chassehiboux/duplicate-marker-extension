@@ -4,6 +4,8 @@ const PROBLEM_PICKER_BRIDGE_NEW_RESPONSE_GREEN = '#00ff00';
 const PROBLEM_PICKER_BRIDGE_NEW_RESPONSE_INBOX_SHEET = 'Служебные новые ответы';
 const PROBLEM_PICKER_BRIDGE_NEW_RESPONSE_INBOX_PENDING = 'pending';
 const PROBLEM_PICKER_BRIDGE_NEW_RESPONSE_INBOX_UNREAD = 'unread';
+const PROBLEM_PICKER_BRIDGE_FAVORITE_HEADER = 'Избранное';
+const PROBLEM_PICKER_BRIDGE_FAVORITE_VALUE = 'Да';
 const PROBLEM_PICKER_BRIDGE_NEW_RESPONSE_INBOX_HEADERS = [
   'event_id',
   'state',
@@ -106,6 +108,8 @@ function doPost(e) {
 
     if (payload.action === 'saveProblem') {
       result = _problemPickerBridgeSaveProblem_(payload);
+    } else if (payload.action === 'setFavoriteState') {
+      result = _problemPickerBridgeSetFavoriteState_(payload);
     } else if (payload.action === 'saveItilData') {
       result = _problemPickerBridgeSaveItilData_(payload);
     } else if (payload.action === 'saveSuppData') {
@@ -173,6 +177,17 @@ function _problemPickerBridgeHasPayloadColumnKey_(payload, key) {
     ? payload.columns
     : null;
   return !!columns && Object.prototype.hasOwnProperty.call(columns, key);
+}
+
+function _problemPickerBridgeIsFavoriteValue_(value) {
+  return String(value == null ? '' : value).trim().toLowerCase() ===
+    PROBLEM_PICKER_BRIDGE_FAVORITE_VALUE.toLowerCase();
+}
+
+function _problemPickerBridgeNormalizeFavoriteAnchor_(value) {
+  return String(value == null ? '' : value)
+    .replace(/\r\n?/g, '\n')
+    .trim();
 }
 
 function _problemPickerBridgeColumn_(payload, key, sh, header) {
@@ -571,6 +586,79 @@ function _problemPickerBridgeReadNewResponseInboxItems_(sh) {
   });
 }
 
+function _problemPickerBridgeAttachNewResponseFavoriteStates_(ss, items) {
+  const sourceItems = Array.isArray(items) ? items : [];
+  const grouped = {};
+
+  sourceItems.forEach(function(item) {
+    const sheetName = String(item && item.sourceSheetName || '').trim();
+    if (!grouped[sheetName]) grouped[sheetName] = [];
+    grouped[sheetName].push(item);
+    item.favorite = false;
+    item.favoriteAvailable = false;
+  });
+
+  Object.keys(grouped).forEach(function(sheetName) {
+    if (PROBLEM_PICKER_BRIDGE_ALLOWED_SHEETS.indexOf(sheetName) === -1) return;
+
+    const sourceSheet = ss.getSheetByName(sheetName);
+    if (!sourceSheet) return;
+
+    const favoriteColumn = getColByHeader(sourceSheet, PROBLEM_PICKER_BRIDGE_FAVORITE_HEADER);
+    const itilColumn = getColByHeader(sourceSheet, 'Номер ITIL');
+    const suppColumn = getColByHeader(sourceSheet, 'Номер СУПП (последний)');
+    const textColumn = getColByHeader(sourceSheet, TEXT_HEADER);
+    if (!favoriteColumn || !itilColumn || !suppColumn || !textColumn) {
+      throw new Error(
+        'На листе «' + sheetName + '» не найдены колонки «' +
+        PROBLEM_PICKER_BRIDGE_FAVORITE_HEADER + '», «Номер ITIL», «Номер СУПП (последний)» или «' +
+        TEXT_HEADER + '».'
+      );
+    }
+
+    const sourceLastRow = sourceSheet.getLastRow();
+    const validRows = grouped[sheetName].map(function(item) {
+      return Number(item && item.row || 0);
+    }).filter(function(row) {
+      return Number.isInteger(row) && row >= 2 && row <= sourceLastRow;
+    });
+    if (!validRows.length) return;
+
+    const minRow = Math.min.apply(null, validRows);
+    const maxRow = Math.max.apply(null, validRows);
+    const minColumn = Math.min(favoriteColumn, itilColumn, suppColumn, textColumn);
+    const maxColumn = Math.max(favoriteColumn, itilColumn, suppColumn, textColumn);
+    const values = sourceSheet.getRange(
+      minRow,
+      minColumn,
+      maxRow - minRow + 1,
+      maxColumn - minColumn + 1
+    ).getDisplayValues();
+
+    grouped[sheetName].forEach(function(item) {
+      const row = Number(item && item.row || 0);
+      if (!Number.isInteger(row) || row < minRow || row > maxRow) return;
+      const rowValues = values[row - minRow] || [];
+      const expectedItil = _problemPickerBridgeNormalizeFavoriteAnchor_(item && item.itilNumber);
+      const expectedSupp = _problemPickerBridgeNormalizeFavoriteAnchor_(item && item.suppValue);
+      const expectedText = _problemPickerBridgeNormalizeFavoriteAnchor_(item && item.text);
+      const actualItil = _problemPickerBridgeNormalizeFavoriteAnchor_(rowValues[itilColumn - minColumn]);
+      const actualSupp = _problemPickerBridgeNormalizeFavoriteAnchor_(rowValues[suppColumn - minColumn]);
+      const actualText = _problemPickerBridgeNormalizeFavoriteAnchor_(rowValues[textColumn - minColumn]);
+      const hasIdentifierAnchor = !!expectedItil || !!expectedSupp;
+      const matches = (!expectedItil || actualItil === expectedItil) &&
+        (!expectedSupp || actualSupp === expectedSupp) &&
+        (hasIdentifierAnchor || (!!expectedText && actualText === expectedText));
+      if (!matches) return;
+
+      item.favorite = _problemPickerBridgeIsFavoriteValue_(rowValues[favoriteColumn - minColumn]);
+      item.favoriteAvailable = true;
+    });
+  });
+
+  return sourceItems;
+}
+
 function _problemPickerBridgeValidateNewResponseInboxPayload_(payload) {
   const spreadsheetId = String(payload.spreadsheetId || '').trim();
   if (spreadsheetId !== PROBLEM_PICKER_BRIDGE_SPREADSHEET_ID) {
@@ -583,13 +671,106 @@ function _problemPickerBridgeGetNewResponseInbox_(payload) {
   const ss = SpreadsheetApp.openById(PROBLEM_PICKER_BRIDGE_SPREADSHEET_ID);
   _problemPickerBridgeRecoverPendingNewResponseInbox_(ss);
   const sh = _problemPickerBridgeEnsureNewResponseInboxSheet_(ss);
-  const items = _problemPickerBridgeReadNewResponseInboxItems_(sh);
+  let items = _problemPickerBridgeReadNewResponseInboxItems_(sh);
+  if (!payload.summaryOnly) {
+    items = _problemPickerBridgeAttachNewResponseFavoriteStates_(ss, items);
+  }
 
   return {
     sheetName: sh.getName(),
     itemsCount: items.length,
     items: payload.summaryOnly ? [] : items
   };
+}
+
+function _problemPickerBridgeSetFavoriteState_(payload) {
+  const spreadsheetId = String(payload.spreadsheetId || '').trim();
+  if (spreadsheetId !== PROBLEM_PICKER_BRIDGE_SPREADSHEET_ID) {
+    throw new Error('Некорректная таблица: ' + spreadsheetId);
+  }
+
+  const sheetName = String(payload.sheetName || '').trim();
+  if (PROBLEM_PICKER_BRIDGE_ALLOWED_SHEETS.indexOf(sheetName) === -1) {
+    throw new Error('Лист не разрешён для изменения избранного: ' + sheetName);
+  }
+
+  const row = Number(payload.row);
+  if (!Number.isInteger(row) || row < 2) {
+    throw new Error('Некорректный номер строки: ' + payload.row);
+  }
+  if (payload.isFavorite !== true && payload.isFavorite !== false) {
+    throw new Error('Не передано состояние избранного для строки ' + row + '.');
+  }
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+
+  try {
+    const ss = SpreadsheetApp.openById(PROBLEM_PICKER_BRIDGE_SPREADSHEET_ID);
+    const sh = ss.getSheetByName(sheetName);
+    if (!sh) throw new Error('Лист не найден: ' + sheetName);
+    if (row > sh.getLastRow()) {
+      throw new Error('Строка ' + row + ' больше не существует на листе «' + sheetName + '».');
+    }
+
+    const colFavorite = getColByHeader(sh, PROBLEM_PICKER_BRIDGE_FAVORITE_HEADER);
+    const colItil = getColByHeader(sh, 'Номер ITIL');
+    const colSupp = getColByHeader(sh, 'Номер СУПП (последний)');
+    const colText = getColByHeader(sh, TEXT_HEADER);
+    if (!colFavorite || !colItil || !colSupp || !colText) {
+      throw new Error(
+        'Не найдены колонки «' + PROBLEM_PICKER_BRIDGE_FAVORITE_HEADER +
+        '», «Номер ITIL», «Номер СУПП (последний)» или «' + TEXT_HEADER + '».'
+      );
+    }
+
+    const rowValues = _problemPickerBridgeReadRowDisplayValues_(sh, row, [colItil, colSupp, colText]);
+    const expectedItil = _problemPickerBridgeNormalizeFavoriteAnchor_(payload.expectedItilNumber);
+    const expectedSupp = _problemPickerBridgeNormalizeFavoriteAnchor_(payload.expectedSuppValue);
+    const expectedText = _problemPickerBridgeNormalizeFavoriteAnchor_(payload.expectedRequestText);
+    const expectedCleanText = _problemPickerBridgeNormalizeFavoriteAnchor_(payload.expectedCleanRequestText);
+    const actualItil = _problemPickerBridgeNormalizeFavoriteAnchor_(rowValues[colItil]);
+    const actualSupp = _problemPickerBridgeNormalizeFavoriteAnchor_(rowValues[colSupp]);
+    const actualText = _problemPickerBridgeNormalizeFavoriteAnchor_(rowValues[colText]);
+    let hasIdentifierAnchor = false;
+
+    if (expectedItil) {
+      hasIdentifierAnchor = true;
+      if (actualItil !== expectedItil) {
+        throw new Error('Строка ' + row + ' больше не соответствует ITIL ' + expectedItil + '.');
+      }
+    }
+    if (expectedSupp) {
+      hasIdentifierAnchor = true;
+      if (actualSupp !== expectedSupp) {
+        throw new Error('Строка ' + row + ' больше не соответствует ожидаемому списку СУПП.');
+      }
+    }
+    if (!hasIdentifierAnchor) {
+      if (!expectedText && !expectedCleanText) {
+        throw new Error('Не удалось безопасно идентифицировать заявку в строке ' + row + '.');
+      }
+      if (actualText !== expectedText && actualText !== expectedCleanText) {
+        throw new Error('Текст заявки в строке ' + row + ' изменился. Обновите очередь и повторите действие.');
+      }
+    }
+
+    const favoriteRange = sh.getRange(row, colFavorite);
+    if (payload.isFavorite) {
+      favoriteRange.setValue(PROBLEM_PICKER_BRIDGE_FAVORITE_VALUE);
+    } else {
+      favoriteRange.clearContent();
+    }
+
+    return {
+      sheetName: sheetName,
+      row: row,
+      favorite: payload.isFavorite,
+      value: payload.isFavorite ? PROBLEM_PICKER_BRIDGE_FAVORITE_VALUE : ''
+    };
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function _problemPickerBridgeDeleteNewResponseInboxItem_(payload) {
