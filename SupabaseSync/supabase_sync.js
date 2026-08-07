@@ -58,7 +58,8 @@
     SUPPORT_REMINDERS_STORAGE_KEY,
     'dup_execution_analysis_params_v1',
     'dup_execution_analysis_state_v1',
-    'dup_id_card_check_state_v1'
+    'dup_id_card_check_state_v1',
+    'dup_epgu_retry_excluded_claimants_v1'
   ]);
 
   const SUPPORT_REMINDER_OPERATION_TYPES = new Set([

@@ -21,6 +21,7 @@ html.dup-ext-screenshot-mode .dup-extension-ui-settings-overlay,
 html.dup-ext-screenshot-mode .dup-extension-ui-settings-panel,
 html.dup-ext-screenshot-mode #dup-epgu-summary-btn,
 html.dup-ext-screenshot-mode #dup-epgu-summary-modal,
+html.dup-ext-screenshot-mode #dup-epgu-retry-modal,
 html.dup-ext-screenshot-mode #dup-execution-analysis-manual-dialog,
 html.dup-ext-screenshot-mode .dup-execution-analysis-modal,
 html.dup-ext-screenshot-mode #dup-id-card-check-nav,
@@ -555,10 +556,195 @@ html.dup-ext-screenshot-mode [aria-label="Показать таймер"] {
     line-height: 1.4;
 }
 
+.dup-epgu-summary-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding-top: 12px;
+    border-top: 1px solid rgba(39, 64, 79, 0.12);
+}
+
+.dup-epgu-summary-retry-hint {
+    max-width: 560px;
+    color: #51656f;
+    font-size: 12px;
+    line-height: 1.4;
+}
+
+.dup-epgu-summary-retry-button,
+.dup-epgu-retry-start {
+    flex: none;
+    min-height: 36px !important;
+    padding: 0 14px !important;
+    border-color: #176b5b !important;
+    background: #176b5b !important;
+    color: #fff !important;
+    box-shadow: 0 6px 16px rgba(23, 107, 91, 0.18);
+}
+
+.dup-epgu-summary-retry-button:disabled,
+.dup-epgu-retry-start:disabled {
+    border-color: #9aa9af !important;
+    background: #9aa9af !important;
+    box-shadow: none;
+    opacity: 0.72;
+    cursor: not-allowed;
+}
+
+.dup-epgu-retry-panel {
+    --dup-epgu-retry-ink: #10202a;
+    --dup-epgu-retry-muted: #51656f;
+    --dup-epgu-retry-accent: #176b5b;
+    width: min(94vw, 860px);
+    gap: 10px;
+    background:
+        linear-gradient(135deg, rgba(23, 107, 91, 0.055), transparent 42%),
+        #f8fbfc;
+}
+
+.dup-epgu-retry-intro,
+.dup-epgu-retry-selection-meta,
+.dup-epgu-retry-notice {
+    color: var(--dup-epgu-retry-muted);
+    font-size: 12px;
+    line-height: 1.45;
+}
+
+.dup-epgu-retry-toolbar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.dup-epgu-retry-list {
+    display: grid;
+    gap: 8px;
+    max-height: min(60vh, 520px);
+    overflow: auto;
+    padding: 2px;
+}
+
+.dup-epgu-retry-item {
+    display: grid;
+    grid-template-columns: 22px minmax(0, 1fr);
+    gap: 10px;
+    align-items: start;
+    padding: 11px 12px;
+    border: 1px solid rgba(39, 64, 79, 0.14);
+    border-left: 4px solid #d1dade;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.94);
+    color: var(--dup-epgu-retry-ink);
+    transition: border-color 140ms ease, background-color 140ms ease, box-shadow 140ms ease;
+}
+
+.dup-epgu-retry-item:hover {
+    border-color: rgba(23, 107, 91, 0.38);
+    box-shadow: 0 5px 14px rgba(16, 32, 42, 0.07);
+}
+
+.dup-epgu-retry-item[data-status="running"] {
+    border-left-color: #d28a16;
+    background: #fffaf0;
+}
+
+.dup-epgu-retry-item[data-status="success"] {
+    border-left-color: #238352;
+    background: #f2fbf6;
+}
+
+.dup-epgu-retry-item[data-status="skipped"] {
+    border-left-color: #7c8c94;
+    background: #f5f7f8;
+}
+
+.dup-epgu-retry-item[data-status="error"] {
+    border-left-color: #bd3d3d;
+    background: #fff4f4;
+}
+
+.dup-epgu-retry-checkbox {
+    width: 17px;
+    height: 17px;
+    margin: 2px 0 0;
+    accent-color: var(--dup-epgu-retry-accent);
+    cursor: pointer;
+}
+
+.dup-epgu-retry-checkbox:disabled {
+    cursor: not-allowed;
+}
+
+.dup-epgu-retry-item-main {
+    min-width: 0;
+    display: grid;
+    gap: 5px;
+}
+
+.dup-epgu-retry-headline {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 700;
+    overflow-wrap: anywhere;
+}
+
+.dup-epgu-retry-status {
+    min-height: 24px;
+    padding: 0 8px;
+    font-size: 11px;
+}
+
+.dup-epgu-retry-details,
+.dup-epgu-retry-progress {
+    color: var(--dup-epgu-retry-muted);
+    font-size: 12px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+}
+
+.dup-epgu-retry-progress {
+    color: #27414d;
+    font-weight: 600;
+}
+
+.dup-epgu-retry-item[data-status="error"] .dup-epgu-retry-progress {
+    color: #a22828;
+}
+
+.dup-epgu-retry-notice {
+    min-height: 18px;
+    padding: 7px 9px;
+    border-radius: 7px;
+    background: rgba(23, 107, 91, 0.07);
+}
+
+.dup-epgu-retry-notice:empty {
+    min-height: 0;
+    padding: 0;
+    background: transparent;
+}
+
+.dup-epgu-retry-notice.is-error {
+    background: rgba(189, 61, 61, 0.1);
+    color: #9e2c2c;
+}
+
+.dup-epgu-retry-actions {
+    justify-content: flex-end;
+    padding-top: 10px;
+    border-top: 1px solid rgba(39, 64, 79, 0.12);
+}
+
 @media (max-width: 640px) {
     .dup-epgu-summary-item,
     .dup-epgu-summary-side,
-    .dup-epgu-summary-claimant {
+    .dup-epgu-summary-claimant,
+    .dup-epgu-summary-actions {
         flex-direction: column;
         align-items: flex-start;
     }
@@ -568,6 +754,10 @@ html.dup-ext-screenshot-mode [aria-label="Показать таймер"] {
     }
 
     .dup-epgu-summary-status {
+        width: 100%;
+    }
+
+    .dup-epgu-summary-retry-button {
         width: 100%;
     }
 }

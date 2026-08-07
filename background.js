@@ -1616,6 +1616,60 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             return true;
         }
 
+        case 'EPGU_OPEN_CREATE_REQUEST_FORM': {
+            const tabId = sender && sender.tab ? sender.tab.id : null;
+            const buttonId = request && request.data
+                ? String(request.data.buttonId || '').trim()
+                : '';
+            if (!Number.isInteger(tabId)) {
+                sendResponse({ success: false, error: 'NO_TAB_ID' });
+                return false;
+            }
+            if (buttonId !== 'fromsbrfbutton') {
+                sendResponse({ success: false, error: 'INVALID_CREATE_BUTTON_ID' });
+                return false;
+            }
+
+            (async () => {
+                try {
+                    const result = await executeScriptInTabAsync(
+                        tabId,
+                        (buttonId) => {
+                            const button = document.getElementById(String(buttonId || ''));
+                            if (!(button instanceof HTMLElement)) {
+                                return { success: false, error: 'CREATE_BUTTON_NOT_FOUND' };
+                            }
+
+                            const originalConfirm = window.confirm;
+                            let confirmHandled = false;
+                            window.confirm = function(message) {
+                                confirmHandled = true;
+                                return true;
+                            };
+
+                            try {
+                                button.click();
+                                return { success: true, confirmHandled };
+                            } finally {
+                                window.confirm = originalConfirm;
+                            }
+                        },
+                        [buttonId],
+                        { world: 'MAIN' }
+                    );
+                    sendResponse(result && typeof result === 'object'
+                        ? result
+                        : { success: false, error: 'CREATE_DIALOG_NO_RESULT' });
+                } catch (error) {
+                    sendResponse({
+                        success: false,
+                        error: error && error.message ? error.message : 'CREATE_DIALOG_SCRIPT_FAILED'
+                    });
+                }
+            })();
+            return true;
+        }
+
         case 'STAGEJUMP_APPLY_DEBTID_MAIN_WORLD': {
             const tabId = sender && sender.tab ? sender.tab.id : null;
             const frameId = (sender && Number.isInteger(sender.frameId)) ? sender.frameId : 0;

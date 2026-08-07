@@ -264,6 +264,13 @@
   ];
   const EPGU_REQUESTS_SUMMARY_BUTTON_ID = 'dup-epgu-summary-btn';
   const EPGU_REQUESTS_SUMMARY_MODAL_ID = 'dup-epgu-summary-modal';
+  const EPGU_REQUESTS_RETRY_MODAL_ID = 'dup-epgu-retry-modal';
+  const EPGU_REQUESTS_RETRY_EXCLUSIONS_STORAGE_KEY = 'dup_epgu_retry_excluded_claimants_v1';
+  const EPGU_REQUESTS_FORM_PATH_PART = '/ovzid/epgurequests/form';
+  const EPGU_REQUESTS_CREATE_BUTTON_ID = 'fromsbrfbutton';
+  const EPGU_REQUESTS_RETRY_SUCCESS_TEXT = 'запрос успешно создан';
+  const EPGU_REQUESTS_RETRY_FORM_TIMEOUT_MS = 20000;
+  const EPGU_REQUESTS_RETRY_RESULT_TIMEOUT_MS = 90000;
   const EPGU_REQUESTS_COLOR_RED = '#FFC9C9';
   const EPGU_REQUESTS_COLOR_GREEN = '#C8F2CC';
   const EPGU_REQUESTS_COLOR_YELLOW = '#FFF3B8';
@@ -363,12 +370,13 @@
     {
       key: 'epguSummaryTools',
       storageKey: 'dup_ui_show_epgu_summary_tools',
-      label: 'Сводка ЕПГУ',
-      description: 'Кнопка ЕПГУ внизу списка и окно со статусами взыскателей за сегодня.',
+      label: 'Сводка и повторы ЕПГУ',
+      description: 'Сводка за сегодня, выбор взыскателей и последовательная отправка повторных запросов.',
       hideClass: 'dup-ui-hide-epgu-summary-tools',
       hideCss: `
         html.dup-ui-hide-epgu-summary-tools #${EPGU_REQUESTS_SUMMARY_BUTTON_ID},
-        html.dup-ui-hide-epgu-summary-tools #${EPGU_REQUESTS_SUMMARY_MODAL_ID} {
+        html.dup-ui-hide-epgu-summary-tools #${EPGU_REQUESTS_SUMMARY_MODAL_ID},
+        html.dup-ui-hide-epgu-summary-tools #${EPGU_REQUESTS_RETRY_MODAL_ID} {
           display: none !important;
         }
       `
@@ -6231,8 +6239,40 @@
     return String(value || '').replace(/\s+/g, ' ').trim();
   }
 
+  function normalizeEpguComparisonKey(value) {
+    return normalizeEpguRequestsCellText(value)
+      .toLocaleLowerCase('ru-RU')
+      .replace(/ё/g, 'е');
+  }
+
+  function isEpguElementTag(element, tagName) {
+    return !!element && element.nodeType === 1 &&
+      String(element.tagName || '').toUpperCase() === String(tagName || '').toUpperCase();
+  }
+
+  function parseEpguClaimantIdentity(value) {
+    const fullText = normalizeEpguRequestsCellText(value);
+    const match = fullText.match(/^(.*?)\s*\(([^()]*)\)\s*$/);
+    const claimantKey = normalizeEpguRequestsCellText(match ? match[1] : fullText);
+    const personName = normalizeEpguRequestsCellText(match ? match[2] : '');
+    const claimantComparisonKey = normalizeEpguComparisonKey(claimantKey);
+    const personComparisonKey = normalizeEpguComparisonKey(personName);
+
+    return {
+      fullText,
+      claimantKey,
+      claimantComparisonKey,
+      personName,
+      personComparisonKey,
+      pairComparisonKey: claimantComparisonKey && personComparisonKey
+        ? `${claimantComparisonKey}\u241f${personComparisonKey}`
+        : ''
+    };
+  }
+
   const epguRequestsDuplicateColorMap = new Map();
   let epguRequestsDuplicateColorIndex = 0;
+  let epguRetryBatchRunning = false;
 
   function clearEpguRequestsHighlights() {
     document.querySelectorAll(`.${EPGU_REQUESTS_DUPLICATE_CLASS}`).forEach((cell) => {
@@ -6278,10 +6318,7 @@
   }
 
   function normalizeEpguClaimantKey(value) {
-    const normalized = normalizeEpguRequestsCellText(value);
-    if (!normalized) return '';
-    const withoutPerson = normalized.replace(/\s*\([^)]*\)\s*$/, '').trim();
-    return withoutPerson || normalized;
+    return parseEpguClaimantIdentity(value).claimantKey;
   }
 
   function parseEpguCreateDateInfo(rawValue) {
@@ -6393,32 +6430,45 @@
       const messageCell = row.querySelector('td[aria-describedby="list_Message"]');
       if (!(claimantCell instanceof HTMLElement) || !(createDateCell instanceof HTMLElement)) return;
 
-      const claimantKey = normalizeEpguClaimantKey(getSmartValue(claimantCell));
+      const claimantIdentity = parseEpguClaimantIdentity(getSmartValue(claimantCell));
+      const claimantKey = claimantIdentity.claimantKey;
       const dateInfo = parseEpguCreateDateInfo(getSmartValue(createDateCell));
-      if (!claimantKey || dateInfo.dayKey !== todayDateKey) return;
+      if (!claimantKey || !claimantIdentity.claimantComparisonKey || dateInfo.dayKey !== todayDateKey) return;
 
       const statusText = statusCell instanceof HTMLElement ? getSmartValue(statusCell) : '';
       const messageText = messageCell instanceof HTMLElement ? normalizeEpguRequestsCellText(getSmartValue(messageCell)) : '';
       const entry = {
         rowIndex,
         claimantKey,
+        claimantComparisonKey: claimantIdentity.claimantComparisonKey,
+        claimantText: claimantIdentity.fullText,
+        personName: claimantIdentity.personName,
+        personComparisonKey: claimantIdentity.personComparisonKey,
+        pairComparisonKey: claimantIdentity.pairComparisonKey,
         dateInfo,
         statusMeta: resolveEpguStatusMeta(statusText),
         messageText
       };
 
-      if (!groups.has(claimantKey)) {
-        groups.set(claimantKey, {
+      if (!groups.has(claimantIdentity.claimantComparisonKey)) {
+        groups.set(claimantIdentity.claimantComparisonKey, {
           claimantKey,
+          claimantComparisonKey: claimantIdentity.claimantComparisonKey,
           count: 0,
           bestEntry: null,
-          entries: []
+          entries: [],
+          usedPersonNames: [],
+          usedPairKeys: new Set()
         });
       }
 
-      const group = groups.get(claimantKey);
+      const group = groups.get(claimantIdentity.claimantComparisonKey);
       group.count += 1;
       group.entries.push(entry);
+      if (entry.personName && entry.pairComparisonKey && !group.usedPairKeys.has(entry.pairComparisonKey)) {
+        group.usedPairKeys.add(entry.pairComparisonKey);
+        group.usedPersonNames.push(entry.personName);
+      }
       if (isEpguEntryBetter(entry, group.bestEntry)) {
         group.bestEntry = entry;
       }
@@ -6446,18 +6496,622 @@
     };
   }
 
+  function collectEpguRetryTargets(summary) {
+    const sourceItems = summary && Array.isArray(summary.items) ? summary.items : [];
+    return sourceItems.filter((item) => {
+      return item && item.bestEntry && item.bestEntry.statusMeta && item.bestEntry.statusMeta.rank !== 4;
+    }).map((item) => ({
+      claimantKey: item.claimantKey,
+      claimantComparisonKey: item.claimantComparisonKey,
+      count: item.count,
+      statusLabel: item.bestEntry.statusMeta.label,
+      statusColor: item.bestEntry.statusMeta.color,
+      messageText: item.bestEntry.messageText,
+      usedPersonNames: Array.isArray(item.usedPersonNames) ? item.usedPersonNames.slice() : [],
+      usedPairKeys: item.usedPairKeys instanceof Set ? new Set(item.usedPairKeys) : new Set()
+    }));
+  }
+
+  function normalizeEpguRetryExcludedClaimants(value) {
+    const source = Array.isArray(value) ? value : [];
+    return Array.from(new Set(source
+      .map((item) => normalizeEpguComparisonKey(item))
+      .filter(Boolean)))
+      .sort((left, right) => left.localeCompare(right, 'ru'));
+  }
+
+  async function readEpguRetryExcludedClaimants() {
+    const stored = await chromeStorageGet([EPGU_REQUESTS_RETRY_EXCLUSIONS_STORAGE_KEY]);
+    return new Set(normalizeEpguRetryExcludedClaimants(
+      stored && stored[EPGU_REQUESTS_RETRY_EXCLUSIONS_STORAGE_KEY]
+    ));
+  }
+
+  function waitEpguRetryDelay(delayMs) {
+    return new Promise((resolve) => window.setTimeout(resolve, Math.max(0, Number(delayMs) || 0)));
+  }
+
+  function createEpguRetryError(code, message) {
+    const error = new Error(String(message || code || 'Ошибка отправки ЕПГУ.'));
+    error.code = String(code || 'EPGU_RETRY_ERROR');
+    return error;
+  }
+
+  async function waitForEpguRetryCondition(predicate, timeoutMs, timeoutMessage) {
+    const startedAt = Date.now();
+    const timeout = Math.max(1000, Number(timeoutMs) || 1000);
+
+    while (Date.now() - startedAt < timeout) {
+      try {
+        const result = predicate();
+        if (result) return result;
+      } catch (error) {
+        // Системный iframe может кратковременно менять document во время навигации.
+      }
+      await waitEpguRetryDelay(180);
+    }
+
+    throw createEpguRetryError('EPGU_RETRY_TIMEOUT', timeoutMessage);
+  }
+
+  function getEpguCreateRequestFrames() {
+    return Array.from(document.querySelectorAll('iframe')).filter((frame) => {
+      if (!(frame instanceof HTMLIFrameElement)) return false;
+      const source = String(frame.getAttribute('src') || frame.src || '').toLowerCase();
+      return source.includes(EPGU_REQUESTS_FORM_PATH_PART);
+    });
+  }
+
+  function isEpguCreateRequestFrameVisible(frame) {
+    if (!(frame instanceof HTMLIFrameElement) || !frame.isConnected) return false;
+    const dialog = frame.closest('.ui-dialog');
+    if (!(dialog instanceof HTMLElement)) return true;
+    const style = window.getComputedStyle(dialog);
+    return !dialog.hidden && dialog.getAttribute('aria-hidden') !== 'true' && style.display !== 'none' && style.visibility !== 'hidden';
+  }
+
+  function getEpguCreateRequestFrame() {
+    const frames = getEpguCreateRequestFrames();
+    return frames.slice().reverse().find(isEpguCreateRequestFrameVisible) || frames[frames.length - 1] || null;
+  }
+
+  function getEpguCreateRequestFormElements() {
+    const frames = getEpguCreateRequestFrames().slice().reverse();
+
+    for (const frame of frames) {
+      if (!isEpguCreateRequestFrameVisible(frame)) continue;
+
+      let frameDocument = null;
+      try {
+        frameDocument = frame.contentDocument;
+      } catch (error) {
+        continue;
+      }
+      if (!frameDocument || frameDocument.readyState !== 'complete') continue;
+
+      const select = frameDocument.querySelector('#LegalPerson');
+      const form = isEpguElementTag(select, 'select') ? select.closest('form') : null;
+      const submitButton = form
+        ? Array.from(form.querySelectorAll('button')).find((button) => {
+            return normalizeEpguComparisonKey(button.textContent).includes('отправить запрос');
+          })
+        : null;
+
+      if (!isEpguElementTag(select, 'select') || !isEpguElementTag(form, 'form') || !isEpguElementTag(submitButton, 'button')) {
+        continue;
+      }
+
+      return {
+        frame,
+        document: frameDocument,
+        form,
+        select,
+        submitButton
+      };
+    }
+
+    return null;
+  }
+
+  function closeEpguCreateRequestDialog(targetFrame) {
+    const frame = targetFrame instanceof HTMLIFrameElement ? targetFrame : getEpguCreateRequestFrame();
+    if (!(frame instanceof HTMLIFrameElement)) return false;
+
+    const dialog = frame.closest('.ui-dialog');
+    if (!(dialog instanceof HTMLElement)) return false;
+
+    const buttons = Array.from(dialog.querySelectorAll('button'));
+    const closeButton = buttons.find((button) => {
+      const text = normalizeEpguComparisonKey(button.textContent);
+      const ariaLabel = normalizeEpguComparisonKey(button.getAttribute('aria-label'));
+      return text === 'готово' || text === 'close' || ariaLabel === 'close' || ariaLabel === 'закрыть';
+    });
+    if (!(closeButton instanceof HTMLButtonElement)) return false;
+    closeButton.click();
+    return true;
+  }
+
+  async function openEpguCreateRequestForm() {
+    const existing = getEpguCreateRequestFormElements();
+    if (existing) return existing;
+
+    const response = await sendRuntimeMessage({
+      action: 'EPGU_OPEN_CREATE_REQUEST_FORM',
+      data: { buttonId: EPGU_REQUESTS_CREATE_BUTTON_ID }
+    });
+    if (!response || response.success === false) {
+      throw createEpguRetryError(
+        'EPGU_CREATE_DIALOG_FAILED',
+        `Не удалось открыть «Создать запрос»: ${response && response.error ? response.error : 'нет ответа фонового модуля'}.`
+      );
+    }
+
+    return waitForEpguRetryCondition(
+      getEpguCreateRequestFormElements,
+      EPGU_REQUESTS_RETRY_FORM_TIMEOUT_MS,
+      'Не дождались системной формы «Создать запрос».'
+    );
+  }
+
+  function findEpguUnusedRequestOption(select, target, usedPairKeys) {
+    if (!isEpguElementTag(select, 'select') || !target) return null;
+    const used = usedPairKeys instanceof Set ? usedPairKeys : new Set();
+
+    for (const option of Array.from(select.options)) {
+      const identity = parseEpguClaimantIdentity(option.textContent);
+      if (!identity.claimantComparisonKey || identity.claimantComparisonKey !== target.claimantComparisonKey) continue;
+      if (!identity.personName || !identity.pairComparisonKey || used.has(identity.pairComparisonKey)) continue;
+      return {
+        option,
+        value: option.value,
+        claimantKey: identity.claimantKey,
+        claimantComparisonKey: identity.claimantComparisonKey,
+        personName: identity.personName,
+        pairComparisonKey: identity.pairComparisonKey,
+        fullText: identity.fullText
+      };
+    }
+
+    return null;
+  }
+
+  function getEpguRetryResponseText(frameDocument, selector) {
+    if (!frameDocument) return '';
+    const element = frameDocument.querySelector(selector);
+    return element ? normalizeEpguRequestsCellText(element.textContent) : '';
+  }
+
+  async function waitForEpguRetryRequestResult(frame) {
+    const startedAt = Date.now();
+
+    while (Date.now() - startedAt < EPGU_REQUESTS_RETRY_RESULT_TIMEOUT_MS) {
+      if (!(frame instanceof HTMLIFrameElement) || !frame.isConnected) {
+        throw createEpguRetryError('EPGU_FORM_CLOSED', 'Системная форма закрылась до подтверждения результата.');
+      }
+
+      try {
+        const frameDocument = frame.contentDocument;
+        if (frameDocument) {
+          const successText = getEpguRetryResponseText(frameDocument, '.alert-success');
+          const bodyText = frameDocument.body
+            ? normalizeEpguComparisonKey(frameDocument.body.textContent)
+            : '';
+          if (
+            normalizeEpguComparisonKey(successText).includes(EPGU_REQUESTS_RETRY_SUCCESS_TEXT) ||
+            bodyText.includes(EPGU_REQUESTS_RETRY_SUCCESS_TEXT)
+          ) {
+            return successText || 'Запрос успешно создан';
+          }
+
+          const errorText = getEpguRetryResponseText(
+            frameDocument,
+            '.alert-danger, .alert-warning, .validation-summary-errors, .field-validation-error'
+          );
+          if (errorText) {
+            throw createEpguRetryError('EPGU_REQUEST_REJECTED', errorText);
+          }
+        }
+      } catch (error) {
+        if (error && error.code) throw error;
+      }
+
+      await waitEpguRetryDelay(220);
+    }
+
+    throw createEpguRetryError('EPGU_RESULT_TIMEOUT', 'Не дождались сообщения «Запрос успешно создан».');
+  }
+
+  async function sendEpguRetryRequestForTarget(target, usedPairKeys) {
+    let formElements = null;
+    try {
+      formElements = await openEpguCreateRequestForm();
+      const candidate = findEpguUnusedRequestOption(formElements.select, target, usedPairKeys);
+      if (!candidate) {
+        throw createEpguRetryError(
+          'EPGU_NO_UNUSED_PERSON',
+          `Для взыскателя «${target.claimantKey}» не осталось ФИО, которых ещё нет в сегодняшнем гриде.`
+        );
+      }
+
+      formElements.document.querySelectorAll('.alert-success, .alert-danger, .alert-warning')
+        .forEach((element) => element.remove());
+      formElements.select.value = candidate.value;
+      formElements.select.dispatchEvent(new Event('input', { bubbles: true }));
+      formElements.select.dispatchEvent(new Event('change', { bubbles: true }));
+      await waitEpguRetryDelay(140);
+
+      if (formElements.select.value !== candidate.value) {
+        throw createEpguRetryError(
+          'EPGU_OPTION_NOT_SELECTED',
+          `Системный список не принял выбор «${candidate.fullText}».`
+        );
+      }
+
+      formElements.submitButton.click();
+      await waitForEpguRetryRequestResult(formElements.frame);
+      return candidate;
+    } finally {
+      closeEpguCreateRequestDialog(formElements && formElements.frame);
+    }
+  }
+
+  function getEpguRetryModalState(modal) {
+    return modal && modal.__dupEpguRetryState && typeof modal.__dupEpguRetryState === 'object'
+      ? modal.__dupEpguRetryState
+      : null;
+  }
+
+  function getEpguRetryTargetRow(modal, claimantComparisonKey) {
+    return Array.from(modal.querySelectorAll('.dup-epgu-retry-item')).find((row) => {
+      return row instanceof HTMLElement && row.dataset.claimantKey === claimantComparisonKey;
+    }) || null;
+  }
+
+  function updateEpguRetrySelectionCount(modal) {
+    const state = getEpguRetryModalState(modal);
+    if (!state) return;
+    const checkboxes = Array.from(modal.querySelectorAll('.dup-epgu-retry-checkbox'));
+    const selectedCount = checkboxes.filter((checkbox) => checkbox instanceof HTMLInputElement && checkbox.checked).length;
+    const startButton = modal.querySelector('.dup-epgu-retry-start');
+    const selectionMeta = modal.querySelector('.dup-epgu-retry-selection-meta');
+
+    if (startButton instanceof HTMLButtonElement && !state.running) {
+      startButton.disabled = selectedCount < 1;
+      startButton.textContent = selectedCount
+        ? `Отправить запросы (${selectedCount})`
+        : 'Выберите взыскателей';
+    }
+    if (selectionMeta instanceof HTMLElement && !state.running) {
+      selectionMeta.textContent = `Выбрано: ${selectedCount} из ${checkboxes.length}. Снятые галочки сохраняются.`;
+    }
+  }
+
+  async function persistEpguRetrySelection(modal) {
+    const state = getEpguRetryModalState(modal);
+    if (!state) return false;
+
+    const excluded = new Set(state.excludedClaimants);
+    Array.from(modal.querySelectorAll('.dup-epgu-retry-checkbox')).forEach((checkbox) => {
+      if (!(checkbox instanceof HTMLInputElement)) return;
+      const key = normalizeEpguComparisonKey(checkbox.dataset.claimantKey);
+      if (!key) return;
+      if (checkbox.checked) excluded.delete(key);
+      else excluded.add(key);
+    });
+    state.excludedClaimants = excluded;
+
+    const saved = await chromeStorageSet({
+      [EPGU_REQUESTS_RETRY_EXCLUSIONS_STORAGE_KEY]: Array.from(excluded)
+        .sort((left, right) => left.localeCompare(right, 'ru'))
+    });
+    const notice = modal.querySelector('.dup-epgu-retry-notice');
+    if (notice instanceof HTMLElement && !state.running) {
+      notice.textContent = saved ? '' : 'Не удалось сохранить выбор. Проверьте состояние расширения.';
+      notice.classList.toggle('is-error', !saved);
+    }
+    return saved;
+  }
+
+  function setEpguRetryTargetProgress(modal, target, status, message) {
+    const row = getEpguRetryTargetRow(modal, target.claimantComparisonKey);
+    if (!(row instanceof HTMLElement)) return;
+    row.dataset.status = String(status || 'pending');
+    const progress = row.querySelector('.dup-epgu-retry-progress');
+    if (progress instanceof HTMLElement) {
+      progress.hidden = false;
+      progress.textContent = String(message || '');
+    }
+  }
+
+  function renderEpguRetrySelection(modal) {
+    const state = getEpguRetryModalState(modal);
+    if (!state) return;
+    const list = modal.querySelector('.dup-epgu-retry-list');
+    if (!(list instanceof HTMLElement)) return;
+    list.textContent = '';
+
+    state.targets.forEach((target, index) => {
+      const row = document.createElement('label');
+      row.className = 'dup-epgu-retry-item';
+      row.dataset.claimantKey = target.claimantComparisonKey;
+      row.dataset.status = 'pending';
+
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.className = 'dup-epgu-retry-checkbox';
+      checkbox.dataset.claimantKey = target.claimantComparisonKey;
+      checkbox.checked = !state.excludedClaimants.has(target.claimantComparisonKey);
+
+      const main = document.createElement('span');
+      main.className = 'dup-epgu-retry-item-main';
+
+      const headline = document.createElement('span');
+      headline.className = 'dup-epgu-retry-headline';
+      headline.textContent = `${index + 1}. ${target.claimantKey}`;
+
+      const status = createEpguSummaryBadge(
+        target.statusLabel,
+        'dup-epgu-summary-status dup-epgu-retry-status',
+        target.statusColor
+      );
+      headline.appendChild(status);
+      main.appendChild(headline);
+
+      const details = document.createElement('span');
+      details.className = 'dup-epgu-retry-details';
+      details.textContent = target.usedPersonNames.length
+        ? `Сегодня использованы: ${target.usedPersonNames.join(', ')}`
+        : 'За сегодня ФИО в гриде не определены.';
+      main.appendChild(details);
+
+      const progress = document.createElement('span');
+      progress.className = 'dup-epgu-retry-progress';
+      progress.hidden = true;
+      main.appendChild(progress);
+
+      row.append(checkbox, main);
+      list.appendChild(row);
+    });
+
+    updateEpguRetrySelectionCount(modal);
+  }
+
+  async function startEpguRetryBatch(modal) {
+    const state = getEpguRetryModalState(modal);
+    if (!state || state.running || epguRetryBatchRunning) return;
+
+    await persistEpguRetrySelection(modal);
+    const selectedKeys = new Set(Array.from(modal.querySelectorAll('.dup-epgu-retry-checkbox'))
+      .filter((checkbox) => checkbox instanceof HTMLInputElement && checkbox.checked)
+      .map((checkbox) => checkbox.dataset.claimantKey));
+    const selectedTargets = state.targets.filter((target) => selectedKeys.has(target.claimantComparisonKey));
+    if (!selectedTargets.length) {
+      updateEpguRetrySelectionCount(modal);
+      return;
+    }
+
+    state.running = true;
+    epguRetryBatchRunning = true;
+    modal.dataset.running = 'true';
+    modal.querySelectorAll('button, input').forEach((element) => {
+      if (element instanceof HTMLButtonElement || element instanceof HTMLInputElement) element.disabled = true;
+    });
+
+    const title = modal.querySelector('.dup-execution-analysis-modal-title');
+    const selectionMeta = modal.querySelector('.dup-epgu-retry-selection-meta');
+    const notice = modal.querySelector('.dup-epgu-retry-notice');
+    const cancelButton = modal.querySelector('.dup-epgu-retry-cancel');
+    const startButton = modal.querySelector('.dup-epgu-retry-start');
+    const closeButton = modal.querySelector('.dup-execution-analysis-modal-close');
+    if (title instanceof HTMLElement) title.textContent = 'Отправка запросов ЕПГУ';
+    if (notice instanceof HTMLElement) {
+      notice.textContent = 'Не закрывайте страницу: запросы отправляются строго по одному.';
+      notice.classList.remove('is-error');
+    }
+
+    const usedPairKeys = new Set();
+    state.summary.items.forEach((item) => {
+      if (!(item && item.usedPairKeys instanceof Set)) return;
+      item.usedPairKeys.forEach((key) => usedPairKeys.add(key));
+    });
+
+    let successCount = 0;
+    let skippedCount = 0;
+    let failedTarget = null;
+
+    for (let index = 0; index < selectedTargets.length; index += 1) {
+      const target = selectedTargets[index];
+      if (selectionMeta instanceof HTMLElement) {
+        selectionMeta.textContent = `Шаг ${index + 1} из ${selectedTargets.length}: ${target.claimantKey}.`;
+      }
+      setEpguRetryTargetProgress(modal, target, 'running', 'Открываем системную форму и подбираем новое ФИО…');
+
+      try {
+        const candidate = await sendEpguRetryRequestForTarget(target, usedPairKeys);
+        usedPairKeys.add(candidate.pairComparisonKey);
+        successCount += 1;
+        setEpguRetryTargetProgress(modal, target, 'success', `Запрос создан: ${candidate.fullText}.`);
+      } catch (error) {
+        if (error && error.code === 'EPGU_NO_UNUSED_PERSON') {
+          skippedCount += 1;
+          setEpguRetryTargetProgress(modal, target, 'skipped', error.message);
+          continue;
+        }
+
+        failedTarget = target;
+        setEpguRetryTargetProgress(
+          modal,
+          target,
+          'error',
+          error && error.message ? error.message : 'Неизвестная ошибка отправки.'
+        );
+        break;
+      }
+    }
+
+    if (successCount > 0) {
+      document.getElementById('refresh_list')?.click();
+    }
+
+    state.running = false;
+    epguRetryBatchRunning = false;
+    modal.dataset.running = 'false';
+    if (selectionMeta instanceof HTMLElement) {
+      selectionMeta.textContent = failedTarget
+        ? `Пакет остановлен на взыскателе «${failedTarget.claimantKey}». Успешно: ${successCount}, пропущено: ${skippedCount}.`
+        : `Готово. Успешно: ${successCount}, пропущено: ${skippedCount}.`;
+    }
+    if (notice instanceof HTMLElement) {
+      notice.textContent = failedTarget
+        ? 'Следующие взыскатели не обрабатывались. Закройте окно, проверьте причину и запустите повторно.'
+        : 'Пакет завершён. Грид обновляется.';
+      notice.classList.toggle('is-error', !!failedTarget);
+    }
+    if (cancelButton instanceof HTMLButtonElement) {
+      cancelButton.disabled = false;
+      cancelButton.textContent = 'Закрыть';
+    }
+    if (closeButton instanceof HTMLButtonElement) {
+      closeButton.disabled = false;
+    }
+    if (startButton instanceof HTMLButtonElement) {
+      startButton.hidden = true;
+    }
+  }
+
+  function createEpguRetryModal() {
+    const existing = document.getElementById(EPGU_REQUESTS_RETRY_MODAL_ID);
+    if (existing instanceof HTMLElement) return existing;
+
+    const modal = document.createElement('div');
+    modal.id = EPGU_REQUESTS_RETRY_MODAL_ID;
+    modal.className = 'dup-execution-analysis-modal dup-epgu-retry-modal';
+    modal.hidden = true;
+    modal.innerHTML = `
+      <div class="dup-execution-analysis-modal-panel dup-epgu-retry-panel" role="dialog" aria-modal="true" aria-label="Отправка запросов по неуспешным взыскателям">
+        <div class="dup-execution-analysis-modal-header">
+          <div class="dup-execution-analysis-modal-title">Повторные запросы ЕПГУ</div>
+          <button type="button" class="dup-execution-analysis-modal-close" aria-label="Закрыть">×</button>
+        </div>
+        <div class="dup-epgu-retry-intro">Оставьте отмеченными взыскателей, по которым нужно создать новый запрос. Для каждого будет выбрано первое ФИО, которого ещё нет в сегодняшнем гриде.</div>
+        <div class="dup-epgu-retry-toolbar">
+          <button type="button" class="dup-epgu-retry-select-all">Выбрать всех</button>
+          <button type="button" class="dup-epgu-retry-select-none">Снять все</button>
+        </div>
+        <div class="dup-epgu-retry-selection-meta"></div>
+        <div class="dup-epgu-retry-list" role="group" aria-label="Неуспешные взыскатели"></div>
+        <div class="dup-epgu-retry-notice" aria-live="polite"></div>
+        <div class="dup-execution-analysis-modal-actions dup-epgu-retry-actions">
+          <button type="button" class="dup-epgu-retry-cancel">Отмена</button>
+          <button type="button" class="dup-epgu-retry-start">Отправить запросы</button>
+        </div>
+      </div>
+    `;
+
+    const close = () => {
+      const state = getEpguRetryModalState(modal);
+      if (state && state.running) return;
+      modal.hidden = true;
+      const summaryModal = document.getElementById(EPGU_REQUESTS_SUMMARY_MODAL_ID);
+      if (isEpguRequestsPage() && summaryModal instanceof HTMLElement) {
+        renderEpguSummaryModal(summaryModal);
+        summaryModal.hidden = false;
+      }
+    };
+    modal.addEventListener('click', (event) => {
+      if (event.target === modal) close();
+    }, { capture: true });
+    modal.querySelector('.dup-execution-analysis-modal-close')?.addEventListener('click', close, { capture: true });
+    modal.querySelector('.dup-epgu-retry-cancel')?.addEventListener('click', close, { capture: true });
+    modal.querySelector('.dup-epgu-retry-select-all')?.addEventListener('click', () => {
+      modal.querySelectorAll('.dup-epgu-retry-checkbox').forEach((checkbox) => {
+        if (checkbox instanceof HTMLInputElement) checkbox.checked = true;
+      });
+      updateEpguRetrySelectionCount(modal);
+      void persistEpguRetrySelection(modal);
+    }, { capture: true });
+    modal.querySelector('.dup-epgu-retry-select-none')?.addEventListener('click', () => {
+      modal.querySelectorAll('.dup-epgu-retry-checkbox').forEach((checkbox) => {
+        if (checkbox instanceof HTMLInputElement) checkbox.checked = false;
+      });
+      updateEpguRetrySelectionCount(modal);
+      void persistEpguRetrySelection(modal);
+    }, { capture: true });
+    modal.addEventListener('change', (event) => {
+      if (!(event.target instanceof HTMLInputElement) || !event.target.classList.contains('dup-epgu-retry-checkbox')) return;
+      updateEpguRetrySelectionCount(modal);
+      void persistEpguRetrySelection(modal);
+    }, { capture: true });
+    modal.querySelector('.dup-epgu-retry-start')?.addEventListener('click', () => {
+      void startEpguRetryBatch(modal);
+    }, { capture: true });
+
+    (document.body || document.documentElement).appendChild(modal);
+    return modal;
+  }
+
+  async function openEpguRetrySelectionModal() {
+    if (!isEpguRequestsPage() || epguRetryBatchRunning) return;
+    const summary = collectEpguTodaySummaryItems();
+    const targets = collectEpguRetryTargets(summary);
+    if (!targets.length) return;
+
+    const excludedClaimants = await readEpguRetryExcludedClaimants();
+    const modal = createEpguRetryModal();
+    modal.__dupEpguRetryState = {
+      summary,
+      targets,
+      excludedClaimants,
+      running: false
+    };
+    modal.dataset.running = 'false';
+
+    const title = modal.querySelector('.dup-execution-analysis-modal-title');
+    const notice = modal.querySelector('.dup-epgu-retry-notice');
+    const cancelButton = modal.querySelector('.dup-epgu-retry-cancel');
+    const startButton = modal.querySelector('.dup-epgu-retry-start');
+    modal.querySelectorAll('button, input').forEach((element) => {
+      if (element instanceof HTMLButtonElement || element instanceof HTMLInputElement) element.disabled = false;
+    });
+    if (title instanceof HTMLElement) title.textContent = 'Повторные запросы ЕПГУ';
+    if (notice instanceof HTMLElement) {
+      notice.textContent = '';
+      notice.classList.remove('is-error');
+    }
+    if (cancelButton instanceof HTMLButtonElement) cancelButton.textContent = 'Отмена';
+    if (startButton instanceof HTMLButtonElement) startButton.hidden = false;
+
+    renderEpguRetrySelection(modal);
+    document.getElementById(EPGU_REQUESTS_SUMMARY_MODAL_ID)?.setAttribute('hidden', '');
+    modal.hidden = false;
+  }
+
   function renderEpguSummaryModal(modal) {
     if (!(modal instanceof HTMLElement)) return;
 
     const meta = modal.querySelector('.dup-epgu-summary-meta');
     const list = modal.querySelector('.dup-epgu-summary-list');
+    const retryButton = modal.querySelector('.dup-epgu-summary-retry-button');
+    const retryHint = modal.querySelector('.dup-epgu-summary-retry-hint');
     if (!(meta instanceof HTMLElement) || !(list instanceof HTMLElement)) return;
 
     const summary = collectEpguTodaySummaryItems();
+    const retryTargets = collectEpguRetryTargets(summary);
     const displayDate = formatEpguDateKeyForDisplay(summary.todayDateKey);
     meta.textContent = summary.items.length
       ? `Текущая страница. За ${displayDate}. Уникальных взыскателей: ${summary.items.length}.`
       : `На текущей странице нет запросов за ${displayDate}.`;
+    if (retryButton instanceof HTMLButtonElement) {
+      retryButton.disabled = retryTargets.length < 1 || epguRetryBatchRunning;
+      retryButton.textContent = retryTargets.length
+        ? `Отправить запросы по неуспешным (${retryTargets.length})`
+        : 'Все взыскатели успешны';
+    }
+    if (retryHint instanceof HTMLElement) {
+      retryHint.textContent = retryTargets.length
+        ? 'Перед запуском можно исключить отдельных взыскателей. Выбор сохранится.'
+        : 'За сегодня нет взыскателей, которым нужен повторный запрос.';
+    }
 
     list.textContent = '';
     if (!summary.items.length) {
@@ -6538,6 +7192,10 @@
         </div>
         <div class="dup-epgu-summary-meta"></div>
         <div class="dup-epgu-summary-list" role="list"></div>
+        <div class="dup-epgu-summary-actions">
+          <div class="dup-epgu-summary-retry-hint"></div>
+          <button type="button" class="dup-epgu-summary-retry-button">Отправить запросы по неуспешным</button>
+        </div>
       </div>
     `;
 
@@ -6546,6 +7204,9 @@
       if (event.target === modal) close();
     }, { capture: true });
     modal.querySelector('.dup-execution-analysis-modal-close')?.addEventListener('click', close, { capture: true });
+    modal.querySelector('.dup-epgu-summary-retry-button')?.addEventListener('click', () => {
+      void openEpguRetrySelectionModal();
+    }, { capture: true });
 
     (document.body || document.documentElement).appendChild(modal);
     return modal;
@@ -6596,6 +7257,7 @@
   function removeEpguSummaryUi() {
     document.getElementById(EPGU_REQUESTS_SUMMARY_BUTTON_ID)?.remove();
     document.getElementById(EPGU_REQUESTS_SUMMARY_MODAL_ID)?.remove();
+    document.getElementById(EPGU_REQUESTS_RETRY_MODAL_ID)?.remove();
   }
 
   function syncEpguSummaryUi() {
