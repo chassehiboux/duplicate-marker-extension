@@ -460,6 +460,91 @@ html.dup-ext-screenshot-mode [aria-label="Показать таймер"] {
     width: min(94vw, 920px);
 }
 
+.dup-epgu-database-card {
+    display: grid;
+    grid-template-columns: auto minmax(300px, 1fr);
+    grid-template-areas:
+        "heading switcher"
+        "status status";
+    align-items: center;
+    gap: 8px 14px;
+    padding: 10px 12px;
+    border: 1px solid rgba(39, 64, 79, 0.18);
+    border-left: 4px solid #176b5b;
+    border-radius: 4px;
+    background:
+        linear-gradient(90deg, rgba(23, 107, 91, 0.075), transparent 46%),
+        #f8faf9;
+}
+
+.dup-epgu-database-heading {
+    grid-area: heading;
+    color: #243943;
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+
+.dup-epgu-database-switcher {
+    grid-area: switcher;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 4px;
+    padding: 3px;
+    border: 1px solid rgba(39, 64, 79, 0.18);
+    border-radius: 4px;
+    background: #e9efed;
+}
+
+.dup-epgu-database-button {
+    min-height: 32px !important;
+    padding: 0 12px !important;
+    border: 1px solid transparent !important;
+    border-radius: 3px !important;
+    background: transparent !important;
+    color: #314b57 !important;
+    font-size: 12px !important;
+    font-weight: 700 !important;
+    box-shadow: none !important;
+    transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.dup-epgu-database-button:hover:not(:disabled),
+.dup-epgu-database-button:focus-visible:not(:disabled) {
+    border-color: rgba(23, 107, 91, 0.38) !important;
+    background: rgba(255, 255, 255, 0.82) !important;
+    color: #124f44 !important;
+}
+
+.dup-epgu-database-button.is-active {
+    border-color: #176b5b !important;
+    background: #176b5b !important;
+    color: #fff !important;
+    box-shadow: 0 2px 6px rgba(23, 107, 91, 0.22) !important;
+    opacity: 1 !important;
+    cursor: default;
+}
+
+.dup-epgu-database-button:disabled:not(.is-active) {
+    opacity: 0.56;
+    cursor: wait;
+}
+
+.dup-epgu-database-status {
+    grid-area: status;
+    min-height: 17px;
+    color: #51656f;
+    font-size: 11px;
+    line-height: 1.45;
+}
+
+.dup-epgu-database-status.is-error {
+    color: #a12f2f;
+    font-weight: 700;
+}
+
 .dup-epgu-summary-meta {
     font-size: 12px;
     line-height: 1.35;
@@ -741,6 +826,22 @@ html.dup-ext-screenshot-mode [aria-label="Показать таймер"] {
 }
 
 @media (max-width: 640px) {
+    .dup-epgu-database-card {
+        grid-template-columns: 1fr;
+        grid-template-areas:
+            "heading"
+            "switcher"
+            "status";
+    }
+
+    .dup-epgu-database-switcher {
+        width: 100%;
+    }
+
+    .dup-epgu-database-button {
+        padding: 0 6px !important;
+    }
+
     .dup-epgu-summary-item,
     .dup-epgu-summary-side,
     .dup-epgu-summary-claimant,

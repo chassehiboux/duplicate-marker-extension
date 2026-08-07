@@ -266,6 +266,13 @@
   const EPGU_REQUESTS_SUMMARY_MODAL_ID = 'dup-epgu-summary-modal';
   const EPGU_REQUESTS_RETRY_MODAL_ID = 'dup-epgu-retry-modal';
   const EPGU_REQUESTS_RETRY_EXCLUSIONS_STORAGE_KEY = 'dup_epgu_retry_excluded_claimants_v1';
+  const EPGU_REQUESTS_SUMMARY_REOPEN_STORAGE_KEY = 'dup_epgu_summary_reopen_once_v1';
+  const EPGU_REQUESTS_SUMMARY_REOPEN_TTL_MS = 2 * 60 * 1000;
+  const EPGU_REQUESTS_DATABASES = Object.freeze([
+    { depid: '39', label: 'Курган', departmentName: 'Курган' },
+    { depid: '66', label: 'Основная', departmentName: 'Тюмень и Тюменский участок (АСРН)' },
+    { depid: '70', label: 'ЮРИЦ', departmentName: 'ООО "ЮРИЦ"' }
+  ]);
   const EPGU_REQUESTS_FORM_PATH_PART = '/ovzid/epgurequests/form';
   const EPGU_REQUESTS_CREATE_BUTTON_ID = 'fromsbrfbutton';
   const EPGU_REQUESTS_RETRY_SUCCESS_TEXT = 'запрос успешно создан';
@@ -371,7 +378,7 @@
       key: 'epguSummaryTools',
       storageKey: 'dup_ui_show_epgu_summary_tools',
       label: 'Сводка и повторы ЕПГУ',
-      description: 'Сводка за сегодня, выбор взыскателей и последовательная отправка повторных запросов.',
+      description: 'Сводка за сегодня, переключение баз и последовательная отправка повторных запросов.',
       hideClass: 'dup-ui-hide-epgu-summary-tools',
       hideCss: `
         html.dup-ui-hide-epgu-summary-tools #${EPGU_REQUESTS_SUMMARY_BUTTON_ID},
@@ -6273,6 +6280,7 @@
   const epguRequestsDuplicateColorMap = new Map();
   let epguRequestsDuplicateColorIndex = 0;
   let epguRetryBatchRunning = false;
+  let epguSummaryReopenCheckStarted = false;
 
   function clearEpguRequestsHighlights() {
     document.querySelectorAll(`.${EPGU_REQUESTS_DUPLICATE_CLASS}`).forEach((cell) => {
@@ -7086,9 +7094,222 @@
     modal.hidden = false;
   }
 
+  function getEpguDatabaseConfig(depid) {
+    const normalizedDepid = String(depid || '').trim();
+    return EPGU_REQUESTS_DATABASES.find((database) => database.depid === normalizedDepid) || null;
+  }
+
+  function findEpguDatabaseDepartmentLink(depid) {
+    const normalizedDepid = String(depid || '').trim();
+    return Array.from(document.querySelectorAll(SLOWSEARCH_CITIES_LINK_SELECTOR)).find((link) => (
+      link instanceof HTMLAnchorElement && getDepartmentLinkDepid(link) === normalizedDepid
+    )) || null;
+  }
+
+  function getActiveEpguDepartmentLink() {
+    const activeLink = document.querySelector(`${SLOWSEARCH_CITIES_LINK_SELECTOR}.active`);
+    return activeLink instanceof HTMLAnchorElement ? activeLink : null;
+  }
+
+  function getActiveEpguDepartmentDepid() {
+    return getDepartmentLinkDepid(getActiveEpguDepartmentLink());
+  }
+
+  function setEpguSummaryReopenPending(value) {
+    return new Promise((resolve) => {
+      try {
+        chrome.storage.local.set({ [EPGU_REQUESTS_SUMMARY_REOPEN_STORAGE_KEY]: value }, () => {
+          const runtimeError = chrome.runtime.lastError;
+          resolve(!runtimeError);
+        });
+      } catch (error) {
+        resolve(false);
+      }
+    });
+  }
+
+  function clearEpguSummaryReopenPending() {
+    return new Promise((resolve) => {
+      try {
+        chrome.storage.local.remove(EPGU_REQUESTS_SUMMARY_REOPEN_STORAGE_KEY, () => {
+          const runtimeError = chrome.runtime.lastError;
+          resolve(!runtimeError);
+        });
+      } catch (error) {
+        resolve(false);
+      }
+    });
+  }
+
+  function renderEpguDatabaseSwitcher(modal) {
+    if (!(modal instanceof HTMLElement)) return;
+    const switcher = modal.querySelector('.dup-epgu-database-switcher');
+    const status = modal.querySelector('.dup-epgu-database-status');
+    if (!(switcher instanceof HTMLElement) || !(status instanceof HTMLElement)) return;
+
+    const activeLink = getActiveEpguDepartmentLink();
+    const activeDepid = getDepartmentLinkDepid(activeLink);
+    const activeDatabase = getEpguDatabaseConfig(activeDepid);
+    const isSwitching = modal.dataset.databaseSwitching === 'true';
+
+    switcher.querySelectorAll('.dup-epgu-database-button').forEach((button) => {
+      if (!(button instanceof HTMLButtonElement)) return;
+      const isActive = button.dataset.depid === activeDepid;
+      button.classList.toggle('is-active', isActive);
+      button.disabled = isSwitching || isActive;
+      button.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+    });
+
+    if (isSwitching) return;
+    status.classList.remove('is-error');
+    if (activeDatabase) {
+      status.textContent = `Открыта база «${activeDatabase.label}»: ${activeDatabase.departmentName}.`;
+      return;
+    }
+
+    const currentDepartmentName = normalizeEpguRequestsCellText(activeLink && activeLink.textContent);
+    status.textContent = currentDepartmentName
+      ? `Текущий департамент: ${currentDepartmentName}. Выберите базу для проверки.`
+      : 'Выберите базу для проверки запросов.';
+  }
+
+  async function switchEpguRequestsDatabase(modal, depid) {
+    if (!(modal instanceof HTMLElement) || modal.dataset.databaseSwitching === 'true') return false;
+    const database = getEpguDatabaseConfig(depid);
+    if (!database) return false;
+    if (getActiveEpguDepartmentDepid() === database.depid) return true;
+
+    const status = modal.querySelector('.dup-epgu-database-status');
+    const targetLink = findEpguDatabaseDepartmentLink(database.depid);
+    const targetUrl = targetLink ? buildDepartmentNavigationUrl(targetLink) : '';
+    if (!(targetLink instanceof HTMLAnchorElement) || !targetUrl) {
+      if (status instanceof HTMLElement) {
+        status.textContent = `Не найден штатный пункт базы «${database.label}». Откройте dropdown департаментов и повторите.`;
+        status.classList.add('is-error');
+      }
+      return false;
+    }
+
+    let targetHost = '';
+    try {
+      targetHost = normalizeDepartmentContainerHost(new URL(targetUrl, window.location.origin).hostname);
+    } catch (error) {
+      targetHost = '';
+    }
+    if (!targetHost) {
+      if (status instanceof HTMLElement) {
+        status.textContent = `У базы «${database.label}» некорректная ссылка перехода.`;
+        status.classList.add('is-error');
+      }
+      return false;
+    }
+
+    modal.dataset.databaseSwitching = 'true';
+    modal.querySelectorAll('.dup-epgu-database-button').forEach((button) => {
+      if (button instanceof HTMLButtonElement) button.disabled = true;
+    });
+    if (status instanceof HTMLElement) {
+      status.textContent = `Переходим в базу «${database.label}»…`;
+      status.classList.remove('is-error');
+    }
+
+    const markerSaved = await setEpguSummaryReopenPending({
+      targetDepid: database.depid,
+      targetHost,
+      createdAt: Date.now()
+    });
+    if (!markerSaved) {
+      modal.dataset.databaseSwitching = 'false';
+      renderEpguDatabaseSwitcher(modal);
+      if (status instanceof HTMLElement) {
+        status.textContent = 'Не удалось подготовить автоматическое открытие сводки после перехода.';
+        status.classList.add('is-error');
+      }
+      return false;
+    }
+
+    try {
+      const navigationStarted = await navigateToDepartmentByHotkey(targetLink);
+      if (!navigationStarted) throw new Error('NAVIGATION_NOT_STARTED');
+
+      window.setTimeout(() => {
+        if (!modal.isConnected || modal.dataset.databaseSwitching !== 'true') return;
+        modal.dataset.databaseSwitching = 'false';
+        renderEpguDatabaseSwitcher(modal);
+        if (status instanceof HTMLElement) {
+          status.textContent = `База «${database.label}» открыта в отдельной вкладке.`;
+          status.classList.remove('is-error');
+        }
+      }, 2500);
+      return true;
+    } catch (error) {
+      await clearEpguSummaryReopenPending();
+      modal.dataset.databaseSwitching = 'false';
+      renderEpguDatabaseSwitcher(modal);
+      if (status instanceof HTMLElement) {
+        status.textContent = `Не удалось перейти в базу «${database.label}».`;
+        status.classList.add('is-error');
+      }
+      return false;
+    }
+  }
+
+  function scheduleEpguSummaryReopenAfterDepartmentSwitch() {
+    if (epguSummaryReopenCheckStarted || !isEpguRequestsPage()) return;
+    epguSummaryReopenCheckStarted = true;
+
+    void chromeStorageGet([EPGU_REQUESTS_SUMMARY_REOPEN_STORAGE_KEY]).then((stored) => {
+      const pending = stored && stored[EPGU_REQUESTS_SUMMARY_REOPEN_STORAGE_KEY];
+      const targetDepid = String(pending && pending.targetDepid || '').trim();
+      const targetHost = normalizeDepartmentContainerHost(pending && pending.targetHost);
+      const createdAt = Number(pending && pending.createdAt || 0);
+      const expiresAt = createdAt + EPGU_REQUESTS_SUMMARY_REOPEN_TTL_MS;
+      if (!getEpguDatabaseConfig(targetDepid) || !targetHost || !createdAt || Date.now() > expiresAt) {
+        if (pending) void clearEpguSummaryReopenPending();
+        return;
+      }
+
+      const attemptOpen = () => {
+        if (!isEpguRequestsPage() || Date.now() > expiresAt) {
+          void clearEpguSummaryReopenPending();
+          return;
+        }
+
+        const currentHost = normalizeDepartmentContainerHost(window.location.hostname);
+        const summaryButton = ensureEpguSummaryButton();
+        const grid = document.querySelector('#list');
+        const loading = document.getElementById('load_list');
+        const gridIsLoading = loading instanceof HTMLElement &&
+          window.getComputedStyle(loading).display !== 'none' &&
+          window.getComputedStyle(loading).visibility !== 'hidden';
+        const targetIsActive = getActiveEpguDepartmentDepid() === targetDepid;
+
+        if (
+          currentHost === targetHost &&
+          targetIsActive &&
+          summaryButton instanceof HTMLElement &&
+          grid instanceof HTMLElement &&
+          !gridIsLoading
+        ) {
+          void clearEpguSummaryReopenPending().then(() => {
+            if (isEpguRequestsPage() && getActiveEpguDepartmentDepid() === targetDepid) {
+              openEpguSummaryModal();
+            }
+          });
+          return;
+        }
+
+        window.setTimeout(attemptOpen, 250);
+      };
+
+      attemptOpen();
+    });
+  }
+
   function renderEpguSummaryModal(modal) {
     if (!(modal instanceof HTMLElement)) return;
 
+    renderEpguDatabaseSwitcher(modal);
     const meta = modal.querySelector('.dup-epgu-summary-meta');
     const list = modal.querySelector('.dup-epgu-summary-list');
     const retryButton = modal.querySelector('.dup-epgu-summary-retry-button');
@@ -7190,6 +7411,15 @@
           <div class="dup-execution-analysis-modal-title">Сводка ЕПГУ</div>
           <button type="button" class="dup-execution-analysis-modal-close" aria-label="Закрыть">×</button>
         </div>
+        <div class="dup-epgu-database-card">
+          <div class="dup-epgu-database-heading">База запросов</div>
+          <div class="dup-epgu-database-switcher" role="group" aria-label="Переключение базы ЕПГУ">
+            <button type="button" class="dup-epgu-database-button" data-depid="39">Курган</button>
+            <button type="button" class="dup-epgu-database-button" data-depid="66">Основная</button>
+            <button type="button" class="dup-epgu-database-button" data-depid="70">ЮРИЦ</button>
+          </div>
+          <div class="dup-epgu-database-status" aria-live="polite"></div>
+        </div>
         <div class="dup-epgu-summary-meta"></div>
         <div class="dup-epgu-summary-list" role="list"></div>
         <div class="dup-epgu-summary-actions">
@@ -7206,6 +7436,14 @@
     modal.querySelector('.dup-execution-analysis-modal-close')?.addEventListener('click', close, { capture: true });
     modal.querySelector('.dup-epgu-summary-retry-button')?.addEventListener('click', () => {
       void openEpguRetrySelectionModal();
+    }, { capture: true });
+    modal.querySelector('.dup-epgu-database-switcher')?.addEventListener('click', (event) => {
+      const button = event.target instanceof Element
+        ? event.target.closest('.dup-epgu-database-button')
+        : null;
+      if (!(button instanceof HTMLButtonElement) || button.disabled) return;
+      event.preventDefault();
+      void switchEpguRequestsDatabase(modal, button.dataset.depid);
     }, { capture: true });
 
     (document.body || document.documentElement).appendChild(modal);
@@ -7267,6 +7505,7 @@
     }
 
     ensureEpguSummaryButton();
+    scheduleEpguSummaryReopenAfterDepartmentSwitch();
   }
 
   function applyEpguRequestsFillColor(cell, color) {
