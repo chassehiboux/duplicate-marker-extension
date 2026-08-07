@@ -6516,7 +6516,15 @@
       statusColor: item.bestEntry.statusMeta.color,
       messageText: item.bestEntry.messageText,
       usedPersonNames: Array.isArray(item.usedPersonNames) ? item.usedPersonNames.slice() : [],
-      usedPairKeys: item.usedPairKeys instanceof Set ? new Set(item.usedPairKeys) : new Set()
+      usedPairKeys: item.usedPairKeys instanceof Set ? new Set(item.usedPairKeys) : new Set(),
+      requestPairSequence: Array.isArray(item.entries)
+        ? item.entries.slice().sort((left, right) => {
+            const leftSortKey = String(left && left.dateInfo && left.dateInfo.sortKey || '');
+            const rightSortKey = String(right && right.dateInfo && right.dateInfo.sortKey || '');
+            if (leftSortKey !== rightSortKey) return leftSortKey.localeCompare(rightSortKey);
+            return Number(right && right.rowIndex || 0) - Number(left && left.rowIndex || 0);
+          }).map((entry) => String(entry && entry.pairComparisonKey || '')).filter(Boolean)
+        : []
     }));
   }
 
@@ -6661,14 +6669,18 @@
     );
   }
 
-  function findEpguUnusedRequestOption(select, target, usedPairKeys) {
-    if (!isEpguElementTag(select, 'select') || !target) return null;
-    const used = usedPairKeys instanceof Set ? usedPairKeys : new Set();
-
-    for (const option of Array.from(select.options)) {
+  function collectEpguRequestOptionsForTarget(select, target) {
+    if (!isEpguElementTag(select, 'select') || !target) return [];
+    return Array.from(select.options).map((option) => {
       const identity = parseEpguClaimantIdentity(option.textContent);
-      if (!identity.claimantComparisonKey || identity.claimantComparisonKey !== target.claimantComparisonKey) continue;
-      if (!identity.personName || !identity.pairComparisonKey || used.has(identity.pairComparisonKey)) continue;
+      if (
+        !identity.claimantComparisonKey ||
+        identity.claimantComparisonKey !== target.claimantComparisonKey ||
+        !identity.personName ||
+        !identity.pairComparisonKey
+      ) {
+        return null;
+      }
       return {
         option,
         value: option.value,
@@ -6678,6 +6690,47 @@
         pairComparisonKey: identity.pairComparisonKey,
         fullText: identity.fullText
       };
+    }).filter(Boolean);
+  }
+
+  function resolveEpguCurrentCycleUsedPairKeys(target, candidates, usedPairKeys) {
+    const availablePairKeys = new Set((Array.isArray(candidates) ? candidates : [])
+      .map((candidate) => String(candidate && candidate.pairComparisonKey || ''))
+      .filter(Boolean));
+    if (!target || !target.claimantComparisonKey || !availablePairKeys.size) return new Set();
+
+    const pairPrefix = `${target.claimantComparisonKey}\u241f`;
+    const runtimeUsed = usedPairKeys instanceof Set ? usedPairKeys : new Set();
+    const originalGridUsed = target.usedPairKeys instanceof Set ? target.usedPairKeys : new Set();
+    const runtimeTargetPairs = new Set(Array.from(runtimeUsed).filter((pairKey) => (
+      String(pairKey || '').startsWith(pairPrefix) && availablePairKeys.has(pairKey)
+    )));
+    const wasExplicitlyReset = originalGridUsed.size > 0 &&
+      !Array.from(originalGridUsed).some((pairKey) => runtimeUsed.has(pairKey));
+
+    if (wasExplicitlyReset) return runtimeTargetPairs;
+
+    const currentCycleUsed = new Set();
+    const sequence = Array.isArray(target.requestPairSequence) ? target.requestPairSequence : [];
+    sequence.forEach((pairKey) => {
+      if (!availablePairKeys.has(pairKey)) return;
+      if (currentCycleUsed.size >= availablePairKeys.size) currentCycleUsed.clear();
+      currentCycleUsed.add(pairKey);
+    });
+
+    runtimeTargetPairs.forEach((pairKey) => {
+      if (!originalGridUsed.has(pairKey)) currentCycleUsed.add(pairKey);
+    });
+    return currentCycleUsed;
+  }
+
+  function findEpguUnusedRequestOption(select, target, usedPairKeys) {
+    const candidates = collectEpguRequestOptionsForTarget(select, target);
+    const used = resolveEpguCurrentCycleUsedPairKeys(target, candidates, usedPairKeys);
+
+    for (const candidate of candidates) {
+      if (used.has(candidate.pairComparisonKey)) continue;
+      return candidate;
     }
 
     return null;
@@ -6907,22 +6960,28 @@
     return false;
   }
 
-  async function returnEpguRetryToSummary(modal, refreshGrid) {
+  async function reloadEpguRequestsPageWithSummary() {
+    const activeDatabase = getActiveEpguDatabase();
+    if (activeDatabase) {
+      await setEpguSummaryReopenPending({
+        targetDepid: activeDatabase.depid,
+        targetHost: activeDatabase.host,
+        createdAt: Date.now()
+      });
+    }
+    window.location.reload();
+  }
+
+  async function returnEpguRetryToSummary(modal, reloadPage) {
     if (!(modal instanceof HTMLElement)) return;
     modal.hidden = true;
-    const summaryModal = createEpguSummaryModal();
-    renderEpguSummaryModal(summaryModal);
-    summaryModal.hidden = false;
 
-    if (!refreshGrid) return;
-
-    const summaryMeta = summaryModal.querySelector('.dup-epgu-summary-meta');
-    if (summaryMeta instanceof HTMLElement) {
-      summaryMeta.textContent = 'Запросы созданы. Обновляем таблицу…';
+    if (reloadPage) {
+      await reloadEpguRequestsPageWithSummary();
+      return;
     }
-    await refreshEpguRequestsGrid();
 
-    if (!summaryModal.isConnected) return;
+    const summaryModal = createEpguSummaryModal();
     renderEpguSummaryModal(summaryModal);
     summaryModal.hidden = false;
   }
