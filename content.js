@@ -6710,11 +6710,22 @@
     ].includes(key);
   }
 
-  function getEpguRegistryDepartmentsForRecheck(scanContext, cacheResult) {
+  function getEpguRegistryDepartmentsForRecheck(scanContext, cacheResult, claimantNames = []) {
     const registries = cacheResult && Array.isArray(cacheResult.registries)
       ? cacheResult.registries
       : [];
     if (!registries.length) return scanContext.departments.slice();
+
+    const currentClaimants = Array.from(new Set(
+      (Array.isArray(claimantNames) ? claimantNames : [])
+        .map((claimantName) => normalizeEpguRegistryText(claimantName))
+        .filter(Boolean)
+    ));
+    if (currentClaimants.some((claimantName) => (
+      getEpguClaimantRegistries(cacheResult, claimantName).length < 1
+    ))) {
+      return scanContext.departments.slice();
+    }
 
     return scanContext.departments.filter((department) => {
       const depid = normalizeEpguRegistryText(department && department.depid);
@@ -8110,7 +8121,12 @@
       return;
     }
     const previousResult = getEpguRegistryCheckResultForCurrentBase();
-    const departmentsToCheck = getEpguRegistryDepartmentsForRecheck(scanContext, previousResult);
+    const currentSummary = collectEpguTodaySummaryItems();
+    const departmentsToCheck = getEpguRegistryDepartmentsForRecheck(
+      scanContext,
+      previousResult,
+      currentSummary.items.map((item) => item.claimantKey)
+    );
     if (!departmentsToCheck.length) {
       epguRegistryCheckNotice = 'Все ранее найденные реестры имеют положительные статусы. Повторная проверка не требуется.';
       epguRegistryCheckNoticeIsError = false;
