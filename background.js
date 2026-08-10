@@ -440,13 +440,242 @@ function normalizeEpguRegistryScanRequest(data) {
         !/^\d{2}\.\d{2}\.\d{4}$/.test(checkDate) ||
         !restoreDepid ||
         !restoreUrl ||
-        departments.length < 1 ||
-        !usedDepids.has(restoreDepid)
+        departments.length < 1
     ) {
         return null;
     }
 
     return { baseHost, checkDate, restoreDepid, restoreUrl, departments };
+}
+
+function normalizeEpguRegistryConductRequest(data) {
+    const raw = data && typeof data === 'object' ? data : {};
+    const baseHost = String(raw.baseHost || '').trim().toLowerCase();
+    const checkDate = String(raw.checkDate || '').trim();
+    const restoreDepid = String(raw.restoreDepid || '').trim();
+    const targetDepid = String(raw.targetDepid || '').trim();
+    const targetDepartment = String(raw.targetDepartment || '').replace(/\s+/g, ' ').trim();
+    const restoreUrl = normalizeEpguRegistryScanUrl(raw.restoreUrl, baseHost);
+    const targetUrl = normalizeEpguRegistryScanUrl(raw.targetUrl, baseHost);
+    const registryId = String(raw.registryId || '').replace(/\s+/g, ' ').trim();
+    const fileName = String(raw.fileName || '').replace(/\s+/g, ' ').trim();
+    const typeName = String(raw.typeName || '').replace(/\s+/g, ' ').trim();
+    const expectedStatusNames = Array.from(new Set(
+        (Array.isArray(raw.expectedStatusNames) ? raw.expectedStatusNames : [])
+            .map((value) => String(value || '').replace(/\s+/g, ' ').trim())
+            .filter(Boolean)
+    ));
+
+    if (
+        !baseHost ||
+        !/^\d{2}\.\d{2}\.\d{4}$/.test(checkDate) ||
+        !restoreDepid ||
+        !targetDepid ||
+        !targetDepartment ||
+        !restoreUrl ||
+        !targetUrl ||
+        !registryId ||
+        !fileName ||
+        !typeName
+    ) {
+        return null;
+    }
+
+    return {
+        baseHost,
+        checkDate,
+        restoreDepid,
+        restoreUrl,
+        targetDepid,
+        targetDepartment,
+        targetUrl,
+        registryId,
+        fileName,
+        typeName,
+        expectedStatusNames
+    };
+}
+
+async function conductEpguRegistryInTab(tabId, requestData) {
+    const result = await executeScriptInTabAsync(tabId, async (payload) => {
+        const normalizeText = (value) => String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
+        const normalizeKey = (value) => normalizeText(value).replace(/ё/g, 'е').replace(/Ё/g, 'Е').toLocaleLowerCase('ru-RU');
+        const delay = (timeoutMs) => new Promise((resolve) => setTimeout(resolve, timeoutMs));
+        const isVisible = (element) => {
+            if (!(element instanceof HTMLElement)) return false;
+            const style = window.getComputedStyle(element);
+            return style.display !== 'none' && style.visibility !== 'hidden' && element.getClientRects().length > 0;
+        };
+        const waitFor = async (getter, timeoutMs, errorCode) => {
+            const startedAt = Date.now();
+            while ((Date.now() - startedAt) <= timeoutMs) {
+                try {
+                    const value = getter();
+                    if (value) return value;
+                } catch (error) {
+                    // The target can be rebuilt while jqGrid or the dialog is loading.
+                }
+                await delay(150);
+            }
+            throw new Error(errorCode);
+        };
+        const getCellText = (row, columnName) => {
+            if (!(row instanceof HTMLElement)) return '';
+            const cell = row.querySelector(`td[aria-describedby="list_${columnName}"]`);
+            return normalizeText(cell && (cell.textContent || cell.innerText));
+        };
+        const getGridRows = () => Array.from(document.querySelectorAll('#list tbody > tr.jqgrow'));
+        const findRegistryRow = (requireExpectedStatus) => {
+            const expectedStatuses = new Set(payload.expectedStatusNames.map(normalizeKey));
+            return getGridRows().find((row) => {
+                const rowId = getCellText(row, 'Id');
+                const fileName = getCellText(row, 'FileName');
+                const typeName = getCellText(row, 'TypeName');
+                const statusName = getCellText(row, 'StatusName');
+                return rowId === payload.registryId &&
+                    fileName === payload.fileName &&
+                    typeName === payload.typeName &&
+                    (!requireExpectedStatus || expectedStatuses.size === 0 || expectedStatuses.has(normalizeKey(statusName)));
+            }) || null;
+        };
+        const triggerFileFilter = () => {
+            const input = document.querySelector('#gs_FileName, input[name="FileName"]');
+            if (!(input instanceof HTMLInputElement)) return false;
+            const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+            if (valueSetter && typeof valueSetter.set === 'function') valueSetter.set.call(input, payload.fileName);
+            else input.value = payload.fileName;
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+            input.dispatchEvent(new KeyboardEvent('keydown', {
+                key: 'Enter',
+                code: 'Enter',
+                keyCode: 13,
+                which: 13,
+                bubbles: true
+            }));
+            input.dispatchEvent(new KeyboardEvent('keyup', {
+                key: 'Enter',
+                code: 'Enter',
+                keyCode: 13,
+                which: 13,
+                bubbles: true
+            }));
+            const grid = document.getElementById('list');
+            if (grid && typeof grid.triggerToolbar === 'function') grid.triggerToolbar();
+            return true;
+        };
+        const reloadFilteredGrid = async () => {
+            const grid = document.getElementById('list');
+            if (window.jQuery && grid) window.jQuery(grid).trigger('reloadGrid');
+            await delay(250);
+            triggerFileFilter();
+            await delay(500);
+        };
+
+        try {
+            if (String(window.location.hostname || '').trim().toLowerCase() !== payload.baseHost) {
+                throw new Error('Открылась другая база Пирамиды.');
+            }
+
+            await waitFor(() => document.querySelector('#gs_FileName, input[name="FileName"]'), 20000, 'Не найден фильтр «Имя файла».');
+            triggerFileFilter();
+            await delay(400);
+
+            const targetRow = await waitFor(
+                () => findRegistryRow(true),
+                20000,
+                'Не найдена строка с указанными ID, типом и статусом реестра.'
+            );
+            const checkbox = targetRow.querySelector('input.cbox[type="checkbox"], input[id^="jqg_list_"]');
+            if (!(checkbox instanceof HTMLInputElement)) throw new Error('Не найден флажок выбора реестра.');
+            if (!checkbox.checked) checkbox.click();
+
+            const conductToolbarButton = await waitFor(() => (
+                Array.from(document.querySelectorAll('button, [role="button"]')).find((button) => {
+                    const text = normalizeText(button.textContent || button.innerText);
+                    return isVisible(button) &&
+                        text.includes('Проведение реестра') &&
+                        !text.includes('Отменить проведение реестра') &&
+                        !button.disabled;
+                }) || null
+            ), 10000, 'Не найдена кнопка «Проведение реестра».');
+            conductToolbarButton.click();
+
+            const conductDialog = await waitFor(() => (
+                Array.from(document.querySelectorAll('[role="dialog"], .ui-dialog')).find((dialog) => (
+                    isVisible(dialog) &&
+                    normalizeText(dialog.textContent || dialog.innerText).includes('Проведение реестра') &&
+                    dialog.querySelector('iframe')
+                )) || null
+            ), 15000, 'Не открылось окно проведения реестра.');
+            const iframe = conductDialog.querySelector('iframe');
+            await waitFor(() => {
+                if (!(iframe instanceof HTMLIFrameElement)) return null;
+                const candidate = iframe.contentDocument;
+                return candidate && candidate.body ? candidate : null;
+            }, 15000, 'Не загрузилось окно подтверждения проведения.');
+            const confirmButton = await waitFor(() => (
+                (() => {
+                    const currentDocument = iframe instanceof HTMLIFrameElement ? iframe.contentDocument : null;
+                    if (!currentDocument || !currentDocument.body) return null;
+                    return Array.from(currentDocument.querySelectorAll('button, input[type="button"], input[type="submit"], [role="button"]')).find((button) => {
+                        const text = normalizeText(button.textContent || button.innerText || button.value);
+                        return text.includes('Провести реестр') && !button.disabled;
+                    }) || null;
+                })()
+            ), 15000, 'Не найдена кнопка «Провести реестр» в окне подтверждения.');
+            confirmButton.click();
+
+            const message = await waitFor(() => {
+                const currentDocument = iframe instanceof HTMLIFrameElement ? iframe.contentDocument : null;
+                if (!currentDocument || !currentDocument.body) return '';
+                const alerts = Array.from(currentDocument.querySelectorAll('[role="alert"], .alert'));
+                const alertText = alerts.map((alert) => normalizeText(alert.textContent || alert.innerText)).find(Boolean);
+                return alertText || '';
+            }, 120000, 'Пирамида не сообщила результат проведения реестра.');
+            const successPattern = new RegExp(`Реестр\\s+${payload.registryId}\\s*-\\s*Реестр провед[её]н`, 'i');
+            if (!successPattern.test(message)) throw new Error(message);
+
+            const closeButton = Array.from(conductDialog.querySelectorAll('button')).find((button) => (
+                normalizeText(button.textContent || button.innerText) === 'Закрыть'
+            ));
+            if (closeButton instanceof HTMLButtonElement) closeButton.click();
+
+            let refreshedRow = null;
+            let statusName = '';
+            const positiveStatuses = new Set([
+                'проведен',
+                'проведено',
+                'проведен (нет данных)',
+                'проведено (нет данных)'
+            ]);
+            for (let attempt = 1; attempt <= 12; attempt += 1) {
+                await reloadFilteredGrid();
+                refreshedRow = findRegistryRow(false);
+                statusName = refreshedRow ? getCellText(refreshedRow, 'StatusName') : '';
+                if (statusName && positiveStatuses.has(normalizeKey(statusName))) break;
+            }
+            if (!refreshedRow) throw new Error('После проведения реестр не найден повторно.');
+            if (!statusName) throw new Error('После проведения не удалось прочитать статус реестра.');
+
+            return {
+                success: true,
+                registryId: payload.registryId,
+                statusName,
+                message
+            };
+        } catch (error) {
+            return {
+                success: false,
+                error: error && error.message ? error.message : 'Не удалось провести реестр.'
+            };
+        }
+    }, [requestData], { world: 'MAIN' });
+
+    if (!result || result.success !== true) {
+        throw new Error(result && result.error ? result.error : 'Не удалось провести реестр.');
+    }
+    return result;
 }
 
 async function collectEpguRegistryRowsInTab(tabId, requestData) {
@@ -632,7 +861,11 @@ async function runEpguRegistryScan(sourceTab, scanRequest) {
                 );
             }
             departmentRows.forEach((row) => {
-                collectedRows.push({ ...row, department: department.label, depid: department.depid });
+                collectedRows.push({
+                    ...row,
+                    department: department.label,
+                    depid: department.depid
+                });
             });
 
             await sendTabMessageAsync(sourceTabId, {
@@ -699,6 +932,89 @@ async function runEpguRegistryScan(sourceTab, scanRequest) {
         rows: collectedRows,
         departmentCount: scanRequest.departments.length
     };
+}
+
+async function runEpguRegistryConduct(sourceTab, conductRequest) {
+    const sourceTabId = sourceTab && Number.isInteger(sourceTab.id) ? sourceTab.id : null;
+    const sourceWindowId = sourceTab && Number.isInteger(sourceTab.windowId) ? sourceTab.windowId : null;
+    const sourceCookieStoreId = sourceTab && typeof sourceTab.cookieStoreId === 'string'
+        ? sourceTab.cookieStoreId.trim()
+        : '';
+    if (!Number.isInteger(sourceTabId)) throw new Error('NO_SOURCE_TAB');
+
+    const createProperties = {
+        url: conductRequest.targetUrl,
+        active: false,
+        openerTabId: sourceTabId
+    };
+    if (Number.isInteger(sourceWindowId)) createProperties.windowId = sourceWindowId;
+    if (sourceCookieStoreId) createProperties.cookieStoreId = sourceCookieStoreId;
+
+    let workerTabId = null;
+    let restoreCompleted = false;
+    let conductError = null;
+    let conductResult = null;
+
+    try {
+        let workerTab = null;
+        try {
+            workerTab = await createTabAsync(createProperties);
+        } catch (error) {
+            if (!createProperties.cookieStoreId) throw error;
+            const fallbackProperties = { ...createProperties };
+            delete fallbackProperties.cookieStoreId;
+            workerTab = await createTabAsync(fallbackProperties);
+        }
+        workerTabId = workerTab && Number.isInteger(workerTab.id) ? workerTab.id : null;
+        if (!Number.isInteger(workerTabId)) throw new Error('Не удалось открыть служебную вкладку.');
+
+        await navigateEpguRegistryWorkerTab(workerTabId, conductRequest.targetUrl, conductRequest.targetDepid);
+        conductResult = await conductEpguRegistryInTab(workerTabId, conductRequest);
+    } catch (error) {
+        conductError = error;
+    } finally {
+        if (Number.isInteger(workerTabId)) {
+            try {
+                await navigateEpguRegistryWorkerTab(workerTabId, conductRequest.restoreUrl, conductRequest.restoreDepid);
+                restoreCompleted = true;
+            } catch (error) {
+                if (!conductError) {
+                    conductError = new Error(`Не удалось вернуть исходный департамент: ${error && error.message ? error.message : error}`);
+                }
+            }
+
+            if (restoreCompleted) {
+                try {
+                    await removeTabAsync(workerTabId);
+                } catch (error) {
+                    if (!conductError) conductError = error;
+                }
+            } else {
+                try {
+                    await updateTabAsync(workerTabId, { active: true });
+                } catch (error) {
+                    // The error below tells the user that manual restoration is required.
+                }
+            }
+        } else {
+            restoreCompleted = true;
+        }
+
+        if (restoreCompleted) {
+            try {
+                await updateTabAsync(sourceTabId, { active: true });
+            } catch (error) {
+                // The result can still be returned if the source tab was closed meanwhile.
+            }
+        }
+    }
+
+    if (!restoreCompleted) {
+        throw new Error('Не удалось подтвердить возврат исходного департамента. Служебная вкладка оставлена открытой.');
+    }
+    if (conductError) throw conductError;
+    if (!conductResult) throw new Error('Пирамида не вернула результат проведения реестра.');
+    return conductResult;
 }
 
 function executeScriptInTabAsync(tabId, func, args = [], options = {}) {
@@ -1992,6 +2308,37 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     sendResponse({
                         success: false,
                         error: error && error.message ? error.message : 'Не удалось проверить реестры.'
+                    });
+                }
+            })();
+            return true;
+        }
+
+        case 'EPGU_REGISTRY_CONDUCT_START': {
+            const sourceTab = sender && sender.tab ? sender.tab : null;
+            const conductRequest = normalizeEpguRegistryConductRequest(request && request.data);
+            if (!sourceTab || !Number.isInteger(sourceTab.id)) {
+                sendResponse({ success: false, error: 'Не удалось определить исходную вкладку.' });
+                return false;
+            }
+            if (!conductRequest) {
+                sendResponse({ success: false, error: 'Некорректные параметры проведения реестра.' });
+                return false;
+            }
+
+            (async () => {
+                try {
+                    const result = await runEpguRegistryConduct(sourceTab, conductRequest);
+                    sendResponse({
+                        success: true,
+                        registryId: result.registryId,
+                        statusName: result.statusName,
+                        message: result.message
+                    });
+                } catch (error) {
+                    sendResponse({
+                        success: false,
+                        error: error && error.message ? error.message : 'Не удалось провести реестр.'
                     });
                 }
             })();

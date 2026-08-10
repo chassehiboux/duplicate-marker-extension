@@ -663,7 +663,10 @@ html.dup-ext-screenshot-mode [aria-label="Показать таймер"] {
 }
 
 .dup-epgu-registry-summary-status {
+    width: 290px;
+    min-width: 290px;
     max-width: 290px;
+    box-sizing: border-box;
     white-space: normal;
 }
 
@@ -687,7 +690,7 @@ html.dup-ext-screenshot-mode [aria-label="Показать таймер"] {
 
 .dup-epgu-registry-table {
     width: 100%;
-    min-width: 720px;
+    min-width: 780px;
     border-collapse: collapse;
     background: #fff;
     color: #213843;
@@ -716,6 +719,85 @@ html.dup-ext-screenshot-mode [aria-label="Показать таймер"] {
 
 .dup-epgu-registry-table tbody tr:last-child td {
     border-bottom: 0;
+}
+
+.dup-epgu-registry-status-cell {
+    width: 170px;
+}
+
+.dup-epgu-registry-status-chip {
+    min-height: 24px;
+    padding: 2px 8px;
+    font-size: 10px;
+    line-height: 1.25;
+    text-align: center;
+    white-space: normal;
+}
+
+.dup-epgu-registry-status-cell .dup-epgu-registry-status-chip + .dup-epgu-registry-status-chip {
+    margin-top: 4px;
+}
+
+.dup-epgu-registry-department {
+    width: 165px !important;
+    min-width: 165px !important;
+    max-width: 165px !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis;
+    white-space: nowrap !important;
+    overflow-wrap: normal !important;
+}
+
+.dup-epgu-registry-file-name {
+    cursor: copy;
+}
+
+.dup-epgu-registry-action-cell {
+    width: 38px;
+    min-width: 38px;
+    padding-right: 6px !important;
+    padding-left: 6px !important;
+    text-align: center !important;
+    vertical-align: middle !important;
+}
+
+.dup-epgu-registry-conduct-button {
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 1px solid #176b5b;
+    border-radius: 6px;
+    background: #fff;
+    color: #176b5b;
+    font-size: 12px;
+    line-height: 26px;
+    text-align: center;
+    cursor: pointer;
+    transition: background-color 0.15s ease, color 0.15s ease, opacity 0.15s ease;
+}
+
+.dup-epgu-registry-conduct-button:hover:not(:disabled),
+.dup-epgu-registry-conduct-button:focus-visible:not(:disabled) {
+    background: #176b5b;
+    color: #fff;
+}
+
+.dup-epgu-registry-conduct-button:disabled {
+    cursor: default;
+    opacity: 0.5;
+}
+
+.dup-epgu-registry-conduct-button.is-running {
+    opacity: 0.85;
+}
+
+.dup-epgu-registry-conduct-button.is-running .fa {
+    animation: dup-epgu-registry-conduct-pulse 0.8s ease-in-out infinite alternate;
+}
+
+@keyframes dup-epgu-registry-conduct-pulse {
+    from { transform: scale(0.82); opacity: 0.55; }
+    to { transform: scale(1); opacity: 1; }
 }
 
 .dup-epgu-registry-empty {
@@ -1080,6 +1162,11 @@ html.dup-ext-screenshot-mode [aria-label="Показать таймер"] {
 
     .dup-epgu-summary-status {
         width: 100%;
+    }
+
+    .dup-epgu-registry-summary-status {
+        min-width: 0;
+        max-width: none;
     }
 
     .dup-epgu-summary-retry-button {
