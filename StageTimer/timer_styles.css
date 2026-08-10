@@ -566,6 +566,7 @@ html.dup-ext-screenshot-mode [aria-label="Показать таймер"] {
 
 .dup-epgu-summary-item {
     display: flex;
+    flex-wrap: wrap;
     align-items: flex-start;
     justify-content: space-between;
     gap: 12px;
@@ -594,6 +595,29 @@ html.dup-ext-screenshot-mode [aria-label="Показать таймер"] {
     overflow-wrap: anywhere;
 }
 
+.dup-epgu-summary-claimant.is-expandable {
+    width: fit-content;
+    cursor: pointer;
+    border-radius: 4px;
+}
+
+.dup-epgu-summary-claimant.is-expandable:hover {
+    color: #176b5b;
+}
+
+.dup-epgu-summary-claimant.is-expandable:focus-visible {
+    outline: 2px solid #176b5b;
+    outline-offset: 3px;
+}
+
+.dup-epgu-registry-toggle {
+    width: 14px;
+    color: #176b5b;
+    font-size: 14px;
+    line-height: 1;
+    text-align: center;
+}
+
 .dup-epgu-summary-subline {
     font-size: 12px;
     line-height: 1.35;
@@ -610,7 +634,9 @@ html.dup-ext-screenshot-mode [aria-label="Показать таймер"] {
 .dup-epgu-summary-side {
     flex: none;
     display: flex;
+    flex-direction: column;
     align-items: flex-start;
+    gap: 6px;
 }
 
 .dup-epgu-summary-summary-message {
@@ -636,6 +662,71 @@ html.dup-ext-screenshot-mode [aria-label="Показать таймер"] {
     text-align: center;
 }
 
+.dup-epgu-registry-summary-status {
+    max-width: 290px;
+    white-space: normal;
+}
+
+.dup-epgu-registry-details {
+    flex: 1 0 100%;
+    width: 100%;
+    padding-top: 8px;
+    border-top: 1px solid rgba(39, 64, 79, 0.12);
+}
+
+.dup-epgu-registry-details[hidden] {
+    display: none !important;
+}
+
+.dup-epgu-registry-table-wrap {
+    width: 100%;
+    overflow-x: auto;
+    border: 1px solid rgba(39, 64, 79, 0.14);
+    border-radius: 6px;
+}
+
+.dup-epgu-registry-table {
+    width: 100%;
+    min-width: 720px;
+    border-collapse: collapse;
+    background: #fff;
+    color: #213843;
+    font-size: 11px;
+    line-height: 1.4;
+}
+
+.dup-epgu-registry-table th,
+.dup-epgu-registry-table td {
+    padding: 8px 10px;
+    border-bottom: 1px solid rgba(39, 64, 79, 0.1);
+    text-align: left;
+    vertical-align: top;
+    overflow-wrap: anywhere;
+}
+
+.dup-epgu-registry-table th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: #e9efed;
+    color: #243943;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+}
+
+.dup-epgu-registry-table tbody tr:last-child td {
+    border-bottom: 0;
+}
+
+.dup-epgu-registry-empty {
+    padding: 10px 12px;
+    border: 1px dashed rgba(39, 64, 79, 0.18);
+    border-radius: 6px;
+    background: #f8faf9;
+    color: #51656f;
+    font-size: 12px;
+}
+
 .dup-epgu-summary-empty {
     padding: 12px;
     border: 1px dashed rgba(39, 64, 79, 0.18);
@@ -655,6 +746,30 @@ html.dup-ext-screenshot-mode [aria-label="Показать таймер"] {
     border-top: 1px solid rgba(39, 64, 79, 0.12);
 }
 
+.dup-epgu-summary-action-buttons {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.dup-epgu-registry-check-status {
+    min-height: 18px;
+    padding: 8px 10px;
+    border-left: 3px solid #607d8b;
+    background: rgba(96, 125, 139, 0.08);
+    color: #415761;
+    font-size: 12px;
+    line-height: 1.4;
+}
+
+.dup-epgu-registry-check-status.is-error {
+    border-left-color: #b73b3b;
+    background: rgba(183, 59, 59, 0.08);
+    color: #962f2f;
+    font-weight: 700;
+}
+
 .dup-epgu-summary-retry-hint {
     max-width: 560px;
     color: #51656f;
@@ -671,6 +786,32 @@ html.dup-ext-screenshot-mode [aria-label="Показать таймер"] {
     background: #176b5b !important;
     color: #fff !important;
     box-shadow: 0 6px 16px rgba(23, 107, 91, 0.18);
+}
+
+.dup-epgu-registry-check-button {
+    flex: none;
+    min-height: 36px !important;
+    padding: 0 14px !important;
+    border-color: #506c78 !important;
+    background: #fff !important;
+    color: #314b57 !important;
+    font-weight: 700 !important;
+    box-shadow: 0 4px 12px rgba(49, 75, 87, 0.1);
+}
+
+.dup-epgu-registry-check-button:hover:not(:disabled),
+.dup-epgu-registry-check-button:focus-visible:not(:disabled) {
+    border-color: #176b5b !important;
+    color: #124f44 !important;
+}
+
+.dup-epgu-registry-check-button:disabled {
+    border-color: #9aa9af !important;
+    background: #eef1f2 !important;
+    color: #6f7d83 !important;
+    box-shadow: none;
+    opacity: 0.78;
+    cursor: wait;
 }
 
 .dup-epgu-summary-retry-button:disabled,
@@ -927,7 +1068,8 @@ html.dup-ext-screenshot-mode [aria-label="Показать таймер"] {
     .dup-epgu-summary-item,
     .dup-epgu-summary-side,
     .dup-epgu-summary-claimant,
-    .dup-epgu-summary-actions {
+    .dup-epgu-summary-actions,
+    .dup-epgu-summary-action-buttons {
         flex-direction: column;
         align-items: flex-start;
     }
@@ -941,6 +1083,11 @@ html.dup-ext-screenshot-mode [aria-label="Показать таймер"] {
     }
 
     .dup-epgu-summary-retry-button {
+        width: 100%;
+    }
+
+    .dup-epgu-summary-action-buttons,
+    .dup-epgu-registry-check-button {
         width: 100%;
     }
 

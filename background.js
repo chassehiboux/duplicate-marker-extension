@@ -330,6 +330,59 @@ function createTabAsync(createProperties) {
     });
 }
 
+function updateTabAsync(tabId, updateProperties) {
+    return new Promise((resolve, reject) => {
+        try {
+            chrome.tabs.update(tabId, updateProperties, (tab) => {
+                const runtimeError = chrome.runtime && chrome.runtime.lastError
+                    ? chrome.runtime.lastError.message
+                    : '';
+                if (runtimeError) {
+                    reject(new Error(runtimeError));
+                    return;
+                }
+                resolve(tab || null);
+            });
+        } catch (error) {
+            reject(error);
+        }
+    });
+}
+
+function removeTabAsync(tabId) {
+    return new Promise((resolve, reject) => {
+        try {
+            chrome.tabs.remove(tabId, () => {
+                const runtimeError = chrome.runtime && chrome.runtime.lastError
+                    ? chrome.runtime.lastError.message
+                    : '';
+                if (runtimeError) {
+                    reject(new Error(runtimeError));
+                    return;
+                }
+                resolve(true);
+            });
+        } catch (error) {
+            reject(error);
+        }
+    });
+}
+
+function sendTabMessageAsync(tabId, message) {
+    return new Promise((resolve) => {
+        try {
+            chrome.tabs.sendMessage(tabId, message, (response) => {
+                void (chrome.runtime && chrome.runtime.lastError
+                    ? chrome.runtime.lastError.message
+                    : '');
+                resolve(response || null);
+            });
+        } catch (error) {
+            resolve(null);
+        }
+    });
+}
+
 function getTabAsync(tabId) {
     return new Promise((resolve, reject) => {
         try {
@@ -347,6 +400,305 @@ function getTabAsync(tabId) {
             reject(error);
         }
     });
+}
+
+function normalizeEpguRegistryScanUrl(value, expectedHost) {
+    const rawValue = String(value || '').trim();
+    const normalizedHost = String(expectedHost || '').trim().toLowerCase();
+    if (!rawValue || !normalizedHost) return '';
+
+    try {
+        const parsed = new URL(rawValue);
+        if (parsed.protocol !== 'https:' || parsed.hostname.toLowerCase() !== normalizedHost) return '';
+        return parsed.toString();
+    } catch (error) {
+        return '';
+    }
+}
+
+function normalizeEpguRegistryScanRequest(data) {
+    const raw = data && typeof data === 'object' ? data : {};
+    const baseHost = String(raw.baseHost || '').trim().toLowerCase();
+    const checkDate = String(raw.checkDate || '').trim();
+    const restoreDepid = String(raw.restoreDepid || '').trim();
+    const restoreUrl = normalizeEpguRegistryScanUrl(raw.restoreUrl, baseHost);
+    const rawDepartments = Array.isArray(raw.departments) ? raw.departments : [];
+    const departments = [];
+    const usedDepids = new Set();
+
+    for (const item of rawDepartments) {
+        const depid = String(item && item.depid || '').trim();
+        const label = String(item && item.label || '').replace(/\s+/g, ' ').trim();
+        const switchUrl = normalizeEpguRegistryScanUrl(item && item.switchUrl, baseHost);
+        if (!depid || !label || !switchUrl || usedDepids.has(depid)) continue;
+        usedDepids.add(depid);
+        departments.push({ depid, label, switchUrl });
+    }
+
+    if (
+        !baseHost ||
+        !/^\d{2}\.\d{2}\.\d{4}$/.test(checkDate) ||
+        !restoreDepid ||
+        !restoreUrl ||
+        departments.length < 1 ||
+        !usedDepids.has(restoreDepid)
+    ) {
+        return null;
+    }
+
+    return { baseHost, checkDate, restoreDepid, restoreUrl, departments };
+}
+
+async function collectEpguRegistryRowsInTab(tabId, requestData) {
+    const result = await executeScriptInTabAsync(tabId, async (payload) => {
+        const normalizeText = (value) => String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
+        if (String(window.location.hostname || '').trim().toLowerCase() !== payload.baseHost) {
+            return { success: false, error: 'WRONG_BASE_HOST' };
+        }
+
+        const endpoint = new URL('/ovzid/fsspreestr/data', window.location.origin);
+        const filters = {
+            groupOp: 'AND',
+            rules: [{
+                field: 'CreateDate',
+                op: 'cn',
+                data: `${payload.checkDate}-${payload.checkDate}`
+            }]
+        };
+
+        const fetchPage = async (pageNo) => {
+            const target = new URL(endpoint.toString());
+            const params = {
+                page: pageNo,
+                rows: 300,
+                sidx: 'Id',
+                sord: 'desc',
+                _search: 'true',
+                filters: JSON.stringify(filters)
+            };
+            Object.entries(params).forEach(([key, value]) => target.searchParams.set(key, String(value)));
+            const response = await fetch(target.toString(), {
+                method: 'GET',
+                credentials: 'include',
+                headers: { 'X-Requested-With': 'XMLHttpRequest' }
+            });
+            const responseText = await response.text();
+            if (!response.ok) {
+                throw new Error(`HTTP_${response.status}`);
+            }
+            try {
+                return JSON.parse(responseText);
+            } catch (error) {
+                throw new Error('INVALID_JSON');
+            }
+        };
+
+        try {
+            const firstPage = await fetchPage(1);
+            const totalPages = Math.max(1, Number(firstPage && firstPage.total || 1));
+            const sourceRows = Array.isArray(firstPage && firstPage.rows) ? firstPage.rows.slice() : [];
+            for (let pageNo = 2; pageNo <= totalPages; pageNo += 1) {
+                const nextPage = await fetchPage(pageNo);
+                if (Array.isArray(nextPage && nextPage.rows)) sourceRows.push(...nextPage.rows);
+            }
+
+            const rows = sourceRows.map((item) => {
+                const cell = item && item.cell && typeof item.cell === 'object' ? item.cell : {};
+                return {
+                    registryId: normalizeText(cell.Id || (item && item.id)),
+                    statusName: normalizeText(cell.StatusName),
+                    claimantName: normalizeText(cell.ClaimantName),
+                    typeName: normalizeText(cell.TypeName),
+                    fileName: normalizeText(cell.FileName),
+                    createDate: normalizeText(cell.CreateDate)
+                };
+            }).filter((item) => (
+                item.createDate === payload.checkDate && (item.registryId || item.fileName)
+            ));
+
+            return { success: true, rows, totalPages };
+        } catch (error) {
+            return {
+                success: false,
+                error: error && error.message ? error.message : 'FETCH_FAILED'
+            };
+        }
+    }, [requestData], { world: 'MAIN' });
+
+    if (!result || result.success !== true || !Array.isArray(result.rows)) {
+        throw new Error(result && result.error ? result.error : 'REGISTRY_ROWS_UNAVAILABLE');
+    }
+    return result.rows;
+}
+
+async function verifyEpguRegistryDepartmentInTab(tabId, depid) {
+    const activeDepid = await executeScriptInTabAsync(tabId, () => {
+        const activeLink = document.querySelector('a.department-switch.active');
+        if (!(activeLink instanceof HTMLAnchorElement)) return '';
+        const attrDepid = String(activeLink.getAttribute('data-depid') || activeLink.getAttribute('depid') || '').trim();
+        if (attrDepid) return attrDepid;
+        try {
+            const match = String(new URL(activeLink.href, window.location.origin).pathname || '')
+                .match(/\/login\/department\/(\d+)(?:\/|$)/i);
+            return match ? match[1] : '';
+        } catch (error) {
+            return '';
+        }
+    }, [], { world: 'MAIN' });
+    return String(activeDepid || '').trim() === String(depid || '').trim();
+}
+
+async function navigateEpguRegistryWorkerTab(tabId, targetUrl, expectedDepid) {
+    let lastError = null;
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+        try {
+            await updateTabAsync(tabId, { url: targetUrl, active: false });
+            await waitForTabCompleteAsync(tabId, 30000);
+            await delayAsync(350);
+            if (!expectedDepid || await verifyEpguRegistryDepartmentInTab(tabId, expectedDepid)) return true;
+            lastError = new Error('DEPARTMENT_NOT_SELECTED');
+        } catch (error) {
+            lastError = error;
+        }
+    }
+    throw lastError || new Error('DEPARTMENT_NAVIGATION_FAILED');
+}
+
+async function runEpguRegistryScan(sourceTab, scanRequest) {
+    const sourceTabId = sourceTab && Number.isInteger(sourceTab.id) ? sourceTab.id : null;
+    const sourceWindowId = sourceTab && Number.isInteger(sourceTab.windowId) ? sourceTab.windowId : null;
+    const sourceCookieStoreId = sourceTab && typeof sourceTab.cookieStoreId === 'string'
+        ? sourceTab.cookieStoreId.trim()
+        : '';
+    if (!Number.isInteger(sourceTabId)) throw new Error('NO_SOURCE_TAB');
+
+    const createProperties = {
+        url: scanRequest.departments[0].switchUrl,
+        active: false,
+        openerTabId: sourceTabId
+    };
+    if (Number.isInteger(sourceWindowId)) createProperties.windowId = sourceWindowId;
+    if (sourceCookieStoreId) createProperties.cookieStoreId = sourceCookieStoreId;
+
+    let workerTabId = null;
+    let restoreCompleted = false;
+    let scanError = null;
+    const collectedRows = [];
+
+    try {
+        let workerTab = null;
+        try {
+            workerTab = await createTabAsync(createProperties);
+        } catch (error) {
+            if (!createProperties.cookieStoreId) throw error;
+            const fallbackProperties = { ...createProperties };
+            delete fallbackProperties.cookieStoreId;
+            workerTab = await createTabAsync(fallbackProperties);
+        }
+        workerTabId = workerTab && Number.isInteger(workerTab.id) ? workerTab.id : null;
+        if (!Number.isInteger(workerTabId)) throw new Error('NO_WORKER_TAB');
+
+        for (let index = 0; index < scanRequest.departments.length; index += 1) {
+            const department = scanRequest.departments[index];
+            await sendTabMessageAsync(sourceTabId, {
+                action: 'EPGU_REGISTRY_SCAN_PROGRESS',
+                data: {
+                    current: index,
+                    total: scanRequest.departments.length,
+                    department: department.label
+                }
+            });
+
+            let departmentRows = null;
+            try {
+                await navigateEpguRegistryWorkerTab(workerTabId, department.switchUrl, department.depid);
+                let lastFetchError = null;
+                for (let attempt = 1; attempt <= 2; attempt += 1) {
+                    try {
+                        departmentRows = await collectEpguRegistryRowsInTab(workerTabId, {
+                            baseHost: scanRequest.baseHost,
+                            checkDate: scanRequest.checkDate
+                        });
+                        break;
+                    } catch (error) {
+                        lastFetchError = error;
+                        if (attempt < 2) await delayAsync(500);
+                    }
+                }
+                if (!Array.isArray(departmentRows)) throw lastFetchError || new Error('REGISTRY_FETCH_FAILED');
+            } catch (error) {
+                throw new Error(
+                    `Не удалось проверить департамент «${department.label}»: ${error && error.message ? error.message : error}`
+                );
+            }
+            departmentRows.forEach((row) => {
+                collectedRows.push({ ...row, department: department.label, depid: department.depid });
+            });
+
+            await sendTabMessageAsync(sourceTabId, {
+                action: 'EPGU_REGISTRY_SCAN_PROGRESS',
+                data: {
+                    current: index + 1,
+                    total: scanRequest.departments.length,
+                    department: department.label
+                }
+            });
+        }
+    } catch (error) {
+        scanError = error;
+    } finally {
+        if (Number.isInteger(workerTabId)) {
+            try {
+                await sendTabMessageAsync(sourceTabId, {
+                    action: 'EPGU_REGISTRY_SCAN_PROGRESS',
+                    data: {
+                        current: scanRequest.departments.length,
+                        total: scanRequest.departments.length,
+                        department: 'Возврат исходного департамента',
+                        restoring: true
+                    }
+                });
+                await navigateEpguRegistryWorkerTab(workerTabId, scanRequest.restoreUrl, scanRequest.restoreDepid);
+                restoreCompleted = true;
+            } catch (error) {
+                if (!scanError) scanError = new Error(`RESTORE_FAILED:${error && error.message ? error.message : error}`);
+            }
+
+            if (restoreCompleted) {
+                try {
+                    await removeTabAsync(workerTabId);
+                } catch (error) {
+                    if (!scanError) scanError = error;
+                }
+            } else {
+                try {
+                    await updateTabAsync(workerTabId, { active: true });
+                } catch (error) {
+                    // The source response below still explains that manual restoration is required.
+                }
+            }
+        } else {
+            restoreCompleted = true;
+        }
+
+        if (restoreCompleted) {
+            try {
+                await updateTabAsync(sourceTabId, { active: true });
+            } catch (error) {
+                // The scan result can still be returned if the source tab was closed meanwhile.
+            }
+        }
+    }
+
+    if (!restoreCompleted) {
+        throw new Error('Не удалось подтвердить возврат исходного департамента. Служебная вкладка оставлена открытой.');
+    }
+    if (scanError) throw scanError;
+
+    return {
+        rows: collectedRows,
+        departmentCount: scanRequest.departments.length
+    };
 }
 
 function executeScriptInTabAsync(tabId, func, args = [], options = {}) {
@@ -1613,6 +1965,36 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 }
                 sendResponse({ success: true });
             });
+            return true;
+        }
+
+        case 'EPGU_REGISTRY_SCAN_START': {
+            const sourceTab = sender && sender.tab ? sender.tab : null;
+            const scanRequest = normalizeEpguRegistryScanRequest(request && request.data);
+            if (!sourceTab || !Number.isInteger(sourceTab.id)) {
+                sendResponse({ success: false, error: 'Не удалось определить исходную вкладку.' });
+                return false;
+            }
+            if (!scanRequest) {
+                sendResponse({ success: false, error: 'Некорректные параметры проверки реестров.' });
+                return false;
+            }
+
+            (async () => {
+                try {
+                    const result = await runEpguRegistryScan(sourceTab, scanRequest);
+                    sendResponse({
+                        success: true,
+                        rows: result.rows,
+                        departmentCount: result.departmentCount
+                    });
+                } catch (error) {
+                    sendResponse({
+                        success: false,
+                        error: error && error.message ? error.message : 'Не удалось проверить реестры.'
+                    });
+                }
+            })();
             return true;
         }
 

@@ -267,6 +267,7 @@
   const EPGU_REQUESTS_RETRY_MODAL_ID = 'dup-epgu-retry-modal';
   const EPGU_REQUESTS_RETRY_EXCLUSIONS_STORAGE_KEY = 'dup_epgu_retry_excluded_claimants_v1';
   const EPGU_REQUESTS_SUMMARY_REOPEN_STORAGE_KEY = 'dup_epgu_summary_reopen_once_v1';
+  const EPGU_REGISTRY_CHECK_CACHE_STORAGE_KEY = 'dup_epgu_registry_check_cache_v1';
   const EPGU_REQUESTS_SUMMARY_REOPEN_TTL_MS = 2 * 60 * 1000;
   const EPGU_REQUESTS_DATABASES = Object.freeze([
     { depid: '39', label: 'Курган', host: 'kgn.pyramid.vostok-electra.ru' },
@@ -378,7 +379,7 @@
       key: 'epguSummaryTools',
       storageKey: 'dup_ui_show_epgu_summary_tools',
       label: 'Сводка и повторы ЕПГУ',
-      description: 'Сводка за сегодня, переключение баз и последовательная отправка повторных запросов.',
+      description: 'Сводка за сегодня, проверка реестров, переключение баз и повторные запросы.',
       hideClass: 'dup-ui-hide-epgu-summary-tools',
       hideCss: `
         html.dup-ui-hide-epgu-summary-tools #${EPGU_REQUESTS_SUMMARY_BUTTON_ID},
@@ -2345,6 +2346,19 @@
       currentIndex,
       updatedAt: Number(raw.updatedAt || 0) || Date.now()
     };
+  }
+
+  function chromeLocalStorageSet(values) {
+    return new Promise((resolve) => {
+      try {
+        chrome.storage.local.set(values, () => {
+          const runtimeError = chrome.runtime && chrome.runtime.lastError;
+          resolve(!runtimeError);
+        });
+      } catch (error) {
+        resolve(false);
+      }
+    });
   }
 
   function loadIdCardCheckSessionCache() {
@@ -6281,6 +6295,12 @@
   let epguRequestsDuplicateColorIndex = 0;
   let epguRetryBatchRunning = false;
   let epguSummaryReopenCheckStarted = false;
+  let epguRegistryCheckRunning = false;
+  let epguRegistryCheckProgress = null;
+  let epguRegistryCheckNotice = '';
+  let epguRegistryCheckNoticeIsError = false;
+  let epguRegistryCheckCache = null;
+  let epguRegistryCheckCachePromise = null;
 
   function clearEpguRequestsHighlights() {
     document.querySelectorAll(`.${EPGU_REQUESTS_DUPLICATE_CLASS}`).forEach((cell) => {
@@ -6422,6 +6442,281 @@
       badge.style.borderColor = backgroundColor;
     }
     return badge;
+  }
+
+  const EPGU_REGISTRY_CLAIMANT_ALIASES = Object.freeze([
+    ['КГК', ['кгк', 'курганская генерирующая компания']],
+    ['Водный союз', ['водный союз']],
+    ['Чистый город', ['чистый город']],
+    ['Восток', ['восток']],
+    ['Ямалкоммунэнерго', ['ямалкоммунэнерго']],
+    ['Рифей', ['рифей', 'компания рифей']],
+    ['СЕВЭНКО', ['севэнко', 'северная энергетическая компания']],
+    ['ВТВК', ['втвк', 'вынгапуровский тепловодоканал']],
+    ['СУЭНКО', ['суэнко']],
+    ['ТЭО', ['тэо', 'тюменское экологическое объединение']],
+    ['ХЭГ', ['хэг', 'харп-энерго-газ', 'хэг харп']],
+    ['Ямал Экология', ['ямал экология', 'ямалэкология']],
+    ['ЮГРА', ['югра-экология', 'югра экология', 'югра']],
+    ['ГТС', ['гтс']],
+    ['СГЭС', ['сгэс']]
+  ]);
+
+  function normalizeEpguRegistryText(value) {
+    return normalizeEpguRequestsCellText(value)
+      .replace(/\u00a0/g, ' ')
+      .replace(/ё/g, 'е')
+      .replace(/Ё/g, 'Е')
+      .replace(/[«»]/g, '"');
+  }
+
+  function normalizeEpguRegistryStatusKey(value) {
+    return normalizeEpguRegistryText(value).toLocaleLowerCase('ru-RU').replace(/"/g, '');
+  }
+
+  function canonicalizeEpguRegistryClaimant(value) {
+    const cleaned = normalizeEpguRegistryText(value);
+    if (!cleaned) return '';
+    const lookup = cleaned.toLocaleLowerCase('ru-RU').replace(/"/g, '');
+    for (const [canonicalName, aliases] of EPGU_REGISTRY_CLAIMANT_ALIASES) {
+      if (aliases.some((alias) => lookup.includes(alias))) return canonicalName;
+    }
+    return cleaned;
+  }
+
+  function parseEpguRegistryFileClaimant(fileName) {
+    const match = normalizeEpguRegistryText(fileName).match(/^Реестр_ЕПГУ_(.+)_(\d+)_(\d+)\.xml$/i);
+    return match ? normalizeEpguRegistryText(match[1]) : '';
+  }
+
+  function createEmptyEpguRegistryCheckCache(dateKey) {
+    return { dateKey: String(dateKey || ''), bases: {} };
+  }
+
+  async function loadEpguRegistryCheckCache() {
+    const todayDateKey = getEpguTodayDateKey();
+    if (epguRegistryCheckCache && epguRegistryCheckCache.dateKey === todayDateKey) {
+      return epguRegistryCheckCache;
+    }
+    if (epguRegistryCheckCachePromise) return epguRegistryCheckCachePromise;
+
+    epguRegistryCheckCachePromise = (async () => {
+      const stored = await chromeStorageGet([EPGU_REGISTRY_CHECK_CACHE_STORAGE_KEY]);
+      const raw = stored && stored[EPGU_REGISTRY_CHECK_CACHE_STORAGE_KEY];
+      if (!raw || typeof raw !== 'object' || raw.dateKey !== todayDateKey) {
+        epguRegistryCheckCache = createEmptyEpguRegistryCheckCache(todayDateKey);
+        await chromeLocalStorageSet({ [EPGU_REGISTRY_CHECK_CACHE_STORAGE_KEY]: epguRegistryCheckCache });
+        return epguRegistryCheckCache;
+      }
+
+      epguRegistryCheckCache = {
+        dateKey: todayDateKey,
+        bases: raw.bases && typeof raw.bases === 'object' ? raw.bases : {}
+      };
+      return epguRegistryCheckCache;
+    })();
+
+    try {
+      return await epguRegistryCheckCachePromise;
+    } finally {
+      epguRegistryCheckCachePromise = null;
+    }
+  }
+
+  function getEpguRegistryCheckResultForCurrentBase() {
+    const todayDateKey = getEpguTodayDateKey();
+    if (!epguRegistryCheckCache || epguRegistryCheckCache.dateKey !== todayDateKey) return null;
+    const host = normalizeDepartmentContainerHost(window.location.hostname);
+    const result = epguRegistryCheckCache.bases && epguRegistryCheckCache.bases[host];
+    return result && typeof result === 'object' ? result : null;
+  }
+
+  async function saveEpguRegistryCheckResultForCurrentBase(result) {
+    const todayDateKey = getEpguTodayDateKey();
+    const currentCache = await loadEpguRegistryCheckCache();
+    const host = normalizeDepartmentContainerHost(window.location.hostname);
+    const nextCache = currentCache && currentCache.dateKey === todayDateKey
+      ? { dateKey: todayDateKey, bases: { ...(currentCache.bases || {}) } }
+      : createEmptyEpguRegistryCheckCache(todayDateKey);
+    nextCache.bases[host] = result;
+    const saved = await chromeLocalStorageSet({ [EPGU_REGISTRY_CHECK_CACHE_STORAGE_KEY]: nextCache });
+    if (saved) epguRegistryCheckCache = nextCache;
+    return saved;
+  }
+
+  function aggregateEpguRegistryScanRows(rows, departmentCount) {
+    const grouped = new Map();
+    (Array.isArray(rows) ? rows : []).forEach((raw, rowIndex) => {
+      const registryId = normalizeEpguRegistryText(raw && raw.registryId);
+      const fileName = normalizeEpguRegistryText(raw && raw.fileName);
+      const typeName = normalizeEpguRegistryText(raw && raw.typeName);
+      const groupKey = registryId || `file:${fileName}|${typeName}|${rowIndex}`;
+      const fileClaimant = parseEpguRegistryFileClaimant(fileName);
+      const claimantKeys = [fileClaimant, raw && raw.claimantName]
+        .map(canonicalizeEpguRegistryClaimant)
+        .filter(Boolean);
+
+      if (!grouped.has(groupKey)) {
+        grouped.set(groupKey, {
+          registryId,
+          fileName,
+          typeName,
+          claimantKeys: new Set(),
+          statusNames: new Set(),
+          departmentNames: new Set()
+        });
+      }
+
+      const item = grouped.get(groupKey);
+      if (!item.fileName && fileName) item.fileName = fileName;
+      if (!item.typeName && typeName) item.typeName = typeName;
+      claimantKeys.forEach((key) => item.claimantKeys.add(key));
+      const statusName = normalizeEpguRegistryText(raw && raw.statusName);
+      if (statusName) item.statusNames.add(statusName);
+      const departmentName = normalizeEpguRegistryText(raw && raw.department);
+      if (departmentName) item.departmentNames.add(departmentName);
+    });
+
+    const registries = Array.from(grouped.values()).map((item) => ({
+      registryId: item.registryId,
+      fileName: item.fileName,
+      typeName: item.typeName,
+      claimantKeys: Array.from(item.claimantKeys).sort((left, right) => left.localeCompare(right, 'ru')),
+      statusNames: Array.from(item.statusNames).sort((left, right) => left.localeCompare(right, 'ru')),
+      departmentNames: Array.from(item.departmentNames).sort((left, right) => left.localeCompare(right, 'ru'))
+    })).sort((left, right) => {
+      const leftClaimant = left.claimantKeys[0] || '';
+      const rightClaimant = right.claimantKeys[0] || '';
+      return leftClaimant.localeCompare(rightClaimant, 'ru') ||
+        left.typeName.localeCompare(right.typeName, 'ru') ||
+        left.fileName.localeCompare(right.fileName, 'ru');
+    });
+
+    return {
+      checkedAt: Date.now(),
+      departmentCount: Math.max(0, Number(departmentCount) || 0),
+      registries
+    };
+  }
+
+  function getEpguClaimantRegistries(cacheResult, claimantName) {
+    const claimantKey = normalizeEpguRegistryStatusKey(canonicalizeEpguRegistryClaimant(claimantName));
+    const registries = cacheResult && Array.isArray(cacheResult.registries)
+      ? cacheResult.registries
+      : [];
+    return registries.filter((registry) => {
+      const keys = Array.isArray(registry && registry.claimantKeys) ? registry.claimantKeys : [];
+      return claimantKey && keys.some((key) => (
+        normalizeEpguRegistryStatusKey(canonicalizeEpguRegistryClaimant(key)) === claimantKey
+      ));
+    });
+  }
+
+  function resolveEpguRegistrySummaryMeta(registries, hasCheckResult) {
+    if (!hasCheckResult) {
+      return { label: 'Реестры не проверены', color: '#E7E6E6', count: 0, checked: false };
+    }
+    const source = Array.isArray(registries) ? registries : [];
+    if (!source.length) {
+      return { label: 'Реестры не созданы', color: EPGU_REQUESTS_COLOR_RED, count: 0, checked: true };
+    }
+
+    const positiveStatuses = new Set([
+      'проведен',
+      'проведено',
+      'проведен (нет данных)',
+      'проведено (нет данных)'
+    ]);
+    const pendingStatuses = new Set(['не проведен', 'не проведено']);
+    let hasPending = false;
+    let hasError = false;
+
+    source.forEach((registry) => {
+      const statuses = Array.isArray(registry && registry.statusNames) && registry.statusNames.length
+        ? registry.statusNames
+        : [''];
+      statuses.forEach((statusName) => {
+        const key = normalizeEpguRegistryStatusKey(statusName);
+        if (pendingStatuses.has(key)) hasPending = true;
+        else if (!positiveStatuses.has(key)) hasError = true;
+      });
+    });
+
+    if (hasPending && hasError) {
+      return { label: 'Идет проведение, есть ошибки', color: EPGU_REQUESTS_COLOR_YELLOW, count: source.length, checked: true };
+    }
+    if (hasPending) {
+      return { label: 'Идет проведение', color: EPGU_REQUESTS_COLOR_YELLOW, count: source.length, checked: true };
+    }
+    if (hasError) {
+      return { label: 'Ошибки при проведении', color: EPGU_REQUESTS_COLOR_RED, count: source.length, checked: true };
+    }
+    return { label: 'Реестры проведены', color: EPGU_REQUESTS_COLOR_GREEN, count: source.length, checked: true };
+  }
+
+  function formatEpguRegistryCount(count) {
+    const value = Math.max(0, Number(count) || 0);
+    const mod100 = value % 100;
+    const mod10 = value % 10;
+    const noun = mod100 >= 11 && mod100 <= 14
+      ? 'реестров'
+      : mod10 === 1
+        ? 'реестр'
+        : mod10 >= 2 && mod10 <= 4
+          ? 'реестра'
+          : 'реестров';
+    return `${value} ${noun}`;
+  }
+
+  function createEpguRegistryDetails(registries, claimantName) {
+    const details = document.createElement('div');
+    details.className = 'dup-epgu-registry-details';
+    details.hidden = true;
+
+    const source = Array.isArray(registries) ? registries : [];
+    if (!source.length) {
+      const empty = document.createElement('div');
+      empty.className = 'dup-epgu-registry-empty';
+      empty.textContent = `За сегодня реестры взыскателя «${claimantName}» не найдены.`;
+      details.appendChild(empty);
+      return details;
+    }
+
+    const tableWrap = document.createElement('div');
+    tableWrap.className = 'dup-epgu-registry-table-wrap';
+    const table = document.createElement('table');
+    table.className = 'dup-epgu-registry-table';
+    const thead = document.createElement('thead');
+    const headerRow = document.createElement('tr');
+    ['Статус', 'Департамент', 'Тип реестра', 'Имя файла'].forEach((label) => {
+      const cell = document.createElement('th');
+      cell.scope = 'col';
+      cell.textContent = label;
+      headerRow.appendChild(cell);
+    });
+    thead.appendChild(headerRow);
+    const tbody = document.createElement('tbody');
+    source.forEach((registry) => {
+      const row = document.createElement('tr');
+      const values = [
+        Array.isArray(registry.statusNames) && registry.statusNames.length
+          ? registry.statusNames.join(', ')
+          : 'Статус не указан',
+        Array.isArray(registry.departmentNames) ? registry.departmentNames.join(', ') : '',
+        registry.typeName || '',
+        registry.fileName || ''
+      ];
+      values.forEach((value) => {
+        const cell = document.createElement('td');
+        cell.textContent = value;
+        row.appendChild(cell);
+      });
+      tbody.appendChild(row);
+    });
+    table.append(thead, tbody);
+    tableWrap.appendChild(table);
+    details.appendChild(tableWrap);
+    return details;
   }
 
   function collectEpguTodaySummaryItems() {
@@ -7312,6 +7607,48 @@
     )) || null;
   }
 
+  function collectEpguRegistryScanContext() {
+    const baseHost = normalizeDepartmentContainerHost(window.location.hostname);
+    const entries = getDepartmentNavigationItems();
+    const departments = [];
+    const usedDepids = new Set();
+    let restoreDepid = '';
+    let restoreUrl = '';
+
+    entries.forEach((entry) => {
+      const link = entry && entry.link;
+      if (!(link instanceof HTMLAnchorElement)) return;
+      const depid = getDepartmentLinkDepid(link);
+      const switchUrl = buildDepartmentNavigationUrl(link);
+      const label = normalizeEpguRegistryText(getSmartValue(link));
+      if (!depid || !switchUrl || !label || usedDepids.has(depid)) return;
+
+      try {
+        const targetUrl = new URL(switchUrl, window.location.origin);
+        if (normalizeDepartmentContainerHost(targetUrl.hostname) !== baseHost) return;
+      } catch (error) {
+        return;
+      }
+
+      usedDepids.add(depid);
+      departments.push({ depid, label, switchUrl });
+      if (link.classList.contains('active')) {
+        restoreDepid = depid;
+        restoreUrl = switchUrl;
+      }
+    });
+
+    if (!restoreDepid || !restoreUrl || !departments.length) return null;
+    return {
+      baseHost,
+      restoreDepid,
+      restoreUrl,
+      departments,
+      checkDateKey: getEpguTodayDateKey(),
+      checkDate: getEpguTodayDateKey().replace(/-/g, '.')
+    };
+  }
+
   function getActiveEpguDatabase() {
     const currentHost = normalizeDepartmentContainerHost(window.location.hostname);
     return EPGU_REQUESTS_DATABASES.find((database) => database.host === currentHost) || null;
@@ -7350,7 +7687,7 @@
     if (!(switcher instanceof HTMLElement)) return;
 
     const activeDatabase = getActiveEpguDatabase();
-    const isSwitching = modal.dataset.databaseSwitching === 'true';
+    const isSwitching = modal.dataset.databaseSwitching === 'true' || epguRegistryCheckRunning;
 
     switcher.querySelectorAll('.dup-epgu-database-button').forEach((button) => {
       if (!(button instanceof HTMLButtonElement)) return;
@@ -7366,6 +7703,138 @@
       status.classList.remove('is-error');
     }
   }
+
+  function renderEpguRegistryCheckControls(modal) {
+    if (!(modal instanceof HTMLElement)) return;
+    const status = modal.querySelector('.dup-epgu-registry-check-status');
+    const scanButton = modal.querySelector('.dup-epgu-registry-check-button');
+    const retryButton = modal.querySelector('.dup-epgu-summary-retry-button');
+    const closeButton = modal.querySelector('.dup-execution-analysis-modal-close');
+    const cacheResult = getEpguRegistryCheckResultForCurrentBase();
+
+    modal.dataset.registryScanning = epguRegistryCheckRunning ? 'true' : 'false';
+    modal.setAttribute('aria-busy', epguRegistryCheckRunning ? 'true' : 'false');
+    if (scanButton instanceof HTMLButtonElement) {
+      scanButton.disabled = epguRegistryCheckRunning || modal.dataset.databaseSwitching === 'true';
+      if (epguRegistryCheckRunning && epguRegistryCheckProgress) {
+        const current = Math.max(0, Number(epguRegistryCheckProgress.current) || 0);
+        const total = Math.max(0, Number(epguRegistryCheckProgress.total) || 0);
+        scanButton.textContent = epguRegistryCheckProgress.restoring
+          ? 'Возвращаем департамент…'
+          : `Проверка ${current}/${total}`;
+      } else {
+        scanButton.textContent = 'Проверить формирование реестров';
+      }
+    }
+    if (retryButton instanceof HTMLButtonElement && epguRegistryCheckRunning) retryButton.disabled = true;
+    if (closeButton instanceof HTMLButtonElement) closeButton.disabled = epguRegistryCheckRunning;
+
+    modal.querySelectorAll('.dup-epgu-database-button').forEach((button) => {
+      if (button instanceof HTMLButtonElement && epguRegistryCheckRunning) button.disabled = true;
+    });
+
+    if (!(status instanceof HTMLElement)) return;
+    status.classList.toggle('is-error', epguRegistryCheckNoticeIsError);
+    if (epguRegistryCheckRunning && epguRegistryCheckProgress) {
+      const progress = epguRegistryCheckProgress;
+      status.textContent = progress.restoring
+        ? 'Проверка завершена. Возвращаем исходный департамент…'
+        : `Проверено ${Math.max(0, Number(progress.current) || 0)} из ${Math.max(0, Number(progress.total) || 0)}. Сейчас: ${progress.department || 'подготовка'}.`;
+      return;
+    }
+    if (epguRegistryCheckNotice) {
+      status.textContent = epguRegistryCheckNotice;
+      return;
+    }
+    if (cacheResult) {
+      const checkedAt = Number(cacheResult.checkedAt || 0);
+      const checkedLabel = checkedAt
+        ? new Date(checkedAt).toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' })
+        : 'сегодня';
+      status.textContent = `Реестры проверены ${checkedLabel}. Департаментов: ${Number(cacheResult.departmentCount || 0)}.`;
+      return;
+    }
+    status.textContent = 'Реестры за сегодня ещё не проверялись.';
+  }
+
+  async function startEpguRegistryCheck(modal) {
+    if (!(modal instanceof HTMLElement) || epguRegistryCheckRunning) return;
+    const scanContext = collectEpguRegistryScanContext();
+    if (!scanContext) {
+      epguRegistryCheckNotice = 'Не удалось определить полный список департаментов и исходный департамент.';
+      epguRegistryCheckNoticeIsError = true;
+      renderEpguRegistryCheckControls(modal);
+      return;
+    }
+
+    epguRegistryCheckRunning = true;
+    epguRegistryCheckNotice = '';
+    epguRegistryCheckNoticeIsError = false;
+    epguRegistryCheckProgress = {
+      current: 0,
+      total: scanContext.departments.length,
+      department: 'подготовка служебной вкладки'
+    };
+    renderEpguDatabaseSwitcher(modal);
+    renderEpguRegistryCheckControls(modal);
+
+    try {
+      const response = await sendRuntimeMessage({
+        action: 'EPGU_REGISTRY_SCAN_START',
+        data: {
+          baseHost: scanContext.baseHost,
+          checkDate: scanContext.checkDate,
+          restoreDepid: scanContext.restoreDepid,
+          restoreUrl: scanContext.restoreUrl,
+          departments: scanContext.departments
+        }
+      });
+      if (!response || response.success !== true || !Array.isArray(response.rows)) {
+        throw new Error(response && response.error ? response.error : 'Проверка реестров не завершена.');
+      }
+      if (getEpguTodayDateKey() !== scanContext.checkDateKey) {
+        throw new Error('Во время проверки сменилась дата. Запустите проверку ещё раз.');
+      }
+
+      const cacheResult = aggregateEpguRegistryScanRows(response.rows, response.departmentCount);
+      const saved = await saveEpguRegistryCheckResultForCurrentBase(cacheResult);
+      if (!saved) throw new Error('Не удалось сохранить результат проверки в браузере.');
+
+      const activeDatabase = getActiveEpguDatabase();
+      const reopenPrepared = activeDatabase
+        ? await setEpguSummaryReopenPending({
+            targetDepid: activeDatabase.depid,
+            targetHost: scanContext.baseHost,
+            createdAt: Date.now()
+          })
+        : false;
+      if (!reopenPrepared) {
+        throw new Error('Реестры проверены, но не удалось подготовить автоматическое открытие сводки после обновления.');
+      }
+
+      window.location.reload();
+    } catch (error) {
+      epguRegistryCheckNotice = error && error.message
+        ? error.message
+        : 'Не удалось проверить формирование реестров.';
+      epguRegistryCheckNoticeIsError = true;
+    } finally {
+      epguRegistryCheckRunning = false;
+      epguRegistryCheckProgress = null;
+      renderEpguDatabaseSwitcher(modal);
+      renderEpguSummaryModal(modal);
+    }
+  }
+
+  chrome.runtime.onMessage.addListener((message) => {
+    if (!message || message.action !== 'EPGU_REGISTRY_SCAN_PROGRESS') return false;
+    epguRegistryCheckProgress = message.data && typeof message.data === 'object'
+      ? message.data
+      : null;
+    const modal = document.getElementById(EPGU_REQUESTS_SUMMARY_MODAL_ID);
+    if (modal instanceof HTMLElement) renderEpguRegistryCheckControls(modal);
+    return false;
+  });
 
   async function switchEpguRequestsDatabase(modal, depid) {
     if (!(modal instanceof HTMLElement) || modal.dataset.databaseSwitching === 'true') return false;
@@ -7516,6 +7985,7 @@
 
     const summary = collectEpguTodaySummaryItems();
     const retryTargets = collectEpguRetryTargets(summary);
+    const registryCheckResult = getEpguRegistryCheckResultForCurrentBase();
     const displayDate = formatEpguDateKeyForDisplay(summary.todayDateKey);
     meta.textContent = summary.items.length
       ? `Текущая страница. За ${displayDate}. Уникальных взыскателей: ${summary.items.length}.`
@@ -7538,6 +8008,7 @@
       empty.className = 'dup-epgu-summary-empty';
       empty.textContent = 'За сегодня на текущей странице записей не найдено.';
       list.appendChild(empty);
+      renderEpguRegistryCheckControls(modal);
       return;
     }
 
@@ -7557,7 +8028,9 @@
 
       const claimantLine = document.createElement('div');
       claimantLine.className = 'dup-epgu-summary-claimant';
-      claimantLine.textContent = `${index + 1}. ${item.claimantKey}`;
+      const claimantLabel = document.createElement('span');
+      claimantLabel.textContent = `${index + 1}. ${item.claimantKey}`;
+      claimantLine.appendChild(claimantLabel);
 
       const count = document.createElement('span');
       count.className = 'dup-epgu-summary-count';
@@ -7589,10 +8062,48 @@
         item.bestEntry.statusMeta.color
       );
 
-      side.appendChild(status);
+      const claimantRegistries = getEpguClaimantRegistries(registryCheckResult, item.claimantKey);
+      const registryMeta = resolveEpguRegistrySummaryMeta(claimantRegistries, !!registryCheckResult);
+      const registryStatusText = registryMeta.checked
+        ? `${registryMeta.label} · ${formatEpguRegistryCount(registryMeta.count)}`
+        : registryMeta.label;
+      const registryStatus = createEpguSummaryBadge(
+        registryStatusText,
+        'dup-epgu-summary-status dup-epgu-registry-summary-status',
+        registryMeta.color
+      );
+
+      side.append(status, registryStatus);
       row.append(main, side);
+      if (registryCheckResult) {
+        const details = createEpguRegistryDetails(claimantRegistries, item.claimantKey);
+        const toggle = document.createElement('span');
+        toggle.className = 'dup-epgu-registry-toggle';
+        toggle.textContent = '▸';
+        toggle.setAttribute('aria-hidden', 'true');
+        claimantLine.prepend(toggle);
+        claimantLine.classList.add('is-expandable');
+        claimantLine.tabIndex = 0;
+        claimantLine.setAttribute('role', 'button');
+        claimantLine.setAttribute('aria-expanded', 'false');
+        const toggleDetails = () => {
+          const expanded = details.hidden;
+          details.hidden = !expanded;
+          claimantLine.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+          toggle.textContent = expanded ? '▾' : '▸';
+          row.classList.toggle('is-expanded', expanded);
+        };
+        claimantLine.addEventListener('click', toggleDetails, { capture: true });
+        claimantLine.addEventListener('keydown', (event) => {
+          if (!event || (event.key !== 'Enter' && event.key !== ' ')) return;
+          event.preventDefault();
+          toggleDetails();
+        }, { capture: true });
+        row.appendChild(details);
+      }
       list.appendChild(row);
     });
+    renderEpguRegistryCheckControls(modal);
   }
 
   function createEpguSummaryModal() {
@@ -7620,20 +8131,30 @@
         </div>
         <div class="dup-epgu-summary-meta"></div>
         <div class="dup-epgu-summary-list" role="list"></div>
+        <div class="dup-epgu-registry-check-status" aria-live="polite"></div>
         <div class="dup-epgu-summary-actions">
           <div class="dup-epgu-summary-retry-hint"></div>
-          <button type="button" class="dup-epgu-summary-retry-button">Отправить запросы по неуспешным</button>
+          <div class="dup-epgu-summary-action-buttons">
+            <button type="button" class="dup-epgu-registry-check-button">Проверить формирование реестров</button>
+            <button type="button" class="dup-epgu-summary-retry-button">Отправить запросы по неуспешным</button>
+          </div>
         </div>
       </div>
     `;
 
-    const close = () => { modal.hidden = true; };
+    const close = () => {
+      if (epguRegistryCheckRunning) return;
+      modal.hidden = true;
+    };
     modal.addEventListener('click', (event) => {
       if (event.target === modal) close();
     }, { capture: true });
     modal.querySelector('.dup-execution-analysis-modal-close')?.addEventListener('click', close, { capture: true });
     modal.querySelector('.dup-epgu-summary-retry-button')?.addEventListener('click', () => {
       void openEpguRetrySelectionModal();
+    }, { capture: true });
+    modal.querySelector('.dup-epgu-registry-check-button')?.addEventListener('click', () => {
+      void startEpguRegistryCheck(modal);
     }, { capture: true });
     modal.querySelector('.dup-epgu-database-switcher')?.addEventListener('click', (event) => {
       const button = event.target instanceof Element
