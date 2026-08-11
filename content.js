@@ -8183,20 +8183,6 @@
       );
       const saved = await saveEpguRegistryCheckResultForCurrentBase(cacheResult);
       if (!saved) throw new Error('Не удалось сохранить результат проверки в браузере.');
-
-      const activeDatabase = getActiveEpguDatabase();
-      const reopenPrepared = activeDatabase
-        ? await setEpguSummaryReopenPending({
-            targetDepid: activeDatabase.depid,
-            targetHost: scanContext.baseHost,
-            createdAt: Date.now()
-          })
-        : false;
-      if (!reopenPrepared) {
-        throw new Error('Реестры проверены, но не удалось подготовить автоматическое открытие сводки после обновления.');
-      }
-
-      window.location.reload();
     } catch (error) {
       epguRegistryCheckNotice = error && error.message
         ? error.message
