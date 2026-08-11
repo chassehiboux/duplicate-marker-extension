@@ -47,6 +47,8 @@
             departmentDropdownFilter: null,
             // Кнопка группировки записей ФССП.
             fsspGroupingToggle: null,
+            // Кнопка и окно пакетного поиска должников в реестрах ФССП.
+            fsspRegistrySearch: null,
             // Инструменты пакетной проверки ИНН и смерти.
             innBatchTools: false,
             // Новогоднее/весеннее сезонное оформление.

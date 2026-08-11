@@ -51,7 +51,8 @@
       "js": [
         "extension_ui_config.js",
         "content.js",
-        "ColumnManager/column_manager.js"
+        "ColumnManager/column_manager.js",
+        "FsspRegistrySearch/fssp_registry_search.js"
       ],
       "run_at": "document_end",
       "all_frames": false

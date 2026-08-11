@@ -2351,6 +2351,49 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             return true;
         }
 
+        case 'FSSP_REGISTRY_SEARCH_GET_GRID_STATE': {
+            const sourceTabId = sender && sender.tab ? sender.tab.id : null;
+            if (!Number.isInteger(sourceTabId)) {
+                sendResponse({ success: false, error: 'Не удалось определить текущую вкладку.' });
+                return false;
+            }
+
+            (async () => {
+                try {
+                    const state = await executeScriptInTabAsync(sourceTabId, () => {
+                        const $ = window.jQuery;
+                        if (!($ && $.fn && $.fn.jqGrid)) return null;
+                        const grid = $('#list');
+                        if (!(grid && grid.length)) return null;
+                        const postData = grid.jqGrid('getGridParam', 'postData') || {};
+                        let safePostData = {};
+                        try {
+                            safePostData = JSON.parse(JSON.stringify(postData));
+                        } catch (error) {
+                            safePostData = {};
+                        }
+                        return {
+                            url: String(grid.jqGrid('getGridParam', 'url') || ''),
+                            postData: safePostData,
+                            sortname: String(grid.jqGrid('getGridParam', 'sortname') || ''),
+                            sortorder: String(grid.jqGrid('getGridParam', 'sortorder') || '')
+                        };
+                    }, [], { world: 'MAIN' });
+                    if (!state || !state.url) {
+                        sendResponse({ success: false, error: 'Таблица реестров ещё не готова.' });
+                        return;
+                    }
+                    sendResponse({ success: true, state });
+                } catch (error) {
+                    sendResponse({
+                        success: false,
+                        error: error && error.message ? error.message : 'Не удалось прочитать параметры таблицы.'
+                    });
+                }
+            })();
+            return true;
+        }
+
         case 'EPGU_REGISTRY_SCAN_START': {
             const sourceTab = sender && sender.tab ? sender.tab : null;
             const scanRequest = normalizeEpguRegistryScanRequest(request && request.data);

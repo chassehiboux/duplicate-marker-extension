@@ -49,6 +49,9 @@ DIR_FILES = {
         'inn_death_background.js',
         'inn_death_content.js',
     ],
+    'FsspRegistrySearch': [
+        'fssp_registry_search.js',
+    ],
     'PyramidNewYear': [
         'pyramid_christmas.css',
         'pyramid_christmas.js',

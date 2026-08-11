@@ -511,6 +511,18 @@
       `
     },
     {
+      key: 'fsspRegistrySearch',
+      storageKey: 'dup_ui_show_fssp_registry_search',
+      label: 'Поиск ИД в реестрах ФССП',
+      description: 'Кнопка пакетного поиска должников и окно результатов.',
+      hideClass: 'dup-ui-hide-fssp-registry-search',
+      hideCss: `
+        html.dup-ui-hide-fssp-registry-search .dup-fssp-registry-search-ui {
+          display: none !important;
+        }
+      `
+    },
+    {
       key: 'innBatchTools',
       storageKey: 'dup_ui_show_inn_batch_tools',
       label: 'Проверка ИНН/смерти',
