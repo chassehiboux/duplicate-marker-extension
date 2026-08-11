@@ -122,6 +122,60 @@ const BIG_DEBTORS_MAP = {
 const STAGE_MAX_WAITING_SEC = 2 * 60 * 60; // Жесткий лимит ожидания стадии: 2 часа.
 let stageRequests = {}; // requestId -> { startTime, tabId, loadType, requestUrl }
 let stageSessions = {}; // tabId -> { sessionId, baseName, userName, departmentName, stageName, loadType, requestUrl, version, startEpochMs }
+const STAGE_DEPARTMENT_STATE_TTL_MS = 10000;
+let stageDepartmentStates = {}; // tabId -> { depid, label, host, pageUrl, updatedAt }
+
+function sendStageTabMessageQuiet(tabId, message) {
+    if (!Number.isInteger(tabId)) return;
+    chrome.tabs.sendMessage(tabId, message, () => {
+        if (chrome.runtime.lastError) {
+            // Вкладка могла быть закрыта или не содержать content script таймера.
+        }
+    });
+}
+
+function broadcastStageDepartmentConflicts() {
+    const now = Date.now();
+    Object.keys(stageDepartmentStates).forEach((tabId) => {
+        const state = stageDepartmentStates[tabId];
+        if (!state || (now - state.updatedAt) > STAGE_DEPARTMENT_STATE_TTL_MS) {
+            delete stageDepartmentStates[tabId];
+        }
+    });
+
+    const states = Object.values(stageDepartmentStates);
+    const uniqueDepids = new Set(states.map((state) => state.depid));
+    const payload = {
+        conflict: uniqueDepids.size > 1,
+        entries: states.map((state) => ({
+            depid: state.depid,
+            label: state.label,
+            host: state.host
+        }))
+    };
+
+    states.forEach((state) => {
+        sendStageTabMessageQuiet(state.tabId, {
+            action: "STAGE_TIMER_DEPARTMENT_CONFLICT",
+            data: payload
+        });
+    });
+}
+
+function updateStageDepartmentState(tabId, data) {
+    if (!Number.isInteger(tabId)) return;
+    const depid = String(data && data.depid || "").trim();
+    if (!depid) return;
+    stageDepartmentStates[tabId] = {
+        tabId,
+        depid,
+        label: String(data && data.label || depid).replace(/\s+/g, " ").trim() || depid,
+        host: String(data && data.host || "").trim(),
+        pageUrl: String(data && data.pageUrl || "").trim(),
+        updatedAt: Date.now()
+    };
+    broadcastStageDepartmentConflicts();
+}
 
 function parseStageDurationSec(rawDuration) {
     if (rawDuration === undefined || rawDuration === null || rawDuration === "") return null;
@@ -304,10 +358,10 @@ chrome.webRequest.onBeforeRequest.addListener((details) => {
         }
         
         // Сообщаем контент скрипту: "Покажи спиннер"
-        chrome.tabs.sendMessage(details.tabId, {
+        sendStageTabMessageQuiet(details.tabId, {
             action: "STAGE_TIMER_START",
             data: { loadType: loadType, requestUrl: details.url }
-        }).catch(() => {}); 
+        });
     }
     
 }, { urls: STAGE_URL_PATTERNS });
@@ -318,24 +372,31 @@ chrome.webRequest.onCompleted.addListener((details) => {
         const duration = performance.now() - req.startTime;
         
         // Сообщаем контент скрипту: "Готово, вот время"
-        chrome.tabs.sendMessage(req.tabId, {
+        sendStageTabMessageQuiet(req.tabId, {
             action: "STAGE_TIMER_STOP",
             data: { 
                 duration: duration,
                 loadType: req.loadType,
                 requestUrl: req.requestUrl
             }
-        }).catch(() => {});
+        });
         
         delete stageRequests[details.requestId];
     }
 }, { urls: STAGE_URL_PATTERNS });
 
 chrome.webRequest.onErrorOccurred.addListener((details) => {
-    if (stageRequests[details.requestId]) {
-        chrome.tabs.sendMessage(details.tabId, {
-            action: "STAGE_TIMER_ERROR"
-        }).catch(() => {});
+    const req = stageRequests[details.requestId];
+    if (req) {
+        sendStageTabMessageQuiet(req.tabId, {
+            action: "STAGE_TIMER_ERROR",
+            data: {
+                duration: performance.now() - req.startTime,
+                error: details.error || "",
+                loadType: req.loadType,
+                requestUrl: req.requestUrl
+            }
+        });
         delete stageRequests[details.requestId];
     }
 }, { urls: STAGE_URL_PATTERNS });
@@ -343,6 +404,12 @@ chrome.webRequest.onErrorOccurred.addListener((details) => {
 
 // --- Основной обработчик сообщений ---
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (request.action === 'STAGE_TIMER_DEPARTMENT_STATE') {
+        const tabId = getStageTabId(request, sender);
+        updateStageDepartmentState(tabId, request.data || {});
+        return false;
+    }
+
     if (request.action === 'STAGE_TIMER_SESSION_START') {
         const tabId = getStageTabId(request, sender);
         if (Number.isInteger(tabId)) {
@@ -485,6 +552,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 chrome.tabs.onRemoved.addListener((tabId) => {
     sendStageCancelForClosedTab(tabId);
     clearStageRequestsForTab(tabId);
+    delete stageDepartmentStates[tabId];
+    broadcastStageDepartmentConflicts();
 });
 
 console.log("Фоновый скрипт StageTimer (v2 POST + Network Monitor) запущен.");

@@ -35,6 +35,8 @@
             stageTimerToggle: null,
             // Кнопка прерывания таймера.
             stageTimerAbort: null,
+            // Предупреждение о разных департаментах в открытых вкладках Пирамиды.
+            stageTimerDepartmentConflict: null,
             // Кнопки и выпадающее меню быстрых действий StageJump, включая реестр возврата ИД.
             stageJumpButtons: null,
             // Блок "Занести анализ исполнения" во вкладке "Функции" меню F2.

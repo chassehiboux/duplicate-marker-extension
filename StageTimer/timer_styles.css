@@ -13,6 +13,7 @@ html.dup-ext-screenshot-mode #pyramid-stage-timer-toggle,
 html.dup-ext-screenshot-mode .pyramid-stage-timer-toggle-btn,
 html.dup-ext-screenshot-mode #pyramid-stage-timer-abort,
 html.dup-ext-screenshot-mode .pyramid-stage-timer-abort-btn,
+html.dup-ext-screenshot-mode #pyramid-stage-department-conflict,
 html.dup-ext-screenshot-mode .dup-stage-jump-btn,
 html.dup-ext-screenshot-mode [data-dup-stage-jump-btn="1"],
 html.dup-ext-screenshot-mode #dup-extension-ui-settings-overlay,
@@ -33,6 +34,14 @@ html.dup-ext-screenshot-mode [aria-label="Скрыть таймер"],
 html.dup-ext-screenshot-mode [title="Показать таймер"],
 html.dup-ext-screenshot-mode [aria-label="Показать таймер"] {
     display: none !important;
+}
+
+/* Выпадающие меню Pyramid всегда должны закрывать весь блок StageTimer. */
+body:has(.open > .dropdown-menu) #pyramid-stage-timer,
+body:has(.open > .dropdown-menu) #pyramid-stage-department-conflict,
+body:has(.open > .dropdown-menu) #pyramid-stage-timer-toggle,
+body:has(.open > .dropdown-menu) #pyramid-stage-timer-abort {
+    visibility: hidden !important;
 }
 
 #pyramid-stage-timer-toggle {
@@ -454,6 +463,47 @@ html.dup-ext-screenshot-mode [aria-label="Показать таймер"] {
     width: 32px;
     padding: 0 !important;
     font-size: 18px !important;
+}
+
+#pyramid-stage-department-conflict {
+    display: none;
+    position: absolute;
+    top: 50%;
+    right: var(--pyramid-stage-department-conflict-right-offset, 0px);
+    transform: translateY(-50%);
+    z-index: 2;
+    align-items: center;
+    gap: 4px;
+    max-width: min(68vw, 700px);
+    padding: 0 6px;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: #8a3b12;
+    box-shadow: none;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1.2;
+    white-space: nowrap;
+    pointer-events: none;
+}
+
+.pyramid-stage-department-conflict-icon {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    color: #c56a08;
+    font-size: 13px;
+    font-weight: 700;
+    line-height: 1;
+}
+
+.pyramid-stage-department-conflict-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .dup-epgu-summary-panel {

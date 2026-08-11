@@ -432,6 +432,18 @@
       `
     },
     {
+      key: 'stageTimerDepartmentConflict',
+      storageKey: 'dup_ui_show_stage_timer_department_conflict',
+      label: 'Предупреждение о разных департаментах',
+      description: 'Сообщает, если во вкладках Пирамиды открыты разные департаменты.',
+      hideClass: 'dup-ui-hide-stage-timer-department-conflict',
+      hideCss: `
+        html.dup-ui-hide-stage-timer-department-conflict #pyramid-stage-department-conflict {
+          display: none !important;
+        }
+      `
+    },
+    {
       key: 'stageJumpButtons',
       storageKey: 'dup_ui_show_stage_jump_buttons',
       label: 'Кнопки StageJump',

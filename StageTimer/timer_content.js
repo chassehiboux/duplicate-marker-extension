@@ -2,6 +2,18 @@
 
 (function() {
     // 1. Определение базы
+    function getBaseDescriptor(hostname) {
+        const h = String(hostname || "").toLowerCase();
+        if (h.startsWith("kgn.")) return { name: "Курган", host: "kgn.pyramid.vostok-electra.ru" };
+        if (h.startsWith("yuric.")) return { name: "ЮРИЦ", host: "yuric.pyramid.vostok-electra.ru" };
+        if (h.startsWith("81.")) return { name: "ЧЭС", host: "81.pyramid.vostok-electra.ru" };
+        if (h === "pyramid.vostok-electra.ru") return { name: "Основная", host: "pyramid.vostok-electra.ru" };
+        if (h === "pyramid.nesko-nv.ru" || h.endsWith(".pyramid.nesko-nv.ru")) {
+            return { name: "Основная", host: h };
+        }
+        return { name: "Основная", host: h };
+    }
+
     function getBaseName() {
         const h = window.location.hostname.toLowerCase();
         if (h.startsWith("kgn.")) return "Курган";
@@ -11,6 +23,13 @@
         if (h === "pyramid.nesko-nv.ru" || h.endsWith(".pyramid.nesko-nv.ru")) return "Основная";
         return "Основная";
     }
+
+    const DEPARTMENT_BASE_BY_DEPID = Object.freeze({
+        "39": { name: "Курган", host: "kgn.pyramid.vostok-electra.ru" },
+        "66": { name: "Основная", host: "pyramid.vostok-electra.ru" },
+        "70": { name: "ЮРИЦ", host: "yuric.pyramid.vostok-electra.ru" },
+        "81": { name: "ЧЭС", host: "81.pyramid.vostok-electra.ru" }
+    });
 
     const baseName = getBaseName();
     const manifest = chrome.runtime.getManifest();
@@ -37,6 +56,7 @@
     const SLEEP_GAP_THRESHOLD_MS = 5 * 60 * 1000; // Если JS "замолчал" > 5 минут — считаем, что был сон/заморозка.
     const UNATTENDED_HIDDEN_TIMEOUT_SEC = 2 * 60 * 60; // Скрытая вкладка без внимания > 2 часов.
     const MAX_PULSE_CATCHUP_PER_TICK = 20; // Защита от лавины pulse-сообщений после долгой паузы.
+    const DEPARTMENT_STATE_HEARTBEAT_MS = 3000;
     let lastTickWallClockMs = 0;
     let lastStableElapsedSec = 0;
     let hiddenSinceEpochMs = 0;
@@ -52,6 +72,7 @@
     const TIMER_VISIBILITY_STORAGE_KEY = "dup_ui_show_stage_timer";
     const TIMER_TOGGLE_VISIBILITY_STORAGE_KEY = "dup_ui_show_stage_timer_toggle";
     const TIMER_ABORT_VISIBILITY_STORAGE_KEY = "dup_ui_show_stage_timer_abort";
+    const DEPARTMENT_CONFLICT_VISIBILITY_STORAGE_KEY = "dup_ui_show_stage_timer_department_conflict";
     const SCREENSHOT_MODE_CLASS = "dup-ext-screenshot-mode";
     const SCREENSHOT_HIDE_EVENT = "dup-ext-screenshot-visibility-change";
     const SCREENSHOT_FRAME_BRIDGE_MESSAGE = "dup-screenshot-hotkey-frame-bridge";
@@ -125,6 +146,12 @@
             storageKey: TIMER_ABORT_VISIBILITY_STORAGE_KEY,
             label: "Кнопка прерывания загрузки",
             description: "Кнопка × для аварийной остановки."
+        },
+        {
+            key: "stageTimerDepartmentConflict",
+            storageKey: DEPARTMENT_CONFLICT_VISIBILITY_STORAGE_KEY,
+            label: "Предупреждение о разных департаментах",
+            description: "Показывает конфликт департаментов между открытыми вкладками Пирамиды."
         }
     ]);
     const TIMER_UI_SETTINGS_STORAGE_KEYS = Object.freeze(
@@ -163,6 +190,15 @@
 
     const timerTypeEl = toast.querySelector(".pyramid-stage-timer-type");
     const timerValueEl = toast.querySelector(".pyramid-stage-timer-val");
+    const departmentConflictAlert = document.createElement("div");
+    departmentConflictAlert.id = "pyramid-stage-department-conflict";
+    departmentConflictAlert.setAttribute("role", "alert");
+    departmentConflictAlert.setAttribute("aria-live", "assertive");
+    departmentConflictAlert.innerHTML = `
+        <span class="pyramid-stage-department-conflict-icon" aria-hidden="true">⚠</span>
+        <span class="pyramid-stage-department-conflict-text"></span>
+    `;
+    const departmentConflictTextEl = departmentConflictAlert.querySelector(".pyramid-stage-department-conflict-text");
     const timerToggleButton = document.createElement("button");
     timerToggleButton.id = "pyramid-stage-timer-toggle";
     timerToggleButton.type = "button";
@@ -181,6 +217,8 @@
     let timerUiElementSettings = { ...TIMER_UI_SETTINGS_DEFAULTS };
     let timerUiSettingsOverlayEl = null;
     let timerUiSettingsPanelEl = null;
+    let departmentConflictEntries = [];
+    let hasDepartmentConflictAlert = false;
     const rows10000TraceEnabled = (
         (
             window.location.hostname.indexOf("pyramid.vostok-electra.ru") !== -1
@@ -1162,6 +1200,16 @@
         ) ? "none" : "inline-flex";
         timerToggleButton.style.display = toggleDisplayValue;
         timerAbortButton.style.display = abortDisplayValue;
+        applyDepartmentConflictAlertVisibility();
+    }
+
+    function applyDepartmentConflictAlertVisibility() {
+        const shouldShow = (
+            !isScreenshotModeActive
+            && isTimerUiSettingEnabled("stageTimerDepartmentConflict")
+            && hasDepartmentConflictAlert
+        );
+        departmentConflictAlert.style.display = shouldShow ? "inline-flex" : "none";
     }
 
     function applyTimerUiVisibility() {
@@ -2151,6 +2199,7 @@
     syncScreenshotModeState();
     initScreenshotAutohideMode();
     initExtensionUiSettingsHotkeys();
+    initDepartmentConflictMonitor();
     setInterval(() => {
         syncTimerHost();
     }, TIMER_BUTTON_SYNC_INTERVAL_MS);
@@ -2180,6 +2229,120 @@
         if (normalized.includes("редактирован")) return "Редактирование";
 
         return raw;
+    }
+
+    function getActiveDepartmentState() {
+        const activeLink = document.querySelector("a.department-switch.active, .department-switch.active");
+        if (!(activeLink instanceof Element)) return null;
+
+        let depid = String(
+            activeLink.getAttribute("data-depid")
+            || activeLink.getAttribute("depid")
+            || ""
+        ).trim();
+
+        if (!depid) {
+            try {
+                const href = activeLink.getAttribute("href") || "";
+                const match = new URL(href, window.location.origin).pathname.match(/\/login\/department\/(\d+)(?:\/|$)/i);
+                depid = match ? match[1] : "";
+            } catch (e) {
+                depid = "";
+            }
+        }
+
+        if (!depid) return null;
+        const label = normalizeDepartmentName(activeLink.textContent || scrapeDepartmentName());
+        const currentBase = getBaseDescriptor(window.location.hostname);
+        let expectedBase = DEPARTMENT_BASE_BY_DEPID[depid] || null;
+        if (!expectedBase) {
+            try {
+                const linkHost = new URL(activeLink.getAttribute("href") || "", window.location.origin).hostname;
+                expectedBase = getBaseDescriptor(linkHost);
+            } catch (e) {
+                expectedBase = null;
+            }
+        }
+        return {
+            depid,
+            label,
+            host: window.location.hostname,
+            pageUrl: window.location.href,
+            currentBaseName: currentBase.name,
+            expectedBaseName: expectedBase ? expectedBase.name : "",
+            baseMismatch: !!(
+                expectedBase
+                && expectedBase.host
+                && expectedBase.host !== currentBase.host
+            )
+        };
+    }
+
+    function reportActiveDepartmentState() {
+        const state = getActiveDepartmentState();
+        if (!state) return;
+        try {
+            chrome.runtime.sendMessage({
+                action: "STAGE_TIMER_DEPARTMENT_STATE",
+                data: state
+            });
+        } catch (e) {
+            // ignore
+        }
+    }
+
+    function updateDepartmentConflictAlert(data) {
+        const rawEntries = data && Array.isArray(data.entries) ? data.entries : [];
+        const unique = new Map();
+        rawEntries.forEach((entry) => {
+            const depid = String(entry && entry.depid || "").trim();
+            if (!depid || unique.has(depid)) return;
+            unique.set(depid, {
+                depid,
+                label: normalizeDepartmentName(entry && entry.label),
+                host: String(entry && entry.host || "").trim()
+            });
+        });
+        departmentConflictEntries = Array.from(unique.values());
+        const currentState = getActiveDepartmentState();
+        const messages = [];
+
+        if (departmentConflictEntries.length > 1) {
+            const shortList = departmentConflictEntries
+                .map((entry) => `${entry.label} (${entry.depid})`)
+                .join(" · ");
+            messages.push(`Во вкладках браузера открыты разные департаменты: ${shortList}`);
+        }
+
+        if (currentState && currentState.baseMismatch) {
+            messages.push(
+                `В текущей вкладке открыта база «${currentState.currentBaseName}», `
+                + `а департамент «${currentState.label} (${currentState.depid})» относится к базе «${currentState.expectedBaseName}»`
+            );
+        }
+
+        hasDepartmentConflictAlert = messages.length > 0;
+        if (hasDepartmentConflictAlert) {
+            const message = messages.join(" • ");
+            if (departmentConflictTextEl) departmentConflictTextEl.textContent = message;
+            departmentConflictAlert.title = `${message}. Приведите департаменты и базы во вкладках в соответствие.`;
+        } else {
+            if (departmentConflictTextEl) departmentConflictTextEl.textContent = "";
+            departmentConflictAlert.removeAttribute("title");
+        }
+
+        applyDepartmentConflictAlertVisibility();
+        syncTimerHost(true);
+    }
+
+    function initDepartmentConflictMonitor() {
+        reportActiveDepartmentState();
+        window.setTimeout(reportActiveDepartmentState, 1000);
+        window.setInterval(reportActiveDepartmentState, DEPARTMENT_STATE_HEARTBEAT_MS);
+        document.addEventListener("click", (event) => {
+            const target = event.target instanceof Element ? event.target.closest(".department-switch") : null;
+            if (target) window.setTimeout(reportActiveDepartmentState, 500);
+        }, { capture: true });
     }
 
     function getVisibleGridTitlebar() {
@@ -2223,7 +2386,9 @@
             currentTimerHost.classList.remove("pyramid-stage-timer-host");
             timerToggleButton.remove();
             timerAbortButton.remove();
+            departmentConflictAlert.remove();
             currentTimerHost.style.removeProperty("--pyramid-stage-timer-right-offset");
+            currentTimerHost.style.removeProperty("--pyramid-stage-department-conflict-right-offset");
             currentTimerHost.style.removeProperty("--pyramid-stage-toggle-right-offset");
             currentTimerHost.style.removeProperty("--pyramid-stage-abort-right-offset");
         }
@@ -2281,6 +2446,18 @@
             }
         }
 
+        if (departmentConflictAlert.parentElement !== host) {
+            departmentConflictAlert.remove();
+            host.insertBefore(departmentConflictAlert, toast);
+        }
+
+        applyDepartmentConflictAlertVisibility();
+        const timerWidth = isElementVisible(toast) ? Math.ceil(toast.getBoundingClientRect().width) : 0;
+        host.style.setProperty(
+            "--pyramid-stage-department-conflict-right-offset",
+            `${timerRightOffsetPx + timerWidth + (timerWidth > 0 ? 6 : 0)}px`
+        );
+
         host.classList.add("pyramid-stage-timer-host");
         currentTimerHost = host;
         return true;
@@ -2302,6 +2479,7 @@
 
     function clearTimerHost(removeToggleButton = true) {
         toast.remove();
+        departmentConflictAlert.remove();
         if (removeToggleButton) {
             timerToggleButton.remove();
             timerAbortButton.remove();
@@ -2309,6 +2487,7 @@
         if (currentTimerHost) {
             currentTimerHost.classList.remove("pyramid-stage-timer-host");
             currentTimerHost.style.removeProperty("--pyramid-stage-timer-right-offset");
+            currentTimerHost.style.removeProperty("--pyramid-stage-department-conflict-right-offset");
             if (removeToggleButton) {
                 currentTimerHost.style.removeProperty("--pyramid-stage-toggle-right-offset");
                 currentTimerHost.style.removeProperty("--pyramid-stage-abort-right-offset");
@@ -2507,6 +2686,8 @@
             handleStop(request.data);
         } else if (request.action === 'STAGE_TIMER_ERROR') {
             handleError(request.data);
+        } else if (request.action === 'STAGE_TIMER_DEPARTMENT_CONFLICT') {
+            updateDepartmentConflictAlert(request.data);
         }
     });
 
@@ -2615,6 +2796,7 @@
         setTimerLabel(activeLoadType);
         setTimerValue(formatUiDuration(0));
         setTimerState("loading");
+        toast.title = "Таймер показывает время ожидания ответа на сетевой запрос.";
         showTimer();
         sendSessionEvent("STAGE_TIMER_SESSION_START");
 
@@ -2736,6 +2918,7 @@
             // UI Update
             setTimerValue(formatUiDuration(durationSecNumber));
             setTimerState("success");
+            toast.title = "Запрос успешно завершен.";
             syncTimerHost(true);
 
             // Отправка лога
@@ -2751,6 +2934,20 @@
     function handleError(data) {
         if (!isTimerActive) return;
 
+        const elapsedSec = Number.isFinite(data && data.duration)
+            ? Math.max(0, data.duration / 1000)
+            : getSafeElapsedSec();
+        const networkError = String(data && data.error || "").trim();
+        const normalizedError = networkError.toUpperCase();
+        let label = "Ошибка сети";
+        if (normalizedError.includes("INTERNET_DISCONNECTED") || navigator.onLine === false) {
+            label = "Нет подключения";
+        } else if (normalizedError.includes("TIMED_OUT") || normalizedError.includes("TIMEOUT")) {
+            label = "Сервер не отвечает";
+        } else if (normalizedError.includes("ABORTED")) {
+            label = "Запрос прерван";
+        }
+
         isTimerActive = false;
         if (timerInterval) {
             clearInterval(timerInterval);
@@ -2759,10 +2956,31 @@
         lastTickWallClockMs = 0;
         lastStableElapsedSec = 0;
         hiddenSinceEpochMs = 0;
-        setTimerValue(formatUiDuration(getSafeElapsedSec()));
+        setTimerLabel(label);
+        setTimerValue(formatUiDuration(elapsedSec));
         setTimerState("error");
+        toast.title = networkError
+            ? `${label}: ${networkError}`
+            : `${label}. Браузер завершил запрос с ошибкой.`;
+        const gridMessage = label === "Нет подключения"
+            ? "Интернет-соединение прервано. Восстановите связь и повторите загрузку/фильтрацию."
+            : (label === "Сервер не отвечает"
+                ? "Сервер не ответил вовремя. Повторите загрузку/фильтрацию."
+                : `${label}. Повторите загрузку/фильтрацию.`);
+        scheduleGridAbortErrorMessageRewrite(gridMessage);
+        const sessionData = getResolvedSessionData(scrapeData());
+        const status = normalizedError.includes("ABORTED") ? "ОТМЕНА" : "ОШИБКА СЕТИ";
+        sendToBackground(status, elapsedSec.toFixed(2), sessionData, activeLoadType, activeRequestUrl);
         scheduleTimerHide(2000);
     }
+
+    window.addEventListener("offline", () => {
+        if (!isTimerActive) return;
+        handleError({
+            error: "net::ERR_INTERNET_DISCONNECTED",
+            duration: Math.max(0, performance.now() - startTime)
+        });
+    }, { capture: true });
 
     document.addEventListener("visibilitychange", () => {
         if (!isTimerActive) return;
