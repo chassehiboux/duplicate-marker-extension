@@ -2389,6 +2389,7 @@
             departmentConflictAlert.remove();
             currentTimerHost.style.removeProperty("--pyramid-stage-timer-right-offset");
             currentTimerHost.style.removeProperty("--pyramid-stage-department-conflict-right-offset");
+            currentTimerHost.style.removeProperty("--pyramid-stage-department-conflict-max-width");
             currentTimerHost.style.removeProperty("--pyramid-stage-toggle-right-offset");
             currentTimerHost.style.removeProperty("--pyramid-stage-abort-right-offset");
         }
@@ -2453,9 +2454,31 @@
 
         applyDepartmentConflictAlertVisibility();
         const timerWidth = isElementVisible(toast) ? Math.ceil(toast.getBoundingClientRect().width) : 0;
+        const conflictRightOffsetPx = timerRightOffsetPx + timerWidth + (timerWidth > 0 ? 6 : 0);
         host.style.setProperty(
             "--pyramid-stage-department-conflict-right-offset",
-            `${timerRightOffsetPx + timerWidth + (timerWidth > 0 ? 6 : 0)}px`
+            `${conflictRightOffsetPx}px`
+        );
+
+        const gridTitle = host.querySelector(".ui-jqgrid-title");
+        const fileExcelIcon = gridTitle && gridTitle.querySelector(
+            ".fa-file-excel-o, .fa-file-excel, [class*='fa-file-excel']"
+        );
+        const fileExcelControlCandidate = fileExcelIcon
+            ? (fileExcelIcon.closest("a, button") || fileExcelIcon)
+            : null;
+        const fileExcelControl = isElementVisible(fileExcelControlCandidate)
+            ? fileExcelControlCandidate
+            : null;
+        const leftBoundary = fileExcelControl || gridTitle;
+        const hostRect = host.getBoundingClientRect();
+        const boundaryRect = leftBoundary && leftBoundary.getBoundingClientRect();
+        const boundaryRightPx = boundaryRect ? boundaryRect.right : hostRect.left;
+        const conflictRightPx = hostRect.right - conflictRightOffsetPx;
+        const conflictMaxWidthPx = Math.max(0, Math.floor(conflictRightPx - boundaryRightPx - 8));
+        host.style.setProperty(
+            "--pyramid-stage-department-conflict-max-width",
+            `${conflictMaxWidthPx}px`
         );
 
         host.classList.add("pyramid-stage-timer-host");
@@ -2488,6 +2511,7 @@
             currentTimerHost.classList.remove("pyramid-stage-timer-host");
             currentTimerHost.style.removeProperty("--pyramid-stage-timer-right-offset");
             currentTimerHost.style.removeProperty("--pyramid-stage-department-conflict-right-offset");
+            currentTimerHost.style.removeProperty("--pyramid-stage-department-conflict-max-width");
             if (removeToggleButton) {
                 currentTimerHost.style.removeProperty("--pyramid-stage-toggle-right-offset");
                 currentTimerHost.style.removeProperty("--pyramid-stage-abort-right-offset");
@@ -2981,6 +3005,10 @@
             duration: Math.max(0, performance.now() - startTime)
         });
     }, { capture: true });
+
+    window.addEventListener("resize", () => {
+        syncTimerHost(true);
+    }, { passive: true });
 
     document.addEventListener("visibilitychange", () => {
         if (!isTimerActive) return;

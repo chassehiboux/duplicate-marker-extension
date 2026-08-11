@@ -474,7 +474,7 @@ body:has(.open > .dropdown-menu) #pyramid-stage-timer-abort {
     z-index: 2;
     align-items: center;
     gap: 4px;
-    max-width: min(68vw, 700px);
+    max-width: var(--pyramid-stage-department-conflict-max-width, min(68vw, 700px));
     padding: 0 6px;
     border: 0;
     border-radius: 0;
@@ -485,7 +485,9 @@ body:has(.open > .dropdown-menu) #pyramid-stage-timer-abort {
     font-weight: 600;
     line-height: 1.2;
     white-space: nowrap;
-    pointer-events: none;
+    overflow: hidden;
+    cursor: help;
+    pointer-events: auto;
 }
 
 .pyramid-stage-department-conflict-icon {
