@@ -44,6 +44,15 @@
     return null;
   }
 
+  async function waitForCondition(check, timeout = 5000) {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeout) {
+      if (check()) return true;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return false;
+  }
+
   async function requestConversation(id, action) {
     const link = [...document.querySelectorAll('a[href*="/c/"]')]
       .find((candidate) => conversationIdFromLink(candidate) === id);
@@ -56,6 +65,26 @@
     });
     if (!menuItem) throw new Error('В штатном меню ChatGPT нет нужного действия.');
     menuItem.click();
+    if (action !== 'delete') return;
+
+    const confirmButton = await waitForElement(() => {
+      const dialog = [...document.querySelectorAll('[role="dialog"]')].find((candidate) => {
+        const title = String(candidate.querySelector('h2')?.textContent || '').trim();
+        return title === 'Удалить чат?' || title === 'Delete chat?';
+      });
+      return dialog?.querySelector('[data-testid="delete-conversation-confirm-button"]')
+        || [...(dialog?.querySelectorAll('button') || [])].find((button) => ['Удалить', 'Delete'].includes(String(button.textContent || '').trim()));
+    });
+    if (!confirmButton) throw new Error('Не удалось найти подтверждение «Удалить чат?».');
+    confirmButton.click();
+
+    const dialogClosed = await waitForCondition(() => {
+      return ![...document.querySelectorAll('[role="dialog"]')].some((candidate) => {
+        const title = String(candidate.querySelector('h2')?.textContent || '').trim();
+        return title === 'Удалить чат?' || title === 'Delete chat?';
+      });
+    });
+    if (!dialogClosed) throw new Error('Окно подтверждения удаления не закрылось.');
   }
 
   function removeConversationLinks(id) {
@@ -66,8 +95,11 @@
 
   async function runNativeConversationAction(id, action) {
     await requestConversation(id, action);
-    await new Promise((resolve) => setTimeout(resolve, 120));
-    removeConversationLinks(id);
+    const removed = await waitForCondition(() => {
+      return ![...document.querySelectorAll('a[href*="/c/"]')]
+        .some((candidate) => conversationIdFromLink(candidate) === id);
+    }, 5000);
+    if (!removed) throw new Error(`ChatGPT не подтвердил ${action === 'delete' ? 'удаление' : 'архивирование'} чата.`);
   }
 
   function iconButton(action, label) {
