@@ -5,7 +5,6 @@
 
   const UI_CLASS = 'dup-chatgpt-extension-ui';
   const ACTIONS_CLASS = 'dup-chatgpt-actions';
-  const API_LIST = '/backend-api/conversations';
   const ICONS = {
     archive: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16v12H4z"/><path d="M3 4h18v3H3zM9 11h6"/></svg>',
     delete: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3m-9 0 1 13h10l1-13M10 11v5m4-5v5"/></svg>',
@@ -29,12 +28,46 @@
     return String(clone.textContent || '').trim() || 'Без названия';
   }
 
+  function nativeActionLabel(action) {
+    return action === 'delete'
+      ? ['Удалить', 'Delete']
+      : ['Архивировать', 'Archive'];
+  }
+
+  async function waitForElement(getElement, timeout = 3000) {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeout) {
+      const element = getElement();
+      if (element) return element;
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    }
+    return null;
+  }
+
   async function requestConversation(id, action) {
-    const options = action === 'delete'
-      ? { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ is_visible: false }) }
-      : { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ is_archived: true }) };
-    const response = await fetch(`/backend-api/conversation/${encodeURIComponent(id)}`, options);
-    if (!response.ok) throw new Error(`ChatGPT вернул ошибку ${response.status}`);
+    const link = [...document.querySelectorAll('a[href*="/c/"]')]
+      .find((candidate) => conversationIdFromLink(candidate) === id);
+    const trigger = link?.querySelector('[data-conversation-options-trigger], button[aria-haspopup="menu"]');
+    if (!trigger) throw new Error('Не удалось найти штатное меню чата.');
+    trigger.click();
+    const menuItem = await waitForElement(() => {
+      const labels = nativeActionLabel(action);
+      return [...document.querySelectorAll('[role="menuitem"]')].find((item) => labels.includes(String(item.textContent || '').trim()));
+    });
+    if (!menuItem) throw new Error('В штатном меню ChatGPT нет нужного действия.');
+    menuItem.click();
+  }
+
+  function removeConversationLinks(id) {
+    document.querySelectorAll('a[href*="/c/"]').forEach((candidate) => {
+      if (conversationIdFromLink(candidate) === id) candidate.remove();
+    });
+  }
+
+  async function runNativeConversationAction(id, action) {
+    await requestConversation(id, action);
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    removeConversationLinks(id);
   }
 
   function iconButton(action, label) {
@@ -69,10 +102,7 @@
     }
     button.disabled = true;
     try {
-      await requestConversation(id, action);
-      document.querySelectorAll('a[href*="/c/"]').forEach((candidate) => {
-        if (conversationIdFromLink(candidate) === id) candidate.remove();
-      });
+      await runNativeConversationAction(id, action);
       if (conversationIdFromLink({ getAttribute: () => location.pathname }) === id) location.assign('/');
     } catch (error) {
       button.disabled = false;
@@ -87,6 +117,8 @@
       if (!conversationIdFromLink(link) || link.querySelector(':scope > .' + ACTIONS_CLASS)) return;
       const actions = document.createElement('span');
       actions.className = `${ACTIONS_CLASS} ${UI_CLASS}`;
+      const nativeTrailing = link.querySelector(':scope > .trailing, :scope > [class*="trailing"]');
+      if (nativeTrailing) nativeTrailing.classList.add('dup-chatgpt-native-actions');
       const archive = iconButton('archive', 'Архивировать чат');
       const remove = iconButton('delete', 'Удалить чат');
       archive.addEventListener('click', runSingleAction);
@@ -102,29 +134,9 @@
         remove.innerHTML = ICONS.delete;
       });
       actions.append(archive, remove);
-      link.append(actions);
+      if (nativeTrailing) nativeTrailing.before(actions);
+      else link.append(actions);
     });
-  }
-
-  async function loadAllChats() {
-    const chats = [];
-    const seen = new Set();
-    let offset = 0;
-    for (let page = 0; page < 100; page += 1) {
-      const url = `${API_LIST}?offset=${offset}&limit=100&order=updated&is_archived=false`;
-      const response = await fetch(url, { headers: { accept: 'application/json' } });
-      if (!response.ok) throw new Error(`ChatGPT вернул ошибку ${response.status}`);
-      const data = await response.json();
-      const items = Array.isArray(data.items) ? data.items : [];
-      items.forEach((item) => {
-        if (!item?.id || seen.has(item.id) || item.is_archived) return;
-        seen.add(item.id);
-        chats.push({ id: item.id, title: String(item.title || 'Без названия') });
-      });
-      offset += items.length;
-      if (!items.length || items.length < 100 || (Number.isFinite(data.total) && offset >= data.total)) break;
-    }
-    return chats;
   }
 
   function loadVisibleChats() {
@@ -245,7 +257,7 @@
       for (const input of selected) {
         status.textContent = `Обработано: ${completed} из ${selected.length}`;
         try {
-          await requestConversation(input.dataset.chatId, action);
+          await runNativeConversationAction(input.dataset.chatId, action);
           chats = chats.filter((chat) => chat.id !== input.dataset.chatId);
           input.closest('.dup-chatgpt-chat-row')?.remove();
         } catch (error) {
@@ -261,8 +273,7 @@
     }));
 
     try {
-      chats = await loadAllChats();
-      if (!chats.length) chats = loadVisibleChats();
+      chats = loadVisibleChats();
       render();
       search.focus();
     } catch (error) {

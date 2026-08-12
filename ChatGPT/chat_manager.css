@@ -9,10 +9,7 @@
   opacity: 0;
   padding-inline: 2px;
   pointer-events: none;
-  position: absolute;
-  right: 4px;
-  top: 50%;
-  transform: translateY(-50%);
+  position: relative;
   transition: opacity 120ms ease;
   z-index: 3;
 }
@@ -25,6 +22,11 @@ a[href*="/c/"]:focus-within > .dup-chatgpt-actions {
 
 a[href*="/c/"]:has(> .dup-chatgpt-actions) {
   position: relative;
+}
+
+.dup-chatgpt-native-actions {
+  position: relative;
+  z-index: 4;
 }
 
 .dup-chatgpt-icon-button {
