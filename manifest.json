@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Помощник по Пирамиде",
-  "version": "2.0.57",
+  "version": "2.0.64",
   "description": "Авто-режим + Проверка ИНН/Смерти + Мониторинг скорости стадий",
   "permissions": [
     "activeTab",
@@ -64,6 +64,20 @@
       "js": [
         "GoogleSheets/problem_picker_config.js",
         "GoogleSheets/problem_picker_content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*"
+      ],
+      "css": [
+        "ChatGPT/chat_manager.css"
+      ],
+      "js": [
+        "ChatGPT/chat_manager.js"
       ],
       "run_at": "document_idle",
       "all_frames": false

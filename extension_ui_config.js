@@ -49,8 +49,10 @@
             fsspGroupingToggle: null,
             // Кнопка и окно пакетного поиска должников в реестрах ФССП.
             fsspRegistrySearch: null,
-            // Инструменты пакетной проверки ИНН и смерти.
-            innBatchTools: false,
+            // Команда StageJump и окно перекрёстной проверки паспорта, ИНН и даты смерти.
+            identityVerificationTools: null,
+            // Быстрые и массовые действия с чатами на chatgpt.com.
+            chatgptChatTools: null,
             // Новогоднее/весеннее сезонное оформление.
             seasonalTheme: false,
             // Кнопка "Настройки сезонного оформления" и связанные панели.

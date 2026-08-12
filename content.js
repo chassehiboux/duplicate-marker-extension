@@ -41,10 +41,13 @@
   const STAGE_JUMP_MENU_ACTION_SLOWSEARCH = 'to_slowsearch';
   const STAGE_JUMP_MENU_ACTION_ALL_RECORDS = 'to_all_records';
   const STAGE_JUMP_MENU_ACTION_COPY_INFO = 'copy_info';
+  const STAGE_JUMP_MENU_ACTION_VERIFY_IDENTITY = 'verify_identity';
+  const STAGE_JUMP_IDENTITY_VERIFICATION_START_EVENT = 'dup-pyramid-identity-verification-start';
   const STAGE_JUMP_REESTR_RETURN_TO_PU_TM_LABEL = 'Реестр возврата ИД в ОРДЗ/ПУ';
   const STAGE_JUMP_MENU_ITEM_SLOWSEARCH_TEXT = 'Переход в Глобальный поиск';
   const STAGE_JUMP_MENU_ITEM_ALL_RECORDS_TEXT = 'Переход в ОВЗИД: все доступные записи';
   const STAGE_JUMP_MENU_ITEM_COPY_INFO_TEXT = 'Скопировать инфо об ИД';
+  const STAGE_JUMP_MENU_ITEM_VERIFY_IDENTITY_TEXT = 'Проверить паспорт / ИНН / смерть';
   const EXECUTION_ANALYSIS_PATH = '/ovzid/actions/execution-analysis';
   const EXECUTION_ANALYSIS_BLANK_PATH = '/pages/blank';
   const EXECUTION_ANALYSIS_STATE_STORAGE_KEY = 'dup_execution_analysis_state_v1';
@@ -523,16 +526,26 @@
       `
     },
     {
-      key: 'innBatchTools',
-      storageKey: 'dup_ui_show_inn_batch_tools',
-      label: 'Проверка ИНН/смерти',
-      description: 'Кнопка пакетной проверки и её окна.',
-      hideClass: 'dup-ui-hide-inn-batch-tools',
+      key: 'identityVerificationTools',
+      storageKey: 'dup_ui_show_identity_verification_tools',
+      label: 'Проверка паспорта / ИНН / смерти',
+      description: 'Команда StageJump и окно перекрёстной проверки данных.',
+      hideClass: 'dup-ui-hide-identity-verification-tools',
       hideCss: `
-        html.dup-ui-hide-inn-batch-tools .my-super-btn,
-        html.dup-ui-hide-inn-batch-tools #batch-inn-check-btn,
-        html.dup-ui-hide-inn-batch-tools #inn-toast-container,
-        html.dup-ui-hide-inn-batch-tools #inn-batch-modal-overlay {
+        html.dup-ui-hide-identity-verification-tools .${STAGE_JUMP_MENU_ITEM_CLASS}[${STAGE_JUMP_MENU_ACTION_ATTR}="${STAGE_JUMP_MENU_ACTION_VERIFY_IDENTITY}"],
+        html.dup-ui-hide-identity-verification-tools .dup-identity-verification-ui {
+          display: none !important;
+        }
+      `
+    },
+    {
+      key: 'chatgptChatTools',
+      storageKey: 'dup_ui_show_chatgpt_chat_tools',
+      label: 'Управление чатами ChatGPT',
+      description: 'Быстрые кнопки архива/удаления и окно массового управления чатами.',
+      hideClass: 'dup-ui-hide-chatgpt-chat-tools',
+      hideCss: `
+        html.dup-ui-hide-chatgpt-chat-tools .dup-chatgpt-extension-ui {
           display: none !important;
         }
       `
@@ -5299,10 +5312,8 @@
       html.${SCREENSHOT_MODE_CLASS} .dup-grid-card-check-modal,
       html.${SCREENSHOT_MODE_CLASS} #${ID_CARD_CHECK_NAV_ID},
       html.${SCREENSHOT_MODE_CLASS} #${GRID_CARD_CHECK_NAV_ID},
-      html.${SCREENSHOT_MODE_CLASS} .my-super-btn,
-      html.${SCREENSHOT_MODE_CLASS} #batch-inn-check-btn,
-      html.${SCREENSHOT_MODE_CLASS} #inn-toast-container,
-      html.${SCREENSHOT_MODE_CLASS} #inn-batch-modal-overlay,
+      html.${SCREENSHOT_MODE_CLASS} .dup-identity-verification-ui,
+      html.${SCREENSHOT_MODE_CLASS} .dup-chatgpt-extension-ui,
       html.${SCREENSHOT_MODE_CLASS} .ny-snow-container,
       html.${SCREENSHOT_MODE_CLASS} .ny-garland-container,
       html.${SCREENSHOT_MODE_CLASS} .spring-petal-layer,
@@ -10710,6 +10721,18 @@
       return;
     }
 
+    if (action === STAGE_JUMP_MENU_ACTION_VERIFY_IDENTITY) {
+      const verificationSummary = collectStageJumpCopyInfoTargets(anchorButton);
+      if (!verificationSummary.targets.length) {
+        window.alert('Нет строк для проверки паспорта, ИНН и даты смерти.');
+        return;
+      }
+      window.dispatchEvent(new CustomEvent(STAGE_JUMP_IDENTITY_VERIFICATION_START_EVENT, {
+        detail: { targets: verificationSummary.targets }
+      }));
+      return;
+    }
+
     if (!debtId) return;
 
     if (action === STAGE_JUMP_MENU_ACTION_SLOWSEARCH) {
@@ -10753,6 +10776,7 @@
     menu.hidden = true;
     menu.innerHTML = [
       `<button type="button" class="${STAGE_JUMP_MENU_ITEM_CLASS}" ${STAGE_JUMP_MENU_ACTION_ATTR}="${STAGE_JUMP_MENU_ACTION_COPY_INFO}">${STAGE_JUMP_MENU_ITEM_COPY_INFO_TEXT} (0)</button>`,
+      `<button type="button" class="${STAGE_JUMP_MENU_ITEM_CLASS}" ${STAGE_JUMP_MENU_ACTION_ATTR}="${STAGE_JUMP_MENU_ACTION_VERIFY_IDENTITY}">${STAGE_JUMP_MENU_ITEM_VERIFY_IDENTITY_TEXT} (0)</button>`,
       `<button type="button" class="${STAGE_JUMP_MENU_ITEM_CLASS}" ${STAGE_JUMP_MENU_ACTION_ATTR}="${STAGE_JUMP_MENU_ACTION_SLOWSEARCH}">${STAGE_JUMP_MENU_ITEM_SLOWSEARCH_TEXT}</button>`,
       `<button type="button" class="${STAGE_JUMP_MENU_ITEM_CLASS}" ${STAGE_JUMP_MENU_ACTION_ATTR}="${STAGE_JUMP_MENU_ACTION_ALL_RECORDS}">${STAGE_JUMP_MENU_ITEM_ALL_RECORDS_TEXT}</button>`
     ].join('');
@@ -10801,6 +10825,7 @@
     const slowsearchItem = menu.querySelector(`.${STAGE_JUMP_MENU_ITEM_CLASS}[${STAGE_JUMP_MENU_ACTION_ATTR}="${STAGE_JUMP_MENU_ACTION_SLOWSEARCH}"]`);
     const allRecordsItem = menu.querySelector(`.${STAGE_JUMP_MENU_ITEM_CLASS}[${STAGE_JUMP_MENU_ACTION_ATTR}="${STAGE_JUMP_MENU_ACTION_ALL_RECORDS}"]`);
     const copyInfoItem = menu.querySelector(`.${STAGE_JUMP_MENU_ITEM_CLASS}[${STAGE_JUMP_MENU_ACTION_ATTR}="${STAGE_JUMP_MENU_ACTION_COPY_INFO}"]`);
+    const identityVerificationItem = menu.querySelector(`.${STAGE_JUMP_MENU_ITEM_CLASS}[${STAGE_JUMP_MENU_ACTION_ATTR}="${STAGE_JUMP_MENU_ACTION_VERIFY_IDENTITY}"]`);
     const copyInfoSummary = collectStageJumpCopyInfoTargets(anchorButton);
     const hasDebtId = String(anchorButton.dataset.debtId || '').trim().length > 0;
     [slowsearchItem, allRecordsItem].forEach((item) => {
@@ -10822,6 +10847,18 @@
         copyInfoItem.title = `Будет скопировано строк: ${copyCount}`;
       } else {
         copyInfoItem.removeAttribute('title');
+      }
+    }
+    if (identityVerificationItem instanceof HTMLButtonElement) {
+      const verificationCount = copyInfoSummary.targets.filter((target) => String(target.edocId || '').trim()).length;
+      identityVerificationItem.textContent = `${STAGE_JUMP_MENU_ITEM_VERIFY_IDENTITY_TEXT} (${verificationCount})`;
+      identityVerificationItem.disabled = verificationCount < 1;
+      if (verificationCount < 1) {
+        identityVerificationItem.title = 'Не удалось определить EDocID строк.';
+      } else if (copyInfoSummary.selectedRowsCount > 0) {
+        identityVerificationItem.title = `Будет проверено выделенных загруженных строк: ${verificationCount}`;
+      } else {
+        identityVerificationItem.title = 'Будет проверена строка, из которой открыто меню.';
       }
     }
     if (!menu.hidden && stageJumpActionMenuAnchor === anchorButton) {
@@ -10897,18 +10934,21 @@
           `DebtID: ${debtId}`,
           'Выберите действие:',
           `1) ${STAGE_JUMP_MENU_ITEM_COPY_INFO_TEXT}`,
-          `2) ${STAGE_JUMP_MENU_ITEM_SLOWSEARCH_TEXT}`,
-          `3) ${STAGE_JUMP_MENU_ITEM_ALL_RECORDS_TEXT}`
+          `2) ${STAGE_JUMP_MENU_ITEM_VERIFY_IDENTITY_TEXT}`,
+          `3) ${STAGE_JUMP_MENU_ITEM_SLOWSEARCH_TEXT}`,
+          `4) ${STAGE_JUMP_MENU_ITEM_ALL_RECORDS_TEXT}`
         ].join('\n');
       } else {
         delete jumpButton.dataset.debtId;
-        delete jumpButton.dataset.edocId;
+        if (edocId) jumpButton.dataset.edocId = edocId;
+        else delete jumpButton.dataset.edocId;
         jumpButton.title = [
           'DebtID не найден. Доступно копирование информации об ИД.',
           'Выберите действие:',
           `1) ${STAGE_JUMP_MENU_ITEM_COPY_INFO_TEXT}`,
-          `2) ${STAGE_JUMP_MENU_ITEM_SLOWSEARCH_TEXT} (недоступен: DebtID не найден)`,
-          `3) ${STAGE_JUMP_MENU_ITEM_ALL_RECORDS_TEXT} (недоступен: DebtID не найден)`
+          `2) ${STAGE_JUMP_MENU_ITEM_VERIFY_IDENTITY_TEXT}${edocId ? '' : ' (недоступен: EDocID не найден)'}`,
+          `3) ${STAGE_JUMP_MENU_ITEM_SLOWSEARCH_TEXT} (недоступен: DebtID не найден)`,
+          `4) ${STAGE_JUMP_MENU_ITEM_ALL_RECORDS_TEXT} (недоступен: DebtID не найден)`
         ].join('\n');
       }
 

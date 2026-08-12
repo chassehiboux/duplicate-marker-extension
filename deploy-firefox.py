@@ -42,6 +42,10 @@ ROOT_FILES = [
 ]
 
 DIR_FILES = {
+    'ChatGPT': [
+        'chat_manager.css',
+        'chat_manager.js',
+    ],
     'ColumnManager': [
         'column_manager.js',
     ],
