@@ -1,407 +1,409 @@
-let isBatchCheckCancelled = false;
+(function initializePyramidIdentityVerificationBackground() {
+    'use strict';
 
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    if (request.action === "start_check") {
-        processFullCheck(request.data, sendResponse);
-        return true; 
-    }
-    if (request.action === "start_batch_check") {
-        processBatchCheck(request, sender.tab.id);
-        return true;
-    }
-    if (request.action === "cancel_batch_check") {
-        isBatchCheckCancelled = true;
-        console.log("Batch check cancellation received.");
-        return true;
-    }
-});
+    const ACTION_LOOKUP_INN = 'PYRAMID_IDENTITY_LOOKUP_INN';
+    const ACTION_CHECK_INVALID_INN = 'PYRAMID_IDENTITY_CHECK_INVALID_INN';
+    const ACTION_CHECK_PROBATE = 'PYRAMID_IDENTITY_CHECK_PROBATE';
+    const FNS_INN_PAGE_URL = 'https://service.nalog.ru/inn.do';
+    const FNS_CONSENT_URL = 'https://service.nalog.ru/static/personal-data-proc.json';
+    const FNS_INN_API_URL = 'https://service.nalog.ru/inn-new-proc.json';
+    const FNS_INVALID_INN_API_URL = 'https://service.nalog.ru/invalid-inn-proc.json';
+    const NOTARIAT_API_URL = 'https://notariat.ru/api/probate-cases';
+    const REQUEST_TIMEOUT_MS = 30000;
+    const INN_LOOKUP_INTERVAL_MS = 11000;
+    const INN_POLL_ATTEMPTS = 16;
+    const INN_POLL_INTERVAL_MS = 500;
+    const NOTARIAT_IGNORED_CASE_IDS = new Set(['38129461']);
 
-// ========= SINGLE CHECK =========
-async function processFullCheck(data, sendResponse) {
-    try {
-        const results = await getCheckResults(data);
-        sendResponse({ success: true, ...results });
-    } catch (err) {
-        console.error("BG Error in processFullCheck:", err);
-        sendResponse({ success: false, error: err.message });
-    }
-}
+    let innLookupQueue = Promise.resolve();
+    let lastInnLookupStartedAt = 0;
 
-// ========= BATCH CHECK =========
-async function processBatchCheck(request, senderTabId) {
-    isBatchCheckCancelled = false; // Reset flag on new batch start
-    const { ids, origin } = request;
-    const total = ids.length;
-
-    chrome.tabs.sendMessage(senderTabId, { action: "batch_progress", current: 0, total: total });
-
-    for (let i = 0; i < total; i++) {
-        if (isBatchCheckCancelled) {
-            console.log("Batch check cancelled by user.");
-            break; // Exit the loop if cancelled
-        }
-
-        const id = ids[i];
-        chrome.tabs.sendMessage(senderTabId, { action: "batch_progress", current: i + 1, total: total });
-
-        let personData;
-        const url = `${origin}/ovzid/fullcard/${id}`;
-        let tab;
-
-        try {
-            tab = await chrome.tabs.create({ url, active: false });
-            
-            const scriptResults = await chrome.scripting.executeScript({
-                target: { tabId: tab.id },
-                func: getPersonDataFromCard,
-            });
-
-            personData = scriptResults && scriptResults[0] ? scriptResults[0].result : null;
-            
-            let resultPayload;
-            if (personData && personData.surname && personData.birthDate) {
-                // Параллельная проверка
-                const checkResult = await getCheckResults(personData);
-                resultPayload = { id, ...checkResult };
-            } else {
-                resultPayload = { id, error: 'Не удалось получить данные со страницы' };
-            }
-            
-            // Check again in case cancellation happened during the async check
-            if (isBatchCheckCancelled) break;
-
-            chrome.tabs.sendMessage(senderTabId, { 
-                action: "batch_item_result", 
-                result: resultPayload 
-            });
-
-        } catch (e) {
-            console.error(`Error processing ID ${id}:`, e);
-            if (isBatchCheckCancelled) break;
-            chrome.tabs.sendMessage(senderTabId, { 
-                action: "batch_item_result", 
-                result: { id, error: e.message } 
-            });
-        } finally {
-            if (tab) await chrome.tabs.remove(tab.id);
+    class VerificationServiceError extends Error {
+        constructor(code, message, options = {}) {
+            super(message);
+            this.name = 'VerificationServiceError';
+            this.code = code || 'SERVICE_ERROR';
+            this.service = options.service || '';
+            this.retryable = options.retryable !== false;
+            this.details = options.details || null;
         }
     }
 
-    chrome.tabs.sendMessage(senderTabId, { action: "batch_complete" });
-}
-
-// ========= PARALLEL CHECKING LOGIC =========
-async function getCheckResults(data) {
-    try {
-        const existingInn = data.existingInn; 
-        
-        // 1. Запускаем поиск ИНН и проверку Наследства параллельно
-        // Используем Promise.allSettled, чтобы ошибка в одном не убивала остальные
-        const [pFindInn, pProbate, pExistDeath] = await Promise.allSettled([
-            findInn(data),
-            checkProbateCase(data),
-            existingInn ? checkDeathDate(existingInn) : Promise.resolve(null)
-        ]);
-
-        const foundInn = pFindInn.status === 'fulfilled' ? pFindInn.value : null;
-        const probateCaseDeath = pProbate.status === 'fulfilled' ? pProbate.value : null;
-        const existingDeath = pExistDeath.status === 'fulfilled' ? pExistDeath.value : null;
-
-        let foundDeath = null;
-
-        // 2. Если нашли новый ИНН, проверяем его статус
-        if (foundInn) {
-            if (foundInn === existingInn) {
-                foundDeath = existingDeath;
-            } else {
-                foundDeath = await checkDeathDate(foundInn);
-            }
-        }
-
-        return { 
-            surname: data.surname,
-            name: data.name,
-            patronymic: data.patronymic,
-            foundInn,
-            existingInn,
-            foundDeath,
-            existingDeath,
-            probateCaseDeath
-        };
-
-    } catch (err) {
-        console.error("BG Error in getCheckResults:", err);
-        return { error: err.message };
+    function sleep(milliseconds) {
+        return new Promise((resolve) => setTimeout(resolve, Math.max(0, milliseconds || 0)));
     }
-}
 
-// --- TAB HELPERS ---
-async function findInn(personData) {
-    if (!personData || !personData.surname || !personData.birthDate || !personData.docNumber) return null;
-    const tab = await chrome.tabs.create({ url: "https://service.nalog.ru/inn.do", active: false });
-    try {
-        return await executeScriptInTab(tab.id, injectInnSearchLogic, [personData]);
-    } catch(e) { return null; } finally { await chrome.tabs.remove(tab.id); }
-}
+    function digitsOnly(value) {
+        return String(value === undefined || value === null ? '' : value).replace(/\D/g, '');
+    }
 
-async function checkDeathDate(inn) {
-    if (!inn) return null;
-    const tab = await chrome.tabs.create({ url: "https://service.nalog.ru/invalid-inn-fl.html", active: false });
-    try {
-        return await executeScriptInTab(tab.id, injectDeathCheckLogic, [inn]);
-    } catch(e) { return null; } finally { await chrome.tabs.remove(tab.id); }
-}
+    function normalizeText(value) {
+        return String(value === undefined || value === null ? '' : value).replace(/\s+/g, ' ').trim();
+    }
 
-async function checkProbateCase(personData) {
-    if (!personData || !personData.surname || !personData.birthDate) return null;
-    const tab = await chrome.tabs.create({ url: "https://notariat.ru/ru-ru/help/probate-cases/", active: false });
-    try {
-        return await executeScriptInTab(tab.id, injectProbateCaseLogic, [personData]);
-    } catch(e) { return null; } finally { await chrome.tabs.remove(tab.id); }
-}
-
-function executeScriptInTab(tabId, func, args) {
-    return new Promise((resolve, reject) => {
-        let fulfilled = false;
-        const listener = (tid, changeInfo, tab) => {
-            if (tid === tabId && changeInfo.status === 'complete' && tab.url.startsWith('http')) {
-                if (fulfilled) return;
-                fulfilled = true;
-                chrome.tabs.onUpdated.removeListener(listener);
-                setTimeout(() => chrome.scripting.executeScript({
-                    target: { tabId: tabId },
-                    func: func,
-                    args: args
-                }, (results) => {
-                    if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
-                    else resolve(results && results[0] ? results[0].result : null);
-                }), 500); 
-            }
-        };
-        chrome.tabs.onUpdated.addListener(listener);
-        setTimeout(() => {
-            if (!fulfilled) {
-                fulfilled = true;
-                chrome.tabs.onUpdated.removeListener(listener);
-                reject(new Error(`Tab ${tabId} timed out`));
-            }
-        }, 60000); // 1 мин таймаут на случай медленного интернета
-    });
-}
-
-// --- INJECTED SCRIPTS ---
-
-function getPersonDataFromCard() {
-    const headerNode = Array.from(document.querySelectorAll('h4')).find(h => h.innerText.includes('Реквизиты ИД'));
-    if (!headerNode) return null;
-    try {
-        let container = headerNode.nextElementSibling;
-        let table = null;
-        for(let i=0; i<3; i++) {
-            if(!container) break;
-            table = container.querySelector ? container.querySelector('table') : null;
-            if(table) break;
-            if(container.tagName === 'TABLE') { table = container; break; }
-            container = container.nextElementSibling;
-        }
-        if (!table) return null;
-        const tr = table.querySelector('tbody tr');
-        if (!tr) return null;
-        const tds = tr.querySelectorAll(':scope > td');
-        const fio = tds[0].innerText.trim();
-        const fioParts = fio.split(/\s+/);
-        let bdate = '', passport = '', inn = '';
-        const allInnerRows = tr.querySelectorAll('table tr');
-        allInnerRows.forEach(r => {
-            const txt = r.innerText.toLowerCase();
-            const cells = r.querySelectorAll('td');
-            const val = cells[1] ? cells[1].innerText.trim() : '';
-            if (txt.includes('др должника')) bdate = val;
-            if (txt.includes('серия документа')) passport += val + ' ';
-            if (txt.includes('номер документа')) passport += val;
-            if (txt.includes('инн') && /^\d+$/.test(val)) inn = val;
-        });
+    function splitFio(value) {
+        const parts = normalizeText(value).split(' ').filter(Boolean);
         return {
-            surname: fioParts[0],
-            name: fioParts[1],
-            patronymic: fioParts.slice(2).join(' '),
-            birthDate: bdate,
-            docNumber: passport.trim(),
-            existingInn: inn
+            surname: parts[0] || '',
+            name: parts[1] || '',
+            patronymic: parts.slice(2).join(' ')
         };
-    } catch (e) { return null; }
-}
+    }
 
-// УЛУЧШЕННЫЙ ПОИСК ИНН
-async function injectInnSearchLogic(data) {
-    const sleep = ms => new Promise(r => setTimeout(r, ms));
-    const waitLoader = async () => {
-        // Увеличенные паузы для фоновой вкладки
-        for (let i=0; i<60; i++) { 
-            if (!document.querySelector('#uniPreloader') && 
-                !document.querySelector('.loading') && 
-                document.readyState === 'complete') return true;
-            await sleep(400);
-        }
-        return false;
-    };
-    try {
-        await waitLoader();
-        const chk = document.querySelector('a.checkbox') || document.querySelector('#unichk_0');
-        if (chk && !chk.classList.contains('checkbox-on')) { chk.click(); await sleep(400); }
-        const btnNext = document.querySelector('#btnContinue');
-        if (btnNext) { btnNext.click(); await sleep(800); await waitLoader(); await sleep(500); }
-        if (!document.querySelector('#fam')) return null;
+    function formatPassportNumber(series, number) {
+        const normalizedSeries = digitsOnly(series);
+        const normalizedNumber = digitsOnly(number);
+        if (normalizedSeries.length !== 4 || normalizedNumber.length !== 6) return '';
+        return `${normalizedSeries.slice(0, 2)} ${normalizedSeries.slice(2)} ${normalizedNumber}`;
+    }
 
-        const fill = (sel, val) => {
-            const el = document.querySelector(sel);
-            if(el) {
-                el.value = val;
-                el.dispatchEvent(new Event('input', {bubbles:true}));
-                el.dispatchEvent(new Event('change', {bubbles:true}));
+    function formatBirthDateForNotariat(value) {
+        const match = normalizeText(value).match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
+        return match ? `${match[3]}${match[2]}${match[1]}` : '';
+    }
+
+    function extractDate(value) {
+        const text = normalizeText(value);
+        const russianMatch = text.match(/\b\d{2}\.\d{2}\.\d{4}\b/);
+        if (russianMatch) return russianMatch[0];
+        const isoMatch = text.match(/\b(\d{4})-(\d{2})-(\d{2})\b/);
+        return isoMatch ? `${isoMatch[3]}.${isoMatch[2]}.${isoMatch[1]}` : '';
+    }
+
+    async function fetchWithTimeout(url, options = {}, service = '') {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+        try {
+            return await fetch(url, { ...options, signal: controller.signal });
+        } catch (error) {
+            if (error && error.name === 'AbortError') {
+                throw new VerificationServiceError(
+                    'REQUEST_TIMEOUT',
+                    `Сервис ${service || 'проверки'} не ответил за ${Math.round(REQUEST_TIMEOUT_MS / 1000)} секунд.`,
+                    { service, retryable: true }
+                );
             }
-        };
-        fill('#fam', data.surname);
-        fill('#nam', data.name);
-        if (data.patronymic) fill('#otch', data.patronymic);
-        else { const o = document.querySelector('#opt_otch'); if(o) o.click(); }
-        fill('#bdate', data.birthDate);
-        fill('#docno', data.docNumber);
+            throw new VerificationServiceError(
+                'NETWORK_ERROR',
+                `Не удалось связаться с сервисом ${service || 'проверки'}: ${error && error.message ? error.message : error}`,
+                { service, retryable: true }
+            );
+        } finally {
+            clearTimeout(timeout);
+        }
+    }
 
-        await sleep(600);
-        const btnSend = document.querySelector('#btn_send');
-        if (btnSend) { btnSend.click(); await sleep(1500); }
+    async function readJsonResponse(response, service, operation) {
+        const text = await response.text();
+        let data;
+        try {
+            data = text ? JSON.parse(text) : {};
+        } catch (error) {
+            throw new VerificationServiceError(
+                'INVALID_RESPONSE',
+                `${service}: получен некорректный ответ при операции «${operation}».`,
+                { service, retryable: true, details: text.slice(0, 500) }
+            );
+        }
+        if (!response.ok) {
+            assertNoFnsCaptcha(data);
+            throw new VerificationServiceError(
+                response.status === 429 ? 'RATE_LIMITED' : 'HTTP_ERROR',
+                `${service}: HTTP ${response.status} при операции «${operation}».`,
+                { service, retryable: response.status === 429 || response.status >= 500, details: data }
+            );
+        }
+        if (!data || typeof data !== 'object' || Array.isArray(data)) {
+            throw new VerificationServiceError(
+                'INVALID_RESPONSE',
+                `${service}: неожиданный формат ответа при операции «${operation}».`,
+                { service, retryable: true, details: data }
+            );
+        }
+        return data;
+    }
 
-        // Долгое ожидание результатов
-        for (let i = 0; i < 40; i++) { 
-            await waitLoader();
-            
-            // 1. Поиск по ID (стандарт)
-            const resEl = document.querySelector('#resultInn');
-            if (resEl && resEl.innerText.trim()) return resEl.innerText.trim();
+    function assertNoFnsCaptcha(data) {
+        const errors = data && typeof data.ERRORS === 'object' ? data.ERRORS : null;
+        if (data && data.captchaRequired === true) {
+            throw new VerificationServiceError(
+                'CAPTCHA_REQUIRED',
+                'ФНС потребовал ввод капчи.',
+                { service: 'ФНС (поиск ИНН)', retryable: true, details: data }
+            );
+        }
+        if (errors && errors.captcha) {
+            throw new VerificationServiceError(
+                'CAPTCHA_REQUIRED',
+                `ФНС потребовал ввод капчи: ${normalizeText(errors.captcha)}`,
+                { service: 'ФНС (поиск ИНН)', retryable: true, details: data }
+            );
+        }
+    }
 
-            // 2. Поиск по тексту (если ID нет или верстка сменилась)
-            const content = document.body.innerText;
-            if (content.includes('ИНН:')) {
-                // Ищем 10-12 цифр подряд
-                const match = content.match(/ИНН:?\s*(\d{10,12})/);
-                if (match && match[1]) return match[1];
+    async function prepareFnsInnSession() {
+        const pageResponse = await fetchWithTimeout(FNS_INN_PAGE_URL, {
+            method: 'GET',
+            credentials: 'include',
+            cache: 'no-store'
+        }, 'ФНС (поиск ИНН)');
+        if (!pageResponse.ok) {
+            throw new VerificationServiceError(
+                'HTTP_ERROR',
+                `ФНС: не удалось открыть сервис поиска ИНН, HTTP ${pageResponse.status}.`,
+                { service: 'ФНС (поиск ИНН)', retryable: pageResponse.status >= 500 }
+            );
+        }
+
+        const consentResponse = await fetchWithTimeout(FNS_CONSENT_URL, {
+            method: 'POST',
+            credentials: 'include',
+            cache: 'no-store',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+                'X-Requested-With': 'XMLHttpRequest'
+            },
+            body: new URLSearchParams({
+                from: '/inn.do',
+                svc: 'inn',
+                personalData: '1'
+            })
+        }, 'ФНС (поиск ИНН)');
+        if (!consentResponse.ok) {
+            throw new VerificationServiceError(
+                'CONSENT_FAILED',
+                `ФНС: не удалось подтвердить согласие, HTTP ${consentResponse.status}.`,
+                { service: 'ФНС (поиск ИНН)', retryable: consentResponse.status >= 500 }
+            );
+        }
+    }
+
+    async function lookupInnDirect(payload) {
+        const fio = splitFio(payload && payload.fio);
+        const birthDate = normalizeText(payload && payload.birthDate);
+        const documentNumber = formatPassportNumber(payload && payload.series, payload && payload.number);
+        const issueDate = normalizeText(payload && payload.issueDate);
+        if (!fio.surname || !fio.name || !birthDate || !documentNumber) {
+            throw new VerificationServiceError(
+                'INVALID_INPUT',
+                'Для поиска ИНН не хватает ФИО, даты рождения или паспортных данных.',
+                { service: 'ФНС (поиск ИНН)', retryable: false }
+            );
+        }
+
+        await prepareFnsInnSession();
+        const findPayload = new URLSearchParams({
+            c: 'find',
+            captcha: '',
+            captchaToken: '',
+            fam: fio.surname,
+            nam: fio.name,
+            bdate: birthDate,
+            doctype: '21',
+            docno: documentNumber,
+            docdt: issueDate
+        });
+        if (fio.patronymic) findPayload.set('otch', fio.patronymic);
+        else findPayload.set('opt_otch', '1');
+
+        const findResponse = await fetchWithTimeout(FNS_INN_API_URL, {
+            method: 'POST',
+            credentials: 'include',
+            cache: 'no-store',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+                'X-Requested-With': 'XMLHttpRequest'
+            },
+            body: findPayload
+        }, 'ФНС (поиск ИНН)');
+        const findData = await readJsonResponse(findResponse, 'ФНС (поиск ИНН)', 'создание запроса');
+        assertNoFnsCaptcha(findData);
+
+        const requestId = normalizeText(findData.requestId);
+        if (!requestId) {
+            throw new VerificationServiceError(
+                'MISSING_REQUEST_ID',
+                'ФНС не вернул идентификатор запроса поиска ИНН.',
+                { service: 'ФНС (поиск ИНН)', retryable: true, details: findData }
+            );
+        }
+
+        let lastData = findData;
+        for (let attempt = 0; attempt < INN_POLL_ATTEMPTS; attempt += 1) {
+            const resultResponse = await fetchWithTimeout(FNS_INN_API_URL, {
+                method: 'POST',
+                credentials: 'include',
+                cache: 'no-store',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+                    'X-Requested-With': 'XMLHttpRequest'
+                },
+                body: new URLSearchParams({ c: 'get', requestId })
+            }, 'ФНС (поиск ИНН)');
+            lastData = await readJsonResponse(resultResponse, 'ФНС (поиск ИНН)', 'получение результата');
+            assertNoFnsCaptcha(lastData);
+            const state = Number(lastData.state);
+            if (state === 0) {
+                return {
+                    status: 'not_found',
+                    inn: '',
+                    errorCode: normalizeText(lastData.error_code),
+                    requestId
+                };
             }
-            
-            // 3. Проверка на "не найдено"
-            if (content.includes('Информация об ИНН не найдена')) return null;
-
-            await sleep(500);
-        }
-        return null;
-    } catch (e) { return null; }
-}
-
-// УЛУЧШЕННАЯ ПРОВЕРКА СМЕРТИ
-async function injectDeathCheckLogic(inn) {
-    const sleep = ms => new Promise(r => setTimeout(r, ms));
-    const forceInput = async (selector, value) => {
-        const el = document.querySelector(selector);
-        if(!el) return;
-        el.value = ''; await sleep(100);
-        el.value = value;
-        el.dispatchEvent(new Event('input', {bubbles:true}));
-        el.dispatchEvent(new Event('change', {bubbles:true}));
-        await sleep(200);
-    };
-    try {
-        await forceInput('#inn', inn);
-        const btn = document.querySelector('button.btn-search');
-        if (btn && btn.disabled) {
-            await sleep(600);
-            await forceInput('#inn', inn);
-        }
-        if (btn && !btn.disabled) btn.click();
-        else { const f = document.querySelector('form'); if(f) f.submit(); }
-
-        await sleep(1500); // Даем больше времени на отработку в фоне
-
-        for (let i=0; i<40; i++) {
-            await sleep(600);
-            
-            // 1. Стандартный ID
-            const txtDate = document.querySelector('#txtDate');
-            if (txtDate && txtDate.innerText.trim().length > 5) return txtDate.innerText.trim();
-            
-            // 2. Поиск любой даты в таблице результатов
-            const cells = document.querySelectorAll('#pnlResult td');
-            for (let c of cells) { if (c.innerText.match(/^\d{2}\.\d{2}\.\d{4}$/)) return c.innerText; }
-            
-            // 3. Поиск по тексту "Дата смерти" или "Дата признания недействительным"
-            const bodyText = document.body.innerText;
-            const dateMatch = bodyText.match(/(?:Дата смерти|Дата признания недействительным).*?(\d{2}\.\d{2}\.\d{4})/);
-            if (dateMatch && dateMatch[1]) return dateMatch[1];
-
-            // 4. Отрицательный результат
-            if (bodyText.includes('является действительным')) return null; 
-            
-            const noResPanel = document.querySelector('#pnlNoResult');
-            if ((noResPanel && noResPanel.style.display !== 'none') || document.querySelector('.msg-no-data')) {
-                return null;
-            }
-            
-            const dBtn = document.querySelector('div[role="dialog"] button'); if(dBtn) dBtn.click();
-        }
-        return null;
-    } catch (e) { return null; }
-}
-
-async function injectProbateCaseLogic(data) {
-    const sleep = ms => new Promise(r => setTimeout(r, ms));
-    const waitReady = async () => {
-        for (let i=0; i<60; i++) { 
-            if (document.readyState === 'complete') return true;
-            await sleep(300);
-        }
-        return false;
-    };
-    try {
-        await waitReady();
-        const fullName = `${data.surname} ${data.name} ${data.patronymic}`.trim();
-        const [day, month, year] = data.birthDate.split('.');
-        const fill = (sel, val) => {
-            const el = document.querySelector(sel);
-            if (el) {
-                el.value = val;
-                el.dispatchEvent(new Event('input', { bubbles: true }));
-                el.dispatchEvent(new Event('change', { bubbles: true }));
-            }
-        };
-        const select = (sel, val) => {
-             const el = document.querySelector(sel);
-             if (el) {
-                el.value = val;
-                el.dispatchEvent(new Event('change', { bubbles: true }));
-             }
-        }
-        fill('input[name="name"]', fullName);
-        select('select[name="b-day"]', day);
-        select('select[name="b-month"]', month);
-        fill('input[name="b-year"]', year);
-        await sleep(600);
-        const btn = document.querySelector('.js-probate-cases__submit');
-        if (btn) btn.click();
-        for (let i = 0; i < 50; i++) {
-            await sleep(400);
-            const resultBlock = document.querySelector('.probate-cases__result');
-            if (resultBlock && resultBlock.style.display !== 'none') {
-                const header = resultBlock.querySelector('.probate-cases__result-header');
-                if (header && header.innerHTML.includes('<b>0</b>')) return null;
-                if (resultBlock.innerText.includes('К сожалению, по вашему запросу ничего не найдено')) return null;
-                const resultItem = resultBlock.querySelector('.probate-cases__result-item');
-                if (resultItem) {
-                    const text = resultItem.innerText;
-                    const match = text.match(/Дата смерти: (\d{2}\.\d{2}\.\d{4})/);
-                    if (match && match[1]) return match[1];
+            if (state === 1) {
+                const inn = digitsOnly(lastData.inn);
+                if (inn.length !== 12) {
+                    throw new VerificationServiceError(
+                        'INVALID_INN_RESPONSE',
+                        'ФНС вернул ИНН неожиданного формата.',
+                        { service: 'ФНС (поиск ИНН)', retryable: true, details: lastData }
+                    );
                 }
+                return { status: 'found', inn, errorCode: '', requestId };
             }
-            if (document.body.innerText.includes('К сожалению, по вашему запросу ничего не найдено')) return null;
+            if (state === -2) {
+                throw new VerificationServiceError(
+                    'SERVICE_UNAVAILABLE',
+                    'ФНС временно не может выполнить поиск ИНН.',
+                    { service: 'ФНС (поиск ИНН)', retryable: true, details: lastData }
+                );
+            }
+            await sleep(INN_POLL_INTERVAL_MS);
         }
-        return null;
-    } catch (e) { return null; }
-}
+
+        throw new VerificationServiceError(
+            'RESULT_TIMEOUT',
+            'ФНС не сформировал итог поиска ИНН за отведённое время.',
+            { service: 'ФНС (поиск ИНН)', retryable: true, details: lastData }
+        );
+    }
+
+    function enqueueInnLookup(payload) {
+        const queued = innLookupQueue.then(async () => {
+            const remaining = INN_LOOKUP_INTERVAL_MS - (Date.now() - lastInnLookupStartedAt);
+            if (remaining > 0) await sleep(remaining);
+            lastInnLookupStartedAt = Date.now();
+            return lookupInnDirect(payload);
+        });
+        innLookupQueue = queued.catch(() => undefined);
+        return queued;
+    }
+
+    async function checkInvalidInn(payload) {
+        const inn = digitsOnly(payload && payload.inn);
+        if (inn.length !== 12) {
+            throw new VerificationServiceError(
+                'INVALID_INPUT',
+                'Для проверки даты смерти нужен ИНН из 12 цифр.',
+                { service: 'ФНС (дата смерти по ИНН)', retryable: false }
+            );
+        }
+        const response = await fetchWithTimeout(FNS_INVALID_INN_API_URL, {
+            method: 'POST',
+            credentials: 'include',
+            cache: 'no-store',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+                'X-Requested-With': 'XMLHttpRequest'
+            },
+            body: new URLSearchParams({ k: 'fl', inn })
+        }, 'ФНС (дата смерти по ИНН)');
+        const data = await readJsonResponse(response, 'ФНС (дата смерти по ИНН)', 'проверка даты смерти');
+        return {
+            status: extractDate(data.date) ? 'date_found' : 'no_date',
+            inn,
+            date: extractDate(data.date)
+        };
+    }
+
+    function normalizeProbateRecord(record) {
+        if (!record || typeof record !== 'object') return null;
+        const caseId = normalizeText(record.CaseId || record.caseId || record.case_id || record.id);
+        if (caseId && NOTARIAT_IGNORED_CASE_IDS.has(caseId)) return null;
+        return {
+            caseId,
+            caseNumber: normalizeText(record.CaseNumber || record.caseNumber || record.case_number),
+            fio: normalizeText(record.Fio || record.FIO || record.name || record.fio),
+            birthDate: extractDate(record.BirthDate || record.birthDate || record.birth_date),
+            deathDate: extractDate(record.DeathDate || record.deathDate || record.death_date)
+        };
+    }
+
+    async function checkProbate(payload) {
+        const fio = normalizeText(payload && payload.fio);
+        const birthDate = formatBirthDateForNotariat(payload && payload.birthDate);
+        if (!fio || !birthDate) {
+            throw new VerificationServiceError(
+                'INVALID_INPUT',
+                'Для поиска наследственного дела не хватает ФИО или даты рождения.',
+                { service: 'Нотариат', retryable: false }
+            );
+        }
+        const response = await fetchWithTimeout(NOTARIAT_API_URL, {
+            method: 'POST',
+            credentials: 'omit',
+            cache: 'no-store',
+            headers: {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json;charset=UTF-8'
+            },
+            body: JSON.stringify({ name: fio, birth_date: birthDate, death_date: 'NULL' })
+        }, 'Нотариат');
+        const data = await readJsonResponse(response, 'Нотариат', 'поиск наследственного дела');
+        const rawRecords = Array.isArray(data.records)
+            ? data.records
+            : (Array.isArray(data.items) ? data.items : (Array.isArray(data.data) ? data.data : []));
+        const records = rawRecords.map(normalizeProbateRecord).filter(Boolean);
+        return {
+            status: records.length ? 'found' : 'not_found',
+            count: records.length,
+            records
+        };
+    }
+
+    function serializeError(error) {
+        return {
+            code: error && error.code ? error.code : 'UNEXPECTED_ERROR',
+            message: error && error.message ? error.message : String(error),
+            service: error && error.service ? error.service : '',
+            retryable: !(error && error.retryable === false),
+            details: error && error.details ? error.details : null
+        };
+    }
+
+    function notifyCaptcha() {
+        if (!chrome.notifications || typeof chrome.notifications.create !== 'function') return;
+        try {
+            const result = chrome.notifications.create('pyramid-identity-verification-captcha', {
+                type: 'basic',
+                iconUrl: chrome.runtime.getURL('icon.png'),
+                title: 'Проверка приостановлена: ФНС запросил капчу',
+                message: 'Повторный запрос будет выполнен автоматически через 30 секунд.',
+                priority: 2
+            });
+            if (result && typeof result.catch === 'function') result.catch(() => undefined);
+        } catch (error) {
+            // Уведомление в модальном окне всё равно будет показано content script.
+        }
+    }
+
+    chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+        if (!request || ![ACTION_LOOKUP_INN, ACTION_CHECK_INVALID_INN, ACTION_CHECK_PROBATE].includes(request.action)) {
+            return false;
+        }
+
+        let operation;
+        if (request.action === ACTION_LOOKUP_INN) operation = enqueueInnLookup(request.data || {});
+        else if (request.action === ACTION_CHECK_INVALID_INN) operation = checkInvalidInn(request.data || {});
+        else operation = checkProbate(request.data || {});
+
+        operation
+            .then((result) => sendResponse({ success: true, result }))
+            .catch((error) => {
+                if (error && error.code === 'CAPTCHA_REQUIRED') notifyCaptcha();
+                sendResponse({ success: false, error: serializeError(error) });
+            });
+        return true;
+    });
+})();

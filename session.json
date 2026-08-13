@@ -1,0 +1,9 @@
+SQL был применён через Supabase MCP успешно.
+
+Сначала я подтвердил, что функция `public.extension_apply_support_reminders_mutation` уже существует в базе с сигнатурой `p_device_id text, p_mutation_id text, p_base_revision bigint, p_operations jsonb`. Затем выполнил SQL из `supabase/migrations/20260602091500_support_reminder_message_target.sql` через `apply_migration`. Ошибок не было: `success: true`.
+
+Постпроверка:
+- в базе есть обе функции: `public.extension_apply_support_reminders_mutation(...)` и `public.extension_normalize_support_message_target(jsonb)`;
+- миграция зарегистрировалась в проекте как `support_reminder_message_target` с версией `20260602041349`.
+
+Локальные файлы не изменялись. Ошибка: отсутствует.
