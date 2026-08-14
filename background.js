@@ -448,6 +448,118 @@ function normalizeEpguRegistryScanRequest(data) {
     return { baseHost, checkDate, restoreDepid, restoreUrl, departments };
 }
 
+function normalizeEpguRequestsWeekLoadRequest(data, sourceTab) {
+    const raw = data && typeof data === 'object' ? data : {};
+    const baseHost = String(raw.baseHost || '').trim().toLowerCase();
+    const minDateKey = String(raw.minDateKey || '').trim();
+    const maxDateKey = String(raw.maxDateKey || '').trim();
+    let sourceHost = '';
+
+    try {
+        sourceHost = String(new URL(sourceTab && sourceTab.url || '').hostname || '').trim().toLowerCase();
+    } catch (error) {
+        sourceHost = '';
+    }
+
+    if (
+        !baseHost ||
+        baseHost !== sourceHost ||
+        !/^\d{2}-\d{2}-\d{4}$/.test(minDateKey) ||
+        !/^\d{2}-\d{2}-\d{4}$/.test(maxDateKey)
+    ) {
+        return null;
+    }
+
+    return { baseHost, minDateKey, maxDateKey };
+}
+
+async function collectEpguRequestsWeekRowsInTab(tabId, requestData) {
+    const result = await executeScriptInTabAsync(tabId, async (payload) => {
+        const normalizeText = (value) => String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
+        const toComparableDate = (value) => {
+            const match = normalizeText(value).match(/^(\d{2})-(\d{2})-(\d{4})/);
+            return match ? `${match[3]}${match[2]}${match[1]}` : '';
+        };
+        const minComparable = toComparableDate(payload.minDateKey);
+        const maxComparable = toComparableDate(payload.maxDateKey);
+        if (!minComparable || !maxComparable || minComparable > maxComparable) {
+            return { success: false, error: 'INVALID_DATE_RANGE' };
+        }
+        if (String(window.location.hostname || '').trim().toLowerCase() !== payload.baseHost) {
+            return { success: false, error: 'WRONG_BASE_HOST' };
+        }
+
+        const endpoint = new URL('/ovzid/epgurequests/data', window.location.origin);
+        const collectedRows = [];
+
+        try {
+            let totalPages = 1;
+            let totalRecords = 0;
+            for (let pageNo = 1; pageNo <= totalPages; pageNo += 1) {
+                const target = new URL(endpoint.toString());
+                const params = {
+                    _search: 'false',
+                    rows: 300,
+                    page: pageNo,
+                    sidx: 'DateAdd',
+                    sord: 'desc'
+                };
+                Object.entries(params).forEach(([key, value]) => target.searchParams.set(key, String(value)));
+                const response = await fetch(target.toString(), {
+                    method: 'GET',
+                    credentials: 'include',
+                    headers: { 'X-Requested-With': 'XMLHttpRequest' }
+                });
+                const responseText = await response.text();
+                if (!response.ok) throw new Error(`HTTP_${response.status}`);
+
+                let data = null;
+                try {
+                    data = JSON.parse(responseText);
+                } catch (error) {
+                    throw new Error('INVALID_JSON');
+                }
+
+                totalPages = Math.min(100, Math.max(1, Number(data && data.total || 1)));
+                totalRecords = Math.max(0, Number(data && data.records || 0));
+                const sourceRows = Array.isArray(data && data.rows) ? data.rows : [];
+                let oldestComparable = '';
+
+                sourceRows.forEach((item) => {
+                    const cell = item && item.cell && typeof item.cell === 'object' ? item.cell : {};
+                    const createDate = normalizeText(cell.CreateDate);
+                    const comparableDate = toComparableDate(createDate);
+                    if (!comparableDate) return;
+                    if (!oldestComparable || comparableDate < oldestComparable) oldestComparable = comparableDate;
+                    if (comparableDate < minComparable || comparableDate > maxComparable) return;
+                    collectedRows.push({
+                        id: normalizeText(cell.Id || (item && item.id)),
+                        orderId: normalizeText(cell.OrderId),
+                        claimant: normalizeText(cell.Claimant),
+                        statusName: normalizeText(cell.StatusName),
+                        message: normalizeText(cell.Message),
+                        createDate
+                    });
+                });
+
+                if (oldestComparable && oldestComparable < minComparable) break;
+            }
+
+            return { success: true, rows: collectedRows, totalRecords };
+        } catch (error) {
+            return {
+                success: false,
+                error: error && error.message ? error.message : 'FETCH_FAILED'
+            };
+        }
+    }, [requestData], { world: 'MAIN' });
+
+    if (!result || result.success !== true || !Array.isArray(result.rows)) {
+        throw new Error(result && result.error ? result.error : 'EPGU_REQUEST_ROWS_UNAVAILABLE');
+    }
+    return result;
+}
+
 function normalizeEpguRegistryConductRequest(data) {
     const raw = data && typeof data === 'object' ? data : {};
     const baseHost = String(raw.baseHost || '').trim().toLowerCase();
@@ -2388,6 +2500,36 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     sendResponse({
                         success: false,
                         error: error && error.message ? error.message : 'Не удалось прочитать параметры таблицы.'
+                    });
+                }
+            })();
+            return true;
+        }
+
+        case 'EPGU_REQUESTS_WEEK_LOAD': {
+            const sourceTab = sender && sender.tab ? sender.tab : null;
+            const loadRequest = normalizeEpguRequestsWeekLoadRequest(request && request.data, sourceTab);
+            if (!sourceTab || !Number.isInteger(sourceTab.id)) {
+                sendResponse({ success: false, error: 'Не удалось определить исходную вкладку.' });
+                return false;
+            }
+            if (!loadRequest) {
+                sendResponse({ success: false, error: 'Некорректные параметры загрузки сводки ЕПГУ.' });
+                return false;
+            }
+
+            (async () => {
+                try {
+                    const result = await collectEpguRequestsWeekRowsInTab(sourceTab.id, loadRequest);
+                    sendResponse({
+                        success: true,
+                        rows: result.rows,
+                        totalRecords: result.totalRecords
+                    });
+                } catch (error) {
+                    sendResponse({
+                        success: false,
+                        error: error && error.message ? error.message : 'Не удалось загрузить строки ЕПГУ.'
                     });
                 }
             })();

@@ -272,6 +272,7 @@
   const EPGU_REQUESTS_SUMMARY_REOPEN_STORAGE_KEY = 'dup_epgu_summary_reopen_once_v1';
   const EPGU_REGISTRY_CHECK_CACHE_STORAGE_KEY = 'dup_epgu_registry_check_cache_v1';
   const EPGU_REQUESTS_SUMMARY_REOPEN_TTL_MS = 2 * 60 * 1000;
+  const EPGU_REQUESTS_SUMMARY_DAYS_BACK = 7;
   const EPGU_REQUESTS_DATABASES = Object.freeze([
     { depid: '39', label: 'Курган', host: 'kgn.pyramid.vostok-electra.ru' },
     { depid: '66', label: 'Основная', host: 'pyramid.vostok-electra.ru' },
@@ -382,7 +383,7 @@
       key: 'epguSummaryTools',
       storageKey: 'dup_ui_show_epgu_summary_tools',
       label: 'Сводка и повторы ЕПГУ',
-      description: 'Сводка за сегодня, проверка реестров, переключение баз и повторные запросы.',
+      description: 'Сводка за выбранную дату, проверка реестров, переключение баз и повторные запросы.',
       hideClass: 'dup-ui-hide-epgu-summary-tools',
       hideCss: `
         html.dup-ui-hide-epgu-summary-tools #${EPGU_REQUESTS_SUMMARY_BUTTON_ID},
@@ -6337,6 +6338,13 @@
   let epguRegistryCheckNoticeIsError = false;
   let epguRegistryCheckCache = null;
   let epguRegistryCheckCachePromise = null;
+  let epguSummarySelectedDateKey = '';
+  let epguSummaryRowsByDate = new Map();
+  let epguSummaryRowsLoadPromise = null;
+  let epguSummaryRowsLoadHost = '';
+  let epguSummaryRowsLoadRangeKey = '';
+  let epguSummaryRowsLoadError = '';
+  let epguSummaryRowsLoaded = false;
 
   function clearEpguRequestsHighlights() {
     document.querySelectorAll(`.${EPGU_REQUESTS_DUPLICATE_CLASS}`).forEach((cell) => {
@@ -6420,6 +6428,137 @@
     const month = String(now.getMonth() + 1).padStart(2, '0');
     const year = String(now.getFullYear());
     return `${day}-${month}-${year}`;
+  }
+
+  function parseEpguDateKey(dateKey) {
+    const match = String(dateKey || '').trim().match(/^(\d{2})-(\d{2})-(\d{4})$/);
+    if (!match) return null;
+    const date = new Date(Number(match[3]), Number(match[2]) - 1, Number(match[1]), 12, 0, 0, 0);
+    if (
+      Number.isNaN(date.getTime()) ||
+      date.getFullYear() !== Number(match[3]) ||
+      date.getMonth() !== Number(match[2]) - 1 ||
+      date.getDate() !== Number(match[1])
+    ) {
+      return null;
+    }
+    return date;
+  }
+
+  function formatEpguDateToKey(date) {
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '';
+    const day = String(date.getDate()).padStart(2, '0');
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    return `${day}-${month}-${date.getFullYear()}`;
+  }
+
+  function shiftEpguDateKey(dateKey, dayDelta) {
+    const date = parseEpguDateKey(dateKey);
+    if (!date) return '';
+    date.setDate(date.getDate() + Number(dayDelta || 0));
+    return formatEpguDateToKey(date);
+  }
+
+  function getEpguSummaryDateRange() {
+    const maxDateKey = getEpguTodayDateKey();
+    return {
+      minDateKey: shiftEpguDateKey(maxDateKey, -EPGU_REQUESTS_SUMMARY_DAYS_BACK),
+      maxDateKey
+    };
+  }
+
+  function getEpguDateComparableKey(dateKey) {
+    const match = String(dateKey || '').trim().match(/^(\d{2})-(\d{2})-(\d{4})$/);
+    return match ? `${match[3]}${match[2]}${match[1]}` : '';
+  }
+
+  function normalizeEpguSummarySelectedDateKey(dateKey) {
+    const range = getEpguSummaryDateRange();
+    const candidate = getEpguDateComparableKey(dateKey);
+    const minimum = getEpguDateComparableKey(range.minDateKey);
+    const maximum = getEpguDateComparableKey(range.maxDateKey);
+    if (!candidate || candidate < minimum || candidate > maximum) return range.maxDateKey;
+    return String(dateKey || '').trim();
+  }
+
+  function getEpguSummarySelectedDateKey() {
+    epguSummarySelectedDateKey = normalizeEpguSummarySelectedDateKey(
+      epguSummarySelectedDateKey || getEpguTodayDateKey()
+    );
+    return epguSummarySelectedDateKey;
+  }
+
+  function formatEpguSummaryDateLabel(dateKey) {
+    const date = parseEpguDateKey(dateKey);
+    if (!date) return formatEpguDateKeyForDisplay(dateKey);
+    const weekday = new Intl.DateTimeFormat('ru-RU', { weekday: 'short' })
+      .format(date)
+      .replace('.', '');
+    const weekdayLabel = weekday ? `${weekday.charAt(0).toLocaleUpperCase('ru-RU')}${weekday.slice(1)}` : '';
+    return `${weekdayLabel} ${formatEpguDateKeyForDisplay(dateKey)}`.trim();
+  }
+
+  function getEpguSummaryRowsRangeKey() {
+    const range = getEpguSummaryDateRange();
+    return `${range.minDateKey}|${range.maxDateKey}`;
+  }
+
+  async function loadEpguSummaryRowsForCurrentBase() {
+    const baseHost = String(window.location.hostname || '').trim().toLowerCase();
+    const range = getEpguSummaryDateRange();
+    const rangeKey = getEpguSummaryRowsRangeKey();
+    if (
+      epguSummaryRowsLoaded &&
+      epguSummaryRowsLoadHost === baseHost &&
+      epguSummaryRowsLoadRangeKey === rangeKey
+    ) {
+      return epguSummaryRowsByDate;
+    }
+    if (epguSummaryRowsLoadPromise) return epguSummaryRowsLoadPromise;
+
+    epguSummaryRowsLoadHost = baseHost;
+    epguSummaryRowsLoadRangeKey = rangeKey;
+    epguSummaryRowsLoadError = '';
+    epguSummaryRowsLoaded = false;
+    epguSummaryRowsByDate = new Map();
+    epguSummaryRowsLoadPromise = (async () => {
+      const response = await sendRuntimeMessage({
+        action: 'EPGU_REQUESTS_WEEK_LOAD',
+        data: {
+          baseHost,
+          minDateKey: range.minDateKey,
+          maxDateKey: range.maxDateKey
+        }
+      });
+      if (!response || response.success !== true || !Array.isArray(response.rows)) {
+        throw new Error(response && response.error ? response.error : 'Не удалось получить строки журнала ЕПГУ.');
+      }
+
+      const rowsByDate = new Map();
+      response.rows.forEach((row) => {
+        const dateInfo = parseEpguCreateDateInfo(row && row.createDate);
+        const dateKey = dateInfo.dayKey;
+        if (!dateKey) return;
+        if (!rowsByDate.has(dateKey)) rowsByDate.set(dateKey, []);
+        rowsByDate.get(dateKey).push(row);
+      });
+      epguSummaryRowsByDate = rowsByDate;
+      epguSummaryRowsLoaded = true;
+      return rowsByDate;
+    })();
+
+    try {
+      return await epguSummaryRowsLoadPromise;
+    } catch (error) {
+      epguSummaryRowsLoadError = error && error.message
+        ? error.message
+        : 'Не удалось загрузить полную сводку ЕПГУ.';
+      epguSummaryRowsByDate = new Map();
+      epguSummaryRowsLoaded = false;
+      throw error;
+    } finally {
+      epguSummaryRowsLoadPromise = null;
+    }
   }
 
   function formatEpguDateKeyForDisplay(dateKey) {
@@ -6526,30 +6665,48 @@
     return match ? normalizeEpguRegistryText(match[1]) : '';
   }
 
-  function createEmptyEpguRegistryCheckCache(dateKey) {
-    return { dateKey: String(dateKey || ''), bases: {} };
+  function createEmptyEpguRegistryCheckCache() {
+    return { dates: {} };
+  }
+
+  function normalizeEpguRegistryCheckCache(raw) {
+    const normalized = createEmptyEpguRegistryCheckCache();
+    const range = getEpguSummaryDateRange();
+    const minimum = getEpguDateComparableKey(range.minDateKey);
+    const maximum = getEpguDateComparableKey(range.maxDateKey);
+    const rawDates = raw && typeof raw === 'object' && raw.dates && typeof raw.dates === 'object'
+      ? { ...raw.dates }
+      : {};
+
+    if (
+      raw && typeof raw === 'object' &&
+      /^\d{2}-\d{2}-\d{4}$/.test(String(raw.dateKey || '')) &&
+      raw.bases && typeof raw.bases === 'object' &&
+      !rawDates[raw.dateKey]
+    ) {
+      rawDates[raw.dateKey] = { bases: raw.bases };
+    }
+
+    Object.entries(rawDates).forEach(([dateKey, dayValue]) => {
+      const comparable = getEpguDateComparableKey(dateKey);
+      if (!comparable || comparable < minimum || comparable > maximum) return;
+      const bases = dayValue && typeof dayValue === 'object' && dayValue.bases && typeof dayValue.bases === 'object'
+        ? dayValue.bases
+        : {};
+      normalized.dates[dateKey] = { bases };
+    });
+    return normalized;
   }
 
   async function loadEpguRegistryCheckCache() {
-    const todayDateKey = getEpguTodayDateKey();
-    if (epguRegistryCheckCache && epguRegistryCheckCache.dateKey === todayDateKey) {
-      return epguRegistryCheckCache;
-    }
+    if (epguRegistryCheckCache) return epguRegistryCheckCache;
     if (epguRegistryCheckCachePromise) return epguRegistryCheckCachePromise;
 
     epguRegistryCheckCachePromise = (async () => {
       const stored = await chromeStorageGet([EPGU_REGISTRY_CHECK_CACHE_STORAGE_KEY]);
       const raw = stored && stored[EPGU_REGISTRY_CHECK_CACHE_STORAGE_KEY];
-      if (!raw || typeof raw !== 'object' || raw.dateKey !== todayDateKey) {
-        epguRegistryCheckCache = createEmptyEpguRegistryCheckCache(todayDateKey);
-        await chromeLocalStorageSet({ [EPGU_REGISTRY_CHECK_CACHE_STORAGE_KEY]: epguRegistryCheckCache });
-        return epguRegistryCheckCache;
-      }
-
-      epguRegistryCheckCache = {
-        dateKey: todayDateKey,
-        bases: raw.bases && typeof raw.bases === 'object' ? raw.bases : {}
-      };
+      epguRegistryCheckCache = normalizeEpguRegistryCheckCache(raw);
+      await chromeLocalStorageSet({ [EPGU_REGISTRY_CHECK_CACHE_STORAGE_KEY]: epguRegistryCheckCache });
       return epguRegistryCheckCache;
     })();
 
@@ -6560,22 +6717,27 @@
     }
   }
 
-  function getEpguRegistryCheckResultForCurrentBase() {
-    const todayDateKey = getEpguTodayDateKey();
-    if (!epguRegistryCheckCache || epguRegistryCheckCache.dateKey !== todayDateKey) return null;
+  function getEpguRegistryCheckResultForCurrentBase(dateKey = getEpguSummarySelectedDateKey()) {
+    const normalizedDateKey = normalizeEpguSummarySelectedDateKey(dateKey);
+    if (!epguRegistryCheckCache || !epguRegistryCheckCache.dates) return null;
     const host = normalizeDepartmentContainerHost(window.location.hostname);
-    const result = epguRegistryCheckCache.bases && epguRegistryCheckCache.bases[host];
+    const dayCache = epguRegistryCheckCache.dates[normalizedDateKey];
+    const result = dayCache && dayCache.bases && dayCache.bases[host];
     return result && typeof result === 'object' ? result : null;
   }
 
-  async function saveEpguRegistryCheckResultForCurrentBase(result) {
-    const todayDateKey = getEpguTodayDateKey();
+  async function saveEpguRegistryCheckResultForCurrentBase(result, dateKey = getEpguSummarySelectedDateKey()) {
+    const normalizedDateKey = normalizeEpguSummarySelectedDateKey(dateKey);
     const currentCache = await loadEpguRegistryCheckCache();
     const host = normalizeDepartmentContainerHost(window.location.hostname);
-    const nextCache = currentCache && currentCache.dateKey === todayDateKey
-      ? { dateKey: todayDateKey, bases: { ...(currentCache.bases || {}) } }
-      : createEmptyEpguRegistryCheckCache(todayDateKey);
-    nextCache.bases[host] = result;
+    const nextCache = normalizeEpguRegistryCheckCache(currentCache);
+    const currentDay = nextCache.dates[normalizedDateKey];
+    nextCache.dates[normalizedDateKey] = {
+      bases: {
+        ...(currentDay && currentDay.bases || {}),
+        [host]: result
+      }
+    };
     const saved = await chromeLocalStorageSet({ [EPGU_REGISTRY_CHECK_CACHE_STORAGE_KEY]: nextCache });
     if (saved) epguRegistryCheckCache = nextCache;
     return saved;
@@ -6834,7 +6996,7 @@
   }
 
   function resolveEpguRegistryConductTarget(registry) {
-    const scanContext = collectEpguRegistryScanContext();
+    const scanContext = collectEpguRegistryScanContext(getEpguSummarySelectedDateKey());
     if (!scanContext) return null;
 
     const visibleDepartments = new Map(
@@ -6879,8 +7041,8 @@
     return null;
   }
 
-  async function updateEpguRegistryStatusAfterConduct(registry, response) {
-    const cacheResult = getEpguRegistryCheckResultForCurrentBase();
+  async function updateEpguRegistryStatusAfterConduct(registry, response, dateKey) {
+    const cacheResult = getEpguRegistryCheckResultForCurrentBase(dateKey);
     const registries = cacheResult && Array.isArray(cacheResult.registries)
       ? cacheResult.registries
       : [];
@@ -6928,7 +7090,7 @@
       ])).sort((left, right) => left.localeCompare(right, 'ru'));
     }
     cacheResult.updatedAt = Date.now();
-    if (!await saveEpguRegistryCheckResultForCurrentBase(cacheResult)) {
+    if (!await saveEpguRegistryCheckResultForCurrentBase(cacheResult, dateKey)) {
       throw new Error('Не удалось сохранить новый статус реестра в браузере.');
     }
   }
@@ -6970,15 +7132,15 @@
       if (!response || response.success !== true) {
         throw new Error(response && response.error ? response.error : 'Не удалось провести реестр.');
       }
-      if (getEpguTodayDateKey() !== conductTarget.scanContext.checkDateKey) {
-        throw new Error('Во время проведения сменилась дата. Запустите проверку формирования ещё раз.');
+      if (getEpguSummarySelectedDateKey() !== conductTarget.scanContext.checkDateKey) {
+        throw new Error('Во время проведения изменилась выбранная дата. Запустите проверку формирования ещё раз.');
       }
 
       await updateEpguRegistryStatusAfterConduct(registry, {
         ...response,
         depid: conductTarget.department.depid,
         department: conductTarget.department.label
-      });
+      }, conductTarget.scanContext.checkDateKey);
       epguRegistryCheckNotice = `${response.message || `Реестр ${registryId} проведён`}. Новый статус: ${response.statusName}.`;
       epguRegistryCheckNoticeIsError = false;
     } catch (error) {
@@ -7099,27 +7261,19 @@
     return details;
   }
 
-  function collectEpguTodaySummaryItems() {
-    const rows = Array.from(document.querySelectorAll('#list tbody > tr.jqgrow'));
-    const todayDateKey = getEpguTodayDateKey();
+  function collectEpguSummaryItems(dateKey = getEpguSummarySelectedDateKey()) {
+    const selectedDateKey = normalizeEpguSummarySelectedDateKey(dateKey);
+    const rows = epguSummaryRowsByDate.get(selectedDateKey) || [];
     const groups = new Map();
 
     rows.forEach((row, rowIndex) => {
-      if (!(row instanceof HTMLElement)) return;
-
-      const claimantCell = row.querySelector('td[aria-describedby="list_Claimant"]');
-      const createDateCell = row.querySelector('td[aria-describedby="list_CreateDate"]');
-      const statusCell = row.querySelector('td[aria-describedby="list_StatusName"]');
-      const messageCell = row.querySelector('td[aria-describedby="list_Message"]');
-      if (!(claimantCell instanceof HTMLElement) || !(createDateCell instanceof HTMLElement)) return;
-
-      const claimantIdentity = parseEpguClaimantIdentity(getSmartValue(claimantCell));
+      const claimantIdentity = parseEpguClaimantIdentity(row && row.claimant);
       const claimantKey = claimantIdentity.claimantKey;
-      const dateInfo = parseEpguCreateDateInfo(getSmartValue(createDateCell));
-      if (!claimantKey || !claimantIdentity.claimantComparisonKey || dateInfo.dayKey !== todayDateKey) return;
+      const dateInfo = parseEpguCreateDateInfo(row && row.createDate);
+      if (!claimantKey || !claimantIdentity.claimantComparisonKey || dateInfo.dayKey !== selectedDateKey) return;
 
-      const statusText = statusCell instanceof HTMLElement ? getSmartValue(statusCell) : '';
-      const messageText = messageCell instanceof HTMLElement ? normalizeEpguRequestsCellText(getSmartValue(messageCell)) : '';
+      const statusText = normalizeEpguRequestsCellText(row && row.statusName);
+      const messageText = normalizeEpguRequestsCellText(row && row.message);
       const entry = {
         rowIndex,
         claimantKey,
@@ -7174,7 +7328,8 @@
     });
 
     return {
-      todayDateKey,
+      todayDateKey: selectedDateKey,
+      selectedDateKey,
       items
     };
   }
@@ -7641,6 +7796,7 @@
       await setEpguSummaryReopenPending({
         targetDepid: activeDatabase.depid,
         targetHost: activeDatabase.host,
+        selectedDateKey: getEpguSummarySelectedDateKey(),
         createdAt: Date.now()
       });
     }
@@ -7939,7 +8095,8 @@
 
   async function openEpguRetrySelectionModal() {
     if (!isEpguRequestsPage() || epguRetryBatchRunning) return;
-    const summary = collectEpguTodaySummaryItems();
+    if (getEpguSummarySelectedDateKey() !== getEpguTodayDateKey() || !epguSummaryRowsLoaded) return;
+    const summary = collectEpguSummaryItems();
     const targets = collectEpguRetryTargets(summary);
     if (!targets.length) return;
 
@@ -7987,7 +8144,7 @@
     )) || null;
   }
 
-  function collectEpguRegistryScanContext() {
+  function collectEpguRegistryScanContext(dateKey = getEpguSummarySelectedDateKey()) {
     const baseHost = normalizeDepartmentContainerHost(window.location.hostname);
     const entries = getDepartmentNavigationItems();
     const departments = [];
@@ -8021,13 +8178,14 @@
     });
 
     if (!restoreDepid || !restoreUrl || !departments.length) return null;
+    const normalizedDateKey = normalizeEpguSummarySelectedDateKey(dateKey);
     return {
       baseHost,
       restoreDepid,
       restoreUrl,
       departments,
-      checkDateKey: getEpguTodayDateKey(),
-      checkDate: getEpguTodayDateKey().replace(/-/g, '.')
+      checkDateKey: normalizedDateKey,
+      checkDate: normalizedDateKey.replace(/-/g, '.')
     };
   }
 
@@ -8086,20 +8244,45 @@
     }
   }
 
+  function renderEpguSummaryDateNavigator(modal) {
+    if (!(modal instanceof HTMLElement)) return;
+    const label = modal.querySelector('.dup-epgu-summary-date-label');
+    const previousButton = modal.querySelector('.dup-epgu-summary-date-button.is-previous');
+    const nextButton = modal.querySelector('.dup-epgu-summary-date-button.is-next');
+    const selectedDateKey = getEpguSummarySelectedDateKey();
+    const range = getEpguSummaryDateRange();
+    const operationBusy = epguRegistryCheckRunning ||
+      !!epguRegistryConductingKey ||
+      !!epguSummaryRowsLoadPromise ||
+      modal.dataset.databaseSwitching === 'true';
+
+    if (label instanceof HTMLElement) {
+      label.textContent = formatEpguSummaryDateLabel(selectedDateKey);
+      label.setAttribute('datetime', selectedDateKey.split('-').reverse().join('-'));
+    }
+    if (previousButton instanceof HTMLButtonElement) {
+      previousButton.disabled = operationBusy || selectedDateKey === range.minDateKey;
+    }
+    if (nextButton instanceof HTMLButtonElement) {
+      nextButton.disabled = operationBusy || selectedDateKey === range.maxDateKey;
+    }
+  }
+
   function renderEpguRegistryCheckControls(modal) {
     if (!(modal instanceof HTMLElement)) return;
     const status = modal.querySelector('.dup-epgu-registry-check-status');
     const scanButton = modal.querySelector('.dup-epgu-registry-check-button');
     const retryButton = modal.querySelector('.dup-epgu-summary-retry-button');
     const closeButton = modal.querySelector('.dup-execution-analysis-modal-close');
-    const cacheResult = getEpguRegistryCheckResultForCurrentBase();
+    const selectedDateKey = getEpguSummarySelectedDateKey();
+    const cacheResult = getEpguRegistryCheckResultForCurrentBase(selectedDateKey);
     const operationBusy = epguRegistryCheckRunning || !!epguRegistryConductingKey;
 
     modal.dataset.registryScanning = epguRegistryCheckRunning ? 'true' : 'false';
     modal.dataset.registryConducting = epguRegistryConductingKey ? 'true' : 'false';
     modal.setAttribute('aria-busy', operationBusy ? 'true' : 'false');
     if (scanButton instanceof HTMLButtonElement) {
-      scanButton.disabled = operationBusy || modal.dataset.databaseSwitching === 'true';
+      scanButton.disabled = operationBusy || modal.dataset.databaseSwitching === 'true' || !epguSummaryRowsLoaded;
       if (epguRegistryCheckRunning && epguRegistryCheckProgress) {
         const current = Math.max(0, Number(epguRegistryCheckProgress.current) || 0);
         const total = Math.max(0, Number(epguRegistryCheckProgress.total) || 0);
@@ -8114,6 +8297,9 @@
     if (closeButton instanceof HTMLButtonElement) closeButton.disabled = operationBusy;
 
     modal.querySelectorAll('.dup-epgu-database-button').forEach((button) => {
+      if (button instanceof HTMLButtonElement && operationBusy) button.disabled = true;
+    });
+    modal.querySelectorAll('.dup-epgu-summary-date-button').forEach((button) => {
       if (button instanceof HTMLButtonElement && operationBusy) button.disabled = true;
     });
     modal.querySelectorAll('.dup-epgu-registry-conduct-button').forEach((button) => {
@@ -8139,11 +8325,11 @@
       const checkedAt = Number(cacheResult.checkedAt || 0);
       const checkedLabel = checkedAt
         ? new Date(checkedAt).toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' })
-        : 'сегодня';
+        : formatEpguDateKeyForDisplay(selectedDateKey);
       status.textContent = `Реестры проверены ${checkedLabel}. Департаментов: ${Number(cacheResult.departmentCount || 0)}.`;
       return;
     }
-    status.textContent = 'Реестры за сегодня ещё не проверялись.';
+    status.textContent = `Реестры за ${formatEpguDateKeyForDisplay(selectedDateKey)} ещё не проверялись.`;
   }
 
   async function startEpguRegistryCheck(modal) {
@@ -8155,8 +8341,9 @@
       renderEpguRegistryCheckControls(modal);
       return;
     }
-    const previousResult = getEpguRegistryCheckResultForCurrentBase();
-    const currentSummary = collectEpguTodaySummaryItems();
+    if (!epguSummaryRowsLoaded) return;
+    const previousResult = getEpguRegistryCheckResultForCurrentBase(scanContext.checkDateKey);
+    const currentSummary = collectEpguSummaryItems(scanContext.checkDateKey);
     const departmentsToCheck = getEpguRegistryDepartmentsForRecheck(
       scanContext,
       previousResult,
@@ -8194,8 +8381,8 @@
       if (!response || response.success !== true || !Array.isArray(response.rows)) {
         throw new Error(response && response.error ? response.error : 'Проверка реестров не завершена.');
       }
-      if (getEpguTodayDateKey() !== scanContext.checkDateKey) {
-        throw new Error('Во время проверки сменилась дата. Запустите проверку ещё раз.');
+      if (getEpguSummarySelectedDateKey() !== scanContext.checkDateKey) {
+        throw new Error('Во время проверки изменилась выбранная дата. Запустите проверку ещё раз.');
       }
 
       const cacheResult = mergeEpguRegistryScanRows(
@@ -8204,7 +8391,7 @@
         departmentsToCheck.map((department) => department.depid),
         scanContext.departments.length
       );
-      const saved = await saveEpguRegistryCheckResultForCurrentBase(cacheResult);
+      const saved = await saveEpguRegistryCheckResultForCurrentBase(cacheResult, scanContext.checkDateKey);
       if (!saved) throw new Error('Не удалось сохранить результат проверки в браузере.');
     } catch (error) {
       epguRegistryCheckNotice = error && error.message
@@ -8275,6 +8462,7 @@
     const markerSaved = await setEpguSummaryReopenPending({
       targetDepid: database.depid,
       targetHost,
+      selectedDateKey: getEpguSummarySelectedDateKey(),
       createdAt: Date.now()
     });
     if (!markerSaved) {
@@ -8324,6 +8512,7 @@
       const pending = stored && stored[EPGU_REQUESTS_SUMMARY_REOPEN_STORAGE_KEY];
       const targetDepid = String(pending && pending.targetDepid || '').trim();
       const targetHost = normalizeDepartmentContainerHost(pending && pending.targetHost);
+      const selectedDateKey = normalizeEpguSummarySelectedDateKey(pending && pending.selectedDateKey);
       const createdAt = Number(pending && pending.createdAt || 0);
       const expiresAt = createdAt + EPGU_REQUESTS_SUMMARY_REOPEN_TTL_MS;
       if (!getEpguDatabaseConfig(targetDepid) || !targetHost || !createdAt || Date.now() > expiresAt) {
@@ -8353,7 +8542,7 @@
         ) {
           void clearEpguSummaryReopenPending().then(() => {
             if (isEpguRequestsPage() && normalizeDepartmentContainerHost(window.location.hostname) === targetHost) {
-              openEpguSummaryModal();
+              openEpguSummaryModal({ selectedDateKey });
             }
           });
           return;
@@ -8370,36 +8559,74 @@
     if (!(modal instanceof HTMLElement)) return;
 
     renderEpguDatabaseSwitcher(modal);
+    renderEpguSummaryDateNavigator(modal);
     const meta = modal.querySelector('.dup-epgu-summary-meta');
     const list = modal.querySelector('.dup-epgu-summary-list');
     const retryButton = modal.querySelector('.dup-epgu-summary-retry-button');
     const retryHint = modal.querySelector('.dup-epgu-summary-retry-hint');
     if (!(meta instanceof HTMLElement) || !(list instanceof HTMLElement)) return;
 
-    const summary = collectEpguTodaySummaryItems();
-    const retryTargets = collectEpguRetryTargets(summary);
-    const registryCheckResult = getEpguRegistryCheckResultForCurrentBase();
-    const displayDate = formatEpguDateKeyForDisplay(summary.todayDateKey);
-    meta.textContent = summary.items.length
-      ? `Текущая страница. За ${displayDate}. Уникальных взыскателей: ${summary.items.length}.`
-      : `На текущей странице нет запросов за ${displayDate}.`;
-    if (retryButton instanceof HTMLButtonElement) {
-      retryButton.disabled = retryTargets.length < 1 || epguRetryBatchRunning;
-      retryButton.textContent = retryTargets.length
-        ? `Отправить запросы по неуспешным (${retryTargets.length})`
-        : 'Все взыскатели успешны';
-    }
-    if (retryHint instanceof HTMLElement) {
-      retryHint.textContent = retryTargets.length
-        ? 'Перед запуском можно исключить отдельных взыскателей. Выбор сохранится.'
-        : 'За сегодня нет взыскателей, которым нужен повторный запрос.';
+    const selectedDateKey = getEpguSummarySelectedDateKey();
+    const isTodaySelected = selectedDateKey === getEpguTodayDateKey();
+    const displayDate = formatEpguDateKeyForDisplay(selectedDateKey);
+    list.textContent = '';
+
+    if (epguSummaryRowsLoadPromise || (!epguSummaryRowsLoaded && !epguSummaryRowsLoadError)) {
+      meta.textContent = `Загружаем полную сводку за период до ${displayDate}…`;
+      const loading = document.createElement('div');
+      loading.className = 'dup-epgu-summary-empty';
+      loading.textContent = 'Получаем строки журнала ЕПГУ без изменения видимого грида.';
+      list.appendChild(loading);
+      if (retryButton instanceof HTMLButtonElement) {
+        retryButton.disabled = true;
+        retryButton.textContent = 'Загрузка сводки…';
+      }
+      if (retryHint instanceof HTMLElement) retryHint.textContent = '';
+      renderEpguRegistryCheckControls(modal);
+      return;
     }
 
-    list.textContent = '';
+    if (epguSummaryRowsLoadError) {
+      meta.textContent = 'Не удалось загрузить полную сводку ЕПГУ.';
+      const error = document.createElement('div');
+      error.className = 'dup-epgu-summary-empty is-error';
+      error.textContent = epguSummaryRowsLoadError;
+      list.appendChild(error);
+      if (retryButton instanceof HTMLButtonElement) {
+        retryButton.disabled = true;
+        retryButton.textContent = 'Сводка недоступна';
+      }
+      if (retryHint instanceof HTMLElement) retryHint.textContent = 'Закройте и повторно откройте окно, чтобы повторить загрузку.';
+      renderEpguRegistryCheckControls(modal);
+      return;
+    }
+
+    const summary = collectEpguSummaryItems(selectedDateKey);
+    const retryTargets = collectEpguRetryTargets(summary);
+    const registryCheckResult = getEpguRegistryCheckResultForCurrentBase(selectedDateKey);
+    meta.textContent = summary.items.length
+      ? `За ${displayDate}. Уникальных взыскателей: ${summary.items.length}.`
+      : `За ${displayDate} запросов не найдено.`;
+    if (retryButton instanceof HTMLButtonElement) {
+      retryButton.disabled = !isTodaySelected || retryTargets.length < 1 || epguRetryBatchRunning;
+      retryButton.textContent = !isTodaySelected
+        ? 'Повторные запросы — только сегодня'
+        : retryTargets.length
+          ? `Отправить запросы по неуспешным (${retryTargets.length})`
+          : 'Все взыскатели успешны';
+    }
+    if (retryHint instanceof HTMLElement) {
+      retryHint.textContent = !isTodaySelected
+        ? 'Для прошлой даты доступен просмотр и проверка реестров. Новые запросы можно отправить только по сегодняшней сводке.'
+        : retryTargets.length
+          ? 'Перед запуском можно исключить отдельных взыскателей. Выбор сохранится.'
+          : 'За сегодня нет взыскателей, которым нужен повторный запрос.';
+    }
+
     if (!summary.items.length) {
       const empty = document.createElement('div');
       empty.className = 'dup-epgu-summary-empty';
-      empty.textContent = 'За сегодня на текущей странице записей не найдено.';
+      empty.textContent = `За ${displayDate} записей не найдено.`;
       list.appendChild(empty);
       renderEpguRegistryCheckControls(modal);
       return;
@@ -8411,7 +8638,7 @@
       row.title = [
         item.claimantKey,
         `Лучший статус за ${displayDate}: ${item.bestEntry.statusMeta.label}`,
-        `Запросов за сегодня на странице: ${item.count}`,
+        `Запросов за ${displayDate}: ${item.count}`,
         item.bestEntry.dateInfo.rawText ? `Последний учтенный запрос: ${item.bestEntry.dateInfo.rawText}` : '',
         item.bestEntry.messageText ? `Сообщение: ${item.bestEntry.messageText}` : ''
       ].filter(Boolean).join('\n');
@@ -8508,7 +8735,7 @@
     modal.className = 'dup-execution-analysis-modal dup-epgu-summary-modal';
     modal.hidden = true;
     modal.innerHTML = `
-      <div class="dup-execution-analysis-modal-panel dup-epgu-summary-panel" role="dialog" aria-modal="true" aria-label="Сводка ЕПГУ за сегодня">
+      <div class="dup-execution-analysis-modal-panel dup-epgu-summary-panel" role="dialog" aria-modal="true" aria-label="Сводка ЕПГУ по выбранной дате">
         <div class="dup-execution-analysis-modal-header">
           <div class="dup-execution-analysis-modal-title">Сводка ЕПГУ</div>
           <button type="button" class="dup-execution-analysis-modal-close" aria-label="Закрыть">×</button>
@@ -8521,6 +8748,11 @@
             <button type="button" class="dup-epgu-database-button" data-depid="70">ЮРИЦ</button>
           </div>
           <div class="dup-epgu-database-status" aria-live="polite" hidden></div>
+        </div>
+        <div class="dup-epgu-summary-date-nav" role="group" aria-label="Выбор даты сводки ЕПГУ">
+          <button type="button" class="dup-epgu-summary-date-button is-previous" data-day-delta="-1" aria-label="Предыдущая дата">‹</button>
+          <time class="dup-epgu-summary-date-label"></time>
+          <button type="button" class="dup-epgu-summary-date-button is-next" data-day-delta="1" aria-label="Следующая дата">›</button>
         </div>
         <div class="dup-epgu-summary-meta"></div>
         <div class="dup-epgu-summary-list" role="list"></div>
@@ -8549,6 +8781,21 @@
     modal.querySelector('.dup-epgu-registry-check-button')?.addEventListener('click', () => {
       void startEpguRegistryCheck(modal);
     }, { capture: true });
+    modal.querySelector('.dup-epgu-summary-date-nav')?.addEventListener('click', (event) => {
+      const button = event.target instanceof Element
+        ? event.target.closest('.dup-epgu-summary-date-button')
+        : null;
+      if (!(button instanceof HTMLButtonElement) || button.disabled) return;
+      const dayDelta = Number(button.dataset.dayDelta || 0);
+      const nextDateKey = normalizeEpguSummarySelectedDateKey(
+        shiftEpguDateKey(getEpguSummarySelectedDateKey(), dayDelta)
+      );
+      if (!nextDateKey || nextDateKey === getEpguSummarySelectedDateKey()) return;
+      epguSummarySelectedDateKey = nextDateKey;
+      epguRegistryCheckNotice = '';
+      epguRegistryCheckNoticeIsError = false;
+      renderEpguSummaryModal(modal);
+    }, { capture: true });
     modal.querySelector('.dup-epgu-database-switcher')?.addEventListener('click', (event) => {
       const button = event.target instanceof Element
         ? event.target.closest('.dup-epgu-database-button')
@@ -8562,12 +8809,22 @@
     return modal;
   }
 
-  function openEpguSummaryModal() {
+  function openEpguSummaryModal(options = {}) {
     if (!isEpguRequestsPage()) return;
+    epguSummarySelectedDateKey = normalizeEpguSummarySelectedDateKey(
+      options && options.selectedDateKey ? options.selectedDateKey : getEpguTodayDateKey()
+    );
+    epguRegistryCheckNotice = '';
+    epguRegistryCheckNoticeIsError = false;
     const modal = createEpguSummaryModal();
+    const registryCachePromise = loadEpguRegistryCheckCache();
+    const summaryRowsPromise = loadEpguSummaryRowsForCurrentBase();
     renderEpguSummaryModal(modal);
     modal.hidden = false;
-    void loadEpguRegistryCheckCache().then(() => {
+    void Promise.allSettled([
+      registryCachePromise,
+      summaryRowsPromise
+    ]).then(() => {
       if (modal.isConnected && !modal.hidden && !epguRegistryCheckRunning) {
         renderEpguSummaryModal(modal);
       }
@@ -8589,7 +8846,7 @@
     button.className = 'btn btn-xs ui-pg-button';
     button.tabIndex = 0;
     button.setAttribute('role', 'button');
-    button.setAttribute('title', 'Сводка взыскателей за сегодня');
+    button.setAttribute('title', 'Сводка взыскателей по выбранной дате');
     button.innerHTML = `
       <div class="ui-pg-div">
         <span class="fa fa-lg fa-fw fa-list-alt"></span>

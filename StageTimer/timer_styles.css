@@ -602,6 +602,50 @@ body:has(.open > .dropdown-menu) #pyramid-stage-timer-abort {
     font-weight: 700;
 }
 
+.dup-epgu-summary-date-nav {
+    display: grid;
+    grid-template-columns: 34px minmax(160px, auto) 34px;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+}
+
+.dup-epgu-summary-date-button {
+    width: 34px !important;
+    min-width: 34px !important;
+    height: 32px !important;
+    padding: 0 !important;
+    border: 1px solid rgba(39, 64, 79, 0.24) !important;
+    border-radius: 6px !important;
+    background: #f8faf9 !important;
+    color: #176b5b !important;
+    font-size: 24px !important;
+    font-weight: 700 !important;
+    line-height: 1 !important;
+    box-shadow: none !important;
+}
+
+.dup-epgu-summary-date-button:hover:not(:disabled),
+.dup-epgu-summary-date-button:focus-visible:not(:disabled) {
+    border-color: #176b5b !important;
+    background: #eef6f3 !important;
+}
+
+.dup-epgu-summary-date-button:disabled {
+    opacity: 0.38;
+    cursor: default;
+}
+
+.dup-epgu-summary-date-label {
+    min-width: 160px;
+    color: #243943;
+    font-size: 15px;
+    font-weight: 800;
+    line-height: 32px;
+    text-align: center;
+    white-space: nowrap;
+}
+
 .dup-epgu-summary-meta {
     font-size: 12px;
     line-height: 1.35;
@@ -869,6 +913,13 @@ body:has(.open > .dropdown-menu) #pyramid-stage-timer-abort {
     color: #51656f;
     font-size: 12px;
     line-height: 1.4;
+}
+
+.dup-epgu-summary-empty.is-error {
+    border-color: rgba(161, 47, 47, 0.35);
+    background: #fff7f7;
+    color: #a12f2f;
+    font-weight: 700;
 }
 
 .dup-epgu-summary-actions {
