@@ -527,6 +527,18 @@
       `
     },
     {
+      key: 'callCenterRegistrySearch',
+      storageKey: 'dup_ui_show_call_center_registry_search',
+      label: 'Поиск в реестрах взыскания',
+      description: 'Кнопка поиска абонентов в реестрах колл-центра и окно результатов.',
+      hideClass: 'dup-ui-hide-call-center-registry-search',
+      hideCss: `
+        html.dup-ui-hide-call-center-registry-search .dup-call-center-registry-search-ui {
+          display: none !important;
+        }
+      `
+    },
+    {
       key: 'identityVerificationTools',
       storageKey: 'dup_ui_show_identity_verification_tools',
       label: 'Проверка паспорта / ИНН / смерти',

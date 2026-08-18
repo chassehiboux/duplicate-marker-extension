@@ -49,6 +49,8 @@
             fsspGroupingToggle: null,
             // Кнопка и окно пакетного поиска должников в реестрах ФССП.
             fsspRegistrySearch: null,
+            // Кнопка и окно поиска абонентов в реестрах взыскания колл-центра.
+            callCenterRegistrySearch: null,
             // Команда StageJump и окно перекрёстной проверки паспорта, ИНН и даты смерти.
             identityVerificationTools: null,
             // Быстрые и массовые действия с чатами на chatgpt.com.

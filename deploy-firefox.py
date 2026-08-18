@@ -56,6 +56,9 @@ DIR_FILES = {
     'FsspRegistrySearch': [
         'fssp_registry_search.js',
     ],
+    'CallCenterRegistrySearch': [
+        'call_center_registry_search.js',
+    ],
     'PyramidNewYear': [
         'pyramid_christmas.css',
         'pyramid_christmas.js',
