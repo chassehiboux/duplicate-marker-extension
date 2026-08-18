@@ -12111,6 +12111,52 @@
     return rect.width > 0 && rect.height > 0;
   }
 
+  function initGridLinksOpenInNewTabs() {
+    const gridLinkSelector = [
+      '[role="grid"] [role="row"] [role="gridcell"] a[href]',
+      'table.ui-jqgrid-btable tbody tr.jqgrow td[role="gridcell"] a[href]'
+    ].join(', ');
+
+    const prepareGridLink = (anchor) => {
+      if (!(anchor instanceof HTMLAnchorElement)) return;
+
+      let targetUrl;
+      try {
+        targetUrl = new URL(anchor.href, window.location.href);
+      } catch (_) {
+        return;
+      }
+      if (targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:') return;
+
+      anchor.target = '_blank';
+      const relTokens = new Set(String(anchor.rel || '').split(/\s+/).filter(Boolean));
+      relTokens.add('noopener');
+      anchor.rel = Array.from(relTokens).join(' ');
+    };
+
+    const prepareGridLinks = (root) => {
+      if (!(root instanceof Element) && !(root instanceof Document)) return;
+      if (root instanceof Element && root.matches(gridLinkSelector)) {
+        prepareGridLink(root);
+      }
+      root.querySelectorAll(gridLinkSelector).forEach(prepareGridLink);
+    };
+
+    prepareGridLinks(document);
+
+    const observer = new MutationObserver((mutations) => {
+      mutations.forEach((mutation) => {
+        mutation.addedNodes.forEach((node) => prepareGridLinks(node));
+      });
+    });
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+
+    document.addEventListener('click', (event) => {
+      if (event.button !== 0 || !(event.target instanceof Element)) return;
+      prepareGridLink(event.target.closest(gridLinkSelector));
+    }, true);
+  }
+
   // --- Подсветка строк/колонок в Google Sheets (без изменений) ---
   if (window.location.hostname === 'docs.google.com' && window.location.pathname.includes('/spreadsheets/')) {
     // ... (код без изменений)
@@ -12129,6 +12175,7 @@
   initDepartmentDropdownFilter();
   initStageJumpButtons();
   initSlowsearchJumpButtons();
+  initGridLinksOpenInNewTabs();
   init();
 
   // --- Логика модального окна для подтверждения действий ---
