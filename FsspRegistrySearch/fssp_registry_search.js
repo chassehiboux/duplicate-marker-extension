@@ -61,15 +61,16 @@
                 z-index: 2147483500;
                 display: grid;
                 place-items: center;
-                padding: 24px;
+                padding: 8px;
                 background: rgba(17, 31, 27, .58);
                 backdrop-filter: blur(2px);
                 font-family: "Segoe UI", Tahoma, sans-serif;
                 color: var(--fssp-search-ink);
             }
             #${MODAL_ID} .dup-fssp-registry-search-dialog {
-                width: min(1120px, calc(100vw - 36px));
-                max-height: min(780px, calc(100vh - 36px));
+                width: min(1120px, calc(100vw - 16px));
+                height: calc(100vh - 16px);
+                max-height: none;
                 display: flex;
                 flex-direction: column;
                 overflow: hidden;
@@ -123,15 +124,49 @@
             }
             #${MODAL_ID} .dup-fssp-registry-search-body {
                 flex: 1 1 auto;
-                min-height: 210px;
-                overflow: auto;
-                padding: 16px 20px 10px;
+                min-height: 0;
+                display: flex;
+                flex-direction: column;
+                overflow: hidden;
+                padding: 14px 20px 16px;
             }
             #${MODAL_ID} .dup-fssp-registry-search-table-wrap {
                 overflow: auto;
                 border: 1px solid var(--fssp-search-line);
                 border-radius: 6px;
                 background: #fff;
+            }
+            #${MODAL_ID} .dup-fssp-registry-search-input-wrap {
+                flex: 0 1 auto;
+                max-height: 220px;
+            }
+            #${MODAL_ID} .dup-fssp-registry-search-results {
+                flex: 1 1 auto;
+                min-height: 180px;
+                display: flex;
+                flex-direction: column;
+                margin-top: 12px;
+            }
+            #${MODAL_ID} .dup-fssp-registry-search-results-heading {
+                display: flex;
+                align-items: baseline;
+                justify-content: space-between;
+                gap: 12px;
+                margin: 0 2px 7px;
+            }
+            #${MODAL_ID} .dup-fssp-registry-search-results-title {
+                color: #29453b;
+                font-family: Georgia, "Times New Roman", serif;
+                font-size: 16px;
+                font-weight: 700;
+            }
+            #${MODAL_ID} .dup-fssp-registry-search-results-count {
+                color: var(--fssp-search-muted);
+                font-size: 12px;
+            }
+            #${MODAL_ID} .dup-fssp-registry-search-results-wrap {
+                flex: 1 1 auto;
+                min-height: 0;
             }
             #${MODAL_ID} table {
                 width: 100%;
@@ -156,8 +191,8 @@
             }
             #${MODAL_ID} th:first-child,
             #${MODAL_ID} td:first-child { width: 42px; text-align: center; }
-            #${MODAL_ID} th:last-child,
-            #${MODAL_ID} td:last-child { width: 190px; }
+            #${MODAL_ID} .dup-fssp-registry-search-results-table th:last-child,
+            #${MODAL_ID} .dup-fssp-registry-search-results-table td:last-child { width: 150px; }
             #${MODAL_ID} td {
                 padding: 7px 8px;
                 border-bottom: 1px solid #e2eae7;
@@ -193,13 +228,6 @@
                 outline: none;
             }
             #${MODAL_ID} input[readonly] { background: #f5f8f6; color: #485a54; }
-            #${MODAL_ID} .dup-fssp-registry-search-links {
-                display: flex;
-                flex-wrap: wrap;
-                gap: 5px;
-                min-height: 31px;
-                align-items: center;
-            }
             #${MODAL_ID} .dup-fssp-registry-search-link {
                 display: inline-flex;
                 align-items: center;
@@ -223,6 +251,17 @@
             #${MODAL_ID} .dup-fssp-registry-search-empty {
                 color: #84918d;
                 font-size: 12px;
+            }
+            #${MODAL_ID} .dup-fssp-registry-search-results-empty td {
+                padding: 24px 16px;
+                color: #75857f;
+                text-align: center;
+            }
+            #${MODAL_ID} .dup-fssp-registry-search-result-value {
+                overflow-wrap: anywhere;
+                color: #344b43;
+                font-size: 12px;
+                line-height: 1.35;
             }
             #${MODAL_ID} .dup-fssp-registry-search-progress[hidden] { display: none; }
             #${MODAL_ID} .dup-fssp-registry-search-progress { margin-top: 14px; }
@@ -262,9 +301,10 @@
                 align-items: center;
                 justify-content: flex-end;
                 gap: 9px;
-                padding: 12px 20px 16px;
-                border-top: 1px solid var(--fssp-search-line);
-                background: #f1f6f3;
+                flex: 0 0 auto;
+                padding: 10px 0;
+                border-bottom: 1px solid var(--fssp-search-line);
+                background: transparent;
             }
             #${MODAL_ID} .dup-fssp-registry-search-action {
                 min-height: 34px;
@@ -312,11 +352,10 @@
                 #${MODAL_ID} { padding: 8px; }
                 #${MODAL_ID} .dup-fssp-registry-search-dialog {
                     width: calc(100vw - 16px);
-                    max-height: calc(100vh - 16px);
+                    height: calc(100vh - 16px);
                 }
                 #${MODAL_ID} .dup-fssp-registry-search-header,
-                #${MODAL_ID} .dup-fssp-registry-search-body,
-                #${MODAL_ID} .dup-fssp-registry-search-footer { padding-left: 12px; padding-right: 12px; }
+                #${MODAL_ID} .dup-fssp-registry-search-body { padding-left: 12px; padding-right: 12px; }
             }
             @media (prefers-reduced-motion: reduce) {
                 #${MODAL_ID} .dup-fssp-registry-search-progress-bar { transition: none; }
@@ -380,10 +419,6 @@
         indexCell.className = 'dup-fssp-registry-search-index';
         row.appendChild(indexCell);
         FIELD_DEFINITIONS.forEach((field) => row.appendChild(createInputCell(field)));
-        const resultCell = document.createElement('td');
-        resultCell.className = 'dup-fssp-registry-search-links';
-        resultCell.innerHTML = '<span class="dup-fssp-registry-search-empty">—</span>';
-        row.appendChild(resultCell);
         row.addEventListener('input', () => {
             const rows = Array.from(tbody.querySelectorAll(`tr.${ROW_CLASS}`));
             if (rows[rows.length - 1] !== row) return;
@@ -419,11 +454,16 @@
                     <button type="button" class="dup-fssp-registry-search-close" aria-label="Закрыть окно">×</button>
                 </header>
                 <div class="dup-fssp-registry-search-body">
-                    <div class="dup-fssp-registry-search-table-wrap">
-                        <table>
-                            <thead><tr><th>№</th><th>Номер ИП</th><th>ФИО</th><th>Д.р. должника</th><th>Номер ИД</th><th>ID реестра</th></tr></thead>
+                    <div class="dup-fssp-registry-search-table-wrap dup-fssp-registry-search-input-wrap">
+                        <table class="dup-fssp-registry-search-input-table">
+                            <thead><tr><th>№</th><th>Номер ИП</th><th>ФИО</th><th>Д.р. должника</th><th>Номер ИД</th></tr></thead>
                             <tbody></tbody>
                         </table>
+                    </div>
+                    <div class="dup-fssp-registry-search-footer">
+                        <button type="button" class="dup-fssp-registry-search-action dup-fssp-registry-search-cancel">Закрыть</button>
+                        <button type="button" class="dup-fssp-registry-search-action dup-fssp-registry-search-stop" aria-pressed="false" hidden>Стоп</button>
+                        <button type="button" class="dup-fssp-registry-search-action dup-fssp-registry-search-action-primary dup-fssp-registry-search-submit">Поиск</button>
                     </div>
                     <div class="dup-fssp-registry-search-progress" hidden>
                         <div class="dup-fssp-registry-search-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
@@ -432,17 +472,25 @@
                         <div class="dup-fssp-registry-search-progress-copy"><span class="dup-fssp-registry-search-progress-label">Подготовка…</span><span class="dup-fssp-registry-search-progress-count"></span></div>
                     </div>
                     <div class="dup-fssp-registry-search-notice" role="status" aria-live="polite"></div>
+                    <section class="dup-fssp-registry-search-results" aria-labelledby="dup-fssp-registry-search-results-title">
+                        <div class="dup-fssp-registry-search-results-heading">
+                            <div id="dup-fssp-registry-search-results-title" class="dup-fssp-registry-search-results-title">Результаты поиска</div>
+                            <div class="dup-fssp-registry-search-results-count">Совпадений: 0</div>
+                        </div>
+                        <div class="dup-fssp-registry-search-table-wrap dup-fssp-registry-search-results-wrap">
+                            <table class="dup-fssp-registry-search-results-table">
+                                <thead><tr><th>№</th><th>Номер ИП</th><th>ФИО</th><th>Д.р. должника</th><th>Номер ИД</th><th>ID реестра</th></tr></thead>
+                                <tbody aria-live="polite" aria-relevant="additions text"></tbody>
+                            </table>
+                        </div>
+                    </section>
                 </div>
-                <footer class="dup-fssp-registry-search-footer">
-                    <button type="button" class="dup-fssp-registry-search-action dup-fssp-registry-search-cancel">Закрыть</button>
-                    <button type="button" class="dup-fssp-registry-search-action dup-fssp-registry-search-stop" aria-pressed="false" hidden>Стоп</button>
-                    <button type="button" class="dup-fssp-registry-search-action dup-fssp-registry-search-action-primary dup-fssp-registry-search-submit">Поиск</button>
-                </footer>
             </section>
         `;
         (document.body || document.documentElement).appendChild(modal);
-        const tbody = modal.querySelector('tbody');
+        const tbody = modal.querySelector('.dup-fssp-registry-search-input-table tbody');
         appendInputRow(tbody);
+        renderSearchResults(modal, []);
         const close = () => closeModal();
         modal.querySelector('.dup-fssp-registry-search-close').addEventListener('click', close);
         modal.querySelector('.dup-fssp-registry-search-cancel').addEventListener('click', close);
@@ -455,9 +503,10 @@
     }
 
     function resetModal(modal) {
-        const tbody = modal.querySelector('tbody');
+        const tbody = modal.querySelector('.dup-fssp-registry-search-input-table tbody');
         tbody.replaceChildren();
         appendInputRow(tbody);
+        renderSearchResults(modal, []);
         modal.querySelector('.dup-fssp-registry-search-progress').hidden = true;
         modal.querySelector('.dup-fssp-registry-search-notice').textContent = '';
         modal.querySelector('.dup-fssp-registry-search-notice').removeAttribute('data-tone');
@@ -524,15 +573,15 @@
     }
 
     function lockDebtorRows(modal, debtors) {
-        const tbody = modal.querySelector('tbody');
+        const tbody = modal.querySelector('.dup-fssp-registry-search-input-table tbody');
         Array.from(tbody.querySelectorAll(`tr.${ROW_CLASS}`)).forEach((row) => {
             if (!debtors.some((debtor) => debtor.row === row)) row.remove();
         });
         debtors.forEach((debtor) => {
             debtor.row.querySelectorAll('input').forEach((input) => { input.readOnly = true; });
-            renderDebtorMatches(debtor);
         });
         updateRowNumbers(tbody);
+        renderSearchResults(modal, debtors);
     }
 
     function buildMatchUrl(registryId, match) {
@@ -543,19 +592,39 @@
         return url.toString();
     }
 
-    function renderDebtorMatches(debtor) {
-        const cell = debtor.row.querySelector('.dup-fssp-registry-search-links');
-        if (!cell) return;
-        cell.replaceChildren();
-        const matches = Array.from(debtor.matches.entries()).sort((left, right) => Number(right[0]) - Number(left[0]));
-        if (!matches.length) {
-            const empty = document.createElement('span');
-            empty.className = 'dup-fssp-registry-search-empty';
-            empty.textContent = 'Не найдено';
-            cell.appendChild(empty);
+    function renderSearchResults(modal, debtors, emptyMessage = 'Найденные совпадения появятся здесь во время поиска.') {
+        const tbody = modal.querySelector('.dup-fssp-registry-search-results-table tbody');
+        const count = modal.querySelector('.dup-fssp-registry-search-results-count');
+        if (!(tbody instanceof HTMLElement)) return;
+        const rows = [];
+        (Array.isArray(debtors) ? debtors : []).forEach((debtor) => {
+            debtor.matches.forEach((match, registryId) => rows.push({ debtor, registryId, match }));
+        });
+        tbody.replaceChildren();
+        if (count instanceof HTMLElement) count.textContent = `Совпадений: ${rows.length}`;
+        if (!rows.length) {
+            const emptyRow = document.createElement('tr');
+            emptyRow.className = 'dup-fssp-registry-search-results-empty';
+            const emptyCell = document.createElement('td');
+            emptyCell.colSpan = 6;
+            emptyCell.textContent = emptyMessage;
+            emptyRow.appendChild(emptyCell);
+            tbody.appendChild(emptyRow);
             return;
         }
-        matches.forEach(([registryId, match]) => {
+        rows.forEach(({ registryId, match }, index) => {
+            const row = document.createElement('tr');
+            const indexCell = document.createElement('td');
+            indexCell.className = 'dup-fssp-registry-search-index';
+            indexCell.textContent = String(index + 1);
+            row.appendChild(indexCell);
+            FIELD_DEFINITIONS.forEach((definition) => {
+                const cell = document.createElement('td');
+                cell.className = 'dup-fssp-registry-search-result-value';
+                cell.textContent = normalizeText(match.values && match.values[definition.key]) || '—';
+                row.appendChild(cell);
+            });
+            const registryCell = document.createElement('td');
             const link = document.createElement('a');
             link.className = 'dup-fssp-registry-search-link';
             link.href = buildMatchUrl(registryId, match);
@@ -563,7 +632,9 @@
             link.rel = 'noopener noreferrer';
             link.textContent = registryId;
             link.title = `Открыть реестр ${registryId} и показать найденного должника`;
-            cell.appendChild(link);
+            registryCell.appendChild(link);
+            row.appendChild(registryCell);
+            tbody.appendChild(row);
         });
     }
 
@@ -714,20 +785,27 @@
         return status === 'проведен (нет данных)' || status === 'проведено (нет данных)';
     }
 
-    async function inspectRegistry(registry, run) {
+    async function inspectRegistry(registry, run, modal) {
         if (isNoDataRegistry(registry)) return;
         const registryData = await collectRegistryRows(registry.registryId, run);
         if (!registryData.rows.length) return;
+        let resultsChanged = false;
         run.debtors.forEach((debtor) => {
             const match = registryData.rows.find((row) => debtorMatchesCell(debtor, row.cell));
             if (!match) return;
+            const values = {};
+            FIELD_DEFINITIONS.forEach((definition) => {
+                values[definition.key] = normalizeText(match.cell && match.cell[definition.field]);
+            });
             debtor.matches.set(registry.registryId, {
                 rowId: match.rowId,
                 position: match.position,
-                totalRows: registryData.totalRows || registryData.rows.length
+                totalRows: registryData.totalRows || registryData.rows.length,
+                values
             });
-            renderDebtorMatches(debtor);
+            resultsChanged = true;
         });
+        if (resultsChanged) renderSearchResults(modal, run.debtors);
     }
 
     function countMatches(debtors) {
@@ -744,7 +822,7 @@
                 cursor += 1;
                 if (index >= registries.length) return;
                 try {
-                    await inspectRegistry(registries[index], run);
+                    await inspectRegistry(registries[index], run, modal);
                 } catch (error) {
                     if (isAbortError(error)) throw error;
                     run.errorCount += 1;
@@ -772,6 +850,7 @@
             const result = await scanFilteredRegistryPages(gridState, run, modal);
             if (!result.registryCount) {
                 run.status = 'complete';
+                renderSearchResults(modal, run.debtors, 'По текущим фильтрам реестры не найдены.');
                 setProgress(modal, 1, 1, 'Поиск завершён', '0 реестров');
                 setNotice(modal, 'По текущим фильтрам реестры не найдены.', 'success');
                 return;
@@ -779,6 +858,7 @@
             if (run.controller.signal.aborted) return;
             run.status = 'complete';
             const found = countMatches(run.debtors);
+            renderSearchResults(modal, run.debtors, 'Совпадений не найдено.');
             const errorSuffix = run.errorCount ? ` Не удалось прочитать: ${run.errorCount}.` : '';
             setProgress(modal, result.totalPages, result.totalPages, 'Поиск завершён', `${result.registryCount} реестров`);
             setNotice(modal, `Найдено совпадений по реестрам: ${found}.${errorSuffix}`, run.errorCount ? 'error' : 'success');
