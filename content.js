@@ -6340,6 +6340,7 @@
   let epguRegistryCheckCachePromise = null;
   let epguSummarySelectedDateKey = '';
   let epguSummaryRowsByDate = new Map();
+  let epguSummaryCompleteDateKeys = new Set();
   let epguSummaryRowsLoadPromise = null;
   let epguSummaryRowsLoadHost = '';
   let epguSummaryRowsLoadRangeKey = '';
@@ -6503,6 +6504,78 @@
     return `${range.minDateKey}|${range.maxDateKey}`;
   }
 
+  function isEpguSummaryDateComplete(dateKey) {
+    return epguSummaryRowsLoaded || epguSummaryCompleteDateKeys.has(normalizeEpguSummarySelectedDateKey(dateKey));
+  }
+
+  function isEpguSummaryDateAvailable(dateKey) {
+    const normalized = normalizeEpguSummarySelectedDateKey(dateKey);
+    return normalized === getEpguTodayDateKey() || isEpguSummaryDateComplete(normalized);
+  }
+
+  function readEpguGridCell(row, columnName) {
+    const cell = row.querySelector(`td[aria-describedby="list_${columnName}"]`);
+    if (!(cell instanceof HTMLElement)) return '';
+    return normalizeEpguRequestsCellText(cell.getAttribute('title') || cell.textContent || '');
+  }
+
+  function prepareEpguSummaryRowsForCurrentBase() {
+    const baseHost = String(window.location.hostname || '').trim().toLowerCase();
+    const rangeKey = getEpguSummaryRowsRangeKey();
+    if (epguSummaryRowsLoadHost !== baseHost || epguSummaryRowsLoadRangeKey !== rangeKey) {
+      epguSummaryRowsLoadHost = baseHost;
+      epguSummaryRowsLoadRangeKey = rangeKey;
+      epguSummaryRowsLoadError = '';
+      epguSummaryRowsLoaded = false;
+      epguSummaryRowsByDate = new Map();
+      epguSummaryCompleteDateKeys = new Set();
+    }
+    if (epguSummaryRowsLoaded) return;
+
+    const todayKey = getEpguTodayDateKey();
+    const previousKey = shiftEpguDateKey(todayKey, -1);
+    const visibleRows = Array.from(document.querySelectorAll('#list tbody > tr.jqgrow'))
+      .filter((row) => row instanceof HTMLTableRowElement);
+    const rowsByDate = new Map();
+    const visibleDateKeys = [];
+    visibleRows.forEach((row) => {
+      const item = {
+        id: readEpguGridCell(row, 'Id'),
+        orderId: readEpguGridCell(row, 'OrderId'),
+        claimant: readEpguGridCell(row, 'Claimant'),
+        statusName: readEpguGridCell(row, 'StatusName'),
+        message: readEpguGridCell(row, 'Message'),
+        createDate: readEpguGridCell(row, 'CreateDate')
+      };
+      const dateKey = parseEpguCreateDateInfo(item.createDate).dayKey;
+      if (!dateKey) return;
+      visibleDateKeys.push(dateKey);
+      if (dateKey !== todayKey && dateKey !== previousKey) return;
+      if (!rowsByDate.has(dateKey)) rowsByDate.set(dateKey, []);
+      rowsByDate.get(dateKey).push(item);
+    });
+    rowsByDate.forEach((rows, dateKey) => epguSummaryRowsByDate.set(dateKey, rows));
+
+    const pageInput = document.querySelector('#pager .ui-pg-input, #pager_center .ui-pg-input, input.ui-pg-input');
+    const isFirstPage = !(pageInput instanceof HTMLInputElement) || Number(pageInput.value || 1) === 1;
+    const pagingInfo = normalizeEpguRequestsCellText(
+      document.querySelector('#pager .ui-paging-info, #pager_right .ui-paging-info, .ui-paging-info')?.textContent || ''
+    );
+    const pagingMatch = pagingInfo.match(/(\d[\d\s]*)\s*-\s*(\d[\d\s]*)\s+из\s+(\d[\d\s]*)/i);
+    const parsePagingNumber = (value) => Number(String(value || '').replace(/\s+/g, ''));
+    const isLastPage = !!pagingMatch && parsePagingNumber(pagingMatch[2]) >= parsePagingNumber(pagingMatch[3]);
+    const hasDateOlderThan = (dateKey) => {
+      const boundary = getEpguDateComparableKey(dateKey);
+      return visibleDateKeys.some((visibleKey) => getEpguDateComparableKey(visibleKey) < boundary);
+    };
+    if (isFirstPage && (isLastPage || hasDateOlderThan(todayKey))) {
+      epguSummaryCompleteDateKeys.add(todayKey);
+    }
+    if (isFirstPage && rowsByDate.has(previousKey) && (isLastPage || hasDateOlderThan(previousKey))) {
+      epguSummaryCompleteDateKeys.add(previousKey);
+    }
+  }
+
   async function loadEpguSummaryRowsForCurrentBase() {
     const baseHost = String(window.location.hostname || '').trim().toLowerCase();
     const range = getEpguSummaryDateRange();
@@ -6516,11 +6589,8 @@
     }
     if (epguSummaryRowsLoadPromise) return epguSummaryRowsLoadPromise;
 
-    epguSummaryRowsLoadHost = baseHost;
-    epguSummaryRowsLoadRangeKey = rangeKey;
     epguSummaryRowsLoadError = '';
     epguSummaryRowsLoaded = false;
-    epguSummaryRowsByDate = new Map();
     epguSummaryRowsLoadPromise = (async () => {
       const response = await sendRuntimeMessage({
         action: 'EPGU_REQUESTS_WEEK_LOAD',
@@ -6543,6 +6613,11 @@
         rowsByDate.get(dateKey).push(row);
       });
       epguSummaryRowsByDate = rowsByDate;
+      epguSummaryCompleteDateKeys = new Set(
+        Array.from({ length: EPGU_REQUESTS_SUMMARY_DAYS_BACK + 1 }, (_, index) => (
+          shiftEpguDateKey(range.maxDateKey, -index)
+        ))
+      );
       epguSummaryRowsLoaded = true;
       return rowsByDate;
     })();
@@ -6553,7 +6628,6 @@
       epguSummaryRowsLoadError = error && error.message
         ? error.message
         : 'Не удалось загрузить полную сводку ЕПГУ.';
-      epguSummaryRowsByDate = new Map();
       epguSummaryRowsLoaded = false;
       throw error;
     } finally {
@@ -8253,19 +8327,26 @@
     const range = getEpguSummaryDateRange();
     const operationBusy = epguRegistryCheckRunning ||
       !!epguRegistryConductingKey ||
-      !!epguSummaryRowsLoadPromise ||
       modal.dataset.databaseSwitching === 'true';
+
+    const renderButton = (button, dayDelta, boundaryDateKey) => {
+      if (!(button instanceof HTMLButtonElement)) return;
+      const targetDateKey = shiftEpguDateKey(selectedDateKey, dayDelta);
+      const atBoundary = selectedDateKey === boundaryDateKey;
+      const targetAvailable = !atBoundary && isEpguSummaryDateAvailable(targetDateKey);
+      const targetLoading = !operationBusy && !atBoundary && !targetAvailable && !!epguSummaryRowsLoadPromise;
+      button.disabled = operationBusy || atBoundary || !targetAvailable;
+      button.classList.toggle('is-loading', targetLoading);
+      button.setAttribute('aria-busy', targetLoading ? 'true' : 'false');
+      button.title = targetLoading ? 'Дата загружается' : '';
+    };
 
     if (label instanceof HTMLElement) {
       label.textContent = formatEpguSummaryDateLabel(selectedDateKey);
       label.setAttribute('datetime', selectedDateKey.split('-').reverse().join('-'));
     }
-    if (previousButton instanceof HTMLButtonElement) {
-      previousButton.disabled = operationBusy || selectedDateKey === range.minDateKey;
-    }
-    if (nextButton instanceof HTMLButtonElement) {
-      nextButton.disabled = operationBusy || selectedDateKey === range.maxDateKey;
-    }
+    renderButton(previousButton, -1, range.minDateKey);
+    renderButton(nextButton, 1, range.maxDateKey);
   }
 
   function renderEpguRegistryCheckControls(modal) {
@@ -8282,7 +8363,7 @@
     modal.dataset.registryConducting = epguRegistryConductingKey ? 'true' : 'false';
     modal.setAttribute('aria-busy', operationBusy ? 'true' : 'false');
     if (scanButton instanceof HTMLButtonElement) {
-      scanButton.disabled = operationBusy || modal.dataset.databaseSwitching === 'true' || !epguSummaryRowsLoaded;
+      scanButton.disabled = operationBusy || modal.dataset.databaseSwitching === 'true' || !isEpguSummaryDateComplete(selectedDateKey);
       if (epguRegistryCheckRunning && epguRegistryCheckProgress) {
         const current = Math.max(0, Number(epguRegistryCheckProgress.current) || 0);
         const total = Math.max(0, Number(epguRegistryCheckProgress.total) || 0);
@@ -8341,7 +8422,7 @@
       renderEpguRegistryCheckControls(modal);
       return;
     }
-    if (!epguSummaryRowsLoaded) return;
+    if (!isEpguSummaryDateComplete(scanContext.checkDateKey)) return;
     const previousResult = getEpguRegistryCheckResultForCurrentBase(scanContext.checkDateKey);
     const currentSummary = collectEpguSummaryItems(scanContext.checkDateKey);
     const departmentsToCheck = getEpguRegistryDepartmentsForRecheck(
@@ -8568,14 +8649,16 @@
 
     const selectedDateKey = getEpguSummarySelectedDateKey();
     const isTodaySelected = selectedDateKey === getEpguTodayDateKey();
+    const selectedDateComplete = isEpguSummaryDateComplete(selectedDateKey);
+    const selectedDateAvailable = isEpguSummaryDateAvailable(selectedDateKey);
     const displayDate = formatEpguDateKeyForDisplay(selectedDateKey);
     list.textContent = '';
 
-    if (epguSummaryRowsLoadPromise || (!epguSummaryRowsLoaded && !epguSummaryRowsLoadError)) {
-      meta.textContent = `Загружаем полную сводку за период до ${displayDate}…`;
+    if (!selectedDateAvailable && (epguSummaryRowsLoadPromise || (!epguSummaryRowsLoaded && !epguSummaryRowsLoadError))) {
+      meta.textContent = `Загружаем сводку за ${displayDate}…`;
       const loading = document.createElement('div');
       loading.className = 'dup-epgu-summary-empty';
-      loading.textContent = 'Получаем строки журнала ЕПГУ без изменения видимого грида.';
+      loading.textContent = 'Эта дата станет доступна сразу после загрузки строк журнала.';
       list.appendChild(loading);
       if (retryButton instanceof HTMLButtonElement) {
         retryButton.disabled = true;
@@ -8586,7 +8669,7 @@
       return;
     }
 
-    if (epguSummaryRowsLoadError) {
+    if (!selectedDateAvailable && epguSummaryRowsLoadError) {
       meta.textContent = 'Не удалось загрузить полную сводку ЕПГУ.';
       const error = document.createElement('div');
       error.className = 'dup-epgu-summary-empty is-error';
@@ -8596,7 +8679,7 @@
         retryButton.disabled = true;
         retryButton.textContent = 'Сводка недоступна';
       }
-      if (retryHint instanceof HTMLElement) retryHint.textContent = 'Закройте и повторно откройте окно, чтобы повторить загрузку.';
+      if (retryHint instanceof HTMLElement) retryHint.textContent = 'Доступные даты остались в сводке. Закройте и повторно откройте окно, чтобы повторить загрузку остальных.';
       renderEpguRegistryCheckControls(modal);
       return;
     }
@@ -8604,19 +8687,30 @@
     const summary = collectEpguSummaryItems(selectedDateKey);
     const retryTargets = collectEpguRetryTargets(summary);
     const registryCheckResult = getEpguRegistryCheckResultForCurrentBase(selectedDateKey);
-    meta.textContent = summary.items.length
+    const loadingSuffix = epguSummaryRowsLoadPromise && !epguSummaryRowsLoaded
+      ? selectedDateComplete
+        ? ' Остальные даты загружаются.'
+        : ' Предварительные данные из открытого грида; полная сводка загружается.'
+      : epguSummaryRowsLoadError && !epguSummaryRowsLoaded
+        ? ' Остальные даты загрузить не удалось.'
+        : '';
+    meta.textContent = (summary.items.length
       ? `За ${displayDate}. Уникальных взыскателей: ${summary.items.length}.`
-      : `За ${displayDate} запросов не найдено.`;
+      : `За ${displayDate} запросов не найдено.`) + loadingSuffix;
     if (retryButton instanceof HTMLButtonElement) {
-      retryButton.disabled = !isTodaySelected || retryTargets.length < 1 || epguRetryBatchRunning;
-      retryButton.textContent = !isTodaySelected
+      retryButton.disabled = !selectedDateComplete || !isTodaySelected || retryTargets.length < 1 || epguRetryBatchRunning;
+      retryButton.textContent = !selectedDateComplete
+        ? 'Догружаем полную сводку…'
+        : !isTodaySelected
         ? 'Повторные запросы — только сегодня'
         : retryTargets.length
           ? `Отправить запросы по неуспешным (${retryTargets.length})`
           : 'Все взыскатели успешны';
     }
     if (retryHint instanceof HTMLElement) {
-      retryHint.textContent = !isTodaySelected
+      retryHint.textContent = !selectedDateComplete
+        ? 'Просмотр доступен сразу, а действия появятся после полной загрузки выбранного дня.'
+        : !isTodaySelected
         ? 'Для прошлой даты доступен просмотр и проверка реестров. Новые запросы можно отправить только по сегодняшней сводке.'
         : retryTargets.length
           ? 'Перед запуском можно исключить отдельных взыскателей. Выбор сохранится.'
@@ -8750,9 +8844,9 @@
           <div class="dup-epgu-database-status" aria-live="polite" hidden></div>
         </div>
         <div class="dup-epgu-summary-date-nav" role="group" aria-label="Выбор даты сводки ЕПГУ">
-          <button type="button" class="dup-epgu-summary-date-button is-previous" data-day-delta="-1" aria-label="Предыдущая дата">‹</button>
+          <button type="button" class="dup-epgu-summary-date-button is-previous" data-day-delta="-1" aria-label="Предыдущая дата"><span class="dup-epgu-summary-date-arrow" aria-hidden="true">‹</span><span class="dup-epgu-summary-date-loader" aria-hidden="true"></span></button>
           <time class="dup-epgu-summary-date-label"></time>
-          <button type="button" class="dup-epgu-summary-date-button is-next" data-day-delta="1" aria-label="Следующая дата">›</button>
+          <button type="button" class="dup-epgu-summary-date-button is-next" data-day-delta="1" aria-label="Следующая дата"><span class="dup-epgu-summary-date-arrow" aria-hidden="true">›</span><span class="dup-epgu-summary-date-loader" aria-hidden="true"></span></button>
         </div>
         <div class="dup-epgu-summary-meta"></div>
         <div class="dup-epgu-summary-list" role="list"></div>
@@ -8817,6 +8911,7 @@
     epguRegistryCheckNotice = '';
     epguRegistryCheckNoticeIsError = false;
     const modal = createEpguSummaryModal();
+    prepareEpguSummaryRowsForCurrentBase();
     const registryCachePromise = loadEpguRegistryCheckCache();
     const summaryRowsPromise = loadEpguSummaryRowsForCurrentBase();
     renderEpguSummaryModal(modal);

@@ -286,6 +286,18 @@
             #${MODAL_ID} .dup-fssp-registry-search-action-primary:hover:not(:disabled) {
                 background: var(--fssp-search-accent-dark);
             }
+            #${MODAL_ID} .dup-fssp-registry-search-stop[hidden] { display: none; }
+            #${MODAL_ID} .dup-fssp-registry-search-stop {
+                border-color: #a85b35;
+                background: #fff7f1;
+                color: #8a3f20;
+            }
+            #${MODAL_ID} .dup-fssp-registry-search-stop:hover:not(:disabled) { background: #f9e6d9; }
+            #${MODAL_ID} .dup-fssp-registry-search-stop.is-paused {
+                border-color: var(--fssp-search-accent-dark);
+                background: #e6f3ed;
+                color: var(--fssp-search-accent-dark);
+            }
             #${MODAL_ID} button:disabled { cursor: default; opacity: .55; }
             html.dup-ext-screenshot-mode .${UI_CLASS},
             html.dup-ui-hide-fssp-registry-search .${UI_CLASS} { display: none !important; }
@@ -423,6 +435,7 @@
                 </div>
                 <footer class="dup-fssp-registry-search-footer">
                     <button type="button" class="dup-fssp-registry-search-action dup-fssp-registry-search-cancel">Закрыть</button>
+                    <button type="button" class="dup-fssp-registry-search-action dup-fssp-registry-search-stop" aria-pressed="false" hidden>Стоп</button>
                     <button type="button" class="dup-fssp-registry-search-action dup-fssp-registry-search-action-primary dup-fssp-registry-search-submit">Поиск</button>
                 </footer>
             </section>
@@ -433,6 +446,7 @@
         const close = () => closeModal();
         modal.querySelector('.dup-fssp-registry-search-close').addEventListener('click', close);
         modal.querySelector('.dup-fssp-registry-search-cancel').addEventListener('click', close);
+        modal.querySelector('.dup-fssp-registry-search-stop').addEventListener('click', () => toggleSearchPause(modal));
         modal.querySelector('.dup-fssp-registry-search-submit').addEventListener('click', () => startSearch(modal));
         modal.addEventListener('mousedown', (event) => {
             if (event.target === modal) closeModal();
@@ -448,11 +462,17 @@
         modal.querySelector('.dup-fssp-registry-search-notice').textContent = '';
         modal.querySelector('.dup-fssp-registry-search-notice').removeAttribute('data-tone');
         modal.querySelector('.dup-fssp-registry-search-submit').disabled = false;
+        const stopButton = modal.querySelector('.dup-fssp-registry-search-stop');
+        stopButton.hidden = true;
+        stopButton.disabled = false;
+        stopButton.textContent = 'Стоп';
+        stopButton.classList.remove('is-paused');
+        stopButton.setAttribute('aria-pressed', 'false');
     }
 
     function openModal() {
         const modal = ensureModal();
-        if (activeRun && activeRun.status === 'running') {
+        if (activeRun && (activeRun.status === 'running' || activeRun.status === 'paused')) {
             modal.hidden = false;
             return;
         }
@@ -464,9 +484,10 @@
 
     function closeModal() {
         const modal = document.getElementById(MODAL_ID);
-        if (activeRun && activeRun.status === 'running') {
+        if (activeRun && (activeRun.status === 'running' || activeRun.status === 'paused')) {
             activeRun.status = 'cancelled';
             activeRun.controller.abort();
+            activeRun.pauseWaiters.splice(0).forEach((resolve) => resolve());
         }
         activeRun = null;
         if (modal) modal.hidden = true;
@@ -603,7 +624,31 @@
         throw lastError || new Error('Запрос завершился ошибкой.');
     }
 
-    async function collectFilteredRegistries(gridState, run, modal) {
+    function waitForRunResume(run) {
+        if (run.controller.signal.aborted) return Promise.reject(new DOMException('Aborted', 'AbortError'));
+        if (!run.paused) return Promise.resolve();
+        return new Promise((resolve) => run.pauseWaiters.push(resolve)).then(() => {
+            if (run.controller.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+        });
+    }
+
+    function extractRegistryPageRows(json, seenRegistryIds) {
+        const registries = [];
+        const sourceRows = Array.isArray(json && json.rows) ? json.rows : [];
+        sourceRows.forEach((item) => {
+            const cell = item && item.cell && typeof item.cell === 'object' ? item.cell : {};
+            const registryId = normalizeText(cell.Id || (item && item.id));
+            if (!/^\d+$/.test(registryId) || seenRegistryIds.has(registryId)) return;
+            seenRegistryIds.add(registryId);
+            registries.push({
+                registryId,
+                statusName: normalizeText(cell.StatusName)
+            });
+        });
+        return registries;
+    }
+
+    async function scanFilteredRegistryPages(gridState, run, modal) {
         const baseParams = { ...(gridState.postData || {}) };
         delete baseParams.nd;
         baseParams.rows = LIST_PAGE_SIZE;
@@ -611,36 +656,36 @@
         baseParams.sidx = gridState.sortname || baseParams.sidx || 'CreateDate';
         baseParams.sord = gridState.sortorder || baseParams.sord || 'desc';
         const endpoint = gridState.url || `${LIST_PATH}/data`;
-        const firstPage = await fetchJson(buildRequestUrl(endpoint, baseParams), run.controller.signal);
-        const totalPages = Math.max(1, Number(firstPage && firstPage.total || 1));
-        const sourceRows = Array.isArray(firstPage && firstPage.rows) ? firstPage.rows.slice() : [];
-        for (let page = 2; page <= totalPages; page += 1) {
-            if (run.controller.signal.aborted) throw new DOMException('Aborted', 'AbortError');
-            setProgress(modal, page - 1, totalPages, 'Собираю отфильтрованные реестры', `${page - 1} / ${totalPages} стр.`);
+        const seenRegistryIds = new Set();
+        let totalPages = 1;
+        for (let page = 1; page <= totalPages; page += 1) {
+            await waitForRunResume(run);
+            setProgress(modal, page - 1, totalPages, `Загружаю страницу ${page}`, `${page} / ${totalPages} стр.`);
             const json = await fetchJson(buildRequestUrl(endpoint, { ...baseParams, page }), run.controller.signal);
-            if (Array.isArray(json && json.rows)) sourceRows.push(...json.rows);
+            totalPages = Math.max(1, Number(json && json.total || totalPages));
+            run.totalPages = totalPages;
+            const registries = extractRegistryPageRows(json, seenRegistryIds);
+            run.discovered += registries.length;
+            if (registries.length) {
+                setNotice(modal, `Страница ${page} из ${totalPages}: проверяю ${registries.length} реестров.`);
+                await scanRegistries(registries, run, modal, page, totalPages);
+            } else {
+                setProgress(modal, page, totalPages, `Страница ${page} проверена`, `${page} / ${totalPages} стр. · найдено ${countMatches(run.debtors)}`);
+            }
         }
-        const unique = new Map();
-        sourceRows.forEach((item) => {
-            const cell = item && item.cell && typeof item.cell === 'object' ? item.cell : {};
-            const registryId = normalizeText(cell.Id || (item && item.id));
-            if (!/^\d+$/.test(registryId) || unique.has(registryId)) return;
-            unique.set(registryId, {
-                registryId,
-                statusName: normalizeText(cell.StatusName)
-            });
-        });
-        return Array.from(unique.values());
+        return { totalPages, registryCount: seenRegistryIds.size };
     }
 
     async function collectRegistryRows(registryId, run) {
         const endpoint = `${LIST_PATH}/${encodeURIComponent(registryId)}/typedata`;
         const baseParams = { _search: false, rows: DETAIL_PAGE_SIZE, page: 1, sidx: 'Id', sord: 'asc' };
+        await waitForRunResume(run);
         const firstPage = await fetchJson(buildRequestUrl(endpoint, baseParams), run.controller.signal);
         const totalPages = Math.max(1, Number(firstPage && firstPage.total || 1));
         const totalRows = Math.max(0, Number(firstPage && firstPage.records || 0));
         const sourceRows = Array.isArray(firstPage && firstPage.rows) ? firstPage.rows.slice() : [];
         for (let page = 2; page <= totalPages; page += 1) {
+            await waitForRunResume(run);
             const json = await fetchJson(buildRequestUrl(endpoint, { ...baseParams, page }), run.controller.signal);
             if (Array.isArray(json && json.rows)) sourceRows.push(...json.rows);
         }
@@ -689,10 +734,12 @@
         return debtors.reduce((sum, debtor) => sum + debtor.matches.size, 0);
     }
 
-    async function scanRegistries(registries, run, modal) {
+    async function scanRegistries(registries, run, modal, page, totalPages) {
         let cursor = 0;
+        let pageCompleted = 0;
         const workers = Array.from({ length: Math.min(REQUEST_CONCURRENCY, Math.max(1, registries.length)) }, async () => {
             while (!run.controller.signal.aborted) {
+                await waitForRunResume(run);
                 const index = cursor;
                 cursor += 1;
                 if (index >= registries.length) return;
@@ -703,12 +750,13 @@
                     run.errorCount += 1;
                 } finally {
                     run.completed += 1;
+                    pageCompleted += 1;
                     setProgress(
                         modal,
-                        run.completed,
-                        registries.length,
-                        'Проверяю реестры',
-                        `${run.completed} / ${registries.length} · найдено ${countMatches(run.debtors)}`
+                        (page - 1) + (pageCompleted / Math.max(1, registries.length)),
+                        totalPages,
+                        `Проверяю страницу ${page} из ${totalPages}`,
+                        `проверено ${run.completed} · найдено ${countMatches(run.debtors)}`
                     );
                 }
             }
@@ -721,34 +769,55 @@
             setNotice(modal, 'Читаю текущие фильтры списка…');
             setProgress(modal, 0, 1, 'Подготовка поиска', '');
             const gridState = await getGridState();
-            const registries = await collectFilteredRegistries(gridState, run, modal);
-            if (!registries.length) {
+            const result = await scanFilteredRegistryPages(gridState, run, modal);
+            if (!result.registryCount) {
                 run.status = 'complete';
                 setProgress(modal, 1, 1, 'Поиск завершён', '0 реестров');
                 setNotice(modal, 'По текущим фильтрам реестры не найдены.', 'success');
                 return;
             }
-            setNotice(modal, `Найдено реестров для проверки: ${registries.length}.`);
-            await scanRegistries(registries, run, modal);
             if (run.controller.signal.aborted) return;
             run.status = 'complete';
             const found = countMatches(run.debtors);
             const errorSuffix = run.errorCount ? ` Не удалось прочитать: ${run.errorCount}.` : '';
-            setProgress(modal, registries.length, registries.length, 'Поиск завершён', `${registries.length} / ${registries.length}`);
+            setProgress(modal, result.totalPages, result.totalPages, 'Поиск завершён', `${result.registryCount} реестров`);
             setNotice(modal, `Найдено совпадений по реестрам: ${found}.${errorSuffix}`, run.errorCount ? 'error' : 'success');
         } catch (error) {
             if (isAbortError(error) || run.controller.signal.aborted) return;
             run.status = 'failed';
             setNotice(modal, error && error.message ? error.message : 'Поиск завершился ошибкой.', 'error');
         } finally {
-            if (activeRun === run && run.status !== 'running') {
+            if (activeRun === run && run.status !== 'running' && run.status !== 'paused') {
                 modal.querySelector('.dup-fssp-registry-search-submit').disabled = false;
+                modal.querySelector('.dup-fssp-registry-search-stop').hidden = true;
             }
         }
     }
 
+    function toggleSearchPause(modal) {
+        const run = activeRun;
+        if (!run || (run.status !== 'running' && run.status !== 'paused')) return;
+        const stopButton = modal.querySelector('.dup-fssp-registry-search-stop');
+        if (run.status === 'running') {
+            run.status = 'paused';
+            run.paused = true;
+            stopButton.textContent = 'Продолжить';
+            stopButton.classList.add('is-paused');
+            stopButton.setAttribute('aria-pressed', 'true');
+            setNotice(modal, 'Поиск приостановлен. Уже начатые запросы завершаются, новые не запускаются.');
+            return;
+        }
+        run.status = 'running';
+        run.paused = false;
+        stopButton.textContent = 'Стоп';
+        stopButton.classList.remove('is-paused');
+        stopButton.setAttribute('aria-pressed', 'false');
+        run.pauseWaiters.splice(0).forEach((resolve) => resolve());
+        setNotice(modal, 'Поиск продолжен.');
+    }
+
     function startSearch(modal) {
-        if (activeRun && activeRun.status === 'running') return;
+        if (activeRun && (activeRun.status === 'running' || activeRun.status === 'paused')) return;
         const debtors = readDebtors(modal);
         if (!debtors.length) {
             setNotice(modal, 'Введите хотя бы одно поле должника.', 'error');
@@ -758,12 +827,22 @@
         }
         lockDebtorRows(modal, debtors);
         modal.querySelector('.dup-fssp-registry-search-submit').disabled = true;
+        const stopButton = modal.querySelector('.dup-fssp-registry-search-stop');
+        stopButton.hidden = false;
+        stopButton.disabled = false;
+        stopButton.textContent = 'Стоп';
+        stopButton.classList.remove('is-paused');
+        stopButton.setAttribute('aria-pressed', 'false');
         activeRun = {
             status: 'running',
+            paused: false,
+            pauseWaiters: [],
             controller: new AbortController(),
             debtors,
             completed: 0,
-            errorCount: 0
+            errorCount: 0,
+            discovered: 0,
+            totalPages: 1
         };
         void performSearch(activeRun, modal);
     }

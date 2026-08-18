@@ -636,6 +636,43 @@ body:has(.open > .dropdown-menu) #pyramid-stage-timer-abort {
     cursor: default;
 }
 
+.dup-epgu-summary-date-arrow,
+.dup-epgu-summary-date-loader {
+    display: inline-block;
+}
+
+.dup-epgu-summary-date-loader {
+    display: none;
+    width: 13px;
+    height: 13px;
+    border: 2px solid rgba(23, 107, 91, 0.22);
+    border-top-color: #176b5b;
+    border-radius: 50%;
+    animation: dup-epgu-summary-date-spin 0.7s linear infinite;
+}
+
+.dup-epgu-summary-date-button.is-loading {
+    opacity: 0.82;
+}
+
+.dup-epgu-summary-date-button.is-loading .dup-epgu-summary-date-arrow {
+    display: none;
+}
+
+.dup-epgu-summary-date-button.is-loading .dup-epgu-summary-date-loader {
+    display: inline-block;
+}
+
+@keyframes dup-epgu-summary-date-spin {
+    to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .dup-epgu-summary-date-loader {
+        animation-duration: 1.8s;
+    }
+}
+
 .dup-epgu-summary-date-label {
     min-width: 160px;
     color: #243943;
