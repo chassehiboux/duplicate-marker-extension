@@ -4,7 +4,10 @@
   if (globalThis.__dupSupabaseSyncInitialized) return;
   globalThis.__dupSupabaseSyncInitialized = true;
 
-  const SUPABASE_URL = 'https://odljanxhmjysnduylvxz.supabase.co';
+  const SUPABASE_ORIGINS = [
+    'https://sb.jassco.ru',
+    'https://odljanxhmjysnduylvxz.supabase.co'
+  ];
   const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_2Z6tbzq-QJFyJVmCTbhG4w_ZZAiNu-d';
   const SCHEMA_VERSION = 2;
 
@@ -20,10 +23,11 @@
 
   const SESSION_REFRESH_MARGIN_MS = 60 * 1000;
   const REQUEST_TIMEOUT_MS = 7000;
+  const SUPABASE_FALLBACK_COOLDOWN_MS = 60 * 1000;
   const SYNC_STALL_THRESHOLD_MS = 5000;
   const RETRY_DELAYS_MS = [600, 1500, 3500];
   const FLUSH_DEBOUNCE_MS = 250;
-  const REALTIME_WS_URL = `${SUPABASE_URL.replace(/^http/i, 'ws')}/realtime/v1/websocket?apikey=${encodeURIComponent(SUPABASE_PUBLISHABLE_KEY)}&log_level=warning&vsn=1.0.0`;
+  const REALTIME_WS_URLS = SUPABASE_ORIGINS.map((origin) => `${origin.replace(/^http/i, 'ws')}/realtime/v1/websocket?apikey=${encodeURIComponent(SUPABASE_PUBLISHABLE_KEY)}&log_level=warning&vsn=1.0.0`);
   const REALTIME_TOPIC = 'realtime:extension-sync-state';
   const REALTIME_JOIN_TIMEOUT_MS = 10000;
   const REALTIME_HEARTBEAT_MS = 25000;
@@ -146,6 +150,9 @@
   let realtimeReconnectTimer = 0;
   let realtimeReconnectAttempt = 0;
   let realtimePullTimer = 0;
+  let realtimeOriginIndex = 0;
+  let realtimeCurrentOriginIndex = 0;
+  let supabaseFallbackUntil = 0;
   let outboxLock = Promise.resolve();
   let refreshSessionPromise = null;
   let syncIssueActive = false;
@@ -738,6 +745,39 @@
     }
   }
 
+  async function fetchSupabaseWithTimeout(path, options = {}) {
+    let lastError = null;
+    const defaultOriginIndexes = SUPABASE_ORIGINS.map((_, index) => index);
+    const originIndexes = Date.now() < supabaseFallbackUntil
+      ? [...defaultOriginIndexes.slice(1), defaultOriginIndexes[0]]
+      : defaultOriginIndexes;
+
+    for (let offset = 0; offset < originIndexes.length; offset += 1) {
+      const originIndex = originIndexes[offset];
+      const origin = SUPABASE_ORIGINS[originIndex];
+      try {
+        const response = await fetchWithTimeout(`${origin}${path}`, options);
+        const isGatewayFailure = [502, 503, 504].includes(Number(response.status));
+        if (isGatewayFailure && offset < originIndexes.length - 1) {
+          if (originIndex === 0) {
+            supabaseFallbackUntil = Date.now() + SUPABASE_FALLBACK_COOLDOWN_MS;
+          }
+          continue;
+        }
+        if (originIndex === 0) supabaseFallbackUntil = 0;
+        return response;
+      } catch (error) {
+        lastError = error;
+        if (originIndex === 0) {
+          supabaseFallbackUntil = Date.now() + SUPABASE_FALLBACK_COOLDOWN_MS;
+        }
+        if (offset >= originIndexes.length - 1) throw error;
+      }
+    }
+
+    throw lastError || new Error('Supabase transport failed.');
+  }
+
   function isRetryableStatus(status) {
     return [408, 429, 500, 502, 503, 504].includes(Number(status));
   }
@@ -790,7 +830,7 @@
       }
 
       const previousSession = currentSession;
-      const response = await fetchWithTimeout(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+      const response = await fetchSupabaseWithTimeout('/auth/v1/token?grant_type=refresh_token', {
         method: 'POST',
         headers: authHeaders(null),
         body: JSON.stringify({ refresh_token: previousSession.refresh_token })
@@ -838,7 +878,7 @@
       let response = null;
       let data = null;
       try {
-        response = await fetchWithTimeout(`${SUPABASE_URL}${path}`, {
+        response = await fetchSupabaseWithTimeout(path, {
           ...options,
           headers: {
             ...authHeaders(session),
@@ -2774,7 +2814,8 @@
       realtimeAccessToken = accessToken;
       realtimeJoined = false;
 
-      const socket = new WebSocket(REALTIME_WS_URL);
+      realtimeCurrentOriginIndex = realtimeOriginIndex % REALTIME_WS_URLS.length;
+      const socket = new WebSocket(REALTIME_WS_URLS[realtimeCurrentOriginIndex]);
       realtimeSocket = socket;
       socket.binaryType = 'arraybuffer';
 
@@ -2828,6 +2869,7 @@
         clearRealtimeTimers();
         realtimeSocket = null;
         realtimeJoined = false;
+        realtimeOriginIndex = (realtimeCurrentOriginIndex + 1) % REALTIME_WS_URLS.length;
         void setSyncMeta({
           realtimeStatus: 'disconnected',
           realtimeDisconnectedAt: new Date().toISOString()
