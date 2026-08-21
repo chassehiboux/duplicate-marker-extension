@@ -24,6 +24,38 @@
   const CHATGPT_URL_PREFIX = 'https://chatgpt.com/';
   const SUPP_NOT_FOUND_INFO_TEXT = 'Не найдена заявка в СУПП. Проверьте вручную';
   const SUPP_NO_DATA_INFO_TEXT = 'Информации по решению заявки нет';
+  const WAIT_TIMEOUT_DEFAULTS_MS = Object.freeze({
+    tabLoadMs: 90000,
+    oneCReadyMs: 90000,
+    itilAccountMs: 90000,
+    itilServiceDeskMs: 30000,
+    itilSearchInputMs: 60000,
+    itilSearchResultMs: 60000,
+    itilRequestTabMs: 60000,
+    itilRequestTextMs: 60000,
+    itilRequestCloseMs: 15000,
+    suppSearchInputMs: 90000,
+    suppSearchResultMs: 35000,
+    suppCardOpenMs: 7000,
+    suppFallbackCardOpenMs: 8000,
+    suppRequestTextMs: 60000,
+    suppDiscussionMs: 8000,
+    suppCloseStepMs: 2500,
+    suppCloseRetryMs: 3000,
+    suppCloseFinalMs: 5000
+  });
+
+  function normalizeWaitTimeouts(value) {
+    const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+    const result = { ...WAIT_TIMEOUT_DEFAULTS_MS };
+    Object.keys(result).forEach((key) => {
+      const timeoutMs = Number(source[key]);
+      if (Number.isFinite(timeoutMs) && timeoutMs >= 1000 && timeoutMs <= 3600000) {
+        result[key] = Math.round(timeoutMs);
+      }
+    });
+    return result;
+  }
 
   function isAllowedSender(sender) {
     const url = sender && sender.url ? String(sender.url) : '';
@@ -607,6 +639,7 @@
     }
 
     const settings = options && typeof options === 'object' ? options : {};
+    const waitTimeouts = normalizeWaitTimeouts(settings.waitTimeouts);
     const forceEmptyPrimaryInfoPlaceholder = !!settings.forceEmptyPrimaryInfoPlaceholder;
     const preserveExistingOnSkip = !!settings.preserveExistingOnSkip;
     const itilNumber = String(settings.itilNumber || '').trim();
@@ -614,7 +647,7 @@
     const existingSections = preserveExistingOnSkip
       ? extractExistingSuppInfoSections(settings.currentInfoText, normalizedSuppNumbers)
       : new Map();
-    const tab = settings.tab || await getOrCreateSuppTab();
+    const tab = settings.tab || await getOrCreateSuppTab(waitTimeouts);
     const sectionTexts = [];
     let updatedCount = 0;
     let warningCount = 0;
@@ -624,7 +657,7 @@
       if (presetItilSolutionText) return presetItilSolutionText;
       if (!itilNumber) return '';
       if (!itilDataPromise) {
-        itilDataPromise = collectItilFillData(itilNumber);
+        itilDataPromise = collectItilFillData(itilNumber, waitTimeouts);
       }
       const itilData = await itilDataPromise;
       return String(itilData && itilData.solutionText || '').trim();
@@ -632,7 +665,7 @@
 
     for (let index = 0; index < normalizedSuppNumbers.length; index += 1) {
       const suppNumber = normalizedSuppNumbers[index];
-      const result = await executeInTab(tab.id, collectSuppRequestData, [suppNumber]);
+      const result = await executeInTab(tab.id, collectSuppRequestData, [suppNumber, { waitTimeouts }]);
       if (!result || result.success !== true) {
         throw new Error(result && result.error ? result.error : `Не удалось получить данные из СУПП для ${suppNumber}.`);
       }
@@ -873,7 +906,8 @@
     return String(url || '').startsWith(String(baseUrl || ''));
   }
 
-  async function activateTabForInteractiveAutomation(tab, urlPrefix, label) {
+  async function activateTabForInteractiveAutomation(tab, urlPrefix, label, waitTimeouts) {
+    const timeouts = normalizeWaitTimeouts(waitTimeouts);
     const tabId = tab && Number.isInteger(tab.id) ? tab.id : null;
     if (!Number.isInteger(tabId)) {
       throw new Error(`Не удалось активировать вкладку ${label || ''}: нет tabId.`);
@@ -882,7 +916,7 @@
     let currentTab = await tabsGet(tabId).catch(() => tab);
 
     if (currentTab && currentTab.status !== 'complete') {
-      currentTab = await waitForTabReady(tabId, urlPrefix);
+      currentTab = await waitForTabReady(tabId, urlPrefix, timeouts.tabLoadMs);
     }
 
     if (currentTab && Number.isInteger(currentTab.windowId)) {
@@ -900,7 +934,7 @@
     const refreshedTab = await tabsGet(tabId).catch(() => activatedTab || currentTab || tab);
 
     if (refreshedTab && refreshedTab.status !== 'complete') {
-      return waitForTabReady(tabId, urlPrefix);
+      return waitForTabReady(tabId, urlPrefix, timeouts.tabLoadMs);
     }
 
     return refreshedTab || activatedTab || currentTab || tab;
@@ -919,7 +953,8 @@
     });
   }
 
-  async function waitForTabReady(tabId, urlPrefix) {
+  async function waitForTabReady(tabId, urlPrefix, timeoutMs) {
+    const effectiveTimeoutMs = Number.isFinite(Number(timeoutMs)) ? Number(timeoutMs) : WAIT_TIMEOUT_DEFAULTS_MS.tabLoadMs;
     const existing = await tabsGet(tabId).catch(() => null);
     if (existing && existing.status === 'complete' && String(existing.url || '').startsWith(urlPrefix)) {
       return existing;
@@ -944,7 +979,7 @@
         done = true;
         cleanup();
         reject(new Error('Не дождался загрузки вкладки.'));
-      }, 90000);
+      }, effectiveTimeoutMs);
 
       const listener = (updatedTabId, changeInfo, tab) => {
         if (updatedTabId !== tabId) return;
@@ -970,6 +1005,9 @@
     const readyState = String(settings.readyState || '').trim().toLowerCase();
     const username = String(settings.username || '').trim();
     const password = String(settings.password || '');
+    const readyTimeoutMs = Number.isFinite(Number(settings.readyTimeoutMs))
+      ? Number(settings.readyTimeoutMs)
+      : 90000;
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     const normalizeText = (value) => String(value || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
 
@@ -1197,7 +1235,7 @@
     let attempts = 0;
     const startedAt = Date.now();
 
-    while ((Date.now() - startedAt) < 90000) {
+    while ((Date.now() - startedAt) < readyTimeoutMs) {
       if (isReady()) {
         return {
           success: true,
@@ -1231,12 +1269,14 @@
     };
   }
 
-  async function ensureSuppAuthenticated(tabId) {
+  async function ensureSuppAuthenticated(tabId, waitTimeouts) {
+    const timeouts = normalizeWaitTimeouts(waitTimeouts);
     const result = await executeInTab(tabId, ensureOneCSessionInPage, [{
       systemLabel: 'СУПП',
       readyState: 'supp',
       username: ONE_C_USERNAME,
-      password: ONE_C_PASSWORD
+      password: ONE_C_PASSWORD,
+      readyTimeoutMs: timeouts.oneCReadyMs
     }]);
 
     if (!result || result.success !== true) {
@@ -1245,7 +1285,7 @@
 
     const refreshedTab = await tabsGet(tabId).catch(() => null);
     if (refreshedTab && refreshedTab.status !== 'complete') {
-      await waitForTabReady(tabId, SUPP_BASE_URL);
+      await waitForTabReady(tabId, SUPP_BASE_URL, timeouts.tabLoadMs);
     }
   }
 
@@ -1268,13 +1308,14 @@
     });
   }
 
-  async function getOrCreateItilTab() {
+  async function getOrCreateItilTab(waitTimeouts) {
+    const timeouts = normalizeWaitTimeouts(waitTimeouts);
     const tabs = await tabsQuery({});
     const existing = tabs.find((tab) => isSystemTabUrl(tab.url, ITIL_BASE_URL));
 
     if (existing && Number.isInteger(existing.id)) {
-      if (existing.status !== 'complete') await waitForTabReady(existing.id, ITIL_BASE_URL);
-      return activateTabForInteractiveAutomation(existing, ITIL_BASE_URL, 'ITIL');
+      if (existing.status !== 'complete') await waitForTabReady(existing.id, ITIL_BASE_URL, timeouts.tabLoadMs);
+      return activateTabForInteractiveAutomation(existing, ITIL_BASE_URL, 'ITIL', timeouts);
     }
 
     const created = await tabsCreate({ url: ITIL_URL, active: true });
@@ -1282,11 +1323,12 @@
       throw new Error('Не удалось открыть вкладку ITIL.');
     }
 
-    await waitForTabReady(created.id, ITIL_BASE_URL);
-    return activateTabForInteractiveAutomation(created, ITIL_BASE_URL, 'ITIL');
+    await waitForTabReady(created.id, ITIL_BASE_URL, timeouts.tabLoadMs);
+    return activateTabForInteractiveAutomation(created, ITIL_BASE_URL, 'ITIL', timeouts);
   }
 
-  async function getOrCreateSuppTab() {
+  async function getOrCreateSuppTab(waitTimeouts) {
+    const timeouts = normalizeWaitTimeouts(waitTimeouts);
     const tabs = await tabsQuery({});
     const existing = tabs.find((tab) => isSystemTabUrl(tab.url, SUPP_BASE_URL));
     const targetTab = existing && Number.isInteger(existing.id)
@@ -1298,13 +1340,13 @@
     }
 
     if (targetTab.status !== 'complete') {
-      await waitForTabReady(targetTab.id, SUPP_BASE_URL);
+      await waitForTabReady(targetTab.id, SUPP_BASE_URL, timeouts.tabLoadMs);
     }
 
-    const activatedTab = await activateTabForInteractiveAutomation(targetTab, SUPP_BASE_URL, 'СУПП');
-    await ensureSuppAuthenticated(activatedTab.id);
+    const activatedTab = await activateTabForInteractiveAutomation(targetTab, SUPP_BASE_URL, 'СУПП', timeouts);
+    await ensureSuppAuthenticated(activatedTab.id, timeouts);
     const refreshedTab = await tabsGet(activatedTab.id).catch(() => activatedTab);
-    return activateTabForInteractiveAutomation(refreshedTab || activatedTab, SUPP_BASE_URL, 'СУПП');
+    return activateTabForInteractiveAutomation(refreshedTab || activatedTab, SUPP_BASE_URL, 'СУПП', timeouts);
   }
 
   async function createChatGptTemporaryTab(sourceTabId, sourceWindowId) {
@@ -1508,6 +1550,7 @@
 
   async function runItilFillRow(data) {
     const payload = data && data.payload ? data.payload : {};
+    const waitTimeouts = normalizeWaitTimeouts(data && data.waitTimeouts);
     const row = Number(payload.row);
     const itilNumber = String(payload.itilNumber || '').trim();
     const sheetName = String(payload.sheetName || '').trim();
@@ -1520,7 +1563,7 @@
     if (!itilNumber) throw new Error('Не передан номер ITIL.');
     normalizeBridgeUrl(data.bridgeUrl);
 
-    const itilData = await collectItilFillData(itilNumber);
+    const itilData = await collectItilFillData(itilNumber, waitTimeouts);
     const requestText = itilData.requestText;
     const solutionText = itilData.solutionText;
     if (!requestText) throw new Error(`ITIL ${itilNumber}: текст заявки пустой.`);
@@ -1545,13 +1588,14 @@
     };
   }
 
-  async function collectItilFillData(itilNumber) {
+  async function collectItilFillData(itilNumber, waitTimeouts) {
     const number = String(itilNumber || '').trim();
     if (!number) throw new Error('Не передан номер ITIL.');
 
-    const tab = await getOrCreateItilTab();
+    const timeouts = normalizeWaitTimeouts(waitTimeouts);
+    const tab = await getOrCreateItilTab(timeouts);
     const clipboardPrepared = await writeClipboardText(number);
-    const result = await executeInTab(tab.id, collectItilRequestData, [number, clipboardPrepared]);
+    const result = await executeInTab(tab.id, collectItilRequestData, [number, clipboardPrepared, { waitTimeouts: timeouts }]);
     if (!result || result.success !== true) {
       throw new Error(result && result.error ? result.error : 'Не удалось получить данные из ITIL.');
     }
@@ -1566,6 +1610,7 @@
   }
 
   async function runItilOpenRequest(data) {
+    const waitTimeouts = normalizeWaitTimeouts(data && data.waitTimeouts);
     const itilNumber = String(
       (data && data.itilNumber)
       || (data && data.payload && data.payload.itilNumber)
@@ -1573,9 +1618,9 @@
     ).trim();
     if (!itilNumber) throw new Error('Не передан номер ITIL для открытия заявки.');
 
-    const tab = await getOrCreateItilTab();
+    const tab = await getOrCreateItilTab(waitTimeouts);
     const clipboardPrepared = await writeClipboardText(itilNumber);
-    const result = await executeInTab(tab.id, collectItilRequestData, [itilNumber, clipboardPrepared, { leaveOpen: true }]);
+    const result = await executeInTab(tab.id, collectItilRequestData, [itilNumber, clipboardPrepared, { leaveOpen: true, waitTimeouts }]);
     if (!result || result.success !== true) {
       throw new Error(result && result.error ? result.error : 'Не удалось открыть заявку ITIL.');
     }
@@ -1588,6 +1633,7 @@
 
   async function runSuppFillRow(data) {
     const payload = data && data.payload ? data.payload : {};
+    const waitTimeouts = normalizeWaitTimeouts(data && data.waitTimeouts);
     const row = Number(payload.row);
     const suppNumbers = normalizeSuppNumberList(
       Array.isArray(payload.suppNumbers) && payload.suppNumbers.length
@@ -1615,7 +1661,7 @@
 
     if (suppNumbers.length > 1) {
       if (!itilNumber) throw new Error(`Строка ${row}: для строки с несколькими СУПП не найден «Номер ITIL».`);
-      const itilData = await collectItilFillData(itilNumber);
+      const itilData = await collectItilFillData(itilNumber, waitTimeouts);
       requestText = itilData.requestText;
       requestTextSource = 'ITIL';
       if (!requestText) {
@@ -1623,16 +1669,17 @@
       }
 
       const suppBundle = await collectSuppInfoBundle(suppNumbers, {
-        tab: await getOrCreateSuppTab(),
+        tab: await getOrCreateSuppTab(waitTimeouts),
         itilNumber,
-        itilSolutionText: itilData.solutionText
+        itilSolutionText: itilData.solutionText,
+        waitTimeouts
       });
       infoText = suppBundle.infoText;
       updatedSuppCount = suppBundle.updatedCount;
       warningSuppCount = suppBundle.warningCount;
     } else {
-      const tab = await getOrCreateSuppTab();
-      const result = await executeInTab(tab.id, collectSuppRequestData, [suppNumber]);
+      const tab = await getOrCreateSuppTab(waitTimeouts);
+      const result = await executeInTab(tab.id, collectSuppRequestData, [suppNumber, { waitTimeouts }]);
       if (!result || result.success !== true) {
         throw new Error(result && result.error ? result.error : 'Не удалось получить данные из СУПП.');
       }
@@ -1654,7 +1701,7 @@
           throw new Error(`Строка ${row}, СУПП ${suppNumber}: заявка не найдена в СУПП, но в строке не заполнен «Номер ITIL».`);
         }
 
-        const itilData = await collectItilFillData(itilNumber);
+        const itilData = await collectItilFillData(itilNumber, waitTimeouts);
         requestText = itilData.requestText;
         requestTextSource = 'ITIL';
         if (!requestText) {
@@ -1675,7 +1722,7 @@
         }
 
         const shouldUseItilRequestText = useItilBySuppMismatch;
-        const itilData = shouldUseItilRequestText ? await collectItilFillData(itilNumber) : null;
+        const itilData = shouldUseItilRequestText ? await collectItilFillData(itilNumber, waitTimeouts) : null;
         requestText = shouldUseItilRequestText
           ? (itilData ? itilData.requestText : '')
           : processSuppRequestText(result.requestText || '');
@@ -1725,6 +1772,7 @@
   }
 
   async function runSuppOpenRequest(data) {
+    const waitTimeouts = normalizeWaitTimeouts(data && data.waitTimeouts);
     const suppNumber = String(
       (data && data.suppNumber)
       || (data && data.payload && data.payload.suppNumber)
@@ -1734,8 +1782,8 @@
       throw new Error('Не передан корректный номер СУПП для открытия заявки.');
     }
 
-    const tab = await getOrCreateSuppTab();
-    const result = await executeInTab(tab.id, collectSuppRequestData, [suppNumber, { leaveOpen: true }]);
+    const tab = await getOrCreateSuppTab(waitTimeouts);
+    const result = await executeInTab(tab.id, collectSuppRequestData, [suppNumber, { leaveOpen: true, waitTimeouts }]);
     if (!result || result.success !== true) {
       throw new Error(result && result.error ? result.error : 'Не удалось открыть заявку СУПП.');
     }
@@ -1748,6 +1796,7 @@
 
   async function runItilInfoRefreshRow(data) {
     const payload = data && data.payload ? data.payload : {};
+    const waitTimeouts = normalizeWaitTimeouts(data && data.waitTimeouts);
     const row = Number(payload.row);
     const itilNumber = String(payload.itilNumber || '').trim();
     const sheetName = String(payload.sheetName || '').trim();
@@ -1761,7 +1810,7 @@
     if (!itilNumber) throw new Error('Не передан номер ITIL.');
     normalizeBridgeUrl(data.bridgeUrl);
 
-    const itilData = await collectItilFillData(itilNumber);
+    const itilData = await collectItilFillData(itilNumber, waitTimeouts);
     let solutionText = String(itilData.solutionText || '').trim();
     if (!solutionText && forceEmptyInfoPlaceholder) {
       solutionText = buildItilNoInfoFallbackText();
@@ -1787,6 +1836,7 @@
 
   async function runSuppInfoRefreshRow(data) {
     const payload = data && data.payload ? data.payload : {};
+    const waitTimeouts = normalizeWaitTimeouts(data && data.waitTimeouts);
     const row = Number(payload.row);
     const suppNumbers = normalizeSuppNumberList(
       Array.isArray(payload.suppNumbers) && payload.suppNumbers.length
@@ -1814,18 +1864,19 @@
 
     if (suppNumbers.length > 1) {
       const suppBundle = await collectSuppInfoBundle(suppNumbers, {
-        tab: await getOrCreateSuppTab(),
+        tab: await getOrCreateSuppTab(waitTimeouts),
         itilNumber,
         forceEmptyPrimaryInfoPlaceholder: forceEmptyInfoPlaceholder,
         preserveExistingOnSkip: true,
-        currentInfoText
+        currentInfoText,
+        waitTimeouts
       });
       infoText = suppBundle.infoText;
       updatedSuppCount = suppBundle.updatedCount;
       warningSuppCount = suppBundle.warningCount;
     } else {
-      const tab = await getOrCreateSuppTab();
-      const result = await executeInTab(tab.id, collectSuppRequestData, [suppNumber]);
+      const tab = await getOrCreateSuppTab(waitTimeouts);
+      const result = await executeInTab(tab.id, collectSuppRequestData, [suppNumber, { waitTimeouts }]);
       if (!result || result.success !== true) {
         throw new Error(result && result.error ? result.error : 'Не удалось получить данные из СУПП.');
       }
@@ -1843,7 +1894,7 @@
           };
         }
 
-        const itilData = itilNumber ? await collectItilFillData(itilNumber) : null;
+        const itilData = itilNumber ? await collectItilFillData(itilNumber, waitTimeouts) : null;
         infoText = buildSuppWarningWithItilInfoText(
           suppNumber,
           SUPP_NOT_FOUND_INFO_TEXT,
@@ -1899,6 +1950,15 @@
     const canUseClipboardPaste = !!clipboardPrepared;
     const settings = options && typeof options === 'object' ? options : {};
     const leaveOpen = !!settings.leaveOpen;
+    const configuredTimeouts = settings.waitTimeouts && typeof settings.waitTimeouts === 'object'
+      ? settings.waitTimeouts
+      : {};
+    const getTimeout = (key, fallbackMs) => {
+      const timeoutMs = Number(configuredTimeouts[key]);
+      return Number.isFinite(timeoutMs) && timeoutMs >= 1000 && timeoutMs <= 3600000
+        ? timeoutMs
+        : fallbackMs;
+    };
     if (!number) return { success: false, error: 'Пустой номер ITIL.' };
 
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -2180,13 +2240,13 @@
     }
 
     try {
-      await waitFor(() => document.querySelector('.toplineBox'), 90000, 'личный кабинет ITIL');
+      await waitFor(() => document.querySelector('.toplineBox'), getTimeout('itilAccountMs', 90000), 'личный кабинет ITIL');
 
       let searchInput = findSearchInput();
       if (!searchInput) {
-        const launcher = await waitFor(findServiceDeskLauncher, 30000, 'пункт Service Desk');
+        const launcher = await waitFor(findServiceDeskLauncher, getTimeout('itilServiceDeskMs', 30000), 'пункт Service Desk');
         await clickLikeUser(launcher);
-        searchInput = await waitFor(findSearchInput, 60000, 'поле поиска Service Desk');
+        searchInput = await waitFor(findSearchInput, getTimeout('itilSearchInputMs', 60000), 'поле поиска Service Desk');
       }
 
       await clickLikeUser(searchInput);
@@ -2194,12 +2254,12 @@
       await sleep(200);
       await pasteNumberLikeUser(searchInput, number);
 
-      const numberCell = await waitFor(findGridNumberCell, 60000, `строка ITIL ${number}`);
+      const numberCell = await waitFor(findGridNumberCell, getTimeout('itilSearchResultMs', 60000), `строка ITIL ${number}`);
       const gridCell = numberCell.closest('.gridBox') || numberCell;
       await doubleClickLikeUser(gridCell);
 
-      await waitFor(findRequestTab, 60000, `вкладка заявки ${number}`);
-      await waitFor(() => getIframeText(), 60000, `текст заявки ${number}`);
+      await waitFor(findRequestTab, getTimeout('itilRequestTabMs', 60000), `вкладка заявки ${number}`);
+      await waitFor(() => getIframeText(), getTimeout('itilRequestTextMs', 60000), `текст заявки ${number}`);
 
       if (leaveOpen) {
         return {
@@ -2214,7 +2274,7 @@
       const closeButton = closeRequestTab();
       if (closeButton) {
         await clickLikeUser(closeButton);
-        await waitFor(() => !findRequestTab(), 15000, `закрытие вкладки заявки ${number}`);
+        await waitFor(() => !findRequestTab(), getTimeout('itilRequestCloseMs', 15000), `закрытие вкладки заявки ${number}`);
       }
 
       return {
@@ -2235,6 +2295,15 @@
     const number = String(suppNumber || '').trim();
     const settings = options && typeof options === 'object' ? options : {};
     const leaveOpen = !!settings.leaveOpen;
+    const configuredTimeouts = settings.waitTimeouts && typeof settings.waitTimeouts === 'object'
+      ? settings.waitTimeouts
+      : {};
+    const getTimeout = (key, fallbackMs) => {
+      const timeoutMs = Number(configuredTimeouts[key]);
+      return Number.isFinite(timeoutMs) && timeoutMs >= 1000 && timeoutMs <= 3600000
+        ? timeoutMs
+        : fallbackMs;
+    };
     if (!number) return { success: false, error: 'Пустой номер СУПП.' };
 
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -2596,14 +2665,14 @@
 
       try {
         await clickLikeUser(target);
-        if (await waitForSuppCardOpened(8000)) return true;
+        if (await waitForSuppCardOpened(getTimeout('suppFallbackCardOpenMs', 8000))) return true;
       } catch (error) {
         // Пробуем следующие способы ниже.
       }
 
       try {
         await clickLikeUser(row);
-        if (await waitForSuppCardOpened(8000)) return true;
+        if (await waitForSuppCardOpened(getTimeout('suppFallbackCardOpenMs', 8000))) return true;
       } catch (error) {
         // Пробуем следующие способы ниже.
       }
@@ -2612,7 +2681,7 @@
         dispatchMouseLike(row, 'mousedown', 1);
         dispatchMouseLike(row, 'mouseup', 1);
         dispatchMouseLike(row, 'dblclick', 2);
-        if (await waitForSuppCardOpened(8000)) return true;
+        if (await waitForSuppCardOpened(getTimeout('suppFallbackCardOpenMs', 8000))) return true;
       } catch (error) {
         // Пробуем Enter ниже.
       }
@@ -2622,7 +2691,7 @@
         if (typeof row.focus === 'function') row.focus();
         enterTarget.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter' }));
         enterTarget.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter' }));
-        if (await waitForSuppCardOpened(8000)) return true;
+        if (await waitForSuppCardOpened(getTimeout('suppFallbackCardOpenMs', 8000))) return true;
       } catch (error) {
         // Ничего не делаем, ниже вернём false.
       }
@@ -2721,7 +2790,7 @@
   }
 
     async function openSuppRequestFromSearch() {
-      const input = await waitFor(findGlobalSearchInput, 90000, 'глобальное поле поиска СУПП');
+      const input = await waitFor(findGlobalSearchInput, getTimeout('suppSearchInputMs', 90000), 'глобальное поле поиска СУПП');
 
       for (let attempt = 1; attempt <= 2; attempt++) {
         await clearGlobalSearchInput(input);
@@ -2731,7 +2800,7 @@
         // Даём СУПП время не просто показать dropdown, а навесить обработчики.
         await sleep(700);
 
-        const searchState = await waitForSearchResultOrNotFound(35000);
+        const searchState = await waitForSearchResultOrNotFound(getTimeout('suppSearchResultMs', 35000));
 
         if (searchState.result) {
           let clicked = false;
@@ -2744,7 +2813,7 @@
               clicked = true;
             }
 
-            const openedQuickly = await waitForSuppCardOpened(7000);
+            const openedQuickly = await waitForSuppCardOpened(getTimeout('suppCardOpenMs', 7000));
             if (openedQuickly) return;
 
             // Иногда dropdown выделил нужную строку, но mouse click не прошёл.
@@ -2762,7 +2831,7 @@
               code: 'Enter'
             }));
 
-            const openedByEnter = await waitForSuppCardOpened(7000);
+            const openedByEnter = await waitForSuppCardOpened(getTimeout('suppCardOpenMs', 7000));
             if (openedByEnter) return;
 
             await sleep(500);
@@ -3085,14 +3154,14 @@
     const prefix = getSuppPagePrefixFromElement(closeButton, 'headerTopLine_cmd_CloseButton');
 
     await clickLikeUser(closeButton);
-    if (await waitForSuppCardClosed(2500, prefix)) return true;
+    if (await waitForSuppCardClosed(getTimeout('suppCloseStepMs', 2500), prefix)) return true;
 
     try {
       closeButton.click();
     } catch (error) {
       // Игнорируем и пробуем следующие fallback ниже.
     }
-    if (await waitForSuppCardClosed(2500, prefix)) return true;
+    if (await waitForSuppCardClosed(getTimeout('suppCloseStepMs', 2500), prefix)) return true;
 
     const svg = closeButton.querySelector('svg,use');
     if (svg) {
@@ -3102,11 +3171,11 @@
         // SVG fallback не критичен.
       }
     }
-    if (await waitForSuppCardClosed(2500, prefix)) return true;
+    if (await waitForSuppCardClosed(getTimeout('suppCloseStepMs', 2500), prefix)) return true;
 
     document.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Escape', code: 'Escape' }));
     document.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, cancelable: true, key: 'Escape', code: 'Escape' }));
-    return waitForSuppCardClosed(2500, prefix);
+    return waitForSuppCardClosed(getTimeout('suppCloseStepMs', 2500), prefix);
   }
 
   async function closeOpenedRequestCard() {
@@ -3126,11 +3195,11 @@
 
       closeError = new Error(`Не удалось закрыть заявку ${number}: кнопка ${closeButton.id || closeButton.getAttribute('title') || 'Закрыть'} осталась видимой после попытки ${attempt}.`);
 
-      if (await waitForSuppCardClosed(3000, targetPrefix)) break;
+      if (await waitForSuppCardClosed(getTimeout('suppCloseRetryMs', 3000), targetPrefix)) break;
       await sleep(400);
     }
 
-    await waitForSuppCardClosed(5000, targetPrefix);
+    await waitForSuppCardClosed(getTimeout('suppCloseFinalMs', 5000), targetPrefix);
 
     if (findOpenedRequestCard()) {
       throw closeError || new Error(`Не удалось закрыть заявку ${number}: карточка осталась открытой.`);
@@ -3144,7 +3213,7 @@
   }
 
     try {
-      await waitFor(findGlobalSearchInput, 90000, 'страница СУПП');
+      await waitFor(findGlobalSearchInput, getTimeout('suppSearchInputMs', 90000), 'страница СУПП');
       const openResult = await openSuppRequestFromSearch();
       if (openResult && openResult.skipped === true) {
         return {
@@ -3155,7 +3224,7 @@
         };
       }
 
-      const requestText = await waitFor(getInfoIframeText, 60000, `текст заявки СУПП ${number}`);
+      const requestText = await waitFor(getInfoIframeText, getTimeout('suppRequestTextMs', 60000), `текст заявки СУПП ${number}`);
       if (leaveOpen) {
         return {
           success: true,
@@ -3168,7 +3237,7 @@
       const commentsText = extractCommentsText(requestText);
 
       await openDiscussionPanel();
-      const discussionText = await waitForDiscussionTextStabilized(8000);
+      const discussionText = await waitForDiscussionTextStabilized(getTimeout('suppDiscussionMs', 8000));
 
       await closeOpenedRequestCard();
 

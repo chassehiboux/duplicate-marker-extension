@@ -11,6 +11,32 @@
     storageKey: 'dup_google_sheets_problem_picker_bridge_url'
   }, window.GOOGLE_SHEETS_PROBLEM_PICKER_CONFIG || {});
 
+  const WAIT_TIMEOUTS_STORAGE_KEY = 'dup_google_sheets_problem_picker_wait_timeouts_v1';
+  const WAIT_TIMEOUT_DEFINITIONS = Object.freeze([
+    { key: 'tabLoadMs', group: 'Общее', label: 'Загрузка вкладки ITIL/СУПП', defaultSeconds: 90 },
+    { key: 'oneCReadyMs', group: 'Общее', label: 'Готовность рабочей страницы 1С', defaultSeconds: 90 },
+    { key: 'itilAccountMs', group: 'ITIL', label: 'Личный кабинет ITIL', defaultSeconds: 90 },
+    { key: 'itilServiceDeskMs', group: 'ITIL', label: 'Пункт Service Desk', defaultSeconds: 30 },
+    { key: 'itilSearchInputMs', group: 'ITIL', label: 'Поле поиска Service Desk', defaultSeconds: 60 },
+    { key: 'itilSearchResultMs', group: 'ITIL', label: 'Строка ITIL в результатах', defaultSeconds: 60 },
+    { key: 'itilRequestTabMs', group: 'ITIL', label: 'Открытие вкладки заявки', defaultSeconds: 60 },
+    { key: 'itilRequestTextMs', group: 'ITIL', label: 'Загрузка текста заявки', defaultSeconds: 60 },
+    { key: 'itilRequestCloseMs', group: 'ITIL', label: 'Закрытие вкладки заявки', defaultSeconds: 15 },
+    { key: 'suppSearchInputMs', group: 'СУПП', label: 'Глобальное поле поиска', defaultSeconds: 90 },
+    { key: 'suppSearchResultMs', group: 'СУПП', label: 'Результат поиска заявки', defaultSeconds: 35 },
+    { key: 'suppCardOpenMs', group: 'СУПП', label: 'Открытие карточки из результата', defaultSeconds: 7 },
+    { key: 'suppFallbackCardOpenMs', group: 'СУПП', label: 'Открытие карточки запасным способом', defaultSeconds: 8 },
+    { key: 'suppRequestTextMs', group: 'СУПП', label: 'Загрузка текста заявки', defaultSeconds: 60 },
+    { key: 'suppDiscussionMs', group: 'СУПП', label: 'Загрузка обсуждения', defaultSeconds: 8 },
+    { key: 'suppCloseStepMs', group: 'СУПП', label: 'Одна попытка закрытия карточки', defaultSeconds: 2.5 },
+    { key: 'suppCloseRetryMs', group: 'СУПП', label: 'Ожидание между повторами закрытия', defaultSeconds: 3 },
+    { key: 'suppCloseFinalMs', group: 'СУПП', label: 'Финальное ожидание закрытия', defaultSeconds: 5 }
+  ]);
+  const WAIT_TIMEOUT_DEFAULTS_MS = Object.freeze(WAIT_TIMEOUT_DEFINITIONS.reduce((result, definition) => {
+    result[definition.key] = definition.defaultSeconds * 1000;
+    return result;
+  }, {}));
+
   const TEXT_HEADER = 'Текст заявки';
   const PROBLEM_HEADER = 'Проблемы';
   const DEFAULT_VALUE = 'Публикация/Некорректная публикация/Ошибки публикации';
@@ -126,7 +152,7 @@
   const WSS_IMPORT_REVIEW_MODAL_ID = 'dup-google-sheets-wss-import-review-modal';
   const MENU_ID = 'dup-google-sheets-problem-picker-menu';
   const MENU_OVERLAY_ID = 'dup-google-sheets-problem-picker-menu-overlay';
-  const MENU_LAYOUT_VERSION = '2026-08-06-new-response-inbox-1';
+  const MENU_LAYOUT_VERSION = '2026-08-21-wait-settings-1';
   const MENU_BOUND_FLAG = '__dupGoogleSheetsMenuBound';
   const MENU_OVERLAY_BOUND_FLAG = '__dupGoogleSheetsMenuOverlayBound';
   const STYLE_ID = 'dup-google-sheets-problem-picker-style';
@@ -172,6 +198,11 @@
   let autoOpenInProgress = false;
   let lastAutoOpenAtMs = 0;
   let menuStatusText = '';
+  let waitTimeoutOverrides = {};
+  let waitTimeoutSettingsLoaded = false;
+  let waitSettingsPanelOpen = false;
+  let waitSettingsStatusText = '';
+  let waitSettingsStatusIsError = false;
   let menuStatusIsError = false;
   let itilRunId = 0;
   let suppRunId = 0;
@@ -328,6 +359,16 @@
   };
 
   const $ = (selector, root = document) => root.querySelector(selector);
+  const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
+
+  function escapeHtml(value) {
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
   const FILE_NAME_ONLY_LINE_RE = /^\s*[^\r\n\\/:*?"<>|]+\.(?:png|jpe?g|gif|bmp|webp|svg|heic|pdf|docx?|xlsx?|pptx?|txt|rtf|csv|xml|json|zip|rar|7z)\s*$/i;
 
   function clonePlainData(value) {
@@ -472,6 +513,156 @@
     await chromeStorageSet({ [CONFIG.storageKey]: state.bridgeUrl });
     updateLauncherStatus(state.bridgeUrl ? 'URL bridge сохранён.' : 'URL bridge очищен.', false);
     renderModal();
+  }
+
+  function sanitizeWaitTimeoutOverrides(value) {
+    const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+    const result = {};
+
+    WAIT_TIMEOUT_DEFINITIONS.forEach((definition) => {
+      const timeoutMs = Number(source[definition.key]);
+      if (Number.isFinite(timeoutMs) && timeoutMs >= 1000 && timeoutMs <= 3600000) {
+        result[definition.key] = Math.round(timeoutMs);
+      }
+    });
+
+    return result;
+  }
+
+  async function loadWaitTimeoutSettings() {
+    const stored = await chromeStorageGet([WAIT_TIMEOUTS_STORAGE_KEY]);
+    waitTimeoutOverrides = sanitizeWaitTimeoutOverrides(stored[WAIT_TIMEOUTS_STORAGE_KEY]);
+    waitTimeoutSettingsLoaded = true;
+    return waitTimeoutOverrides;
+  }
+
+  function getEffectiveWaitTimeouts() {
+    return {
+      ...WAIT_TIMEOUT_DEFAULTS_MS,
+      ...sanitizeWaitTimeoutOverrides(waitTimeoutOverrides)
+    };
+  }
+
+  function getWaitSettingsMarkup() {
+    const groups = [];
+    WAIT_TIMEOUT_DEFINITIONS.forEach((definition) => {
+      let group = groups.find((item) => item.name === definition.group);
+      if (!group) {
+        group = { name: definition.group, definitions: [] };
+        groups.push(group);
+      }
+      group.definitions.push(definition);
+    });
+
+    const groupMarkup = groups.map((group) => `
+      <fieldset class="gs-wait-settings-group">
+        <legend>${escapeHtml(group.name)}</legend>
+        <div class="gs-wait-settings-grid">
+          ${group.definitions.map((definition) => `
+            <label class="gs-wait-settings-field">
+              <span>${escapeHtml(definition.label)}</span>
+              <span class="gs-wait-settings-control">
+                <input type="number" min="1" max="3600" step="0.5" inputmode="decimal"
+                  data-wait-timeout-key="${escapeHtml(definition.key)}"
+                  placeholder="${definition.defaultSeconds}"
+                  aria-label="${escapeHtml(`${definition.label}, секунд`)}">
+                <span>сек.</span>
+              </span>
+            </label>
+          `).join('')}
+        </div>
+      </fieldset>
+    `).join('');
+
+    return `
+      <div class="gs-wait-settings-panel" hidden>
+        <div class="gs-wait-settings-intro">
+          Пустое поле использует штатное значение, указанное серым. Изменения применятся со следующей обрабатываемой заявки.
+        </div>
+        ${groupMarkup}
+        <div class="gs-wait-settings-actions">
+          <button type="button" class="gs-wait-settings-save">Сохранить</button>
+          <button type="button" class="gs-wait-settings-defaults">Вернуть все по умолчанию</button>
+        </div>
+        <div class="gs-wait-settings-status" aria-live="polite"></div>
+      </div>
+    `;
+  }
+
+  function renderWaitSettingsPanel() {
+    const menu = document.getElementById(MENU_ID);
+    if (!(menu instanceof HTMLElement)) return;
+
+    const panel = $('.gs-wait-settings-panel', menu);
+    const toggle = $('.gs-wait-settings-toggle', menu);
+    const status = $('.gs-wait-settings-status', menu);
+    if (panel instanceof HTMLElement) panel.hidden = !waitSettingsPanelOpen;
+    if (toggle instanceof HTMLButtonElement) {
+      toggle.setAttribute('aria-expanded', waitSettingsPanelOpen ? 'true' : 'false');
+    }
+    if (status instanceof HTMLElement) {
+      status.textContent = waitSettingsStatusText;
+      status.classList.toggle('is-error', waitSettingsStatusIsError);
+    }
+
+    if (!waitTimeoutSettingsLoaded) return;
+    $$('[data-wait-timeout-key]', menu).forEach((input) => {
+      if (!(input instanceof HTMLInputElement)) return;
+      const key = String(input.dataset.waitTimeoutKey || '');
+      const customMs = Number(waitTimeoutOverrides[key]);
+      input.value = Number.isFinite(customMs) ? String(customMs / 1000) : '';
+    });
+  }
+
+  async function openWaitSettings() {
+    waitSettingsPanelOpen = !waitSettingsPanelOpen;
+    waitSettingsStatusText = '';
+    waitSettingsStatusIsError = false;
+    renderWaitSettingsPanel();
+    if (!waitSettingsPanelOpen || waitTimeoutSettingsLoaded) return;
+
+    await loadWaitTimeoutSettings();
+    renderWaitSettingsPanel();
+  }
+
+  async function saveWaitSettings(useDefaults) {
+    const menu = document.getElementById(MENU_ID);
+    if (!(menu instanceof HTMLElement)) return;
+
+    const nextOverrides = {};
+    if (!useDefaults) {
+      for (const input of $$('[data-wait-timeout-key]', menu)) {
+        if (!(input instanceof HTMLInputElement)) continue;
+        const rawValue = String(input.value || '').trim().replace(',', '.');
+        if (!rawValue) continue;
+
+        const seconds = Number(rawValue);
+        if (!Number.isFinite(seconds) || seconds < 1 || seconds > 3600) {
+          waitSettingsStatusText = 'Укажите время от 1 до 3600 секунд или оставьте поле пустым.';
+          waitSettingsStatusIsError = true;
+          renderWaitSettingsPanel();
+          input.focus();
+          return;
+        }
+        nextOverrides[String(input.dataset.waitTimeoutKey || '')] = Math.round(seconds * 1000);
+      }
+    }
+
+    const saved = await chromeStorageSet({ [WAIT_TIMEOUTS_STORAGE_KEY]: nextOverrides });
+    if (!saved) {
+      waitSettingsStatusText = 'Не удалось сохранить настройки ожидания.';
+      waitSettingsStatusIsError = true;
+      renderWaitSettingsPanel();
+      return;
+    }
+
+    waitTimeoutOverrides = nextOverrides;
+    waitTimeoutSettingsLoaded = true;
+    waitSettingsStatusText = useDefaults
+      ? 'Все ожидания возвращены к штатным значениям.'
+      : 'Настройки сохранены и применятся со следующей заявки.';
+    waitSettingsStatusIsError = false;
+    renderWaitSettingsPanel();
   }
 
   function getActiveSheetName() {
@@ -3282,11 +3473,12 @@
     setSummaryActionMessage(button, `Открываю ${labelText}: ${requestNumber}...`, false);
 
     try {
+      if (!waitTimeoutSettingsLoaded) await loadWaitTimeoutSettings();
       const response = await sendRuntimeMessage({
         action,
         data: action === ITIL_OPEN_REQUEST_ACTION
-          ? { itilNumber: requestNumber }
-          : { suppNumber: requestNumber }
+          ? { itilNumber: requestNumber, waitTimeouts: getEffectiveWaitTimeouts() }
+          : { suppNumber: requestNumber, waitTimeouts: getEffectiveWaitTimeouts() }
       });
 
       if (!response || response.success !== true) {
@@ -3337,6 +3529,22 @@
       #${MENU_ID} .gs-problem-picker-menu-section:first-of-type{border-top:0;padding-top:0;margin-top:0}
       #${MENU_ID} .gs-problem-picker-menu-section-title{font-size:14px;font-weight:700;color:#253044}
       #${MENU_ID} .gs-problem-picker-menu-actions{display:flex;flex-wrap:wrap;gap:8px}
+      #${MENU_ID} .gs-wait-settings-toggle{border-color:#c4d1e6;background:#f6f9ff;color:#234b8f}
+      #${MENU_ID} .gs-wait-settings-panel{display:grid;gap:14px;padding:16px;border:1px solid #cdd8e8;border-radius:12px;background:linear-gradient(145deg,#f8fbff 0%,#eef4fb 100%);box-shadow:inset 0 1px 0 rgba(255,255,255,.85)}
+      #${MENU_ID} .gs-wait-settings-panel[hidden]{display:none!important}
+      #${MENU_ID} .gs-wait-settings-intro{color:#536176;font-size:12px;line-height:1.45}
+      #${MENU_ID} .gs-wait-settings-group{min-width:0;margin:0;padding:12px;border:1px solid rgba(93,116,151,.22);border-radius:10px;background:rgba(255,255,255,.72)}
+      #${MENU_ID} .gs-wait-settings-group legend{padding:0 7px;color:#27466f;font-size:12px;font-weight:800;letter-spacing:.04em;text-transform:uppercase}
+      #${MENU_ID} .gs-wait-settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 14px}
+      #${MENU_ID} .gs-wait-settings-field{display:grid;gap:5px;min-width:0;color:#334155;font-size:12px;font-weight:600}
+      #${MENU_ID} .gs-wait-settings-control{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:7px;color:#64748b;font-weight:500}
+      #${MENU_ID} .gs-wait-settings-control input{width:100%;min-width:0;box-sizing:border-box;padding:7px 9px;border:1px solid #b9c7d9;border-radius:7px;background:#fff;color:#172033;font:600 13px/1.2 "Segoe UI",Tahoma,sans-serif;outline:none}
+      #${MENU_ID} .gs-wait-settings-control input:focus{border-color:#1155cc;box-shadow:0 0 0 3px rgba(17,85,204,.14)}
+      #${MENU_ID} .gs-wait-settings-control input::placeholder{color:#8a96a8;opacity:1}
+      #${MENU_ID} .gs-wait-settings-actions{display:flex;flex-wrap:wrap;gap:8px}
+      #${MENU_ID} .gs-wait-settings-save{border-color:#1155cc;background:#1155cc;color:#fff}
+      #${MENU_ID} .gs-wait-settings-status{min-height:18px;color:#24513a;font-size:12px}
+      #${MENU_ID} .gs-wait-settings-status.is-error{color:#b3261e}
       #${MENU_ID} .gs-problem-picker-combined-grid,#${MENU_ID} .gs-problem-picker-itil-grid,#${MENU_ID} .gs-problem-picker-supp-grid,#${MENU_ID} .gs-problem-picker-new-response-grid{display:grid;grid-template-columns:150px 1fr;gap:6px 12px;font-size:13px;color:#39465c}
       #${MENU_ID} .gs-problem-picker-combined-grid dt,#${MENU_ID} .gs-problem-picker-itil-grid dt,#${MENU_ID} .gs-problem-picker-supp-grid dt,#${MENU_ID} .gs-problem-picker-new-response-grid dt{font-weight:700;color:#5d6678}
       #${MENU_ID} .gs-problem-picker-combined-grid dd,#${MENU_ID} .gs-problem-picker-itil-grid dd,#${MENU_ID} .gs-problem-picker-supp-grid dd,#${MENU_ID} .gs-problem-picker-new-response-grid dd{margin:0;min-width:0;overflow-wrap:anywhere}
@@ -3360,6 +3568,7 @@
       #${MENU_ID} .gs-problem-picker-open,#${MENU_ID} .gs-problem-picker-chatgpt-search-open,#${MENU_ID} .gs-itil-import-open,#${MENU_ID} .gs-wss-import-open,#${MENU_ID} .gs-wss-chatgpt-search-open,#${MENU_ID} .gs-problem-picker-combined-start,#${MENU_ID} .gs-problem-picker-itil-start,#${MENU_ID} .gs-problem-picker-supp-start,#${MENU_ID} .gs-problem-picker-supp-test,#${MENU_ID} .gs-problem-picker-new-response-start{border-color:#1155cc;background:#1155cc;color:#fff;box-shadow:0 8px 22px rgba(17,85,204,.2)}
       #${MENU_ID} .gs-problem-picker-new-response-history{border-color:#c9d7ef;background:#f4f8ff;color:#0f3f99}
       #${MENU_ID} .gs-problem-picker-combined-stop,#${MENU_ID} .gs-problem-picker-itil-stop,#${MENU_ID} .gs-problem-picker-supp-stop,#${MENU_ID} .gs-problem-picker-new-response-stop{border-color:#b3261e;color:#b3261e}
+      @media (max-width:680px){#${MENU_ID} .gs-wait-settings-grid{grid-template-columns:1fr}}
       #${MODAL_ID},#${NEW_RESPONSE_REVIEW_MODAL_ID},#${ITIL_IMPORT_MODAL_ID},#${WSS_IMPORT_MODAL_ID},#${WSS_IMPORT_REVIEW_MODAL_ID}{position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;box-sizing:border-box;padding:16px;overflow:hidden;background:rgba(17,24,39,.42);pointer-events:none;font-family:"Segoe UI",Tahoma,sans-serif}
       #${CHATGPT_SEARCH_MODAL_ID}{position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;background:rgba(15,23,42,.48);pointer-events:none;font-family:"Segoe UI",Tahoma,sans-serif}
       #${MODAL_ID}[hidden],#${NEW_RESPONSE_REVIEW_MODAL_ID}[hidden],#${CHATGPT_SEARCH_MODAL_ID}[hidden],#${ITIL_IMPORT_MODAL_ID}[hidden],#${WSS_IMPORT_MODAL_ID}[hidden],#${WSS_IMPORT_REVIEW_MODAL_ID}[hidden],html.dup-ext-screenshot-mode #${ROOT_ID},html.dup-ext-screenshot-mode #${MODAL_ID},html.dup-ext-screenshot-mode #${NEW_RESPONSE_REVIEW_MODAL_ID},html.dup-ext-screenshot-mode #${CHATGPT_SEARCH_MODAL_ID},html.dup-ext-screenshot-mode #${ITIL_IMPORT_MODAL_ID},html.dup-ext-screenshot-mode #${WSS_IMPORT_MODAL_ID},html.dup-ext-screenshot-mode #${WSS_IMPORT_REVIEW_MODAL_ID},html.dup-ext-screenshot-mode #${MENU_ID},html.dup-ext-screenshot-mode #${MENU_OVERLAY_ID}{display:none!important}
@@ -4038,9 +4247,11 @@
           <button type="button" class="gs-problem-picker-combined-start">Старт</button>
           <button type="button" class="gs-problem-picker-combined-stop" disabled>Стоп</button>
           <button type="button" class="gs-problem-picker-new-response-history" disabled>Непрочитанные (0)</button>
+          <button type="button" class="gs-wait-settings-toggle" aria-expanded="false">Настройки ожидания</button>
           <button type="button" class="gs-problem-picker-manual-toggle" aria-expanded="false" aria-label="Показать ручные действия">▼</button>
           <button type="button" class="gs-problem-picker-url">URL bridge</button>
         </div>
+        ${getWaitSettingsMarkup()}
         <dl class="gs-problem-picker-combined-grid">
           <dt>Собрано строк</dt>
           <dd class="gs-problem-picker-combined-collected">0</dd>
@@ -4173,6 +4384,18 @@
         stopCombinedFlow();
         return;
       }
+      if (button.classList.contains('gs-wait-settings-toggle')) {
+        void openWaitSettings();
+        return;
+      }
+      if (button.classList.contains('gs-wait-settings-save')) {
+        void saveWaitSettings(false);
+        return;
+      }
+      if (button.classList.contains('gs-wait-settings-defaults')) {
+        void saveWaitSettings(true);
+        return;
+      }
       if (button.classList.contains('gs-problem-picker-manual-toggle')) {
         combinedFlowState = {
           ...combinedFlowState,
@@ -4269,6 +4492,8 @@
     menu.setAttribute('aria-label', 'Меню Google Sheets');
 
     const needsMenuRefresh = menu.dataset.layoutVersion !== MENU_LAYOUT_VERSION
+      || !$('.gs-wait-settings-toggle', menu)
+      || !$('.gs-wait-settings-panel', menu)
       || !$('.gs-problem-picker-manual-toggle', menu)
       || !$('.gs-problem-picker-manual-panel', menu)
       || !$('.gs-itil-import-open', menu)
@@ -4285,6 +4510,7 @@
     bindMenuInteractions(menu, overlay);
     updateLauncherStatus(menuStatusText, menuStatusIsError);
     renderCombinedFlowStatus();
+    renderWaitSettingsPanel();
     renderItilStatus();
     renderSuppStatus();
     renderNewResponseStatus();
@@ -4299,6 +4525,7 @@
     if (!(menu instanceof HTMLElement)) return false;
     if (overlay instanceof HTMLElement) overlay.hidden = false;
     menu.hidden = false;
+    renderWaitSettingsPanel();
     renderItilStatus();
     renderSuppStatus();
     renderNewResponseStatus();
@@ -6388,6 +6615,7 @@
 
     try {
       await loadBridgeUrl();
+      await loadWaitTimeoutSettings();
       if (!state.bridgeUrl) throw new Error('URL bridge не задан. Нажми «URL bridge» и задай Apps Script bridge.');
 
       await loadCombinedSearchQueue();
@@ -6414,6 +6642,7 @@
           action: item.mode === 'supp' ? SUPP_FILL_ACTION : ITIL_FILL_ACTION,
           data: {
             bridgeUrl: state.bridgeUrl,
+            waitTimeouts: getEffectiveWaitTimeouts(),
             payload: item.mode === 'supp'
               ? {
                 spreadsheetId: CONFIG.spreadsheetId,
@@ -6641,6 +6870,7 @@
 
     try {
       await loadBridgeUrl();
+      await loadWaitTimeoutSettings();
       if (!state.bridgeUrl) throw new Error('URL bridge не задан. Нажми «URL bridge» и задай Apps Script bridge.');
 
       await loadItilQueue();
@@ -6687,6 +6917,7 @@
           action: ITIL_FILL_ACTION,
           data: {
             bridgeUrl: state.bridgeUrl,
+            waitTimeouts: getEffectiveWaitTimeouts(),
             payload: {
               spreadsheetId: CONFIG.spreadsheetId,
               sheetName: itilState.sheetName,
@@ -6857,6 +7088,7 @@
 
     try {
       await loadBridgeUrl();
+      await loadWaitTimeoutSettings();
       if (!state.bridgeUrl) throw new Error('URL bridge не задан. Нажми «URL bridge» и задай Apps Script bridge.');
 
       await loadSuppQueue();
@@ -6904,6 +7136,7 @@
           action: SUPP_FILL_ACTION,
           data: {
             bridgeUrl: state.bridgeUrl,
+            waitTimeouts: getEffectiveWaitTimeouts(),
             payload: {
               spreadsheetId: CONFIG.spreadsheetId,
               sheetName: suppState.sheetName,
@@ -7124,6 +7357,7 @@
 
     try {
       await loadBridgeUrl();
+      await loadWaitTimeoutSettings();
       if (!state.bridgeUrl) throw new Error('URL bridge не задан. Нажми «URL bridge» и задай Apps Script bridge.');
 
       await loadNewResponseQueue();
@@ -7200,6 +7434,7 @@
           action: item.mode === 'supp' ? SUPP_INFO_REFRESH_ACTION : ITIL_INFO_REFRESH_ACTION,
           data: {
             bridgeUrl: state.bridgeUrl,
+            waitTimeouts: getEffectiveWaitTimeouts(),
             payload: {
               spreadsheetId: CONFIG.spreadsheetId,
               sheetName: newResponseState.sheetName,
@@ -7461,7 +7696,7 @@
     installAutoOpenListeners();
     document.addEventListener('keydown', handleMenuHotkey, true);
     document.addEventListener('keydown', handleMenuEscape, true);
-    void loadBridgeUrl().then(() => refreshNewResponseInboxSummary());
+    void Promise.all([loadBridgeUrl(), loadWaitTimeoutSettings()]).then(() => refreshNewResponseInboxSummary());
   }
 
   chrome.runtime.onMessage.addListener((request) => {

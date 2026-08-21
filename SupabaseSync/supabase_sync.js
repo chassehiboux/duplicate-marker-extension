@@ -55,6 +55,7 @@
     'vzid_last_claim_type_label',
     'vzid_last_claim_type_updated_at',
     'dup_google_sheets_problem_picker_bridge_url',
+    'dup_google_sheets_problem_picker_wait_timeouts_v1',
     SUPPORT_REMINDERS_STORAGE_KEY,
     'dup_execution_analysis_params_v1',
     'dup_execution_analysis_state_v1',
