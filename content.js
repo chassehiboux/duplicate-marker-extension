@@ -287,6 +287,33 @@
   const EPGU_REQUESTS_COLOR_GREEN = '#C8F2CC';
   const EPGU_REQUESTS_COLOR_YELLOW = '#FFF3B8';
   const EPGU_REQUESTS_COLOR_TRANSITION = '#FFDEC1';
+  const REESTR_DZ_PRINCIPAL_PATH = '/ovzid/ReestrDz';
+  const REESTR_DZ_PRINCIPAL_BUTTON_ID = 'dup-reestr-dz-principal-button';
+  const REESTR_DZ_PRINCIPAL_SEPARATOR_ID = 'dup-reestr-dz-principal-separator';
+  const REESTR_DZ_PRINCIPAL_OVERLAY_ID = 'dup-reestr-dz-principal-overlay';
+  const REESTR_DZ_PRINCIPAL_PERIOD_DIALOG_ID = 'dup-reestr-dz-principal-period-dialog';
+  const REESTR_DZ_PRINCIPAL_STYLE_ID = 'dup-reestr-dz-principal-style';
+  const REESTR_DZ_PRINCIPAL_CURRENT_ROW_CLASS = 'dup-reestr-dz-principal-current-row';
+  const REESTR_DZ_PRINCIPAL_ATTENTION_ROW_CLASS = 'dup-reestr-dz-principal-attention-row';
+  const REESTR_DZ_PRINCIPAL_DAILY_STORAGE_KEY = 'dup_reestr_dz_principal_daily_runs';
+  const REESTR_DZ_PRINCIPAL_DAILY_STORAGE_VERSION = 1;
+  const REESTR_DZ_PRINCIPAL_REPORT_HEADERS = Object.freeze([
+    ['ReestrDzID', '№'],
+    ['Status', 'Статус'],
+    ['CreateDate', 'Дата создания реестра'],
+    ['ClaimantName', 'Взыскатель'],
+    ['EDocsCount', 'Количество'],
+    ['EmployeeFullName', 'Исполнитель ОВЗИД'],
+    ['RequestDate', 'Дата запуска поручения на списание'],
+    ['RequestNumber', 'Номер поручения'],
+    ['SendDate', 'Дата отправки принципалу'],
+    ['PrincipalNumber', 'Номер исходящего'],
+    ['OrderDate', 'Дата приказа о списании'],
+    ['OrderNumber', 'Номер приказа о списании'],
+    ['Structure', 'Состав реестра'],
+    ['ResolutionsDirname', 'Путь к папке с постановлениями'],
+    ['Note', 'Комментарий']
+  ]);
   const EXTENSION_UI_SETTINGS_STYLE_ID = 'dup-extension-ui-settings-style';
   const EXTENSION_UI_SETTINGS_OVERLAY_ID = 'dup-extension-ui-settings-overlay';
   const EXTENSION_UI_SETTINGS_PANEL_ID = 'dup-extension-ui-settings-panel';
@@ -527,6 +554,23 @@
       `
     },
     {
+      key: 'reestrDzPrincipalAutofill',
+      storageKey: 'dup_ui_show_reestr_dz_principal_autofill',
+      label: 'Проверка исходящих реестров ДЗ',
+      description: 'Кнопка, оверлей и подсветка строк при заполнении сведений принципалу.',
+      hideClass: 'dup-ui-hide-reestr-dz-principal-autofill',
+      hideCss: `
+        html.dup-ui-hide-reestr-dz-principal-autofill #${REESTR_DZ_PRINCIPAL_BUTTON_ID},
+        html.dup-ui-hide-reestr-dz-principal-autofill #${REESTR_DZ_PRINCIPAL_SEPARATOR_ID},
+        html.dup-ui-hide-reestr-dz-principal-autofill #${REESTR_DZ_PRINCIPAL_OVERLAY_ID},
+        html.dup-ui-hide-reestr-dz-principal-autofill #${REESTR_DZ_PRINCIPAL_PERIOD_DIALOG_ID},
+        html.dup-ui-hide-reestr-dz-principal-autofill .${REESTR_DZ_PRINCIPAL_CURRENT_ROW_CLASS},
+        html.dup-ui-hide-reestr-dz-principal-autofill .${REESTR_DZ_PRINCIPAL_ATTENTION_ROW_CLASS} {
+          display: none !important;
+        }
+      `
+    },
+    {
       key: 'callCenterRegistrySearch',
       storageKey: 'dup_ui_show_call_center_registry_search',
       label: 'Поиск в реестрах взыскания',
@@ -708,6 +752,9 @@
   let extensionUiVisibilitySettings = { ...EXTENSION_UI_SETTINGS_DEFAULTS };
   let extensionUiSettingsOverlayEl = null;
   let extensionUiSettingsPanelEl = null;
+  let reestrDzPrincipalRun = null;
+  let reestrDzPrincipalObserver = null;
+  let reestrDzPrincipalDailyWriteChain = Promise.resolve();
   let stageJumpCachedMenuIndex = null;
   let stageJumpActionMenuEl = null;
   let stageJumpActionMenuAnchor = null;
@@ -2017,6 +2064,1452 @@
       link.remove();
     }, 1000);
     return true;
+  }
+
+  function isReestrDzPrincipalPage() {
+    return String(window.location.pathname || '').replace(/\/+$/, '') === REESTR_DZ_PRINCIPAL_PATH;
+  }
+
+  function normalizeReestrDzText(value) {
+    return String(value === undefined || value === null ? '' : value).replace(/\s+/g, ' ').trim();
+  }
+
+  function parseReestrDzDate(value) {
+    const match = normalizeReestrDzText(value).match(/(?:^|\D)(\d{2})\.(\d{2})\.(\d{4})(?:\D|$)/);
+    if (!match) return null;
+    const day = Number(match[1]);
+    const month = Number(match[2]);
+    const year = Number(match[3]);
+    const timestamp = Date.UTC(year, month - 1, day);
+    const date = new Date(timestamp);
+    if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
+    return timestamp;
+  }
+
+  function formatReestrDzPeriodMask(value) {
+    const digits = String(value || '').replace(/\D/g, '').slice(0, 16);
+    const formatDateDigits = (part) => [part.slice(0, 2), part.slice(2, 4), part.slice(4, 8)].filter(Boolean).join('.');
+    const first = formatDateDigits(digits.slice(0, 8));
+    const secondDigits = digits.slice(8);
+    return secondDigits ? `${first}-${formatDateDigits(secondDigits)}` : first;
+  }
+
+  function parseReestrDzPeriod(value) {
+    const text = normalizeReestrDzText(value);
+    if (!text) return null;
+    const match = text.match(/^(\d{2}\.\d{2}\.\d{4})-(\d{2}\.\d{2}\.\d{4})$/);
+    if (!match) throw new Error('Введите обе даты по маске дд.мм.гггг-дд.мм.гггг.');
+    const from = parseReestrDzDate(match[1]);
+    const to = parseReestrDzDate(match[2]);
+    if (from === null || to === null) throw new Error('Проверьте календарные даты периода.');
+    if (from > to) throw new Error('Начало периода не может быть позже его окончания.');
+    return { from, to, text };
+  }
+
+  function getReestrDzPrincipalLocalDateKey(date = new Date()) {
+    return [
+      date.getFullYear(),
+      String(date.getMonth() + 1).padStart(2, '0'),
+      String(date.getDate()).padStart(2, '0')
+    ].join('-');
+  }
+
+  function cloneReestrDzPrincipalStorageValue(value, fallback) {
+    try {
+      return JSON.parse(JSON.stringify(value));
+    } catch (error) {
+      return fallback;
+    }
+  }
+
+  function readReestrDzPrincipalLocalStorage() {
+    return new Promise((resolve) => {
+      try {
+        chrome.storage.local.get([REESTR_DZ_PRINCIPAL_DAILY_STORAGE_KEY], (result) => {
+          void (chrome.runtime && chrome.runtime.lastError ? chrome.runtime.lastError.message : '');
+          resolve(result && result[REESTR_DZ_PRINCIPAL_DAILY_STORAGE_KEY] || null);
+        });
+      } catch (error) {
+        resolve(null);
+      }
+    });
+  }
+
+  function writeReestrDzPrincipalLocalStorage(store) {
+    return new Promise((resolve) => {
+      try {
+        chrome.storage.local.set({ [REESTR_DZ_PRINCIPAL_DAILY_STORAGE_KEY]: store }, () => {
+          const runtimeError = chrome.runtime && chrome.runtime.lastError ? chrome.runtime.lastError.message : '';
+          resolve(!runtimeError);
+        });
+      } catch (error) {
+        resolve(false);
+      }
+    });
+  }
+
+  function normalizeReestrDzPrincipalDailyStore(rawStore) {
+    const dateKey = getReestrDzPrincipalLocalDateKey();
+    const raw = rawStore && typeof rawStore === 'object' ? rawStore : {};
+    if (raw.dateKey !== dateKey || raw.version !== REESTR_DZ_PRINCIPAL_DAILY_STORAGE_VERSION) {
+      return {
+        version: REESTR_DZ_PRINCIPAL_DAILY_STORAGE_VERSION,
+        dateKey,
+        departments: {}
+      };
+    }
+    return {
+      version: REESTR_DZ_PRINCIPAL_DAILY_STORAGE_VERSION,
+      dateKey,
+      departments: raw.departments && typeof raw.departments === 'object' ? { ...raw.departments } : {}
+    };
+  }
+
+  async function updateReestrDzPrincipalDailyStore(mutator) {
+    reestrDzPrincipalDailyWriteChain = reestrDzPrincipalDailyWriteChain.catch(() => null).then(async () => {
+      const store = normalizeReestrDzPrincipalDailyStore(await readReestrDzPrincipalLocalStorage());
+      const nextStore = typeof mutator === 'function' ? mutator(store) || store : store;
+      const saved = await writeReestrDzPrincipalLocalStorage(nextStore);
+      return { store: nextStore, saved };
+    });
+    return reestrDzPrincipalDailyWriteChain;
+  }
+
+  async function getReestrDzPrincipalDailyDepartment(depid) {
+    await reestrDzPrincipalDailyWriteChain.catch(() => null);
+    const store = normalizeReestrDzPrincipalDailyStore(await readReestrDzPrincipalLocalStorage());
+    const department = store.departments[String(depid || '')];
+    return department && typeof department === 'object'
+      ? cloneReestrDzPrincipalStorageValue(department, { processed: {}, activeRun: null })
+      : { processed: {}, activeRun: null };
+  }
+
+  function serializeReestrDzPrincipalRun(run) {
+    return cloneReestrDzPrincipalStorageValue({
+      status: run.status,
+      gridState: run.gridState,
+      candidates: run.candidates,
+      results: run.results,
+      nextIndex: Number.isInteger(run.nextIndex) ? run.nextIndex : 0,
+      currentIndex: Number.isInteger(run.currentIndex) ? run.currentIndex : 0,
+      department: run.department,
+      period: run.period,
+      metaText: run.metaText,
+      stage: run.stage,
+      warning: run.warning,
+      recoverableError: run.recoverableError === true,
+      updatedAt: Date.now()
+    }, null);
+  }
+
+  async function persistReestrDzPrincipalDailyRun(run) {
+    if (!run || !run.department || !run.department.depid) return false;
+    const depid = String(run.department.depid);
+    const snapshot = serializeReestrDzPrincipalRun(run);
+    const completed = run.status === 'completed';
+    const result = await updateReestrDzPrincipalDailyStore((store) => {
+      const previous = store.departments[depid] && typeof store.departments[depid] === 'object'
+        ? store.departments[depid]
+        : {};
+      const processed = previous.processed && typeof previous.processed === 'object'
+        ? { ...previous.processed }
+        : {};
+      (Array.isArray(run.results) ? run.results : []).forEach((item) => {
+        if (!item || item.error === true || !item.id) return;
+        processed[String(item.id)] = {
+          id: String(item.id),
+          result: normalizeReestrDzText(item.result),
+          description: normalizeReestrDzText(item.description),
+          updatedAt: Date.now()
+        };
+      });
+      store.departments[depid] = {
+        department: cloneReestrDzPrincipalStorageValue(run.department, {}),
+        processed,
+        activeRun: completed ? null : snapshot,
+        updatedAt: Date.now()
+      };
+      return store;
+    });
+    const saved = !!(result && result.saved);
+    run.storageWarning = saved ? '' : 'Не удалось сохранить дневную точку продолжения в памяти Chrome.';
+    syncReestrDzPrincipalOverlay(run);
+    return saved;
+  }
+
+  async function discardReestrDzPrincipalActiveRun(depid) {
+    return updateReestrDzPrincipalDailyStore((store) => {
+      const key = String(depid || '');
+      const previous = store.departments[key] && typeof store.departments[key] === 'object'
+        ? store.departments[key]
+        : {};
+      store.departments[key] = {
+        ...previous,
+        activeRun: null,
+        updatedAt: Date.now()
+      };
+      return store;
+    });
+  }
+
+  function restoreReestrDzPrincipalRun(snapshot) {
+    if (!snapshot || !Array.isArray(snapshot.candidates) || !snapshot.candidates.length) return null;
+    const nextIndex = Math.max(0, Number.parseInt(String(snapshot.nextIndex || 0), 10) || 0);
+    if (nextIndex >= snapshot.candidates.length) return null;
+    const wasError = snapshot.status === 'error';
+    const candidates = cloneReestrDzPrincipalStorageValue(snapshot.candidates, []);
+    return {
+      status: wasError ? 'error' : 'running',
+      paused: !wasError,
+      pauseReason: wasError ? '' : 'manual',
+      resumeWaiters: [],
+      controller: new AbortController(),
+      gridState: cloneReestrDzPrincipalStorageValue(snapshot.gridState, { lastpage: 1 }),
+      candidates,
+      results: cloneReestrDzPrincipalStorageValue(snapshot.results, []),
+      nextIndex,
+      currentIndex: nextIndex,
+      current: candidates[nextIndex] || null,
+      department: cloneReestrDzPrincipalStorageValue(snapshot.department, getReestrDzCurrentDepartment()),
+      period: cloneReestrDzPrincipalStorageValue(snapshot.period, null),
+      overlayDismissed: false,
+      reportDownloaded: false,
+      recoverableError: wasError,
+      canContinue: true,
+      stage: wasError
+        ? `Восстановлена ошибка на строке № ${candidates[nextIndex] && candidates[nextIndex].id || '—'}. Нажмите «Продолжить».`
+        : `Восстановлена дневная сессия. Следующая строка № ${candidates[nextIndex] && candidates[nextIndex].id || '—'}.`,
+      warning: wasError ? normalizeReestrDzText(snapshot.warning) : '',
+      metaText: normalizeReestrDzText(snapshot.metaText) || 'Восстановленная дневная сессия'
+    };
+  }
+
+  function isReestrDzRowInPeriod(cell, period) {
+    if (!period) return true;
+    const timestamp = parseReestrDzDate(cell && cell.RequestDate);
+    return timestamp !== null && timestamp >= period.from && timestamp <= period.to;
+  }
+
+  function askReestrDzPrincipalPeriod() {
+    ensureReestrDzPrincipalStyle();
+    document.getElementById(REESTR_DZ_PRINCIPAL_PERIOD_DIALOG_ID)?.remove();
+    return new Promise((resolve) => {
+      const dialog = document.createElement('div');
+      dialog.id = REESTR_DZ_PRINCIPAL_PERIOD_DIALOG_ID;
+      dialog.className = 'dup-reestr-dz-principal-ui';
+      dialog.innerHTML = `
+        <form class="dup-rdz-period-card">
+          <h2 class="dup-rdz-period-title">Период проверки</h2>
+          <p class="dup-rdz-period-help">Отбор по полю «Дата запуска поручения на списание». Оставьте поле пустым, чтобы проверить все строки.</p>
+          <label class="dup-rdz-period-label" for="dup-rdz-period-input">Период</label>
+          <input id="dup-rdz-period-input" class="dup-rdz-period-input" type="text" inputmode="numeric" maxlength="21" autocomplete="off" placeholder="дд.мм.гггг-дд.мм.гггг" aria-describedby="dup-rdz-period-error">
+          <div id="dup-rdz-period-error" class="dup-rdz-period-error" aria-live="polite"></div>
+          <div class="dup-rdz-period-actions">
+            <button type="button" class="btn btn-default btn-sm" data-action="cancel">Отмена</button>
+            <button type="submit" class="btn btn-primary btn-sm">Продолжить</button>
+          </div>
+        </form>`;
+      const form = dialog.querySelector('form');
+      const input = dialog.querySelector('input');
+      const error = dialog.querySelector('.dup-rdz-period-error');
+      let settled = false;
+      const finish = (result) => {
+        if (settled) return;
+        settled = true;
+        document.removeEventListener('keydown', onKeydown, true);
+        dialog.remove();
+        resolve(result);
+      };
+      const onKeydown = (event) => {
+        if (event.key === 'Escape') finish({ cancelled: true, period: null });
+      };
+      input.addEventListener('input', () => {
+        input.value = formatReestrDzPeriodMask(input.value);
+        error.textContent = '';
+      });
+      input.addEventListener('keydown', (event) => {
+        if (event.key !== 'Backspace' || input.selectionStart !== input.selectionEnd || !input.selectionStart) return;
+        const cursor = input.selectionStart;
+        if (!/[.\-]/.test(input.value.charAt(cursor - 1))) return;
+        event.preventDefault();
+        const digits = input.value.replace(/\D/g, '').split('');
+        const digitIndex = input.value.slice(0, cursor - 1).replace(/\D/g, '').length - 1;
+        if (digitIndex >= 0) digits.splice(digitIndex, 1);
+        input.value = formatReestrDzPeriodMask(digits.join(''));
+        input.setSelectionRange(input.value.length, input.value.length);
+      });
+      form.addEventListener('submit', (event) => {
+        event.preventDefault();
+        try {
+          finish({ cancelled: false, period: parseReestrDzPeriod(input.value) });
+        } catch (validationError) {
+          error.textContent = validationError && validationError.message ? validationError.message : String(validationError);
+          input.focus();
+        }
+      });
+      dialog.querySelector('[data-action="cancel"]').addEventListener('click', () => finish({ cancelled: true, period: null }));
+      document.addEventListener('keydown', onKeydown, true);
+      (document.body || document.documentElement).appendChild(dialog);
+      input.focus();
+    });
+  }
+
+  function ensureReestrDzPrincipalStyle() {
+    if (document.getElementById(REESTR_DZ_PRINCIPAL_STYLE_ID)) return;
+    const style = document.createElement('style');
+    style.id = REESTR_DZ_PRINCIPAL_STYLE_ID;
+    style.textContent = `
+      #${REESTR_DZ_PRINCIPAL_PERIOD_DIALOG_ID} {
+        position: fixed;
+        z-index: 2147483001;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        padding: 20px;
+        background: rgba(20, 31, 43, .48);
+        font-family: Arial, sans-serif;
+      }
+      .dup-rdz-period-card {
+        width: min(470px, calc(100vw - 32px));
+        padding: 18px 20px 16px;
+        border: 1px solid #b9c2cb;
+        border-radius: 4px;
+        background: #fff;
+        color: #333;
+        box-shadow: 0 16px 46px rgba(15, 33, 52, .28);
+      }
+      .dup-rdz-period-title { margin: 0 0 7px; color: #333; font-size: 17px; font-weight: 600; }
+      .dup-rdz-period-help { margin: 0 0 13px; color: #68727d; font-size: 12px; line-height: 1.45; }
+      .dup-rdz-period-label { display: block; margin-bottom: 5px; font-size: 12px; font-weight: 600; }
+      .dup-rdz-period-input {
+        box-sizing: border-box;
+        width: 100%;
+        height: 34px;
+        padding: 6px 9px;
+        border: 1px solid #aaa;
+        border-radius: 3px;
+        color: #333;
+        font: 14px/1.2 Consolas, monospace;
+      }
+      .dup-rdz-period-input:focus { border-color: #337ab7; outline: 0; box-shadow: 0 0 0 2px rgba(51,122,183,.14); }
+      .dup-rdz-period-error { min-height: 17px; margin-top: 5px; color: #c9302c; font-size: 12px; }
+      .dup-rdz-period-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 10px; }
+      #${REESTR_DZ_PRINCIPAL_OVERLAY_ID} {
+        --dup-rdz-accent: #ffb400;
+        --dup-rdz-panel: #0f2134;
+        position: fixed;
+        z-index: 2147483000;
+        top: 82px;
+        right: 22px;
+        width: min(390px, calc(100vw - 32px));
+        overflow: hidden;
+        border: 1px solid rgba(255, 255, 255, .16);
+        border-left: 6px solid var(--dup-rdz-accent);
+        border-radius: 7px;
+        background:
+          linear-gradient(135deg, rgba(255,255,255,.055), transparent 44%),
+          repeating-linear-gradient(0deg, rgba(255,255,255,.018) 0, rgba(255,255,255,.018) 1px, transparent 1px, transparent 5px),
+          var(--dup-rdz-panel);
+        color: #f6f2e8;
+        font-family: Bahnschrift, "Segoe UI Variable", sans-serif;
+        box-shadow: 0 18px 48px rgba(3, 15, 28, .36);
+      }
+      #${REESTR_DZ_PRINCIPAL_OVERLAY_ID}[data-state="paused"] { --dup-rdz-accent: #55b7d2; }
+      #${REESTR_DZ_PRINCIPAL_OVERLAY_ID}[data-state="attention"],
+      #${REESTR_DZ_PRINCIPAL_OVERLAY_ID}[data-state="error"] {
+        --dup-rdz-accent: #ff3f34;
+        --dup-rdz-panel: #321719;
+        animation: dup-rdz-attention-pulse 1.3s ease-in-out 2;
+      }
+      #${REESTR_DZ_PRINCIPAL_OVERLAY_ID}[data-state="completed"] { --dup-rdz-accent: #58c78c; }
+      @keyframes dup-rdz-attention-pulse {
+        50% { box-shadow: 0 18px 52px rgba(255, 63, 52, .46); }
+      }
+      .dup-rdz-principal-head {
+        display: grid;
+        grid-template-columns: 1fr auto auto;
+        gap: 9px;
+        padding: 16px 17px 12px;
+        border-bottom: 1px solid rgba(255,255,255,.12);
+      }
+      .dup-rdz-principal-kicker {
+        color: var(--dup-rdz-accent);
+        font: 700 10px/1 Bahnschrift, sans-serif;
+        letter-spacing: .18em;
+        text-transform: uppercase;
+      }
+      .dup-rdz-principal-title {
+        margin-top: 5px;
+        font: 650 18px/1.15 Bahnschrift, sans-serif;
+      }
+      .dup-rdz-principal-badge {
+        align-self: start;
+        padding: 5px 8px;
+        border: 1px solid color-mix(in srgb, var(--dup-rdz-accent) 65%, transparent);
+        border-radius: 3px;
+        color: var(--dup-rdz-accent);
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: .08em;
+        text-transform: uppercase;
+      }
+      .dup-rdz-principal-close {
+        align-self: start;
+        display: grid;
+        place-items: center;
+        width: 25px;
+        height: 25px;
+        padding: 0;
+        border: 1px solid rgba(255,255,255,.2);
+        border-radius: 3px;
+        background: transparent;
+        color: #dbe4ec;
+        font: 700 18px/1 "Segoe UI", sans-serif;
+        cursor: pointer;
+      }
+      .dup-rdz-principal-close:hover { border-color: var(--dup-rdz-accent); color: var(--dup-rdz-accent); }
+      .dup-rdz-principal-body { padding: 14px 17px 16px; }
+      .dup-rdz-principal-current {
+        display: grid;
+        grid-template-columns: 76px 1fr;
+        gap: 12px;
+        align-items: center;
+        min-height: 58px;
+      }
+      .dup-rdz-principal-number {
+        color: #fff;
+        font: 700 27px/1 Bahnschrift, sans-serif;
+        letter-spacing: -.03em;
+      }
+      .dup-rdz-principal-meta {
+        color: #b9c8d6;
+        font-size: 11px;
+        line-height: 1.45;
+      }
+      .dup-rdz-principal-stage {
+        margin-top: 11px;
+        color: #fff;
+        font-size: 13px;
+        line-height: 1.35;
+      }
+      .dup-rdz-principal-progress {
+        height: 6px;
+        margin: 12px 0 13px;
+        overflow: hidden;
+        border-radius: 1px;
+        background: rgba(255,255,255,.12);
+      }
+      .dup-rdz-principal-progress > span {
+        display: block;
+        width: 0;
+        height: 100%;
+        background: var(--dup-rdz-accent);
+        transition: width .28s ease;
+      }
+      .dup-rdz-principal-stats {
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 6px;
+      }
+      .dup-rdz-principal-stat {
+        padding: 8px 6px;
+        border: 1px solid rgba(255,255,255,.1);
+        background: rgba(255,255,255,.035);
+        text-align: center;
+      }
+      .dup-rdz-principal-stat strong {
+        display: block;
+        color: #fff;
+        font-size: 17px;
+        line-height: 1;
+      }
+      .dup-rdz-principal-stat span {
+        display: block;
+        margin-top: 5px;
+        color: #91a6b8;
+        font-size: 9px;
+        letter-spacing: .05em;
+        text-transform: uppercase;
+      }
+      .dup-rdz-principal-warning {
+        margin-top: 11px;
+        padding: 9px 10px;
+        border: 1px solid rgba(255, 63, 52, .55);
+        background: rgba(255, 63, 52, .12);
+        color: #ffd7d3;
+        font-size: 12px;
+        line-height: 1.4;
+      }
+      .dup-rdz-principal-warning:empty { display: none; }
+      .dup-rdz-principal-actions {
+        display: flex;
+        gap: 8px;
+        margin-top: 13px;
+      }
+      .dup-rdz-principal-action {
+        min-height: 32px;
+        padding: 6px 12px;
+        border: 1px solid rgba(255,255,255,.24);
+        border-radius: 3px;
+        background: transparent;
+        color: #f6f2e8;
+        font: 650 11px/1 Bahnschrift, sans-serif;
+        letter-spacing: .03em;
+        cursor: pointer;
+      }
+      .dup-rdz-principal-action:hover:not([disabled]) { border-color: var(--dup-rdz-accent); color: var(--dup-rdz-accent); }
+      .dup-rdz-principal-action[disabled] { opacity: .34; cursor: default; }
+      .dup-rdz-principal-action[data-action="report"] {
+        margin-left: auto;
+        min-width: 38px;
+        padding-inline: 8px;
+        font-size: 17px;
+      }
+      .dup-rdz-principal-action[hidden] { display: none; }
+      #list tr.${REESTR_DZ_PRINCIPAL_CURRENT_ROW_CLASS} > td {
+        background: #fff0a6 !important;
+        color: #182531 !important;
+        transition: background-color .18s ease;
+      }
+      #list tr.${REESTR_DZ_PRINCIPAL_CURRENT_ROW_CLASS} > td:first-child {
+        box-shadow: inset 6px 0 #f08b22;
+      }
+      #list tr.${REESTR_DZ_PRINCIPAL_ATTENTION_ROW_CLASS} > td {
+        background: #ffd2cf !important;
+        color: #381314 !important;
+      }
+      #list tr.${REESTR_DZ_PRINCIPAL_ATTENTION_ROW_CLASS} > td:first-child {
+        box-shadow: inset 6px 0 #e9342b;
+      }
+    `;
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  function createReestrDzPrincipalOverlay() {
+    ensureReestrDzPrincipalStyle();
+    const existing = document.getElementById(REESTR_DZ_PRINCIPAL_OVERLAY_ID);
+    if (existing instanceof HTMLElement) return existing;
+    const overlay = document.createElement('section');
+    overlay.id = REESTR_DZ_PRINCIPAL_OVERLAY_ID;
+    overlay.className = 'dup-reestr-dz-principal-ui';
+    overlay.dataset.state = 'running';
+    overlay.setAttribute('role', 'status');
+    overlay.setAttribute('aria-live', 'polite');
+    overlay.innerHTML = `
+      <div class="dup-rdz-principal-head">
+        <div>
+          <div class="dup-rdz-principal-kicker">ОВЗИД · контроль</div>
+          <div class="dup-rdz-principal-title">Исходящие принципалу</div>
+        </div>
+        <div class="dup-rdz-principal-badge" data-role="badge">Подготовка</div>
+        <button type="button" class="dup-rdz-principal-close" data-action="close" title="Закрыть" aria-label="Закрыть оверлей">×</button>
+      </div>
+      <div class="dup-rdz-principal-body">
+        <div class="dup-rdz-principal-current">
+          <div class="dup-rdz-principal-number" data-role="number">—</div>
+          <div class="dup-rdz-principal-meta" data-role="meta">Собираю строки грида</div>
+        </div>
+        <div class="dup-rdz-principal-stage" data-role="stage">Подготовка запуска…</div>
+        <div class="dup-rdz-principal-progress"><span data-role="progress"></span></div>
+        <div class="dup-rdz-principal-stats">
+          <div class="dup-rdz-principal-stat"><strong data-role="processed">0</strong><span>обработано</span></div>
+          <div class="dup-rdz-principal-stat"><strong data-role="found">0</strong><span>найдено</span></div>
+          <div class="dup-rdz-principal-stat"><strong data-role="saved">0</strong><span>сохранено</span></div>
+          <div class="dup-rdz-principal-stat"><strong data-role="not-found">0</strong><span>не найдено</span></div>
+          <div class="dup-rdz-principal-stat"><strong data-role="problems">0</strong><span>проблемы</span></div>
+        </div>
+        <div class="dup-rdz-principal-warning" data-role="warning"></div>
+        <div class="dup-rdz-principal-actions">
+          <button type="button" class="dup-rdz-principal-action" data-action="pause">Пауза</button>
+          <button type="button" class="dup-rdz-principal-action" data-action="start" disabled>Продолжить</button>
+          <button type="button" class="dup-rdz-principal-action" data-action="report" title="Сохранить отчёт в Excel" hidden>📊</button>
+        </div>
+      </div>`;
+    overlay.addEventListener('click', (event) => {
+      const button = event.target instanceof Element ? event.target.closest('[data-action]') : null;
+      if (!(button instanceof HTMLButtonElement) || !reestrDzPrincipalRun) return;
+      const action = String(button.dataset.action || '');
+      if (action === 'pause') pauseReestrDzPrincipalRun(reestrDzPrincipalRun);
+      if (action === 'start') {
+        if (reestrDzPrincipalRun.status === 'error') continueReestrDzPrincipalAfterError(reestrDzPrincipalRun);
+        else resumeReestrDzPrincipalRun(reestrDzPrincipalRun);
+      }
+      if (action === 'report') downloadReestrDzPrincipalReport(reestrDzPrincipalRun);
+      if (action === 'close') {
+        if (reestrDzPrincipalRun.status === 'completed') {
+          reestrDzPrincipalRun = null;
+        } else {
+          reestrDzPrincipalRun.overlayDismissed = true;
+        }
+        overlay.remove();
+      }
+    });
+    (document.body || document.documentElement).appendChild(overlay);
+    return overlay;
+  }
+
+  function getReestrDzPrincipalStats(run) {
+    const results = run && Array.isArray(run.results) ? run.results : [];
+    return {
+      processed: results.length,
+      found: results.filter((item) => item.found === true).length,
+      saved: results.filter((item) => item.saved === true).length,
+      notFound: results.filter((item) => item.result === 'Исходящий не найден').length,
+      problems: results.filter((item) => item.error === true).length
+    };
+  }
+
+  function syncReestrDzPrincipalOverlay(run) {
+    if (!run) return;
+    if (run.overlayDismissed) {
+      document.getElementById(REESTR_DZ_PRINCIPAL_OVERLAY_ID)?.remove();
+      return;
+    }
+    const overlay = createReestrDzPrincipalOverlay();
+    const stats = getReestrDzPrincipalStats(run);
+    const total = Array.isArray(run.candidates) ? run.candidates.length : 0;
+    const current = run.current || null;
+    const progress = total ? Math.min(100, Math.round((stats.processed / total) * 100)) : 0;
+    let state = 'running';
+    let badge = 'Работа';
+    if (run.status === 'completed') { state = 'completed'; badge = 'Готово'; }
+    else if (run.status === 'error') { state = 'error'; badge = 'Ошибка'; }
+    else if (run.pauseReason === 'attention') { state = 'attention'; badge = 'Проверить'; }
+    else if (run.paused) { state = 'paused'; badge = 'Пауза'; }
+    else if (run.status === 'preparing') { badge = 'Подготовка'; }
+    overlay.dataset.state = state;
+    const setText = (role, value) => {
+      const element = overlay.querySelector(`[data-role="${role}"]`);
+      if (element instanceof HTMLElement) element.textContent = String(value);
+    };
+    setText('badge', badge);
+    setText('number', current ? `№ ${current.id}` : '—');
+    setText('meta', current
+      ? `${current.cell.RequestNumber || 'Поручение не указано'} · страница ${current.page} из ${run.gridState.lastpage || 1}`
+      : (run.metaText || 'Собираю строки грида'));
+    setText('stage', run.stage || 'Подготовка запуска…');
+    setText('processed', `${stats.processed}/${total}`);
+    setText('found', stats.found);
+    setText('saved', stats.saved);
+    setText('not-found', stats.notFound);
+    setText('problems', stats.problems);
+    setText('warning', run.warning || run.storageWarning || '');
+    const progressEl = overlay.querySelector('[data-role="progress"]');
+    if (progressEl instanceof HTMLElement) progressEl.style.width = `${progress}%`;
+    const pauseButton = overlay.querySelector('[data-action="pause"]');
+    const startButton = overlay.querySelector('[data-action="start"]');
+    const reportButton = overlay.querySelector('[data-action="report"]');
+    if (pauseButton instanceof HTMLButtonElement) pauseButton.disabled = run.paused || ['completed', 'error'].includes(run.status);
+    if (startButton instanceof HTMLButtonElement) {
+      const canResumePause = run.paused && !['completed', 'error'].includes(run.status);
+      const canRetryError = run.status === 'error' && run.recoverableError === true && run.canContinue !== false;
+      startButton.textContent = 'Продолжить';
+      startButton.disabled = !(canResumePause || canRetryError);
+    }
+    if (reportButton instanceof HTMLButtonElement) reportButton.hidden = run.status !== 'completed' || !run.results.length;
+  }
+
+  function updateReestrDzPrincipalStage(run, stage, warning = '') {
+    if (!run) return;
+    run.stage = String(stage || '');
+    run.warning = String(warning || '');
+    syncReestrDzPrincipalOverlay(run);
+  }
+
+  function pauseReestrDzPrincipalRun(run, options = {}) {
+    if (!run || ['completed', 'error'].includes(run.status)) return;
+    run.paused = true;
+    run.pauseReason = options.attention ? 'attention' : 'manual';
+    if (options.message) run.warning = String(options.message);
+    if (!options.message && !options.attention) run.stage = 'Обработка приостановлена пользователем.';
+    syncReestrDzPrincipalOverlay(run);
+    void persistReestrDzPrincipalDailyRun(run);
+  }
+
+  function resumeReestrDzPrincipalRun(run) {
+    if (!run || !run.paused || ['completed', 'error'].includes(run.status)) return;
+    run.paused = false;
+    run.pauseReason = '';
+    run.warning = '';
+    run.stage = run.current ? 'Возобновляю проверку текущей строки…' : 'Возобновляю обработку…';
+    const waiters = Array.isArray(run.resumeWaiters) ? run.resumeWaiters.splice(0) : [];
+    waiters.forEach((resolve) => resolve());
+    syncReestrDzPrincipalOverlay(run);
+  }
+
+  function continueReestrDzPrincipalAfterError(run) {
+    if (!run || run.status !== 'error' || run.recoverableError !== true || run.canContinue === false) return;
+    const failedIndex = Number.isInteger(run.nextIndex) ? run.nextIndex : run.currentIndex;
+    const failedCandidate = Number.isInteger(failedIndex) ? run.candidates[failedIndex] : run.current;
+    for (let index = run.results.length - 1; index >= 0; index -= 1) {
+      const item = run.results[index];
+      if (item && item.error === true && (!failedCandidate || String(item.id) === String(failedCandidate.id))) {
+        run.results.splice(index, 1);
+        break;
+      }
+    }
+    run.status = 'running';
+    run.paused = false;
+    run.pauseReason = '';
+    run.warning = '';
+    run.recoverableError = false;
+    run.canContinue = false;
+    run.stage = failedCandidate
+      ? `Повторяю строку № ${failedCandidate.id}; ранее обработанные строки пропущены…`
+      : 'Продолжаю обработку с места остановки…';
+    syncReestrDzPrincipalOverlay(run);
+    setReestrDzPrincipalLaunchButtonDisabled(true);
+    void runReestrDzPrincipalAutofill(run);
+  }
+
+  async function waitForReestrDzPrincipalResume(run) {
+    while (run && run.paused) {
+      await new Promise((resolve) => run.resumeWaiters.push(resolve));
+    }
+  }
+
+  function clearReestrDzPrincipalRowHighlight() {
+    document.querySelectorAll(`.${REESTR_DZ_PRINCIPAL_CURRENT_ROW_CLASS}, .${REESTR_DZ_PRINCIPAL_ATTENTION_ROW_CLASS}`).forEach((row) => {
+      row.classList.remove(REESTR_DZ_PRINCIPAL_CURRENT_ROW_CLASS, REESTR_DZ_PRINCIPAL_ATTENTION_ROW_CLASS);
+    });
+  }
+
+  async function selectReestrDzPrincipalGridRow(row, candidate) {
+    const startedAt = Date.now();
+    let currentRow = row;
+    while (Date.now() - startedAt < 10000) {
+      if (!isReestrDzGridLoading()) {
+        currentRow = findReestrDzPrincipalRow(candidate.id);
+        const targetCheckbox = currentRow && currentRow.querySelector('input.cbox[type="checkbox"]');
+        if (currentRow instanceof HTMLElement && targetCheckbox instanceof HTMLInputElement) {
+          const response = await sendRuntimeMessage({
+            action: 'REESTR_DZ_SELECT_GRID_ROW',
+            data: { rowId: candidate.id }
+          });
+          await new Promise((resolve) => window.setTimeout(resolve, 120));
+          if (response && response.success === true && targetCheckbox.checked && currentRow.isConnected) {
+            return currentRow;
+          }
+        }
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 150));
+    }
+    throw new Error(`Пирамида не подтвердила выбор строки № ${candidate.id}.`);
+  }
+
+  function findReestrDzPrincipalRow(rowId) {
+    const safeId = String(rowId || '').replace(/[^0-9]/g, '');
+    return safeId ? document.querySelector(`#list tr[id="${safeId}"]`) : null;
+  }
+
+  async function getReestrDzGridState() {
+    const response = await sendRuntimeMessage({ action: 'REESTR_DZ_GET_GRID_STATE' });
+    if (response && response.success) return response;
+    const pageInput = document.querySelector('#pager .ui-pg-input, .ui-jqgrid-pager .ui-pg-input');
+    const rowSelect = document.querySelector('#pager .ui-pg-selbox, .ui-jqgrid-pager .ui-pg-selbox');
+    const recordsText = normalizeReestrDzText(document.querySelector('#pager_right, .ui-paging-info')?.textContent);
+    const recordsMatch = recordsText.match(/из\s+(\d+)/i);
+    return {
+      success: true,
+      page: Math.max(1, Number.parseInt(pageInput && pageInput.value || '1', 10) || 1),
+      rowNum: Math.max(1, Number.parseInt(rowSelect && rowSelect.value || '30', 10) || 30),
+      records: recordsMatch ? Number.parseInt(recordsMatch[1], 10) : 0,
+      lastpage: 1,
+      sortname: 'CreateDate',
+      sortorder: 'desc',
+      postData: { _search: 'false' }
+    };
+  }
+
+  function buildReestrDzGridDataUrl(gridState, options = {}) {
+    const url = new URL('/ovzid/ReestrDz/data', window.location.origin);
+    const postData = gridState && gridState.postData && typeof gridState.postData === 'object'
+      ? gridState.postData
+      : {};
+    Object.entries(postData).forEach(([key, value]) => {
+      if (value === undefined || value === null || typeof value === 'object') return;
+      if (['rows', 'page', 'sidx', 'sord', 'nd'].includes(key)) return;
+      url.searchParams.set(key, String(value));
+    });
+    url.searchParams.set('_search', String(options.search !== undefined ? options.search : postData._search || 'false'));
+    url.searchParams.set('nd', String(Date.now()));
+    url.searchParams.set('rows', String(options.rows || 2000));
+    url.searchParams.set('page', String(options.page || 1));
+    url.searchParams.set('sidx', String(options.sortname || gridState.sortname || 'CreateDate'));
+    url.searchParams.set('sord', String(options.sortorder || gridState.sortorder || 'desc'));
+    if (options.filters) url.searchParams.set('filters', JSON.stringify(options.filters));
+    return url;
+  }
+
+  async function fetchReestrDzGridPage(url, signal) {
+    const response = await fetch(url.toString(), {
+      method: 'GET',
+      credentials: 'same-origin',
+      cache: 'no-store',
+      headers: { 'X-Requested-With': 'XMLHttpRequest' },
+      signal
+    });
+    const text = await response.text();
+    if (!response.ok) throw new Error(`Пирамида вернула HTTP ${response.status} при чтении грида.`);
+    try {
+      return JSON.parse(text);
+    } catch (error) {
+      throw new Error('Пирамида вернула некорректный список реестров.');
+    }
+  }
+
+  async function loadAllReestrDzRows(gridState, signal) {
+    const first = await fetchReestrDzGridPage(buildReestrDzGridDataUrl(gridState, { rows: 2000, page: 1 }), signal);
+    const rows = Array.isArray(first.rows) ? [...first.rows] : [];
+    const totalPages = Math.max(1, Number.parseInt(String(first.total || 1), 10) || 1);
+    for (let page = 2; page <= totalPages; page += 1) {
+      const part = await fetchReestrDzGridPage(buildReestrDzGridDataUrl(gridState, { rows: 2000, page }), signal);
+      if (Array.isArray(part.rows)) rows.push(...part.rows);
+    }
+    return rows;
+  }
+
+  async function loadReestrDzRowById(gridState, rowId, signal) {
+    const filters = {
+      groupOp: 'AND',
+      rules: [{ field: 'ReestrDzID', op: 'eq', data: String(rowId) }]
+    };
+    const data = await fetchReestrDzGridPage(buildReestrDzGridDataUrl(gridState, {
+      search: 'true',
+      rows: 10,
+      page: 1,
+      filters
+    }), signal);
+    return Array.isArray(data.rows)
+      ? data.rows.find((item) => String(item.id || item.cell && item.cell.ReestrDzID || '') === String(rowId)) || null
+      : null;
+  }
+
+  async function setReestrDzGridPage(page) {
+    const response = await sendRuntimeMessage({ action: 'REESTR_DZ_SET_GRID_PAGE', data: { page } });
+    if (response && response.success) return true;
+    const input = document.querySelector('#pager .ui-pg-input, .ui-jqgrid-pager .ui-pg-input');
+    if (!(input instanceof HTMLInputElement)) return false;
+    input.value = String(page);
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+    return true;
+  }
+
+  function isReestrDzGridLoading() {
+    return Array.from(document.querySelectorAll('#load_list, .ui-jqgrid-loading')).some((element) => {
+      if (!(element instanceof HTMLElement)) return false;
+      const style = window.getComputedStyle(element);
+      return style.display !== 'none' && style.visibility !== 'hidden';
+    });
+  }
+
+  async function waitForReestrDzGridReady(rowId = '', timeoutMs = 20000) {
+    const startedAt = Date.now();
+    let stableChecks = 0;
+    while (Date.now() - startedAt < timeoutMs) {
+      const row = rowId ? findReestrDzPrincipalRow(rowId) : null;
+      const hasRows = !!document.querySelector('#list tr.jqgrow');
+      const ready = !isReestrDzGridLoading() && hasRows && (!rowId || row instanceof HTMLElement);
+      stableChecks = ready ? stableChecks + 1 : 0;
+      if (stableChecks >= 3) return rowId ? findReestrDzPrincipalRow(rowId) : true;
+      await new Promise((resolve) => window.setTimeout(resolve, 150));
+    }
+    return rowId ? null : false;
+  }
+
+  async function showReestrDzPrincipalCandidate(run, candidate, attention = false) {
+    await waitForReestrDzPrincipalResume(run);
+    run.current = candidate;
+    syncReestrDzPrincipalOverlay(run);
+    const pageInput = document.querySelector('#pager .ui-pg-input, .ui-jqgrid-pager .ui-pg-input');
+    const currentPage = Math.max(1, Number.parseInt(pageInput && pageInput.value || '1', 10) || 1);
+    if (currentPage !== candidate.page) {
+      updateReestrDzPrincipalStage(run, `Переключаю грид на страницу ${candidate.page}…`);
+      await setReestrDzGridPage(candidate.page);
+    }
+    const row = await waitForReestrDzGridReady(candidate.id);
+    clearReestrDzPrincipalRowHighlight();
+    if (row instanceof HTMLElement) {
+      const selectedRow = await selectReestrDzPrincipalGridRow(row, candidate);
+      selectedRow.classList.add(REESTR_DZ_PRINCIPAL_CURRENT_ROW_CLASS);
+      selectedRow.classList.toggle(REESTR_DZ_PRINCIPAL_ATTENTION_ROW_CLASS, attention);
+      selectedRow.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' });
+      return true;
+    }
+    throw new Error(`Строка № ${candidate.id} не появилась после загрузки страницы ${candidate.page}.`);
+  }
+
+  async function loadReestrDzWssDocument(url, kind, expectedNumber) {
+    const response = await sendRuntimeMessage({
+      action: 'REESTR_DZ_LOAD_WSS_DOCUMENT',
+      data: {
+        url: String(url || ''),
+        kind: String(kind || ''),
+        expectedNumber: normalizeReestrDzText(expectedNumber)
+      }
+    });
+    if (!response || response.success === false) {
+      throw new Error(`Не удалось открыть WSS Docs: ${response && response.error ? response.error : 'нет ответа'}.`);
+    }
+    return response;
+  }
+
+  function parseReestrDzOutgoingLinks(documentData) {
+    const unique = new Map();
+    const links = documentData && Array.isArray(documentData.links) ? documentData.links : [];
+    links.forEach((item) => {
+      const text = normalizeReestrDzText(item && item.text);
+      const rawHref = String(item && item.href || '').trim();
+      if (!text || !rawHref) return;
+      try {
+        const href = new URL(rawHref).toString();
+        unique.set(`${text}\n${href}`, { text, href });
+      } catch (error) {
+        // ignore malformed WSS link
+      }
+    });
+    return Array.from(unique.values());
+  }
+
+  function parseReestrDzOutgoingHeader(documentData, expectedNumber) {
+    const expected = normalizeReestrDzText(expectedNumber);
+    const candidates = documentData && Array.isArray(documentData.headers)
+      ? documentData.headers.map((value) => normalizeReestrDzText(value)).filter(Boolean)
+      : [];
+    for (const text of candidates) {
+      const match = text.match(/^(.+?)\s*\((\d{2}\.\d{2}\.\d{4})\)$/);
+      const number = match ? normalizeReestrDzText(match[1]) : '';
+      if (match && number === expected) return { number, date: match[2], raw: text };
+    }
+    throw new Error(`Карточка исходящего не подтвердила ожидаемый номер ${expected || '—'} в подписи «номер (дата создания)».`);
+  }
+
+  function findReestrDzPrincipalNativeButton() {
+    return Array.from(document.querySelectorAll('#pager_left .ui-pg-button, .ui-jqgrid-pager .ui-pg-button'))
+      .find((element) => normalizeReestrDzText(element.textContent) === 'Заполнить сведения о направлении инфо принципалу') || null;
+  }
+
+  async function waitForReestrDzPrincipalNativeForm(candidate, timeoutMs = 15000) {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      const frames = Array.from(document.querySelectorAll('iframe[src*="/ovzid/ReestrDz/Send"]'));
+      for (const frame of frames) {
+        try {
+          const frameUrl = new URL(frame.src, window.location.origin);
+          if (frameUrl.searchParams.get('ReestrDzID') !== String(candidate.id)) continue;
+          return { frame };
+        } catch (error) {
+          // iframe ещё загружается
+        }
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 120));
+    }
+    throw new Error(`Не открылась штатная форма для строки № ${candidate.id}.`);
+  }
+
+  function closeReestrDzPrincipalNativeDialog(frame) {
+    const dialog = frame instanceof HTMLElement ? frame.closest('.ui-dialog') : null;
+    const closeButton = dialog && dialog.querySelector('.ui-dialog-titlebar-close');
+    if (closeButton instanceof HTMLElement) closeButton.click();
+  }
+
+  async function saveReestrDzPrincipalInfo(run, candidate, outgoing) {
+    await waitForReestrDzPrincipalResume(run);
+    updateReestrDzPrincipalStage(run, `Нажимаю штатную кнопку для строки № ${candidate.id}…`);
+    const nativeButton = findReestrDzPrincipalNativeButton();
+    if (!(nativeButton instanceof HTMLElement)) throw new Error('Не найдена штатная кнопка «Заполнить сведения о направлении инфо принципалу».');
+    nativeButton.click();
+    const nativeForm = await waitForReestrDzPrincipalNativeForm(candidate);
+    await waitForReestrDzPrincipalResume(run);
+    updateReestrDzPrincipalStage(run, `Заполняю штатное окно строки № ${candidate.id}: ${outgoing.date}, ${outgoing.number}…`);
+    const fillResponse = await sendRuntimeMessage({
+      action: 'REESTR_DZ_FILL_NATIVE_FORM',
+      data: {
+        rowId: candidate.id,
+        sendDate: outgoing.date,
+        principalNumber: outgoing.number
+      }
+    });
+    if (!fillResponse || fillResponse.success === false) {
+      throw new Error(`Не удалось заполнить штатную форму для строки № ${candidate.id}: ${fillResponse && fillResponse.error ? fillResponse.error : 'нет ответа'}.`);
+    }
+    updateReestrDzPrincipalStage(run, `Штатная форма заполнена, нажато «Сохранить» для строки № ${candidate.id}…`);
+
+    updateReestrDzPrincipalStage(run, `Проверяю сохранённые значения строки № ${candidate.id}…`);
+    for (let attempt = 1; attempt <= 20; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, attempt === 1 ? 250 : 500));
+      const verified = await loadReestrDzRowById(run.gridState, candidate.id, run.controller.signal);
+      const cell = verified && verified.cell ? verified.cell : null;
+      if (cell && normalizeReestrDzText(cell.SendDate) === outgoing.date && normalizeReestrDzText(cell.PrincipalNumber) === outgoing.number) {
+        await new Promise((resolve) => window.setTimeout(resolve, 700));
+        const gridReady = await waitForReestrDzGridReady('', 20000);
+        if (!gridReady) throw new Error(`Грид не завершил загрузку после сохранения строки № ${candidate.id}.`);
+        closeReestrDzPrincipalNativeDialog(nativeForm.frame);
+        updateReestrDzPrincipalStage(run, `Сохранение строки № ${candidate.id} подтверждено: ${outgoing.number} от ${outgoing.date}.`);
+        await new Promise((resolve) => window.setTimeout(resolve, 900));
+        return { ...candidate.cell, ...cell };
+      }
+    }
+    throw new Error(`Контрольное чтение строки № ${candidate.id} не подтвердило сохранение.`);
+  }
+
+  async function processReestrDzPrincipalCandidate(run, candidate) {
+    while (true) {
+      await waitForReestrDzPrincipalResume(run);
+      await showReestrDzPrincipalCandidate(run, candidate, false);
+      updateReestrDzPrincipalStage(run, `Проверяю текущее состояние строки № ${candidate.id}…`);
+      const liveRow = await loadReestrDzRowById(run.gridState, candidate.id, run.controller.signal);
+      const liveCell = liveRow && liveRow.cell ? liveRow.cell : candidate.cell;
+      const hasDate = !!normalizeReestrDzText(liveCell.SendDate);
+      const hasNumber = !!normalizeReestrDzText(liveCell.PrincipalNumber);
+      if (hasDate && hasNumber) {
+        return {
+          cell: { ...candidate.cell, ...liveCell },
+          result: 'Проверено вручную',
+          description: 'Во время паузы пользователь заполнил дату и номер исходящего.',
+          found: true,
+          saved: false,
+          skipped: false,
+          error: false
+        };
+      }
+      if (hasDate !== hasNumber) {
+        await showReestrDzPrincipalCandidate(run, candidate, true);
+        pauseReestrDzPrincipalRun(run, {
+          attention: true,
+          message: `Строка № ${candidate.id} заполнена частично. Проверьте её вручную и нажмите «Старт».`
+        });
+        await waitForReestrDzPrincipalResume(run);
+        continue;
+      }
+
+      updateReestrDzPrincipalStage(run, `Открываю поручение ${candidate.cell.RequestNumber}…`);
+      const requestUrl = new URL('/api/wss/doclink/redirect', window.location.origin);
+      requestUrl.searchParams.set('RegNumber', candidate.cell.RequestNumber);
+      const requestDocument = await loadReestrDzWssDocument(requestUrl.toString(), 'request', candidate.cell.RequestNumber);
+      const links = parseReestrDzOutgoingLinks(requestDocument);
+      if (!links.length) {
+        return {
+          cell: { ...candidate.cell },
+          result: 'Исходящий не найден',
+          description: 'Поле «Ссылка на исходящий документ» не заполнено.',
+          found: false,
+          saved: false,
+          skipped: true,
+          error: false
+        };
+      }
+      if (links.length > 1) {
+        await showReestrDzPrincipalCandidate(run, candidate, true);
+        pauseReestrDzPrincipalRun(run, {
+          attention: true,
+          message: `В поручении ${candidate.cell.RequestNumber} найдено ${links.length} исходящих. Проверьте строку № ${candidate.id} вручную и нажмите «Старт».`
+        });
+        await waitForReestrDzPrincipalResume(run);
+        continue;
+      }
+
+      updateReestrDzPrincipalStage(run, `Читаю дату создания исходящего ${links[0].text}…`);
+      const outgoingDocument = await loadReestrDzWssDocument(links[0].href, 'outgoing', links[0].text);
+      const outgoing = parseReestrDzOutgoingHeader(outgoingDocument, links[0].text);
+      if (normalizeReestrDzText(outgoing.number) === normalizeReestrDzText(candidate.cell.RequestNumber)) {
+        throw new Error(`Полученный номер исходящего совпал с номером поручения ${candidate.cell.RequestNumber}; сохранение остановлено для ручной проверки.`);
+      }
+      const savedCell = await saveReestrDzPrincipalInfo(run, candidate, outgoing);
+      return {
+        cell: savedCell,
+        result: 'Сохранено',
+        description: `${outgoing.number} от ${outgoing.date}`,
+        found: true,
+        saved: true,
+        skipped: false,
+        error: false
+      };
+    }
+  }
+
+  function buildReestrDzPrincipalReportRows(run) {
+    const headers = [...REESTR_DZ_PRINCIPAL_REPORT_HEADERS.map((item) => item[1]), 'Результат обработки', 'Описание'];
+    const parseSendDate = (value) => {
+      const match = normalizeReestrDzText(value).match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
+      return match ? Date.UTC(Number(match[3]), Number(match[2]) - 1, Number(match[1])) : Number.NEGATIVE_INFINITY;
+    };
+    const sortedResults = (run && Array.isArray(run.results) ? run.results : [])
+      .map((item, sourceIndex) => ({ item, sourceIndex }))
+      .sort((left, right) => {
+        const dateDifference = parseSendDate(right.item.cell && right.item.cell.SendDate) - parseSendDate(left.item.cell && left.item.cell.SendDate);
+        if (dateDifference) return dateDifference;
+        const claimantDifference = normalizeReestrDzText(left.item.cell && left.item.cell.ClaimantName)
+          .localeCompare(normalizeReestrDzText(right.item.cell && right.item.cell.ClaimantName), 'ru', { sensitivity: 'base' });
+        return claimantDifference || left.sourceIndex - right.sourceIndex;
+      })
+      .map(({ item }) => item);
+    const rows = sortedResults.map((item) => [
+      ...REESTR_DZ_PRINCIPAL_REPORT_HEADERS.map(([key]) => normalizeReestrDzText(item.cell && item.cell[key])),
+      normalizeReestrDzText(item.result),
+      normalizeReestrDzText(item.description)
+    ]);
+    return [headers, ...rows];
+  }
+
+  function buildReestrDzPrincipalXlsxBlob(run) {
+    const rows = buildReestrDzPrincipalReportRows(run);
+    const sharedStrings = [];
+    const sharedStringIndex = new Map();
+    const getSharedIndex = (value) => {
+      const text = String(value === undefined || value === null ? '' : value);
+      if (sharedStringIndex.has(text)) return sharedStringIndex.get(text);
+      const index = sharedStrings.length;
+      sharedStrings.push(text);
+      sharedStringIndex.set(text, index);
+      return index;
+    };
+    const sheetRows = rows.map((row, rowIndex) => {
+      const rowNumber = rowIndex + 1;
+      const cells = row.map((value, colIndex) => {
+        const ref = `${columnIndexToName(colIndex)}${rowNumber}`;
+        const style = rowIndex === 0 ? ' s="1"' : '';
+        return `<c r="${ref}" t="s"${style}><v>${getSharedIndex(value)}</v></c>`;
+      }).join('');
+      return `<row r="${rowNumber}">${cells}</row>`;
+    }).join('');
+    const widths = rows[0].map((_, index) => `<col min="${index + 1}" max="${index + 1}" width="${index === 3 || index === 14 || index === 16 ? 34 : 18}" customWidth="1"/>`).join('');
+    const sharedStringsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="${sharedStrings.length}" uniqueCount="${sharedStrings.length}">${sharedStrings.map((value) => `<si><t>${escapeExecutionAnalysisXml(value)}</t></si>`).join('')}</sst>`;
+    const sheetXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><cols>${widths}</cols><sheetData>${sheetRows}</sheetData><autoFilter ref="A1:Q${rows.length}"/></worksheet>`;
+    const workbookXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Обработка" sheetId="1" r:id="rId1"/></sheets></workbook>';
+    const workbookRels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>';
+    const rootRels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>';
+    const contentTypes = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>';
+    const styles = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Aptos"/></font><font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Aptos"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF17395F"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="1" borderId="0" xfId="0" applyFont="1" applyFill="1"/></cellXfs></styleSheet>';
+    return buildStoredZip([
+      { name: '[Content_Types].xml', content: contentTypes },
+      { name: '_rels/.rels', content: rootRels },
+      { name: 'xl/workbook.xml', content: workbookXml },
+      { name: 'xl/_rels/workbook.xml.rels', content: workbookRels },
+      { name: 'xl/worksheets/sheet1.xml', content: sheetXml },
+      { name: 'xl/sharedStrings.xml', content: sharedStringsXml },
+      { name: 'xl/styles.xml', content: styles }
+    ]);
+  }
+
+  function getReestrDzCurrentDepartment() {
+    const activeLink = document.querySelector('a.department-switch.active, a.department-switch[aria-current="page"]');
+    const headerButton = document.querySelector('button.btn-cities.dropdown-toggle, .btn-cities.dropdown-toggle');
+    const meta = document.querySelector('meta[name="pyramid-active-department-id"]');
+    let depid = normalizeReestrDzText(
+      activeLink && (activeLink.getAttribute('data-depid') || activeLink.getAttribute('depid')) ||
+      meta && meta.getAttribute('content') || ''
+    );
+    if (!depid && activeLink instanceof HTMLAnchorElement) {
+      const match = String(activeLink.href || '').match(/\/login\/department\/(\d+)/i);
+      if (match) depid = match[1];
+    }
+    const label = normalizeReestrDzText(
+      activeLink && activeLink.textContent ||
+      headerButton && headerButton.textContent ||
+      'Департамент'
+    );
+    return { depid: depid || 'без-depid', label: label || 'Департамент' };
+  }
+
+  function sanitizeReestrDzFileNamePart(value) {
+    return normalizeReestrDzText(value)
+      .replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_')
+      .replace(/\s+/g, '_')
+      .replace(/_+/g, '_')
+      .replace(/^_+|_+$/g, '') || 'без-названия';
+  }
+
+  function downloadReestrDzPrincipalReport(run) {
+    if (!run || !Array.isArray(run.results) || !run.results.length) return false;
+    const blob = buildReestrDzPrincipalXlsxBlob(run);
+    const link = document.createElement('a');
+    const objectUrl = URL.createObjectURL(blob);
+    const now = new Date();
+    const stamp = [now.getFullYear(), String(now.getMonth() + 1).padStart(2, '0'), String(now.getDate()).padStart(2, '0')].join('-');
+    const department = run.department || getReestrDzCurrentDepartment();
+    link.href = objectUrl;
+    link.download = [
+      stamp,
+      sanitizeReestrDzFileNamePart(department.label),
+      sanitizeReestrDzFileNamePart(department.depid),
+      'проверка_исходящих_реестров_ДЗ.xlsx'
+    ].join('_');
+    link.style.display = 'none';
+    (document.body || document.documentElement).appendChild(link);
+    link.click();
+    window.setTimeout(() => {
+      URL.revokeObjectURL(objectUrl);
+      link.remove();
+    }, 1000);
+    return true;
+  }
+
+  async function runReestrDzPrincipalAutofill(run) {
+    try {
+      const startIndex = Math.max(0, Number.isInteger(run.nextIndex) ? run.nextIndex : 0);
+      for (let index = startIndex; index < run.candidates.length; index += 1) {
+        run.currentIndex = index;
+        run.nextIndex = index;
+        const candidate = run.candidates[index];
+        run.current = candidate;
+        run.stage = `Готовлю строку № ${candidate.id} к проверке…`;
+        syncReestrDzPrincipalOverlay(run);
+        await waitForReestrDzPrincipalResume(run);
+        try {
+          const result = await processReestrDzPrincipalCandidate(run, candidate);
+          run.results.push({ id: candidate.id, ...result });
+          run.nextIndex = index + 1;
+          await persistReestrDzPrincipalDailyRun(run);
+        } catch (error) {
+          const message = error && error.message ? error.message : String(error);
+          run.results.push({
+            id: candidate.id,
+            cell: { ...candidate.cell },
+            result: 'Ошибка',
+            description: message,
+            found: false,
+            saved: false,
+            skipped: false,
+            error: true
+          });
+          run.status = 'error';
+          run.recoverableError = true;
+          run.canContinue = false;
+          run.stage = `Обработка остановлена на строке № ${candidate.id}. После проверки ошибки нажмите «Продолжить».`;
+          run.warning = message;
+          syncReestrDzPrincipalOverlay(run);
+          await persistReestrDzPrincipalDailyRun(run);
+          throw error;
+        }
+        syncReestrDzPrincipalOverlay(run);
+      }
+      run.status = 'completed';
+      run.nextIndex = run.candidates.length;
+      run.recoverableError = false;
+      run.current = null;
+      run.stage = 'Обработка завершена. Итоговый отчёт скачан.';
+      run.warning = '';
+      downloadReestrDzPrincipalReport(run);
+      run.reportDownloaded = true;
+      await persistReestrDzPrincipalDailyRun(run);
+    } catch (error) {
+      if (run.status !== 'error') {
+        run.status = 'error';
+        run.stage = 'Обработка остановлена из-за критической ошибки.';
+        run.warning = error && error.message ? error.message : String(error);
+      }
+    } finally {
+      if (run.status === 'error') {
+        const row = run.current && findReestrDzPrincipalRow(run.current.id);
+        if (row instanceof HTMLElement) row.classList.add(REESTR_DZ_PRINCIPAL_CURRENT_ROW_CLASS, REESTR_DZ_PRINCIPAL_ATTENTION_ROW_CLASS);
+      } else {
+        clearReestrDzPrincipalRowHighlight();
+      }
+      try {
+        await sendRuntimeMessage({ action: 'REESTR_DZ_CLOSE_WSS_SESSION' });
+      } catch (error) {
+        // Сбой закрытия служебной вкладки не должен блокировать повторный запуск.
+      }
+      if (run.status === 'error' && run.recoverableError === true) run.canContinue = true;
+      syncReestrDzPrincipalOverlay(run);
+      setReestrDzPrincipalLaunchButtonDisabled(false);
+    }
+  }
+
+  async function startReestrDzPrincipalAutofill() {
+    if (!isReestrDzPrincipalPage() || !isExtensionUiSettingEnabled('reestrDzPrincipalAutofill')) return;
+    if (reestrDzPrincipalRun && reestrDzPrincipalRun.overlayDismissed) {
+      reestrDzPrincipalRun.overlayDismissed = false;
+      syncReestrDzPrincipalOverlay(reestrDzPrincipalRun);
+      document.getElementById(REESTR_DZ_PRINCIPAL_OVERLAY_ID)?.scrollIntoView({ block: 'nearest' });
+      return;
+    }
+    if (reestrDzPrincipalRun && reestrDzPrincipalRun.status !== 'completed') {
+      createReestrDzPrincipalOverlay().scrollIntoView({ block: 'nearest' });
+      return;
+    }
+    setReestrDzPrincipalLaunchButtonDisabled(true);
+    const currentDepartment = getReestrDzCurrentDepartment();
+    let dailyDepartment = await getReestrDzPrincipalDailyDepartment(currentDepartment.depid);
+    if (dailyDepartment.activeRun) {
+      const savedRun = dailyDepartment.activeRun;
+      const savedNextIndex = Math.max(0, Number.parseInt(String(savedRun.nextIndex || 0), 10) || 0);
+      const savedTotal = Array.isArray(savedRun.candidates) ? savedRun.candidates.length : 0;
+      const restoreConfirmed = window.confirm(
+        `Найдена незавершённая проверка за сегодня для департамента ${currentDepartment.label} (${currentDepartment.depid}).\n` +
+        `Готово строк: ${Math.min(savedNextIndex, savedTotal)} из ${savedTotal}.\n\n` +
+        'Восстановить её и продолжить с места остановки?\n' +
+        '«Отмена» удалит незавершённую очередь и позволит начать новую проверку.'
+      );
+      if (restoreConfirmed) {
+        const restoredRun = restoreReestrDzPrincipalRun(savedRun);
+        if (restoredRun) {
+          reestrDzPrincipalRun = restoredRun;
+          syncReestrDzPrincipalOverlay(restoredRun);
+          setReestrDzPrincipalLaunchButtonDisabled(false);
+          return;
+        }
+      }
+      await discardReestrDzPrincipalActiveRun(currentDepartment.depid);
+      dailyDepartment = await getReestrDzPrincipalDailyDepartment(currentDepartment.depid);
+    }
+    const processedTodayIds = new Set(Object.keys(
+      dailyDepartment.processed && typeof dailyDepartment.processed === 'object'
+        ? dailyDepartment.processed
+        : {}
+    ).map(String));
+    const periodChoice = await askReestrDzPrincipalPeriod();
+    if (periodChoice.cancelled) {
+      setReestrDzPrincipalLaunchButtonDisabled(false);
+      return;
+    }
+    const selectedPeriod = periodChoice.period;
+    const preparingRun = {
+      status: 'preparing',
+      paused: false,
+      pauseReason: '',
+      resumeWaiters: [],
+      controller: new AbortController(),
+      gridState: { lastpage: 1 },
+      candidates: [],
+      results: [],
+      nextIndex: 0,
+      current: null,
+      department: currentDepartment,
+      period: selectedPeriod,
+      overlayDismissed: false,
+      reportDownloaded: false,
+      recoverableError: false,
+      canContinue: false,
+      stage: 'Собираю строки текущего грида…',
+      warning: '',
+      metaText: selectedPeriod ? `Период: ${selectedPeriod.text}` : 'Все даты запуска поручений'
+    };
+    reestrDzPrincipalRun = preparingRun;
+    syncReestrDzPrincipalOverlay(preparingRun);
+    try {
+      const gridState = await getReestrDzGridState();
+      preparingRun.gridState = gridState;
+      const rows = await loadAllReestrDzRows(gridState, preparingRun.controller.signal);
+      const candidates = rows
+        .map((row, index) => ({
+          id: String(row.id || row.cell && row.cell.ReestrDzID || ''),
+          cell: row && row.cell && typeof row.cell === 'object' ? { ...row.cell } : {},
+          sourceIndex: index,
+          page: Math.floor(index / Math.max(1, gridState.rowNum || 30)) + 1
+        }))
+        .filter((row) => row.id && row.cell.RequestNumber &&
+          !normalizeReestrDzText(row.cell.SendDate) &&
+          !normalizeReestrDzText(row.cell.PrincipalNumber) &&
+          !processedTodayIds.has(String(row.id)) &&
+          isReestrDzRowInPeriod(row.cell, selectedPeriod));
+      preparingRun.candidates = candidates;
+      preparingRun.metaText = selectedPeriod
+        ? `В гриде ${rows.length} строк · период ${selectedPeriod.text}`
+        : `В гриде ${rows.length} строк · без ограничения по дате`;
+      syncReestrDzPrincipalOverlay(preparingRun);
+      if (!candidates.length) {
+        preparingRun.status = 'completed';
+        preparingRun.stage = processedTodayIds.size
+          ? 'Новых строк не найдено: уже обработанные сегодня записи пропущены.'
+          : 'Строк без даты и номера исходящего не найдено.';
+        syncReestrDzPrincipalOverlay(preparingRun);
+        await persistReestrDzPrincipalDailyRun(preparingRun);
+        return;
+      }
+      const confirmed = window.confirm(
+        `Найдено строк для проверки: ${candidates.length}.\n` +
+        `Период: ${selectedPeriod ? selectedPeriod.text : 'все даты'}.\n\n` +
+        'Расширение будет последовательно открывать карточки WSS Docs и сохранять найденные дату и номер исходящего. Начать обработку?'
+      );
+      if (!confirmed) {
+        preparingRun.status = 'completed';
+        preparingRun.stage = 'Запуск отменён пользователем.';
+        preparingRun.warning = '';
+        reestrDzPrincipalRun = null;
+        document.getElementById(REESTR_DZ_PRINCIPAL_OVERLAY_ID)?.remove();
+        return;
+      }
+      preparingRun.status = 'running';
+      preparingRun.stage = 'Начинаю последовательную проверку…';
+      syncReestrDzPrincipalOverlay(preparingRun);
+      await persistReestrDzPrincipalDailyRun(preparingRun);
+      setReestrDzPrincipalLaunchButtonDisabled(false);
+      await runReestrDzPrincipalAutofill(preparingRun);
+    } catch (error) {
+      preparingRun.status = 'error';
+      preparingRun.recoverableError = false;
+      preparingRun.canContinue = false;
+      preparingRun.stage = 'Не удалось начать обработку.';
+      preparingRun.warning = error && error.message ? error.message : String(error);
+      syncReestrDzPrincipalOverlay(preparingRun);
+    } finally {
+      setReestrDzPrincipalLaunchButtonDisabled(false);
+    }
+  }
+
+  function setReestrDzPrincipalLaunchButtonDisabled(disabled) {
+    const button = document.getElementById(REESTR_DZ_PRINCIPAL_BUTTON_ID);
+    if (!(button instanceof HTMLElement)) return;
+    const isDisabled = !!disabled;
+    button.classList.toggle('disabled', isDisabled);
+    button.classList.toggle('ui-jqgrid-disablePointerEvents', isDisabled);
+    button.setAttribute('aria-disabled', String(isDisabled));
+    button.tabIndex = isDisabled ? -1 : 0;
+  }
+
+  function ensureReestrDzPrincipalButton() {
+    if (!isReestrDzPrincipalPage()) return null;
+    ensureReestrDzPrincipalStyle();
+    const existing = document.getElementById(REESTR_DZ_PRINCIPAL_BUTTON_ID);
+    if (existing instanceof HTMLElement) return existing;
+    const host = document.querySelector('#pager_left .ui-pg-table.navtable, .ui-jqgrid-pager .ui-pg-table.navtable') || document.querySelector('#pager_left, #pager');
+    if (!(host instanceof HTMLElement)) return null;
+    document.getElementById(REESTR_DZ_PRINCIPAL_SEPARATOR_ID)?.remove();
+    const separator = document.createElement('div');
+    separator.id = REESTR_DZ_PRINCIPAL_SEPARATOR_ID;
+    separator.className = 'btn btn-xs ui-pg-button disabled ui-jqgrid-disablePointerEvents dup-reestr-dz-principal-ui';
+    separator.setAttribute('aria-hidden', 'true');
+    separator.innerHTML = '<span class="ui-separator"></span>';
+    const button = document.createElement('div');
+    button.id = REESTR_DZ_PRINCIPAL_BUTTON_ID;
+    button.className = 'btn btn-xs ui-pg-button dup-reestr-dz-principal-ui';
+    button.tabIndex = 0;
+    button.setAttribute('role', 'button');
+    button.setAttribute('aria-disabled', 'false');
+    button.innerHTML = '<div class="ui-pg-div"><span class="fa fa-lg fa-fw fa-search"></span><span class="ui-pg-button-text">Проверить исходящие</span></div>';
+    button.title = 'Проверить и заполнить сведения об отправке принципалу';
+    const activate = () => {
+      if (button.getAttribute('aria-disabled') === 'true') return;
+      void startReestrDzPrincipalAutofill();
+    };
+    button.addEventListener('click', activate);
+    button.addEventListener('keydown', (event) => {
+      if (!['Enter', ' '].includes(event.key)) return;
+      event.preventDefault();
+      activate();
+    });
+    const exportButton = Array.from(host.querySelectorAll('.ui-pg-button'))
+      .find((element) => normalizeReestrDzText(element.textContent) === 'Выгрузить в Excel');
+    if (exportButton instanceof HTMLElement) exportButton.after(separator, button);
+    else host.append(separator, button);
+    return button;
+  }
+
+  function initReestrDzPrincipalAutofill() {
+    if (!isReestrDzPrincipalPage()) return;
+    ensureReestrDzPrincipalButton();
+    if (!reestrDzPrincipalObserver) {
+      reestrDzPrincipalObserver = new MutationObserver(() => ensureReestrDzPrincipalButton());
+      observeWithRetry(
+        reestrDzPrincipalObserver,
+        () => document.querySelector('#pager') || document.body || document.documentElement,
+        { childList: true, subtree: true },
+        120,
+        100
+      );
+    }
   }
 
   async function openExecutionAnalysisTab(url, active) {
@@ -5327,6 +6820,12 @@
       html.${SCREENSHOT_MODE_CLASS} #${GRID_CARD_CHECK_NAV_ID},
       html.${SCREENSHOT_MODE_CLASS} .dup-identity-verification-ui,
       html.${SCREENSHOT_MODE_CLASS} .dup-chatgpt-extension-ui,
+      html.${SCREENSHOT_MODE_CLASS} #${REESTR_DZ_PRINCIPAL_BUTTON_ID},
+      html.${SCREENSHOT_MODE_CLASS} #${REESTR_DZ_PRINCIPAL_SEPARATOR_ID},
+      html.${SCREENSHOT_MODE_CLASS} #${REESTR_DZ_PRINCIPAL_OVERLAY_ID},
+      html.${SCREENSHOT_MODE_CLASS} #${REESTR_DZ_PRINCIPAL_PERIOD_DIALOG_ID},
+      html.${SCREENSHOT_MODE_CLASS} .${REESTR_DZ_PRINCIPAL_CURRENT_ROW_CLASS},
+      html.${SCREENSHOT_MODE_CLASS} .${REESTR_DZ_PRINCIPAL_ATTENTION_ROW_CLASS},
       html.${SCREENSHOT_MODE_CLASS} .ny-snow-container,
       html.${SCREENSHOT_MODE_CLASS} .ny-garland-container,
       html.${SCREENSHOT_MODE_CLASS} .spring-petal-layer,
@@ -12282,6 +13781,7 @@
   initDepartmentDropdownFilter();
   initStageJumpButtons();
   initSlowsearchJumpButtons();
+  initReestrDzPrincipalAutofill();
   initGridLinksOpenInNewTabs();
   init();
 

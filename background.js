@@ -1157,6 +1157,34 @@ function executeScriptInTabAsync(tabId, func, args = [], options = {}) {
     });
 }
 
+function executeScriptInAllFramesAsync(tabId, func, args = [], options = {}) {
+    return new Promise((resolve, reject) => {
+        try {
+            const request = {
+                target: { tabId: Number(tabId), allFrames: true },
+                func,
+                args: Array.isArray(args) ? args : []
+            };
+            if (options && options.world) {
+                request.world = options.world;
+            }
+
+            chrome.scripting.executeScript(request, (results) => {
+                const runtimeError = chrome.runtime && chrome.runtime.lastError
+                    ? chrome.runtime.lastError.message
+                    : '';
+                if (runtimeError) {
+                    reject(new Error(runtimeError));
+                    return;
+                }
+                resolve(Array.isArray(results) ? results.map((entry) => entry && entry.result) : []);
+            });
+        } catch (error) {
+            reject(error);
+        }
+    });
+}
+
 async function prepareIdCardCheckEditedocReturnAsync(tabId, edocId, transitionText, timeoutMs = 20000) {
     await waitForTabCompleteAsync(tabId, Math.min(Math.max(1000, Number(timeoutMs) || 20000), 15000));
 
@@ -1930,8 +1958,318 @@ chrome.runtime.onInstalled.addListener(() => {
   });
 });
 
+const reestrDzWssWorkerTabs = new Map();
+
+function isAllowedReestrDzUrl(rawUrl) {
+    try {
+        const url = new URL(String(rawUrl || ''));
+        const hostname = String(url.hostname || '').toLowerCase();
+        if (!['http:', 'https:'].includes(url.protocol)) return false;
+        return hostname === 'wssdocs.vostok-electra.ru' ||
+            hostname === 'pyramid.vostok-electra.ru' ||
+            hostname === 'pyramid.nesko-nv.ru' ||
+            hostname === 'pyramid-vostok.electra.ru' ||
+            hostname.endsWith('.pyramid.vostok-electra.ru') ||
+            hostname.endsWith('.pyramid.nesko-nv.ru') ||
+            hostname.endsWith('.pyramid-vostok.electra.ru');
+    } catch (error) {
+        return false;
+    }
+}
+
+async function ensureReestrDzWssWorkerTab(sourceTab) {
+    const sourceTabId = sourceTab && Number.isInteger(sourceTab.id) ? sourceTab.id : null;
+    if (!Number.isInteger(sourceTabId)) throw new Error('NO_SOURCE_TAB');
+
+    const storedTabId = reestrDzWssWorkerTabs.get(sourceTabId);
+    if (Number.isInteger(storedTabId)) {
+        try {
+            await getTabAsync(storedTabId);
+            return storedTabId;
+        } catch (error) {
+            reestrDzWssWorkerTabs.delete(sourceTabId);
+        }
+    }
+
+    const createProperties = {
+        url: 'about:blank',
+        active: false,
+        openerTabId: sourceTabId
+    };
+    if (Number.isInteger(sourceTab.windowId)) createProperties.windowId = sourceTab.windowId;
+    if (sourceTab.cookieStoreId) createProperties.cookieStoreId = sourceTab.cookieStoreId;
+
+    let workerTab;
+    try {
+        workerTab = await createTabAsync(createProperties);
+    } catch (error) {
+        delete createProperties.cookieStoreId;
+        workerTab = await createTabAsync(createProperties);
+    }
+    const workerTabId = workerTab && Number.isInteger(workerTab.id) ? workerTab.id : null;
+    if (!Number.isInteger(workerTabId)) throw new Error('NO_WSS_WORKER_TAB');
+    reestrDzWssWorkerTabs.set(sourceTabId, workerTabId);
+    return workerTabId;
+}
+
+async function loadReestrDzWssDataInWorker(sourceTab, url, kind, expectedNumber) {
+    const workerTabId = await ensureReestrDzWssWorkerTab(sourceTab);
+    await updateTabAsync(workerTabId, { url, active: false });
+    const startedAt = Date.now();
+    let lastResult = null;
+    while (Date.now() - startedAt < 45000) {
+        await delayAsync(180);
+        try {
+            lastResult = await executeScriptInTabAsync(workerTabId, (documentKind, expectedDocumentNumber) => {
+                const normalize = (value) => String(value === undefined || value === null ? '' : value).replace(/\s+/g, ' ').trim();
+                const expected = normalize(expectedDocumentNumber);
+                const base = { url: window.location.href, title: document.title, kind: documentKind };
+                if (document.readyState !== 'complete') return { ...base, success: false, pending: true, error: 'WSS_PAGE_LOADING' };
+                if (documentKind === 'request') {
+                    const title = normalize(document.title);
+                    if (expected && !title.includes(expected)) {
+                        return { ...base, success: false, pending: true, error: 'WSS_REQUEST_IDENTITY_MISMATCH' };
+                    }
+                    const field = document.querySelector('#fieldControlContainer36813');
+                    if (!field) return { ...base, success: false, pending: true, error: 'WSS_REQUEST_FIELD_NOT_FOUND' };
+                    const unique = new Map();
+                    field.querySelectorAll('.lc_divValueContent a[href]').forEach((anchor) => {
+                        const text = normalize(anchor.textContent);
+                        const rawHref = String(anchor.getAttribute('href') || '').trim();
+                        if (!text || !rawHref || /^javascript:/i.test(rawHref) || text.toLocaleLowerCase('ru-RU') === 'создать') return;
+                        try {
+                            const href = new URL(rawHref, window.location.href).toString();
+                            unique.set(`${text}\n${href}`, { text, href });
+                        } catch (error) {
+                            // ignore malformed WSS link
+                        }
+                    });
+                    return { ...base, success: true, expectedNumber: expected, links: Array.from(unique.values()) };
+                }
+                if (documentKind === 'outgoing') {
+                    if (!/\/dms\/outgoing\//i.test(window.location.pathname)) {
+                        return { ...base, success: false, pending: true, error: 'WSS_OUTGOING_PAGE_MISMATCH' };
+                    }
+                    const headers = Array.from(document.querySelectorAll('.stage_info_span_text'))
+                        .map((element) => normalize(element.textContent))
+                        .filter(Boolean);
+                    const matchingHeaders = expected
+                        ? headers.filter((header) => header === expected || header.startsWith(`${expected} (`))
+                        : headers;
+                    if (!matchingHeaders.length) {
+                        return { ...base, success: false, pending: true, error: 'WSS_OUTGOING_IDENTITY_MISMATCH' };
+                    }
+                    return { ...base, success: true, expectedNumber: expected, headers: matchingHeaders };
+                }
+                return { ...base, success: false, error: 'WSS_DOCUMENT_KIND_UNKNOWN' };
+            }, [kind, expectedNumber]);
+        } catch (error) {
+            lastResult = { success: false, pending: true, error: error && error.message ? error.message : String(error) };
+        }
+        if (lastResult && lastResult.success === true) return { source: 'tab', ...lastResult };
+        if (lastResult && lastResult.pending !== true) break;
+    }
+    throw new Error(lastResult && lastResult.error ? lastResult.error : 'WSS_DOCUMENT_UNAVAILABLE');
+}
+
+async function loadReestrDzWssDocument(sourceTab, rawUrl, rawKind, rawExpectedNumber) {
+    const url = String(rawUrl || '').trim();
+    const kind = String(rawKind || '').trim();
+    const expectedNumber = String(rawExpectedNumber || '').replace(/\s+/g, ' ').trim();
+    if (!isAllowedReestrDzUrl(url)) throw new Error('WSS_URL_NOT_ALLOWED');
+    if (!['request', 'outgoing'].includes(kind)) throw new Error('WSS_DOCUMENT_KIND_UNKNOWN');
+    if (!expectedNumber) throw new Error('WSS_EXPECTED_NUMBER_REQUIRED');
+
+    const sourceTabId = sourceTab && Number.isInteger(sourceTab.id) ? sourceTab.id : null;
+    if (!Number.isInteger(sourceTabId)) throw new Error('NO_SOURCE_TAB');
+    return loadReestrDzWssDataInWorker(sourceTab, url, kind, expectedNumber);
+}
+
+async function closeReestrDzWssWorker(sourceTabId) {
+    const tabId = reestrDzWssWorkerTabs.get(sourceTabId);
+    reestrDzWssWorkerTabs.delete(sourceTabId);
+    if (!Number.isInteger(tabId)) return false;
+    try {
+        await removeTabAsync(tabId);
+        return true;
+    } catch (error) {
+        return false;
+    }
+}
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     switch (request.action) {
+        case 'REESTR_DZ_GET_GRID_STATE': {
+            const tabId = sender && sender.tab && Number.isInteger(sender.tab.id) ? sender.tab.id : null;
+            if (!Number.isInteger(tabId)) {
+                sendResponse({ success: false, error: 'NO_SOURCE_TAB' });
+                return false;
+            }
+            executeScriptInTabAsync(tabId, () => {
+                if (!(window.jQuery && window.jQuery.fn && window.jQuery.fn.jqGrid)) {
+                    return { success: false, error: 'JQGRID_UNAVAILABLE' };
+                }
+                const grid = window.jQuery('#list');
+                const postData = grid.jqGrid('getGridParam', 'postData') || {};
+                return {
+                    success: true,
+                    page: Number(grid.jqGrid('getGridParam', 'page')) || 1,
+                    rowNum: Number(grid.jqGrid('getGridParam', 'rowNum')) || 30,
+                    records: Number(grid.jqGrid('getGridParam', 'records')) || 0,
+                    lastpage: Number(grid.jqGrid('getGridParam', 'lastpage')) || 1,
+                    sortname: String(grid.jqGrid('getGridParam', 'sortname') || 'CreateDate'),
+                    sortorder: String(grid.jqGrid('getGridParam', 'sortorder') || 'desc'),
+                    postData: JSON.parse(JSON.stringify(postData))
+                };
+            }, [], { world: 'MAIN' }).then(sendResponse).catch((error) => {
+                sendResponse({ success: false, error: error && error.message ? error.message : String(error) });
+            });
+            return true;
+        }
+
+        case 'REESTR_DZ_SET_GRID_PAGE': {
+            const tabId = sender && sender.tab && Number.isInteger(sender.tab.id) ? sender.tab.id : null;
+            const page = Math.max(1, Number.parseInt(String(request.data && request.data.page || 1), 10) || 1);
+            if (!Number.isInteger(tabId)) {
+                sendResponse({ success: false, error: 'NO_SOURCE_TAB' });
+                return false;
+            }
+            executeScriptInTabAsync(tabId, (targetPage) => {
+                if (!(window.jQuery && window.jQuery.fn && window.jQuery.fn.jqGrid)) {
+                    return { success: false, error: 'JQGRID_UNAVAILABLE' };
+                }
+                const grid = window.jQuery('#list');
+                grid.jqGrid('setGridParam', { page: targetPage }).trigger('reloadGrid');
+                return { success: true, page: targetPage };
+            }, [page], { world: 'MAIN' }).then(sendResponse).catch((error) => {
+                sendResponse({ success: false, error: error && error.message ? error.message : String(error) });
+            });
+            return true;
+        }
+
+        case 'REESTR_DZ_SELECT_GRID_ROW': {
+            const tabId = sender && sender.tab && Number.isInteger(sender.tab.id) ? sender.tab.id : null;
+            const rowId = String(request.data && request.data.rowId || '').trim();
+            if (!Number.isInteger(tabId) || !rowId) {
+                sendResponse({ success: false, error: 'INVALID_GRID_ROW' });
+                return false;
+            }
+            executeScriptInTabAsync(tabId, (targetRowId) => {
+                if (!(window.jQuery && window.jQuery.fn && window.jQuery.fn.jqGrid)) {
+                    return { success: false, error: 'JQGRID_UNAVAILABLE' };
+                }
+                const grid = window.jQuery('#list');
+                const row = document.querySelector(`#list tr[id="${String(targetRowId).replace(/[^0-9]/g, '')}"]`);
+                if (!grid.length || !(row instanceof HTMLElement)) {
+                    return { success: false, error: 'GRID_ROW_NOT_READY' };
+                }
+                grid.jqGrid('resetSelection');
+                grid.jqGrid('setSelection', String(targetRowId), true);
+                const selected = grid.jqGrid('getGridParam', 'selarrrow') || [];
+                const checkbox = row.querySelector('input.cbox[type="checkbox"]');
+                return {
+                    success: selected.map(String).includes(String(targetRowId)) && !!(checkbox && checkbox.checked),
+                    selected: selected.map(String)
+                };
+            }, [rowId], { world: 'MAIN' }).then(sendResponse).catch((error) => {
+                sendResponse({ success: false, error: error && error.message ? error.message : String(error) });
+            });
+            return true;
+        }
+
+        case 'REESTR_DZ_LOAD_WSS_DOCUMENT': {
+            loadReestrDzWssDocument(
+                sender && sender.tab,
+                request.data && request.data.url,
+                request.data && request.data.kind,
+                request.data && request.data.expectedNumber
+            )
+                .then(sendResponse)
+                .catch((error) => sendResponse({
+                    success: false,
+                    error: error && error.message ? error.message : String(error)
+                }));
+            return true;
+        }
+
+        case 'REESTR_DZ_FILL_NATIVE_FORM': {
+            const sourceTabId = sender && sender.tab && Number.isInteger(sender.tab.id) ? sender.tab.id : null;
+            const rowId = String(request.data && request.data.rowId || '').trim();
+            const sendDate = String(request.data && request.data.sendDate || '').trim();
+            const principalNumber = String(request.data && request.data.principalNumber || '').trim();
+            if (!Number.isInteger(sourceTabId) || !rowId || !sendDate || !principalNumber) {
+                sendResponse({ success: false, error: 'INVALID_NATIVE_FORM_DATA' });
+                return false;
+            }
+
+            (async () => {
+                const startedAt = Date.now();
+                while (Date.now() - startedAt < 15000) {
+                    const frameResults = await executeScriptInAllFramesAsync(
+                        sourceTabId,
+                        async (payload) => {
+                            if (window.location.pathname !== '/ovzid/ReestrDz/Send') {
+                                return { matched: false };
+                            }
+
+                            const form = document.querySelector('form[action*="/ovzid/ReestrDz/Send"]');
+                            const idInput = form && form.querySelector('input[name="ReestrDzID"]');
+                            if (!form || String(idInput && idInput.value || '').trim() !== payload.rowId) {
+                                return { matched: false };
+                            }
+
+                            const sendDateInput = form.querySelector('input[name="SendDate"]');
+                            const principalNumberInput = form.querySelector('input[name="PrincipalNumber"]');
+                            const submitButton = form.querySelector('button[type="submit"], input[type="submit"]');
+                            if (!(sendDateInput instanceof HTMLInputElement) ||
+                                !(principalNumberInput instanceof HTMLInputElement) ||
+                                !(submitButton instanceof HTMLElement)) {
+                                return { matched: true, success: false, error: 'NATIVE_FORM_NOT_READY' };
+                            }
+
+                            const setValue = (input, value) => {
+                                input.focus();
+                                input.value = String(value || '');
+                                input.dispatchEvent(new Event('input', { bubbles: true }));
+                                input.dispatchEvent(new Event('change', { bubbles: true }));
+                                input.blur();
+                            };
+
+                            setValue(sendDateInput, payload.sendDate);
+                            setValue(principalNumberInput, payload.principalNumber);
+                            window.setTimeout(() => submitButton.click(), 80);
+                            return { matched: true, success: true };
+                        },
+                        [{ rowId, sendDate, principalNumber }],
+                        { world: 'MAIN' }
+                    );
+                    const successfulFrame = frameResults.find((result) => result && result.matched && result.success);
+                    if (successfulFrame) return successfulFrame;
+                    await delayAsync(120);
+                }
+                return { success: false, error: 'NATIVE_FORM_NOT_FOUND' };
+            })().then(sendResponse).catch((error) => sendResponse({
+                success: false,
+                error: error && error.message ? error.message : String(error)
+            }));
+            return true;
+        }
+
+        case 'REESTR_DZ_CLOSE_WSS_SESSION': {
+            const sourceTabId = sender && sender.tab && Number.isInteger(sender.tab.id) ? sender.tab.id : null;
+            if (!Number.isInteger(sourceTabId)) {
+                sendResponse({ success: false, error: 'NO_SOURCE_TAB' });
+                return false;
+            }
+            closeReestrDzWssWorker(sourceTabId)
+                .then((closed) => sendResponse({ success: true, closed }))
+                .catch((error) => sendResponse({
+                    success: false,
+                    error: error && error.message ? error.message : String(error)
+                }));
+            return true;
+        }
+
         case 'STAGE_TIMER_DEPARTMENT_STATE': {
             const tabId = getStageTabId(request, sender);
             updateStageDepartmentState(tabId, request.data || {});
@@ -2967,6 +3305,14 @@ let pendingEdocids = {};
 
 // Очищаем временное хранилище при закрытии вкладки.
 chrome.tabs.onRemoved.addListener((tabId) => {
+  const reestrDzWorkerTabId = reestrDzWssWorkerTabs.get(tabId);
+  reestrDzWssWorkerTabs.delete(tabId);
+  if (Number.isInteger(reestrDzWorkerTabId)) {
+    removeTabAsync(reestrDzWorkerTabId).catch(() => {});
+  }
+  for (const [sourceTabId, workerTabId] of reestrDzWssWorkerTabs.entries()) {
+    if (workerTabId === tabId) reestrDzWssWorkerTabs.delete(sourceTabId);
+  }
   sendStageCancelForClosedTab(tabId);
   clearStageRequestsForTab(tabId);
   delete stageDepartmentStates[tabId];

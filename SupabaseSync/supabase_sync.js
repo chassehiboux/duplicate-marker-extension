@@ -114,6 +114,7 @@
     'pyramid_christmas_enabled_cache_v1',
     'pyramid_spring_enabled_cache_v1',
     'pyramid_theme_feature_settings_cache_v1',
+    'dup_reestr_dz_principal_daily_runs',
     ...STAGE_TIMER_KEYS
   ]);
 
