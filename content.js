@@ -2116,6 +2116,18 @@
     return REESTR_DZ_WRITE_OFF_EXCLUDED_CLAIMANTS.has(normalizeReestrDzClaimant(value));
   }
 
+  function buildReestrDzExcludedClaimantResult(candidate) {
+    return {
+      cell: candidate && candidate.cell && typeof candidate.cell === 'object' ? { ...candidate.cell } : {},
+      result: 'Пропущено',
+      description: 'Взыскатель относится к АО «ЭК «Восток»: поручение создаётся без фактического списания.',
+      found: false,
+      saved: false,
+      skipped: true,
+      error: false
+    };
+  }
+
   function hasReestrDzExactNoteLine(note, expectedLine) {
     const expected = normalizeReestrDzText(expectedLine);
     return String(note || '').split(/\r?\n/).some((line) => normalizeReestrDzText(line) === expected);
@@ -3277,23 +3289,15 @@
   }
 
   async function processReestrDzPrincipalCandidate(run, candidate) {
+    if (isReestrDzWriteOffExcludedClaimant(candidate.cell)) {
+      return buildReestrDzExcludedClaimantResult(candidate);
+    }
     while (true) {
       await waitForReestrDzPrincipalResume(run);
       await showReestrDzPrincipalCandidate(run, candidate, false);
       updateReestrDzPrincipalStage(run, `Проверяю текущее состояние строки № ${candidate.id}…`);
       const liveRow = await loadReestrDzRowById(run.gridState, candidate.id, run.controller.signal);
       const liveCell = liveRow && liveRow.cell ? liveRow.cell : candidate.cell;
-      if (isReestrDzWriteOffExcludedClaimant(liveCell)) {
-        return {
-          cell: { ...candidate.cell, ...liveCell },
-          result: 'Пропущено',
-          description: 'Взыскатель относится к АО «ЭК «Восток»: поручение создаётся без фактического списания.',
-          found: false,
-          saved: false,
-          skipped: true,
-          error: false
-        };
-      }
       const hasDate = !!normalizeReestrDzText(liveCell.SendDate);
       const hasNumber = !!normalizeReestrDzText(liveCell.PrincipalNumber);
       if (hasDate && hasNumber) {
@@ -3513,6 +3517,12 @@
         run.currentIndex = index;
         run.nextIndex = index;
         const candidate = run.candidates[index];
+        if (isReestrDzWriteOffExcludedClaimant(candidate.cell)) {
+          run.results.push({ id: candidate.id, ...buildReestrDzExcludedClaimantResult(candidate) });
+          run.nextIndex = index + 1;
+          await persistReestrDzPrincipalDailyRun(run);
+          continue;
+        }
         run.current = candidate;
         run.stage = `Готовлю строку № ${candidate.id} к проверке…`;
         syncReestrDzPrincipalOverlay(run);
@@ -3677,6 +3687,22 @@
           : 'Строк без даты и номера исходящего не найдено.';
         syncReestrDzPrincipalOverlay(preparingRun);
         await persistReestrDzPrincipalDailyRun(preparingRun);
+        return;
+      }
+      if (candidates.every((candidate) => isReestrDzWriteOffExcludedClaimant(candidate.cell))) {
+        preparingRun.results = candidates.map((candidate) => ({
+          id: candidate.id,
+          ...buildReestrDzExcludedClaimantResult(candidate)
+        }));
+        preparingRun.status = 'completed';
+        preparingRun.nextIndex = candidates.length;
+        preparingRun.current = null;
+        preparingRun.stage = 'Все найденные строки относятся к исключённым взыскателям. Итоговый отчёт скачан.';
+        preparingRun.warning = '';
+        downloadReestrDzPrincipalReport(preparingRun);
+        preparingRun.reportDownloaded = true;
+        await persistReestrDzPrincipalDailyRun(preparingRun);
+        syncReestrDzPrincipalOverlay(preparingRun);
         return;
       }
       const confirmed = window.confirm(
@@ -4218,16 +4244,13 @@
   }
 
   async function processReestrDzWriteOffCandidate(run, candidate) {
-    await showReestrDzWriteOffCandidate(run, candidate, false);
     if (isReestrDzWriteOffExcludedClaimant(candidate.cell)) {
       return {
-        cell: { ...candidate.cell },
-        review: null,
-        result: 'Пропущено: списание не выполняется',
-        description: 'Взыскатель относится к АО «ЭК «Восток».',
-        skipped: true
+        ...buildReestrDzExcludedClaimantResult(candidate),
+        review: null
       };
     }
+    await showReestrDzWriteOffCandidate(run, candidate, false);
     updateReestrDzWriteOffStage(run, `Открываю поручение ${candidate.cell.RequestNumber}…`);
     const requestUrl = new URL('/api/wss/doclink/redirect', window.location.origin);
     requestUrl.searchParams.set('RegNumber', candidate.cell.RequestNumber);
@@ -4276,7 +4299,16 @@
       for (let index = run.nextIndex; index < run.candidates.length; index += 1) {
         run.currentIndex = index;
         run.nextIndex = index;
-        run.current = run.candidates[index];
+        const candidate = run.candidates[index];
+        if (isReestrDzWriteOffExcludedClaimant(candidate.cell)) {
+          run.current = null;
+          run.results.push({ id: candidate.id, ...buildReestrDzExcludedClaimantResult(candidate), review: null });
+          run.nextIndex = index + 1;
+          run.currentReview = null;
+          await persistReestrDzWriteOffRun(run);
+          continue;
+        }
+        run.current = candidate;
         await waitForReestrDzWriteOffResume(run);
         try {
           const result = await processReestrDzWriteOffCandidate(run, run.current);
@@ -4379,6 +4411,21 @@
       if (!run.candidates.length) {
         run.status = 'completed';
         run.stage = 'Строк с исходящим и незаполненными сведениями о приказе не найдено.';
+        await persistReestrDzWriteOffRun(run);
+        syncReestrDzWriteOffProgressOverlay(run);
+        return;
+      }
+      if (run.candidates.every((candidate) => isReestrDzWriteOffExcludedClaimant(candidate.cell))) {
+        run.results = run.candidates.map((candidate) => ({
+          id: candidate.id,
+          ...buildReestrDzExcludedClaimantResult(candidate),
+          review: null
+        }));
+        run.nextIndex = run.candidates.length;
+        run.status = 'completed';
+        run.current = null;
+        run.stage = `Проверка завершена. Исключённых строк пропущено: ${run.results.length}.`;
+        run.warning = '';
         await persistReestrDzWriteOffRun(run);
         syncReestrDzWriteOffProgressOverlay(run);
         return;
