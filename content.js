@@ -2798,6 +2798,9 @@
       }
       #${REESTR_DZ_WRITE_OFF_OVERLAY_ID}[data-state="error"] { --dup-wo-accent: #d43f3a; }
       #${REESTR_DZ_WRITE_OFF_OVERLAY_ID}[data-state="completed"] { --dup-wo-accent: #3d9b67; }
+      #${REESTR_DZ_WRITE_OFF_OVERLAY_ID}.dup-wo-full-height { top: 8px; height: calc(100vh - 16px); display: flex; flex-direction: column; }
+      #${REESTR_DZ_WRITE_OFF_OVERLAY_ID}.dup-wo-full-height .dup-wo-head { flex: 0 0 auto; }
+      #${REESTR_DZ_WRITE_OFF_OVERLAY_ID}.dup-wo-full-height .dup-wo-body { flex: 1 1 auto; min-height: 0; max-height: none; }
       .dup-wo-head {
         display: grid;
         grid-template-columns: 1fr auto;
@@ -2826,8 +2829,8 @@
       .dup-wo-amount[data-amount-info="total"] { grid-column: 1 / -1; padding-bottom: 5px; border-bottom: 1px solid #d5dde2; }
       .dup-wo-amount span { color: #71808a; }
       .dup-wo-amount strong { color: #243947; font-weight: 650; white-space: nowrap; }
-      .dup-wo-docs, .dup-wo-files { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
-      .dup-wo-files { max-height: 104px; padding-right: 2px; overflow: auto; }
+      .dup-wo-docs { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
+      .dup-wo-files { display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 3px; width: 100%; max-height: min(36vh, 340px); margin-top: 9px; padding-right: 3px; overflow: auto; scrollbar-width: thin; }
       .dup-wo-archive-progress { margin-top: 8px; padding: 7px 8px; border: 1px solid #c8d3da; border-left: 3px solid #d99100; border-radius: 3px; background: #f5f8fa; }
       .dup-wo-archive-progress[data-state="done"] { border-left-color: #3d9b67; }
       .dup-wo-archive-progress[data-state="error"] { border-left-color: #d43f3a; background: #fff5f4; }
@@ -2838,7 +2841,7 @@
       .dup-wo-archive-progress-text { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-top: 4px; color: #647580; font-size: 9px; line-height: 1.25; }
       .dup-wo-archive-progress-text button { flex: 0 0 auto; min-height: 20px; padding: 2px 6px; border: 1px solid #b9c4cc; border-radius: 3px; background: #fff; color: #334955; font: 600 9px "Segoe UI", sans-serif; cursor: pointer; }
       @keyframes dup-wo-archive-progress { 0% { transform: translateX(-115%); } 100% { transform: translateX(300%); } }
-      .dup-wo-docs button, .dup-wo-files button {
+      .dup-wo-docs button {
         min-height: 27px;
         padding: 4px 8px;
         border: 1px solid #b9c4cc;
@@ -2848,6 +2851,23 @@
         font: 600 10px/1.2 Bahnschrift, "Segoe UI", sans-serif;
         cursor: pointer;
       }
+      .dup-wo-files button {
+        display: block;
+        width: 100%;
+        min-height: 21px;
+        padding: 2px 7px;
+        overflow: hidden;
+        border: 1px solid #c2ccd3;
+        border-radius: 3px;
+        background: #fff;
+        color: #315b78;
+        font: 600 9px/1.15 Bahnschrift, "Segoe UI", sans-serif;
+        text-align: left;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        cursor: pointer;
+      }
+      .dup-wo-files button:hover { border-color: #8fa5b3; background: #f4f8fa; }
       .dup-wo-docs button[aria-current="page"] { border-color: #d38c18; background: #fff4d9; color: #6f4807; }
       .dup-wo-form { display: grid; gap: 8px; margin-top: 11px; padding-top: 10px; border-top: 1px solid #d7dde2; }
       .dup-wo-field label { display: block; margin-bottom: 4px; color: #536571; font-size: 10px; font-weight: 600; }
@@ -5850,7 +5870,7 @@
       head.setPointerCapture(event.pointerId);
       const move = (moveEvent) => {
         const left = Math.min(window.innerWidth - overlay.offsetWidth - 8, Math.max(8, startLeft + moveEvent.clientX - startX));
-        const top = Math.min(window.innerHeight - 48, Math.max(8, startTop + moveEvent.clientY - startY));
+        const top = Math.min(Math.max(8, window.innerHeight - overlay.offsetHeight - 8), Math.max(8, startTop + moveEvent.clientY - startY));
         overlay.style.left = `${left}px`;
         overlay.style.top = `${top}px`;
         overlay.style.right = 'auto';
@@ -6148,10 +6168,10 @@
     const fileMap = new Map(knownAttachments.map((item) => [item.href, item]));
     const overlay = document.createElement('section');
     overlay.id = REESTR_DZ_WRITE_OFF_OVERLAY_ID;
-    overlay.className = 'dup-reestr-dz-principal-ui';
+    overlay.className = 'dup-reestr-dz-principal-ui dup-wo-full-height';
     if (session.position && Number.isFinite(Number(session.position.left)) && Number.isFinite(Number(session.position.top))) {
       overlay.style.left = `${Number(session.position.left)}px`;
-      overlay.style.top = `${Number(session.position.top)}px`;
+      overlay.style.top = '8px';
       overlay.style.right = 'auto';
     }
     overlay.innerHTML = `
@@ -6342,10 +6362,14 @@
       attachmentSignature = signature;
       if (filesHost instanceof HTMLElement) {
         filesHost.replaceChildren();
-        Array.from(fileMap.values()).forEach((item) => {
+        const visibleFiles = Array.from(fileMap.values()).filter((item) => !(item.type === 'archive' && (
+          /\.zip$/i.test(normalizeReestrDzText(item.text)) || /\.zip(?:$|[?#])/i.test(item.href)
+        )));
+        visibleFiles.forEach((item) => {
           const button = document.createElement('button');
           button.type = 'button';
           button.textContent = `${item.type === 'archive' ? '🗜️' : '📎'} ${item.text || 'Файл'}`;
+          button.title = item.text || 'Файл';
           button.addEventListener('click', () => {
             if (item.archiveFrameToken && Number.isInteger(item.archivePdfIndex)) {
               const frameEntry = archiveFrames.get(item.archiveFrameToken);
@@ -6376,7 +6400,7 @@
           });
           filesHost.appendChild(button);
         });
-        filesHost.hidden = !fileMap.size;
+        filesHost.hidden = !visibleFiles.length;
       }
       const syncPromise = sendRuntimeMessage({
         action: 'REESTR_DZ_WRITE_OFF_UPDATE_REVIEW',
