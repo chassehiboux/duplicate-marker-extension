@@ -6155,6 +6155,8 @@
     const currentDocumentIndex = Math.max(0, Number(session.currentDocumentIndex) || 0);
     const currentDocument = documents[currentDocumentIndex] || null;
     const initialMode = session.mode === 'comment' ? 'comment' : 'order';
+    const initialOrderDate = normalizeReestrDzText(session.fields && session.fields.orderDate) || normalizeReestrDzText(data.requestOrderDate);
+    const initialOrderNumber = normalizeReestrDzText(session.fields && session.fields.orderNumber) || normalizeReestrDzText(data.requestOrderNumber);
     const knownAttachments = Object.values(session.attachmentsByUrl || {}).flat().map((item) => {
       if (!item || !item.href) return null;
       if (['pdf', 'archive'].includes(item.type)) return item;
@@ -6205,8 +6207,8 @@
         </div>
         <div class="dup-wo-files" data-role="files"></div>
         <div class="dup-wo-form" data-panel="order">
-          <div class="dup-wo-field"><label for="dup-wo-order-date">Дата приказа о списании</label><input id="dup-wo-order-date" name="orderDate" inputmode="numeric" maxlength="10" autocomplete="off" placeholder="дд.мм.гггг" value="${String(session.fields && session.fields.orderDate || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;')}"></div>
-          <div class="dup-wo-field"><label for="dup-wo-order-number">Номер приказа о списании</label><input id="dup-wo-order-number" name="orderNumber" autocomplete="off" value="${String(session.fields && session.fields.orderNumber || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;')}"></div>
+          <div class="dup-wo-field"><label for="dup-wo-order-date">Дата приказа о списании</label><input id="dup-wo-order-date" name="orderDate" inputmode="numeric" maxlength="10" autocomplete="off" placeholder="дд.мм.гггг" value="${initialOrderDate.replace(/&/g, '&amp;').replace(/"/g, '&quot;')}"></div>
+          <div class="dup-wo-field"><label for="dup-wo-order-number">Номер приказа о списании</label><input id="dup-wo-order-number" name="orderNumber" autocomplete="off" value="${initialOrderNumber.replace(/&/g, '&amp;').replace(/"/g, '&quot;')}"></div>
         </div>
         <div class="dup-wo-comment-mode" data-panel="comment" hidden>
           <label for="dup-wo-skip-comment">Комментарий к реестру</label>
