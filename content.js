@@ -2887,6 +2887,8 @@
       .dup-wo-substitute select:focus { border-color: #c58218; outline: 0; box-shadow: 0 0 0 2px rgba(197,130,24,.15); }
       .dup-wo-substitute small { display: block; margin-top: 5px; color: #7c6a4a; font-size: 9px; }
       .dup-wo-actions button[data-action="confirm-decision"] { margin-left: auto; border-color: #2b7d46; background: #36975a; color: #fff; }
+      .dup-wo-actions button[data-action="finish-decision-select"] { border-color: #2b7d46; background: #36975a; color: #fff; }
+      .dup-wo-actions button[data-action="cancel-decision-select"] { margin-left: auto; border-color: #286090; background: #337ab7; color: #fff; }
       .dup-wo-actions button[data-action="finish-decision-skip"] { border-color: #2b7d46; background: #36975a; color: #fff; }
       .dup-wo-error { min-height: 15px; color: #bd302c; font-size: 10px; line-height: 1.35; }
       .dup-wo-actions { display: flex; gap: 6px; margin-top: 7px; background: #f8fafb; }
@@ -6217,14 +6219,19 @@
           <dt>Дата решения</dt><dd data-role="decision-date">—</dd>
         </dl>
         <div class="dup-wo-substitute" data-panel="candidate">
-          <strong>Подтверждаемое решение</strong>
+          <strong>Ручная проверка поручения</strong>
+          <div>Проверьте ответственного и решение на открытой странице. После завершения нажмите «Подтвердить».</div>
+          <small data-role="decision-text">Допустимые решения подсвечены на странице.</small>
+        </div>
+        <div class="dup-wo-substitute" data-panel="decision-select" hidden>
+          <strong>Выберите подтверждённое решение</strong>
           <select name="confirmedDecision" aria-label="Подтверждаемое решение">
             <option value="">Выберите решение</option>
             <option value="Задолженность списана">Задолженность списана</option>
             <option value="Отказ в списании">Отказ в списании</option>
             <option value="Задолженность списана частично">Задолженность списана частично</option>
           </select>
-          <small data-role="decision-text">Автоматически не распознано — выберите вручную.</small>
+          <small>Укажите решение, которое вы только что проверили в поручении.</small>
         </div>
         <div class="dup-wo-comment-mode" data-panel="skip" hidden>
           <label for="dup-wo-mismatch-comment">Комментарий к реестру</label>
@@ -6236,6 +6243,8 @@
           <button type="button" data-action="pause">${session.paused ? 'Продолжить' : 'Пауза'}</button>
           <button type="button" data-action="skip-decision" ${session.paused ? 'disabled' : ''}>Пропустить</button>
           <button type="button" data-action="confirm-decision" ${session.paused ? 'disabled' : ''}>Подтвердить</button>
+          <button type="button" data-action="cancel-decision-select" hidden>Назад</button>
+          <button type="button" data-action="finish-decision-select" hidden ${session.paused ? 'disabled' : ''}>Продолжить</button>
           <button type="button" data-action="cancel-decision-skip" hidden>Отмена</button>
           <button type="button" data-action="finish-decision-skip" hidden ${session.paused ? 'disabled' : ''}>Перейти дальше</button>
         </div>
@@ -6251,10 +6260,9 @@
     set('responsible', data.responsibleName);
     set('decision-user', data.decisionUser);
     set('decision-date', data.decisionDate);
-    set('decision-text', normalizeReestrDzText(data.suggestedDecisionText || data.decision)
-      ? `Найдено автоматически: ${normalizeReestrDzText(data.suggestedDecisionText || data.decision)}`
-      : 'Автоматически не распознано — выберите вручную.');
+    set('decision-text', 'Допустимые решения подсвечены на странице. Выбор появится после подтверждения проверки.');
     const candidatePanel = overlay.querySelector('[data-panel="candidate"]');
+    const decisionSelectPanel = overlay.querySelector('[data-panel="decision-select"]');
     const skipPanel = overlay.querySelector('[data-panel="skip"]');
     const commentInput = overlay.querySelector('[name="skipComment"]');
     const decisionSelect = overlay.querySelector('[name="confirmedDecision"]');
@@ -6275,14 +6283,23 @@
       return sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_UPDATE_REVIEW', data: { mode: session.mode, fields } });
     };
     const setMode = (mode, shouldPersist = true) => {
-      session.mode = mode === 'decision_skip' ? 'decision_skip' : 'decision_confirm';
+      session.mode = mode === 'decision_skip'
+        ? 'decision_skip'
+        : mode === 'decision_select' ? 'decision_select' : 'decision_confirm';
       reestrDzWriteOffReviewState.mode = session.mode;
       const skipMode = session.mode === 'decision_skip';
-      if (candidatePanel instanceof HTMLElement) candidatePanel.hidden = skipMode;
+      const selectMode = session.mode === 'decision_select';
+      const confirmMode = !skipMode && !selectMode;
+      if (candidatePanel instanceof HTMLElement) candidatePanel.hidden = !confirmMode;
+      if (decisionSelectPanel instanceof HTMLElement) decisionSelectPanel.hidden = !selectMode;
       if (skipPanel instanceof HTMLElement) skipPanel.hidden = !skipMode;
       ['skip-decision', 'confirm-decision'].forEach((action) => {
         const button = overlay.querySelector(`[data-action="${action}"]`);
-        if (button instanceof HTMLButtonElement) button.hidden = skipMode;
+        if (button instanceof HTMLButtonElement) button.hidden = !confirmMode;
+      });
+      ['cancel-decision-select', 'finish-decision-select'].forEach((action) => {
+        const button = overlay.querySelector(`[data-action="${action}"]`);
+        if (button instanceof HTMLButtonElement) button.hidden = !selectMode;
       });
       ['cancel-decision-skip', 'finish-decision-skip'].forEach((action) => {
         const button = overlay.querySelector(`[data-action="${action}"]`);
@@ -6290,7 +6307,11 @@
       });
       const confirmButton = overlay.querySelector('[data-action="confirm-decision"]');
       if (confirmButton instanceof HTMLButtonElement) {
-        confirmButton.disabled = session.paused || !(decisionSelect instanceof HTMLSelectElement && REESTR_DZ_WRITE_OFF_DECISIONS.includes(decisionSelect.value));
+        confirmButton.disabled = session.paused;
+      }
+      const finishSelectButton = overlay.querySelector('[data-action="finish-decision-select"]');
+      if (finishSelectButton instanceof HTMLButtonElement) {
+        finishSelectButton.disabled = session.paused || !(decisionSelect instanceof HTMLSelectElement && REESTR_DZ_WRITE_OFF_DECISIONS.includes(decisionSelect.value));
       }
       if (errorElement instanceof HTMLElement) errorElement.textContent = '';
       if (shouldPersist) void persist();
@@ -6299,6 +6320,8 @@
           commentInput.focus();
           commentInput.setSelectionRange(commentInput.value.length, commentInput.value.length);
         }, 0);
+      } else if (selectMode && decisionSelect instanceof HTMLSelectElement) {
+        window.setTimeout(() => decisionSelect.focus(), 0);
       }
     };
     const finish = async (mode) => {
@@ -6321,11 +6344,17 @@
     };
     decisionSelect?.addEventListener('change', () => {
       if (errorElement instanceof HTMLElement) errorElement.textContent = '';
-      const confirmButton = overlay.querySelector('[data-action="confirm-decision"]');
-      if (confirmButton instanceof HTMLButtonElement) {
-        confirmButton.disabled = session.paused || !REESTR_DZ_WRITE_OFF_DECISIONS.includes(decisionSelect.value);
+      const finishSelectButton = overlay.querySelector('[data-action="finish-decision-select"]');
+      if (finishSelectButton instanceof HTMLButtonElement) {
+        finishSelectButton.disabled = session.paused || !REESTR_DZ_WRITE_OFF_DECISIONS.includes(decisionSelect.value);
       }
       void persist();
+    });
+    decisionSelect?.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && REESTR_DZ_WRITE_OFF_DECISIONS.includes(decisionSelect.value)) {
+        event.preventDefault();
+        void finish('decision_confirm');
+      }
     });
     commentInput?.addEventListener('input', () => { if (errorElement instanceof HTMLElement) errorElement.textContent = ''; void persist(); });
     commentInput?.addEventListener('keydown', (event) => {
@@ -6340,7 +6369,9 @@
     overlay.addEventListener('click', (event) => {
       const button = event.target instanceof Element ? event.target.closest('[data-action]') : null;
       if (!(button instanceof HTMLButtonElement)) return;
-      if (button.dataset.action === 'confirm-decision') void finish('decision_confirm');
+      if (button.dataset.action === 'confirm-decision') setMode('decision_select');
+      if (button.dataset.action === 'cancel-decision-select') setMode('decision_confirm');
+      if (button.dataset.action === 'finish-decision-select') void finish('decision_confirm');
       if (button.dataset.action === 'skip-decision') setMode('decision_skip');
       if (button.dataset.action === 'cancel-decision-skip') setMode('decision_confirm');
       if (button.dataset.action === 'finish-decision-skip') void finish('decision_skip');
@@ -6348,10 +6379,10 @@
         const paused = !reestrDzWriteOffReviewState.paused;
         reestrDzWriteOffReviewState.paused = paused;
         button.textContent = paused ? 'Продолжить' : 'Пауза';
-        ['skip-decision', 'confirm-decision', 'finish-decision-skip'].forEach((action) => {
+        ['skip-decision', 'confirm-decision', 'finish-decision-select', 'finish-decision-skip'].forEach((action) => {
           const actionButton = overlay.querySelector(`[data-action="${action}"]`);
           if (actionButton instanceof HTMLButtonElement) {
-            actionButton.disabled = paused || (action === 'confirm-decision' && !(decisionSelect instanceof HTMLSelectElement && REESTR_DZ_WRITE_OFF_DECISIONS.includes(decisionSelect.value)));
+            actionButton.disabled = paused || (action === 'finish-decision-select' && !(decisionSelect instanceof HTMLSelectElement && REESTR_DZ_WRITE_OFF_DECISIONS.includes(decisionSelect.value)));
           }
         });
         void sendRuntimeMessage({
@@ -6849,7 +6880,7 @@
       response.session.fields = cloneReestrDzPrincipalStorageValue(draft.fields, response.session.fields || {});
       const reviewType = response.session.data && response.session.data.reviewType;
       response.session.mode = reviewType === 'decision_mismatch'
-        ? (draft.mode === 'decision_skip' ? 'decision_skip' : 'decision_confirm')
+        ? (draft.mode === 'decision_skip' ? 'decision_skip' : draft.mode === 'decision_select' ? 'decision_select' : 'decision_confirm')
         : reviewType === 'outgoing_mismatch' ? 'comment' : (draft.mode === 'comment' ? 'comment' : 'order');
       if (draft.position && typeof draft.position === 'object') response.session.position = cloneReestrDzPrincipalStorageValue(draft.position, null);
       void sendRuntimeMessage({

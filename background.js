@@ -2654,7 +2654,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     decision: data.fields.decision === undefined ? String(session.fields.decision || '') : String(data.fields.decision || '').trim()
                 };
             }
-            if (['comment', 'order', 'decision_confirm', 'decision_skip'].includes(data.mode)) session.mode = data.mode;
+            if (['comment', 'order', 'decision_confirm', 'decision_select', 'decision_skip'].includes(data.mode)) session.mode = data.mode;
             if (typeof data.paused === 'boolean') session.paused = data.paused;
             if (data.position && Number.isFinite(Number(data.position.left)) && Number.isFinite(Number(data.position.top))) {
                 session.position = { left: Number(data.position.left), top: Number(data.position.top) };
