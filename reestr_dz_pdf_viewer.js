@@ -7,6 +7,8 @@
   const mode = params.get('mode') === 'archive' ? 'archive' : 'pdf';
   const documentCacheKey = String(params.get('cacheKey') || '').trim();
   const archiveCacheKey = `${documentCacheKey}|${fileName}`;
+  const embeddedMode = params.get('embedded') === '1' && window.parent !== window;
+  const embeddedToken = String(params.get('token') || '');
   if (mode === 'archive') document.documentElement.classList.add('archive-progress-in-overlay');
   const frame = document.querySelector('[data-role="pdf-frame"]');
   const status = document.querySelector('[data-role="status"]');
@@ -20,6 +22,7 @@
   const progressBar = document.querySelector('[data-role="progress-bar"]');
   const progressText = document.querySelector('[data-role="progress-text"]');
   const objectUrls = new Set();
+  const embeddedPdfFiles = [];
   const archiveSourceLimit = 200 * 1024 * 1024;
   const archivePdfCountLimit = 100;
   const archivePdfSizeLimit = 500 * 1024 * 1024;
@@ -52,6 +55,11 @@
     if (retryButton instanceof HTMLButtonElement) retryButton.hidden = false;
     if (message) message.textContent = errorText;
     if (progress instanceof HTMLElement) progress.hidden = true;
+  }
+
+  function postEmbedded(type, payload = {}) {
+    if (!embeddedMode || !embeddedToken) return;
+    window.parent.postMessage({ channel: 'dup-reestr-dz-archive', token: embeddedToken, type, ...payload }, '*');
   }
 
   function formatMegabytes(bytes) {
@@ -189,6 +197,7 @@
       };
       window.__dupReestrDzArchiveProgress = progressState;
       window.dispatchEvent(new CustomEvent('dup-reestr-dz-archive-progress', { detail: progressState }));
+      postEmbedded('progress', { state: progressState });
     }
   }
 
@@ -196,6 +205,8 @@
     if (archivePdfsHost instanceof HTMLElement) archivePdfsHost.replaceChildren();
     objectUrls.forEach((url) => URL.revokeObjectURL(url));
     objectUrls.clear();
+    embeddedPdfFiles.length = 0;
+    postEmbedded('files', { files: [] });
   }
 
   function openArchiveCache() {
@@ -250,6 +261,8 @@
     anchor.dataset.dupArchivePdf = 'true';
     anchor.dataset.fileName = fullName;
     archivePdfsHost?.appendChild(anchor);
+    embeddedPdfFiles.push({ name: fullName, url: objectUrl });
+    postEmbedded('files', { files: embeddedPdfFiles.slice() });
   }
 
   function markArchiveProcessed() {
@@ -395,6 +408,7 @@
       const progressState = { fileName, percent: 0, text: errorText, indeterminate: false, state: 'error' };
       window.__dupReestrDzArchiveProgress = progressState;
       window.dispatchEvent(new CustomEvent('dup-reestr-dz-archive-progress', { detail: progressState }));
+      postEmbedded('progress', { state: progressState });
     } finally {
       if (archive) await archive.close().catch(() => null);
     }
@@ -408,6 +422,15 @@
   });
   window.addEventListener('dup-reestr-dz-retry-archive', () => {
     if (mode === 'archive') void loadArchive();
+  });
+  window.addEventListener('message', (event) => {
+    const messageData = event && event.data && typeof event.data === 'object' ? event.data : null;
+    if (!embeddedMode || event.source !== window.parent || !messageData || messageData.channel !== 'dup-reestr-dz-archive' || messageData.token !== embeddedToken) return;
+    if (messageData.action === 'retry') void loadArchive();
+    if (messageData.action === 'open-pdf') {
+      const pdf = embeddedPdfFiles[Number.parseInt(String(messageData.index), 10)];
+      if (pdf) showPdf(pdf.url, pdf.name);
+    }
   });
 
   const load = mode === 'archive' ? loadArchive : loadPdf;

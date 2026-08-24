@@ -172,5 +172,15 @@
       "run_at": "document_end",
       "all_frames": false
     }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "reestr_dz_pdf_viewer.html"
+      ],
+      "matches": [
+        "*://wssdocs.vostok-electra.ru/*"
+      ]
+    }
   ]
 }

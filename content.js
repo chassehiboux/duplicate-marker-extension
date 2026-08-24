@@ -1,4 +1,6 @@
 (function() {
+  if (window.top !== window && /\/reestr_dz_pdf_viewer\.html$/i.test(window.location.pathname) &&
+    new URLSearchParams(window.location.hash.slice(1)).get('embedded') === '1') return;
   // Этот скрипт отвечает за поиск дубликатов и "Турбо-режим".
   if (window.hasDuplicateCheckerRun) return;
   window.hasDuplicateCheckerRun = true;
@@ -586,6 +588,7 @@
         html.dup-ui-hide-reestr-dz-principal-autofill #${REESTR_DZ_WRITE_OFF_OVERLAY_ID},
         html.dup-ui-hide-reestr-dz-principal-autofill #${REESTR_DZ_WRITE_OFF_COMMENT_CONFIRM_ID},
         html.dup-ui-hide-reestr-dz-principal-autofill .pdf-status,
+        html.dup-ui-hide-reestr-dz-principal-autofill .dup-reestr-dz-archive-frame,
         html.dup-ui-hide-reestr-dz-principal-autofill .${REESTR_DZ_WRITE_OFF_HIGHLIGHT_CLASS},
         html.dup-ui-hide-reestr-dz-principal-autofill .${REESTR_DZ_PRINCIPAL_CURRENT_ROW_CLASS},
         html.dup-ui-hide-reestr-dz-principal-autofill .${REESTR_DZ_PRINCIPAL_ATTENTION_ROW_CLASS},
@@ -2880,6 +2883,8 @@
         background: rgba(19, 31, 42, .56);
         font-family: Bahnschrift, "Segoe UI", sans-serif;
       }
+      .dup-reestr-dz-archive-frame { position: fixed; inset: 0; width: 100vw; height: 100vh; border: 0; background: #273744; z-index: 2147483002; }
+      .dup-reestr-dz-archive-frame[hidden] { display: none !important; }
       .dup-wo-confirm-card { box-sizing: border-box; width: min(500px, calc(100vw - 28px)); max-height: calc(100vh - 36px); overflow: auto; border: 1px solid #aeb8c1; border-top: 4px solid #e59b20; border-radius: 6px; background: #f8fafb; color: #273746; box-shadow: 0 18px 52px rgba(15, 27, 38, .38); }
       .dup-wo-confirm-head { padding: 12px 14px 10px; background: #233646; color: #fff; }
       .dup-wo-confirm-head strong { display: block; font-size: 15px; }
@@ -5891,7 +5896,14 @@
         : (archiveNamePattern.test(text) || archiveUrlPattern.test(href) ? 'archive' : '');
       if (!type) return;
       const previous = unique.get(href);
-      const item = { text, href, type, localPdf };
+      const item = {
+        text,
+        href,
+        type,
+        localPdf,
+        archiveFrameToken: String(anchor.dataset.dupArchiveFrameToken || ''),
+        archivePdfIndex: Number.parseInt(String(anchor.dataset.dupArchivePdfIndex || ''), 10)
+      };
       if (!previous || (previous.text === 'Документ' && text !== 'Документ')) unique.set(href, item);
     });
     return Array.from(unique.values());
@@ -6230,6 +6242,11 @@
     });
     const filesHost = overlay.querySelector('[data-role="files"]');
     const archiveProgress = overlay.querySelector('[data-role="archive-progress"]');
+    const archivePdfHost = document.createElement('div');
+    archivePdfHost.hidden = true;
+    archivePdfHost.dataset.dupArchivePdfHost = 'true';
+    const archiveFrames = new Map();
+    const archiveFrameByUrl = new Map();
     const renderArchiveProgress = (rawState) => {
       const state = rawState && typeof rawState === 'object' ? rawState : null;
       if (!state || !(archiveProgress instanceof HTMLElement)) return;
@@ -6258,8 +6275,59 @@
     window.addEventListener('dup-reestr-dz-archive-progress', handleArchiveProgress);
     renderArchiveProgress(window.__dupReestrDzArchiveProgress);
     archiveProgress?.querySelector('[data-action="retry-archive"]')?.addEventListener('click', () => {
-      window.dispatchEvent(new Event('dup-reestr-dz-retry-archive'));
+      const activeFrame = Array.from(archiveFrames.values()).find((entry) => entry.item.href === archiveProgress.dataset.archiveUrl);
+      activeFrame?.iframe.contentWindow?.postMessage({ channel: 'dup-reestr-dz-archive', token: activeFrame.token, action: 'retry' }, '*');
     });
+    const handleEmbeddedArchiveMessage = (event) => {
+      const messageData = event && event.data && typeof event.data === 'object' ? event.data : null;
+      if (!messageData || messageData.channel !== 'dup-reestr-dz-archive') return;
+      const frameEntry = archiveFrames.get(String(messageData.token || ''));
+      if (!frameEntry || event.source !== frameEntry.iframe.contentWindow) return;
+      if (messageData.type === 'progress') {
+        archiveProgress.dataset.archiveUrl = frameEntry.item.href;
+        renderArchiveProgress(messageData.state);
+      }
+      if (messageData.type === 'files' && Array.isArray(messageData.files)) {
+        archivePdfHost.querySelectorAll(`[data-dup-archive-frame-token="${CSS.escape(frameEntry.token)}"]`).forEach((anchor) => anchor.remove());
+        messageData.files.forEach((pdf, index) => {
+          if (!pdf || !/^blob:/i.test(String(pdf.url || ''))) return;
+          const anchor = document.createElement('a');
+          anchor.href = String(pdf.url);
+          anchor.textContent = normalizeReestrDzText(pdf.name) || `PDF ${index + 1}`;
+          anchor.dataset.dupArchivePdf = 'true';
+          anchor.dataset.dupArchiveFrameToken = frameEntry.token;
+          anchor.dataset.dupArchivePdfIndex = String(index);
+          archivePdfHost.appendChild(anchor);
+        });
+      }
+    };
+    window.addEventListener('message', handleEmbeddedArchiveMessage);
+    const startEmbeddedArchive = (item) => {
+      if (!item || !item.href) return;
+      const existingToken = archiveFrameByUrl.get(item.href);
+      if (existingToken && archiveFrames.has(existingToken)) return;
+      const token = typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const frame = document.createElement('iframe');
+      frame.className = 'dup-reestr-dz-archive-frame';
+      frame.hidden = true;
+      frame.title = `PDF из архива ${normalizeReestrDzText(item.text) || ''}`.trim();
+      const documentNumber = normalizeReestrDzText(currentDocument && (currentDocument.text || currentDocument.label));
+      frame.src = chrome.runtime.getURL('reestr_dz_pdf_viewer.html') + '#' + new URLSearchParams({
+        url: item.href,
+        name: normalizeReestrDzText(item.text) || 'Архив',
+        mode: 'archive',
+        cacheKey: `${normalizeReestrDzText(data.depid)}:${documentNumber}`,
+        embedded: '1',
+        token
+      }).toString();
+      archiveFrames.set(token, { token, iframe: frame, item });
+      archiveFrameByUrl.set(item.href, token);
+      archiveProgress.dataset.archiveUrl = item.href;
+      renderArchiveProgress({ fileName: item.text, percent: 0, text: 'Подключение к WSS…', indeterminate: true, state: 'working' });
+      (document.body || document.documentElement).appendChild(frame);
+    };
     let attachmentSignature = null;
     let autoArchiveStarted = false;
     const refreshAttachmentButtons = () => {
@@ -6279,6 +6347,22 @@
           button.type = 'button';
           button.textContent = `${item.type === 'archive' ? '🗜️' : '📎'} ${item.text || 'Файл'}`;
           button.addEventListener('click', () => {
+            if (item.archiveFrameToken && Number.isInteger(item.archivePdfIndex)) {
+              const frameEntry = archiveFrames.get(item.archiveFrameToken);
+              if (!frameEntry) return;
+              frameEntry.iframe.hidden = false;
+              frameEntry.iframe.contentWindow?.postMessage({
+                channel: 'dup-reestr-dz-archive',
+                token: frameEntry.token,
+                action: 'open-pdf',
+                index: item.archivePdfIndex
+              }, '*');
+              return;
+            }
+            if (item.type === 'archive') {
+              startEmbeddedArchive(item);
+              return;
+            }
             if (item.localPdf === true && /^blob:/i.test(item.href)) {
               window.dispatchEvent(new CustomEvent('dup-reestr-dz-open-local-pdf', {
                 detail: { url: item.href, fileName: item.text }
@@ -6306,10 +6390,7 @@
         : null;
       if (automaticZip) {
         autoArchiveStarted = true;
-        void Promise.resolve(syncPromise).then(() => navigateReestrDzWriteOffReview(automaticZip.href, currentDocumentIndex, {
-          attachmentType: 'archive',
-          fileName: automaticZip.text
-        }));
+        void Promise.resolve(syncPromise).then(() => startEmbeddedArchive(automaticZip));
       }
     };
     refreshAttachmentButtons();
@@ -6466,7 +6547,7 @@
       });
       void sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_UPDATE_REVIEW', data: { position } });
     });
-    (document.body || document.documentElement).appendChild(overlay);
+    (document.body || document.documentElement).append(archivePdfHost, overlay);
     const attachmentObserver = new MutationObserver(() => {
       if (!overlay.isConnected) {
         attachmentObserver.disconnect();
@@ -9817,6 +9898,7 @@
       html.${SCREENSHOT_MODE_CLASS} #${REESTR_DZ_WRITE_OFF_OVERLAY_ID},
       html.${SCREENSHOT_MODE_CLASS} #${REESTR_DZ_WRITE_OFF_COMMENT_CONFIRM_ID},
       html.${SCREENSHOT_MODE_CLASS} .pdf-status,
+      html.${SCREENSHOT_MODE_CLASS} .dup-reestr-dz-archive-frame,
       html.${SCREENSHOT_MODE_CLASS} .${REESTR_DZ_WRITE_OFF_HIGHLIGHT_CLASS},
       html.${SCREENSHOT_MODE_CLASS} .${REESTR_DZ_PRINCIPAL_CURRENT_ROW_CLASS},
       html.${SCREENSHOT_MODE_CLASS} .${REESTR_DZ_PRINCIPAL_ATTENTION_ROW_CLASS},
