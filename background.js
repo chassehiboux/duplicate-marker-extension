@@ -2485,8 +2485,7 @@ async function openReestrDzWriteOffReview(sourceTab, rawData) {
         fields: {
             orderDate: '',
             orderNumber: '',
-            comment: String(data.suggestedComment || data.suggestedDecisionText || data.decision || '').trim(),
-            decision: String(data.decision || '').trim()
+            comment: String(data.suggestedComment || data.suggestedDecisionText || data.decision || '').trim()
         },
         position: null,
         attachmentsByUrl: {},
@@ -2650,11 +2649,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 session.fields = {
                     orderDate: data.fields.orderDate === undefined ? String(session.fields.orderDate || '') : String(data.fields.orderDate || '').trim(),
                     orderNumber: data.fields.orderNumber === undefined ? String(session.fields.orderNumber || '') : String(data.fields.orderNumber || '').trim(),
-                    comment: data.fields.comment === undefined ? String(session.fields.comment || '') : String(data.fields.comment || '').trim(),
-                    decision: data.fields.decision === undefined ? String(session.fields.decision || '') : String(data.fields.decision || '').trim()
+                    comment: data.fields.comment === undefined ? String(session.fields.comment || '') : String(data.fields.comment || '').trim()
                 };
             }
-            if (['comment', 'order', 'decision_confirm', 'decision_select', 'decision_skip'].includes(data.mode)) session.mode = data.mode;
+            if (['comment', 'order', 'decision_confirm', 'decision_skip'].includes(data.mode)) session.mode = data.mode;
             if (typeof data.paused === 'boolean') session.paused = data.paused;
             if (data.position && Number.isFinite(Number(data.position.left)) && Number.isFinite(Number(data.position.top))) {
                 session.position = { left: Number(data.position.left), top: Number(data.position.top) };
@@ -2721,8 +2719,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             session.fields = {
                 orderDate: String(fields.orderDate || '').trim(),
                 orderNumber: String(fields.orderNumber || '').trim(),
-                comment: String(fields.comment || '').trim(),
-                decision: String(fields.decision || session.fields.decision || '').trim()
+                comment: String(fields.comment || '').trim()
             };
             if (completionMode === 'comment' && !session.fields.comment) {
                 sendResponse({ success: false, error: 'WRITE_OFF_COMMENT_REQUIRED' });
