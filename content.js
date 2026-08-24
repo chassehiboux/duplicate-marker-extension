@@ -296,7 +296,7 @@
   const REESTR_DZ_PRINCIPAL_CURRENT_ROW_CLASS = 'dup-reestr-dz-principal-current-row';
   const REESTR_DZ_PRINCIPAL_ATTENTION_ROW_CLASS = 'dup-reestr-dz-principal-attention-row';
   const REESTR_DZ_PRINCIPAL_DAILY_STORAGE_KEY = 'dup_reestr_dz_principal_daily_runs';
-  const REESTR_DZ_PRINCIPAL_DAILY_STORAGE_VERSION = 1;
+  const REESTR_DZ_PRINCIPAL_DAILY_STORAGE_VERSION = 2;
   const REESTR_DZ_PRINCIPAL_REPORT_HEADERS = Object.freeze([
     ['ReestrDzID', '№'],
     ['Status', 'Статус'],
@@ -308,6 +308,7 @@
     ['RequestNumber', 'Номер поручения'],
     ['SendDate', 'Дата отправки принципалу'],
     ['PrincipalNumber', 'Номер исходящего'],
+    ['PrincipalAttachmentDate', 'Фактическая дата прикрепления исходящего'],
     ['OrderDate', 'Дата приказа о списании'],
     ['OrderNumber', 'Номер приказа о списании'],
     ['Structure', 'Состав реестра'],
@@ -2984,15 +2985,51 @@
     throw new Error(`Карточка исходящего не подтвердила ожидаемый номер ${expected || '—'} в подписи «номер (дата создания)».`);
   }
 
-  function findReestrDzPrincipalNativeButton() {
-    return Array.from(document.querySelectorAll('#pager_left .ui-pg-button, .ui-jqgrid-pager .ui-pg-button'))
-      .find((element) => normalizeReestrDzText(element.textContent) === 'Заполнить сведения о направлении инфо принципалу') || null;
+  function parseReestrDzPrincipalAttachment(documentData) {
+    const responsibleName = normalizeReestrDzText(documentData && documentData.responsibleName);
+    if (!responsibleName) {
+      throw new Error('В поручении не найдено поле «Ответственный за отражение списания в биллинговом ПК».');
+    }
+    const matchingDecisions = (documentData && Array.isArray(documentData.completedDecisions)
+      ? documentData.completedDecisions
+      : []).filter((item) => normalizeReestrDzText(item && item.user)
+        .localeCompare(responsibleName, 'ru', { sensitivity: 'base' }) === 0);
+    if (!matchingDecisions.length) {
+      throw new Error(`В истории решений не найдено решение «Исполнено» ответственного ${responsibleName}.`);
+    }
+    if (matchingDecisions.length > 1) {
+      throw new Error(`В истории решений найдено несколько решений «Исполнено» ответственного ${responsibleName}; требуется ручная проверка.`);
+    }
+    const date = normalizeReestrDzText(matchingDecisions[0].date);
+    if (!/^\d{2}\.\d{2}\.\d{4}$/.test(date) || parseReestrDzDate(date) === null) {
+      throw new Error(`Не удалось определить дату решения «Исполнено» ответственного ${responsibleName}.`);
+    }
+    return { date, responsibleName };
   }
 
-  async function waitForReestrDzPrincipalNativeForm(candidate, timeoutMs = 15000) {
+  function buildReestrDzAttachmentComment(sendDate, attachmentDate) {
+    const sendMatch = normalizeReestrDzText(sendDate).match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
+    const attachmentMatch = normalizeReestrDzText(attachmentDate).match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
+    if (!sendMatch || !attachmentMatch || parseReestrDzDate(sendDate) === null || parseReestrDzDate(attachmentDate) === null) {
+      throw new Error('Не удалось сравнить дату отправки принципалу и фактическую дату прикрепления исходящего.');
+    }
+    if (sendMatch[2] === attachmentMatch[2] && sendMatch[3] === attachmentMatch[3]) return '';
+    const monthIndex = Number(sendMatch[2]) - 1;
+    const nominativeMonths = ['январь', 'февраль', 'март', 'апрель', 'май', 'июнь', 'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь'];
+    const instrumentalMonths = ['январём', 'февралём', 'мартом', 'апрелем', 'маем', 'июнем', 'июлем', 'августом', 'сентябрём', 'октябрём', 'ноябрём', 'декабрём'];
+    return `Исходящий прикрепили ${attachmentDate} ${instrumentalMonths[monthIndex]}, т.к. дата отправки принципалу ${sendDate} (${nominativeMonths[monthIndex]})`;
+  }
+
+  function findReestrDzNativeButton(title) {
+    const expected = normalizeReestrDzText(title);
+    return Array.from(document.querySelectorAll('#pager_left .ui-pg-button, .ui-jqgrid-pager .ui-pg-button'))
+      .find((element) => normalizeReestrDzText(element.textContent) === expected || normalizeReestrDzText(element.getAttribute('title')) === expected) || null;
+  }
+
+  async function waitForReestrDzNativeForm(candidate, path, timeoutMs = 15000) {
     const startedAt = Date.now();
     while (Date.now() - startedAt < timeoutMs) {
-      const frames = Array.from(document.querySelectorAll('iframe[src*="/ovzid/ReestrDz/Send"]'));
+      const frames = Array.from(document.querySelectorAll(`iframe[src*="${path}"]`));
       for (const frame of frames) {
         try {
           const frameUrl = new URL(frame.src, window.location.origin);
@@ -3016,10 +3053,10 @@
   async function saveReestrDzPrincipalInfo(run, candidate, outgoing) {
     await waitForReestrDzPrincipalResume(run);
     updateReestrDzPrincipalStage(run, `Нажимаю штатную кнопку для строки № ${candidate.id}…`);
-    const nativeButton = findReestrDzPrincipalNativeButton();
+    const nativeButton = findReestrDzNativeButton('Заполнить сведения о направлении инфо принципалу');
     if (!(nativeButton instanceof HTMLElement)) throw new Error('Не найдена штатная кнопка «Заполнить сведения о направлении инфо принципалу».');
     nativeButton.click();
-    const nativeForm = await waitForReestrDzPrincipalNativeForm(candidate);
+    const nativeForm = await waitForReestrDzNativeForm(candidate, '/ovzid/ReestrDz/Send');
     await waitForReestrDzPrincipalResume(run);
     updateReestrDzPrincipalStage(run, `Заполняю штатное окно строки № ${candidate.id}: ${outgoing.date}, ${outgoing.number}…`);
     const fillResponse = await sendRuntimeMessage({
@@ -3053,6 +3090,55 @@
     throw new Error(`Контрольное чтение строки № ${candidate.id} не подтвердило сохранение.`);
   }
 
+  async function saveReestrDzPrincipalComment(run, candidate, cell, generatedComment) {
+    const expectedComment = normalizeReestrDzText(generatedComment);
+    if (!expectedComment) return cell;
+    const currentNote = String(cell && cell.Note || '').trim();
+    if (normalizeReestrDzText(currentNote).includes(expectedComment)) return cell;
+    const updatedNote = currentNote ? `${currentNote}\n${generatedComment}` : generatedComment;
+
+    await waitForReestrDzPrincipalResume(run);
+    updateReestrDzPrincipalStage(run, `Повторно выбираю строку № ${candidate.id} для комментария…`);
+    await showReestrDzPrincipalCandidate(run, candidate, false);
+    const nativeButton = findReestrDzNativeButton('Комментарий к реестру');
+    if (!(nativeButton instanceof HTMLElement)) throw new Error('Не найдена штатная кнопка «Комментарий к реестру».');
+    nativeButton.click();
+    const nativeForm = await waitForReestrDzNativeForm(candidate, '/ovzid/ReestrDz/SetNote');
+    await waitForReestrDzPrincipalResume(run);
+    updateReestrDzPrincipalStage(run, `Вставляю комментарий в штатное окно строки № ${candidate.id}…`);
+    const fillResponse = await sendRuntimeMessage({
+      action: 'REESTR_DZ_FILL_NOTE_FORM',
+      data: { rowId: candidate.id, note: updatedNote }
+    });
+    if (!fillResponse || fillResponse.success === false) {
+      throw new Error(`Не удалось заполнить комментарий строки № ${candidate.id}: ${fillResponse && fillResponse.error ? fillResponse.error : 'нет ответа'}.`);
+    }
+    updateReestrDzPrincipalStage(run, `Комментарий вставлен, нажато «Сохранить» для строки № ${candidate.id}…`);
+
+    for (let attempt = 1; attempt <= 20; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, attempt === 1 ? 250 : 500));
+      const verified = await loadReestrDzRowById(run.gridState, candidate.id, run.controller.signal);
+      const verifiedCell = verified && verified.cell ? verified.cell : null;
+      if (verifiedCell && normalizeReestrDzText(verifiedCell.Note).includes(expectedComment)) {
+        await new Promise((resolve) => window.setTimeout(resolve, 700));
+        const gridReady = await waitForReestrDzGridReady('', 20000);
+        if (!gridReady) throw new Error(`Грид не завершил загрузку после комментария строки № ${candidate.id}.`);
+        closeReestrDzPrincipalNativeDialog(nativeForm.frame);
+        updateReestrDzPrincipalStage(run, `Комментарий строки № ${candidate.id} подтверждён.`);
+        await new Promise((resolve) => window.setTimeout(resolve, 900));
+        return { ...cell, ...verifiedCell };
+      }
+    }
+    throw new Error(`Контрольное чтение строки № ${candidate.id} не подтвердило комментарий.`);
+  }
+
+  async function applyReestrDzPrincipalAttachment(run, candidate, cell, sendDate, attachment) {
+    const enrichedCell = { ...cell, PrincipalAttachmentDate: attachment.date };
+    const generatedComment = buildReestrDzAttachmentComment(sendDate, attachment.date);
+    if (!generatedComment) return enrichedCell;
+    return saveReestrDzPrincipalComment(run, candidate, enrichedCell, generatedComment);
+  }
+
   async function processReestrDzPrincipalCandidate(run, candidate) {
     while (true) {
       await waitForReestrDzPrincipalResume(run);
@@ -3063,10 +3149,16 @@
       const hasDate = !!normalizeReestrDzText(liveCell.SendDate);
       const hasNumber = !!normalizeReestrDzText(liveCell.PrincipalNumber);
       if (hasDate && hasNumber) {
+        updateReestrDzPrincipalStage(run, `Читаю историю поручения ${candidate.cell.RequestNumber}…`);
+        const requestUrl = new URL('/api/wss/doclink/redirect', window.location.origin);
+        requestUrl.searchParams.set('RegNumber', candidate.cell.RequestNumber);
+        const requestDocument = await loadReestrDzWssDocument(requestUrl.toString(), 'request', candidate.cell.RequestNumber);
+        const attachment = parseReestrDzPrincipalAttachment(requestDocument);
+        const enrichedCell = await applyReestrDzPrincipalAttachment(run, candidate, { ...candidate.cell, ...liveCell }, liveCell.SendDate, attachment);
         return {
-          cell: { ...candidate.cell, ...liveCell },
+          cell: enrichedCell,
           result: 'Проверено вручную',
-          description: 'Во время паузы пользователь заполнил дату и номер исходящего.',
+          description: `Дата и номер заполнены вручную; исходящий фактически прикреплён ${attachment.date}.`,
           found: true,
           saved: false,
           skipped: false,
@@ -3109,6 +3201,8 @@
         continue;
       }
 
+      const attachment = parseReestrDzPrincipalAttachment(requestDocument);
+
       updateReestrDzPrincipalStage(run, `Читаю дату создания исходящего ${links[0].text}…`);
       const outgoingDocument = await loadReestrDzWssDocument(links[0].href, 'outgoing', links[0].text);
       const outgoing = parseReestrDzOutgoingHeader(outgoingDocument, links[0].text);
@@ -3116,10 +3210,11 @@
         throw new Error(`Полученный номер исходящего совпал с номером поручения ${candidate.cell.RequestNumber}; сохранение остановлено для ручной проверки.`);
       }
       const savedCell = await saveReestrDzPrincipalInfo(run, candidate, outgoing);
+      const enrichedCell = await applyReestrDzPrincipalAttachment(run, candidate, savedCell, outgoing.date, attachment);
       return {
-        cell: savedCell,
+        cell: enrichedCell,
         result: 'Сохранено',
-        description: `${outgoing.number} от ${outgoing.date}`,
+        description: `${outgoing.number} от ${outgoing.date}; фактически прикреплён ${attachment.date}`,
         found: true,
         saved: true,
         skipped: false,
@@ -3165,6 +3260,15 @@
       return index;
     };
     const countColumnIndex = REESTR_DZ_PRINCIPAL_REPORT_HEADERS.findIndex(([key]) => key === 'EDocsCount');
+    const centeredColumnIndexes = new Set(['ReestrDzID', 'CreateDate', 'SendDate', 'PrincipalAttachmentDate', 'OrderDate']
+      .map((key) => REESTR_DZ_PRINCIPAL_REPORT_HEADERS.findIndex(([columnKey]) => columnKey === key))
+      .filter((index) => index >= 0));
+    const wrappedColumnIndexes = new Set([
+      REESTR_DZ_PRINCIPAL_REPORT_HEADERS.findIndex(([columnKey]) => columnKey === 'EmployeeFullName'),
+      REESTR_DZ_PRINCIPAL_REPORT_HEADERS.findIndex(([columnKey]) => columnKey === 'RequestNumber'),
+      REESTR_DZ_PRINCIPAL_REPORT_HEADERS.findIndex(([columnKey]) => columnKey === 'Note'),
+      rows[0].length - 1
+    ]);
     const sheetRows = rows.map((row, rowIndex) => {
       const rowNumber = rowIndex + 1;
       const cells = row.map((value, colIndex) => {
@@ -3173,13 +3277,14 @@
           const count = Number.parseInt(String(value).replace(/\s+/g, ''), 10);
           if (Number.isFinite(count)) return `<c r="${ref}" s="3"><v>${count}</v></c>`;
         }
-        const style = rowIndex === 0 ? 1 : (colIndex === 0 || colIndex === 2 || colIndex === 8 || colIndex === 10 ? 2 : 0);
+        const style = rowIndex === 0 ? 1 : (centeredColumnIndexes.has(colIndex) ? 2 : (wrappedColumnIndexes.has(colIndex) ? 4 : 0));
         if (value === '' || value === undefined || value === null) return `<c r="${ref}" s="${style}"/>`;
         return `<c r="${ref}" t="s" s="${style}"><v>${getSharedIndex(value)}</v></c>`;
       }).join('');
-      return `<row r="${rowNumber}" ht="${rowIndex === 0 ? 32 : 17}" customHeight="1">${cells}</row>`;
+      const hasLongWrappedValue = rowIndex > 0 && Array.from(wrappedColumnIndexes).some((index) => String(row[index] || '').length > 45);
+      return `<row r="${rowNumber}" ht="${rowIndex === 0 ? 32 : (hasLongWrappedValue ? 45 : 17)}" customHeight="1">${cells}</row>`;
     }).join('');
-    const columnWidths = [8, 15, 12, 27, 16, 20, 16, 22, 14, 23, 14, 22, 17, 28, 25, 17, 38];
+    const columnWidths = [8, 15, 12, 27, 16, 20, 16, 22, 14, 23, 16, 14, 22, 17, 28, 25, 17, 38];
     const widths = rows[0].map((_, index) => `<col min="${index + 1}" max="${index + 1}" width="${columnWidths[index] || 16}" customWidth="1"/>`).join('');
     const lastColumn = columnIndexToName(rows[0].length - 1);
     const sharedStringsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="${sharedStrings.length}" uniqueCount="${sharedStrings.length}">${sharedStrings.map((value) => `<si><t>${escapeExecutionAnalysisXml(value)}</t></si>`).join('')}</sst>`;
@@ -3188,7 +3293,7 @@
     const workbookRels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>';
     const rootRels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>';
     const contentTypes = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>';
-    const styles = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="9"/><color rgb="FF334155"/><name val="Aptos"/></font><font><b/><sz val="9"/><color rgb="FF1E293B"/><name val="Aptos"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE2E8F0"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="2"><border/><border><left/><right/><top/><bottom style="thin"><color rgb="FFCBD5E1"/></bottom><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="4"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyFont="1"><alignment vertical="center"/></xf><xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf><xf numFmtId="3" fontId="0" fillId="0" borderId="0" xfId="0" applyFont="1" applyNumberFormat="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf></cellXfs><cellStyles count="1"><cellStyle name="Обычный" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
+    const styles = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="9"/><color rgb="FF334155"/><name val="Aptos"/></font><font><b/><sz val="9"/><color rgb="FF1E293B"/><name val="Aptos"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE2E8F0"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="2"><border/><border><left/><right/><top/><bottom style="thin"><color rgb="FFCBD5E1"/></bottom><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="5"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyFont="1"><alignment vertical="center"/></xf><xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf><xf numFmtId="3" fontId="0" fillId="0" borderId="0" xfId="0" applyFont="1" applyNumberFormat="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf></cellXfs><cellStyles count="1"><cellStyle name="Обычный" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
     return buildStoredZip([
       { name: '[Content_Types].xml', content: contentTypes },
       { name: '_rels/.rels', content: rootRels },

@@ -2044,7 +2044,35 @@ async function loadReestrDzWssDataInWorker(sourceTab, url, kind, expectedNumber)
                             // ignore malformed WSS link
                         }
                     });
-                    return { ...base, success: true, expectedNumber: expected, links: Array.from(unique.values()) };
+                    if (!unique.size) {
+                        return { ...base, success: true, expectedNumber: expected, links: [] };
+                    }
+                    const responsibleLabel = Array.from(document.querySelectorAll('.dbf_listform_title'))
+                        .find((element) => normalize(element.textContent) === 'Ответственный за отражение списания в биллинговом ПК');
+                    const responsibleRow = responsibleLabel && responsibleLabel.closest('tr');
+                    const responsibleValues = responsibleRow
+                        ? Array.from(responsibleRow.cells || []).map((cell) => normalize(cell.textContent)).filter(Boolean)
+                        : [];
+                    const responsibleName = responsibleValues.find((value) => value !== 'Ответственный за отражение списания в биллинговом ПК') || '';
+                    const historyTable = document.querySelector('#solHistoryTBL');
+                    if (!responsibleLabel || !historyTable) {
+                        return { ...base, success: false, pending: true, error: 'WSS_REQUEST_AUDIT_DATA_LOADING' };
+                    }
+                    const completedDecisions = Array.from(historyTable.querySelectorAll('tr')).map((row) => {
+                        const cells = Array.from(row.cells || []).map((cell) => normalize(cell.textContent));
+                        if (cells.length < 2 || cells[1] !== 'Исполнено') return null;
+                        const match = cells[0].match(/^(\d{2}\.\d{2}\.\d{4})\s+(\d{2}:\d{2})\s+(.+)$/);
+                        if (!match) return null;
+                        return { date: match[1], time: match[2], user: normalize(match[3]), decision: cells[1] };
+                    }).filter(Boolean);
+                    return {
+                        ...base,
+                        success: true,
+                        expectedNumber: expected,
+                        links: Array.from(unique.values()),
+                        responsibleName,
+                        completedDecisions
+                    };
                 }
                 if (documentKind === 'outgoing') {
                     if (!/\/dms\/outgoing\//i.test(window.location.pathname)) {
@@ -2248,6 +2276,60 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     await delayAsync(120);
                 }
                 return { success: false, error: 'NATIVE_FORM_NOT_FOUND' };
+            })().then(sendResponse).catch((error) => sendResponse({
+                success: false,
+                error: error && error.message ? error.message : String(error)
+            }));
+            return true;
+        }
+
+        case 'REESTR_DZ_FILL_NOTE_FORM': {
+            const sourceTabId = sender && sender.tab && Number.isInteger(sender.tab.id) ? sender.tab.id : null;
+            const rowId = String(request.data && request.data.rowId || '').trim();
+            const note = String(request.data && request.data.note || '').trim();
+            if (!Number.isInteger(sourceTabId) || !rowId || !note) {
+                sendResponse({ success: false, error: 'INVALID_NOTE_FORM_DATA' });
+                return false;
+            }
+
+            (async () => {
+                const startedAt = Date.now();
+                while (Date.now() - startedAt < 15000) {
+                    const frameResults = await executeScriptInAllFramesAsync(
+                        sourceTabId,
+                        async (payload) => {
+                            if (window.location.pathname !== '/ovzid/ReestrDz/SetNote') {
+                                return { matched: false };
+                            }
+
+                            const form = document.querySelector('form[action*="/ovzid/ReestrDz/SetNote"]');
+                            const idInput = form && form.querySelector('input[name="ReestrDzID"]');
+                            if (!form || String(idInput && idInput.value || '').trim() !== payload.rowId) {
+                                return { matched: false };
+                            }
+
+                            const noteInput = form.querySelector('textarea[name="Note"]');
+                            const submitButton = form.querySelector('button[type="submit"], input[type="submit"]');
+                            if (!(noteInput instanceof HTMLTextAreaElement) || !(submitButton instanceof HTMLElement)) {
+                                return { matched: true, success: false, error: 'NOTE_FORM_NOT_READY' };
+                            }
+
+                            noteInput.focus();
+                            noteInput.value = String(payload.note || '');
+                            noteInput.dispatchEvent(new Event('input', { bubbles: true }));
+                            noteInput.dispatchEvent(new Event('change', { bubbles: true }));
+                            noteInput.blur();
+                            window.setTimeout(() => submitButton.click(), 80);
+                            return { matched: true, success: true };
+                        },
+                        [{ rowId, note }],
+                        { world: 'MAIN' }
+                    );
+                    const successfulFrame = frameResults.find((result) => result && result.matched && result.success);
+                    if (successfulFrame) return successfulFrame;
+                    await delayAsync(120);
+                }
+                return { success: false, error: 'NOTE_FORM_NOT_FOUND' };
             })().then(sendResponse).catch((error) => sendResponse({
                 success: false,
                 error: error && error.message ? error.message : String(error)
