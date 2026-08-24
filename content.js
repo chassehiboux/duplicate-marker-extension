@@ -2805,13 +2805,20 @@
       .dup-wo-head strong { display: block; font-size: 14px; font-weight: 650; }
       .dup-wo-head small { display: block; margin-top: 3px; color: #b9c7d2; font-size: 10px; }
       .dup-wo-close { width: 24px; height: 24px; padding: 0; border: 1px solid #607586; border-radius: 3px; background: transparent; color: #fff; font-size: 17px; cursor: pointer; }
-      .dup-wo-body { padding: 10px 12px 12px; }
+      .dup-wo-body { max-height: calc(100vh - 130px); padding: 10px 12px 12px; overflow: auto; }
       .dup-wo-stage { margin-bottom: 9px; padding: 7px 8px; border-left: 3px solid var(--dup-wo-accent); background: #eef2f5; font-size: 11px; line-height: 1.35; }
       .dup-wo-grid { display: grid; grid-template-columns: 104px 1fr; gap: 5px 8px; align-items: baseline; font-size: 11px; }
       .dup-wo-grid dt { color: #73818c; }
       .dup-wo-grid dd { min-width: 0; margin: 0; color: #1f2f3c; font-weight: 600; overflow-wrap: anywhere; }
       .dup-wo-decision { color: #8b5a09 !important; }
+      .dup-wo-reference { margin-top: 9px; padding: 8px 9px; border: 1px solid #d5dde2; border-radius: 3px; background: #f4f7f8; }
+      .dup-wo-reference-title { margin-bottom: 6px; color: #526776; font: 650 9px/1 Bahnschrift, "Segoe UI", sans-serif; letter-spacing: .045em; text-transform: uppercase; }
+      .dup-wo-amounts { display: grid; grid-template-columns: 1fr 1fr; gap: 5px 9px; }
+      .dup-wo-amount { display: flex; justify-content: space-between; gap: 7px; min-width: 0; font-size: 10px; }
+      .dup-wo-amount span { color: #71808a; }
+      .dup-wo-amount strong { color: #243947; font-weight: 650; white-space: nowrap; }
       .dup-wo-docs, .dup-wo-files { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
+      .dup-wo-files { max-height: 104px; padding-right: 2px; overflow: auto; }
       .dup-wo-docs button, .dup-wo-files button {
         min-height: 27px;
         padding: 4px 8px;
@@ -3900,6 +3907,7 @@
         if (preparationResult.status === 'rejected') throw preparationResult.reason;
         if (visualizationResult.status === 'rejected') throw visualizationResult.reason;
         const preparedBatch = preparationResult.value;
+        await sendRuntimeMessage({ action: 'REESTR_DZ_CLOSE_WSS_SESSION', data: { workersOnly: true } }).catch(() => null);
         run.parallelProgress = null;
         run.activeBatchCandidates = [];
         run.activeBatchPage = null;
@@ -4614,6 +4622,14 @@
     const writeOffAmount = normalizeReestrDzText(documentData && documentData.writeOffAmount);
     if (!setsCount) throw new Error('В поручении не найдено значение «Количество комплектов».');
     if (!writeOffAmount) throw new Error('В поручении не найдена «Сумма списания задолженности».');
+    const requestDetails = {
+      basicDebtAmount: normalizeReestrDzText(documentData && documentData.basicDebtAmount),
+      stateFeeAmount: normalizeReestrDzText(documentData && documentData.stateFeeAmount),
+      penaltyAmount: normalizeReestrDzText(documentData && documentData.penaltyAmount),
+      additionalExpensesAmount: normalizeReestrDzText(documentData && documentData.additionalExpensesAmount),
+      requestOrderNumber: normalizeReestrDzText(documentData && documentData.requestOrderNumber),
+      requestOrderDate: normalizeReestrDzText(documentData && documentData.requestOrderDate)
+    };
     const responsibleName = normalizeReestrDzText(documentData && documentData.responsibleName);
     if (!responsibleName) throw new Error('Не найден ответственный за отражение списания в биллинговом ПК.');
     const documents = [];
@@ -4637,6 +4653,7 @@
         outgoingNumber,
         setsCount,
         writeOffAmount,
+        ...requestDetails,
         responsibleName,
         decision: '',
         decisionDate: '',
@@ -4663,6 +4680,7 @@
         outgoingNumber,
         setsCount,
         writeOffAmount,
+        ...requestDetails,
         responsibleName,
         decision: suggested ? normalizeReestrDzText(suggested.decision) : '',
         decisionText: suggested ? normalizeReestrDzText(suggested.text || suggested.decision) : '',
@@ -4682,6 +4700,7 @@
       outgoingNumber,
       setsCount,
       writeOffAmount,
+      ...requestDetails,
       responsibleName,
       decision: normalizeReestrDzText(decisions[0].decision),
       decisionText: normalizeReestrDzText(decisions[0].text || decisions[0].decision),
@@ -4935,6 +4954,12 @@
         outgoingNumber: review.outgoingNumber,
         setsCount: review.setsCount,
         writeOffAmount: review.writeOffAmount,
+        basicDebtAmount: review.basicDebtAmount,
+        stateFeeAmount: review.stateFeeAmount,
+        penaltyAmount: review.penaltyAmount,
+        additionalExpensesAmount: review.additionalExpensesAmount,
+        requestOrderNumber: review.requestOrderNumber,
+        requestOrderDate: review.requestOrderDate,
         decision: review.decision,
         documents: review.documents
       }
@@ -5429,6 +5454,7 @@
         if (preparationResult.status === 'rejected') throw preparationResult.reason;
         if (visualizationResult.status === 'rejected') throw visualizationResult.reason;
         const preparedBatch = preparationResult.value;
+        await sendRuntimeMessage({ action: 'REESTR_DZ_CLOSE_WSS_SESSION', data: { workersOnly: true } }).catch(() => null);
         run.parallelProgress = null;
         run.activeBatchCandidates = [];
         run.activeBatchPage = null;
@@ -5753,12 +5779,25 @@
 
   function collectReestrDzWriteOffAttachments() {
     const unique = new Map();
+    const fileNamePattern = /\.(?:pdf|docx?|xlsx?|xls|rtf|tiff?|jpe?g|png)$/i;
+    const fileUrlPattern = /\.(?:pdf|docx?|xlsx?|xls|rtf|tiff?|jpe?g|png)(?:$|[?#])/i;
     document.querySelectorAll('a[href]').forEach((anchor) => {
       if (anchor.closest(`#${REESTR_DZ_WRITE_OFF_OVERLAY_ID}`)) return;
       const href = String(anchor.href || '').trim();
-      const text = normalizeReestrDzText(anchor.textContent) || decodeURIComponent(href.split('/').pop() || 'Документ');
-      if (!href || !/^https?:/i.test(href) || !/\.(?:pdf|docx?|xlsx?|xls|rtf|tiff?|jpe?g|png)(?:$|[?#])/i.test(href)) return;
-      unique.set(href, { text, href });
+      if (!href || !/^https?:/i.test(href)) return;
+      const containerText = normalizeReestrDzText(
+        anchor.closest('.files-fileAndCommentDiv')?.querySelector('.files-filespan')?.textContent
+      );
+      let fallbackText = 'Документ';
+      try {
+        fallbackText = decodeURIComponent(href.split('/').pop() || fallbackText);
+      } catch (error) {
+        // malformed escaping in a WSS URL must not hide other attachments
+      }
+      const text = normalizeReestrDzText(anchor.textContent) || containerText || normalizeReestrDzText(fallbackText);
+      if (!fileNamePattern.test(text) && !fileUrlPattern.test(href)) return;
+      const previous = unique.get(href);
+      if (!previous || (previous.text === 'Документ' && text !== 'Документ')) unique.set(href, { text, href });
     });
     return Array.from(unique.values());
   }
@@ -5978,10 +6017,8 @@
     const currentDocumentIndex = Math.max(0, Number(session.currentDocumentIndex) || 0);
     const currentDocument = documents[currentDocumentIndex] || null;
     const initialMode = session.mode === 'comment' ? 'comment' : 'order';
-    const attachments = collectReestrDzWriteOffAttachments();
-    void sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_UPDATE_REVIEW', data: { attachments, pageUrl: window.location.href } });
     const knownAttachments = Object.values(session.attachmentsByUrl || {}).flat().filter((item) => item && item.href);
-    const fileMap = new Map([...knownAttachments, ...attachments].map((item) => [item.href, item]));
+    const fileMap = new Map(knownAttachments.map((item) => [item.href, item]));
     const overlay = document.createElement('section');
     overlay.id = REESTR_DZ_WRITE_OFF_OVERLAY_ID;
     overlay.className = 'dup-reestr-dz-principal-ui';
@@ -5998,9 +6035,20 @@
           <dt>Исходящий</dt><dd>${data.outgoingNumber || '—'}</dd>
           <dt>Комплектов</dt><dd>${data.setsCount || '—'}</dd>
           <dt>Сумма</dt><dd>${data.writeOffAmount || '—'}</dd>
+          <dt data-order-info="date" hidden>Дата приказа в СДЗ</dt><dd data-order-info="date" data-role="request-order-date" hidden></dd>
+          <dt data-order-info="number" hidden>Номер приказа в СДЗ</dt><dd data-order-info="number" data-role="request-order-number" hidden></dd>
           <dt>Решение</dt><dd class="dup-wo-decision">${data.decision || '—'}</dd>
           <dt>Документ</dt><dd>${currentDocument ? `${currentDocument.label}: ${currentDocument.text}` : document.title}</dd>
         </dl>
+        <div class="dup-wo-reference" data-role="amount-reference" hidden>
+          <div class="dup-wo-reference-title">Состав суммы списания</div>
+          <div class="dup-wo-amounts">
+            <div class="dup-wo-amount" data-amount-info="basic" hidden><span>Основной долг</span><strong data-role="basic-debt"></strong></div>
+            <div class="dup-wo-amount" data-amount-info="fee" hidden><span>Госпошлина</span><strong data-role="state-fee"></strong></div>
+            <div class="dup-wo-amount" data-amount-info="penalty" hidden><span>Пени</span><strong data-role="penalty"></strong></div>
+            <div class="dup-wo-amount" data-amount-info="expenses" hidden><span>Доп. расходы</span><strong data-role="additional-expenses"></strong></div>
+          </div>
+        </div>
         <div class="dup-wo-docs" data-role="documents"></div>
         <div class="dup-wo-files" data-role="files"></div>
         <div class="dup-wo-form" data-panel="order">
@@ -6021,6 +6069,34 @@
           <button type="button" data-action="save-comment" hidden ${session.paused ? 'disabled' : ''}>Сохранить комментарий</button>
         </div>
       </div>`;
+    const showReferenceValue = (selector, value) => {
+      const normalized = normalizeReestrDzText(value);
+      if (!normalized) return false;
+      overlay.querySelectorAll(selector).forEach((element) => {
+        if (!(element instanceof HTMLElement)) return;
+        element.hidden = false;
+        if (element.matches('[data-role]')) element.textContent = normalized;
+      });
+      return true;
+    };
+    showReferenceValue('[data-order-info="date"]', data.requestOrderDate);
+    showReferenceValue('[data-order-info="number"]', data.requestOrderNumber);
+    const hasAmountDetails = [
+      ['basic', 'basic-debt', data.basicDebtAmount],
+      ['fee', 'state-fee', data.stateFeeAmount],
+      ['penalty', 'penalty', data.penaltyAmount],
+      ['expenses', 'additional-expenses', data.additionalExpensesAmount]
+    ].reduce((shown, [key, role, value]) => {
+      const normalized = normalizeReestrDzText(value);
+      if (!normalized) return shown;
+      const item = overlay.querySelector(`[data-amount-info="${key}"]`);
+      const target = overlay.querySelector(`[data-role="${role}"]`);
+      if (item instanceof HTMLElement) item.hidden = false;
+      if (target instanceof HTMLElement) target.textContent = normalized;
+      return true;
+    }, false);
+    const amountReference = overlay.querySelector('[data-role="amount-reference"]');
+    if (amountReference instanceof HTMLElement) amountReference.hidden = !hasAmountDetails;
     const docsHost = overlay.querySelector('[data-role="documents"]');
     documents.forEach((item, index) => {
       const button = document.createElement('button');
@@ -6031,14 +6107,30 @@
       docsHost.appendChild(button);
     });
     const filesHost = overlay.querySelector('[data-role="files"]');
-    Array.from(fileMap.values()).forEach((item) => {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.textContent = `📎 ${item.text || 'Файл'}`;
-      button.addEventListener('click', () => void navigateReestrDzWriteOffReview(item.href, currentDocumentIndex));
-      filesHost.appendChild(button);
-    });
-    if (!fileMap.size) filesHost.remove();
+    let attachmentSignature = null;
+    const refreshAttachmentButtons = () => {
+      const pageAttachments = collectReestrDzWriteOffAttachments();
+      pageAttachments.forEach((item) => fileMap.set(item.href, item));
+      const signature = Array.from(fileMap.values()).map((item) => `${item.href}\n${item.text}`).sort().join('\n---\n');
+      if (signature === attachmentSignature) return;
+      attachmentSignature = signature;
+      if (filesHost instanceof HTMLElement) {
+        filesHost.replaceChildren();
+        Array.from(fileMap.values()).forEach((item) => {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.textContent = `📎 ${item.text || 'Файл'}`;
+          button.addEventListener('click', () => void navigateReestrDzWriteOffReview(item.href, currentDocumentIndex));
+          filesHost.appendChild(button);
+        });
+        filesHost.hidden = !fileMap.size;
+      }
+      void sendRuntimeMessage({
+        action: 'REESTR_DZ_WRITE_OFF_UPDATE_REVIEW',
+        data: { attachments: pageAttachments, pageUrl: window.location.href }
+      });
+    };
+    refreshAttachmentButtons();
     const dateInput = overlay.querySelector('[name="orderDate"]');
     const numberInput = overlay.querySelector('[name="orderNumber"]');
     const commentInput = overlay.querySelector('[name="skipComment"]');
@@ -6193,6 +6285,14 @@
       void sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_UPDATE_REVIEW', data: { position } });
     });
     (document.body || document.documentElement).appendChild(overlay);
+    const attachmentObserver = new MutationObserver(() => {
+      if (!overlay.isConnected) {
+        attachmentObserver.disconnect();
+        return;
+      }
+      refreshAttachmentButtons();
+    });
+    attachmentObserver.observe(document.body || document.documentElement, { childList: true, subtree: true, characterData: true });
     setReviewMode(initialMode, false);
     highlightReestrDzWriteOffText(data.outgoingNumber, data.writeOffAmount);
   }

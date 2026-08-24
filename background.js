@@ -402,6 +402,25 @@ function getTabAsync(tabId) {
     });
 }
 
+function queryTabsAsync(queryInfo = {}) {
+    return new Promise((resolve, reject) => {
+        try {
+            chrome.tabs.query(queryInfo, (tabs) => {
+                const runtimeError = chrome.runtime && chrome.runtime.lastError
+                    ? chrome.runtime.lastError.message
+                    : '';
+                if (runtimeError) {
+                    reject(new Error(runtimeError));
+                    return;
+                }
+                resolve(Array.isArray(tabs) ? tabs : []);
+            });
+        } catch (error) {
+            reject(error);
+        }
+    });
+}
+
 function normalizeEpguRegistryScanUrl(value, expectedHost) {
     const rawValue = String(value || '').trim();
     const normalizedHost = String(expectedHost || '').trim().toLowerCase();
@@ -1959,6 +1978,7 @@ chrome.runtime.onInstalled.addListener(() => {
 });
 
 const reestrDzWssWorkerTabs = new Map();
+const reestrDzWssSourceCleanupPromises = new Map();
 const reestrDzWriteOffReviewSessions = new Map();
 const reestrDzWriteOffReviewSources = new Map();
 
@@ -1977,6 +1997,44 @@ function isAllowedReestrDzUrl(rawUrl) {
     } catch (error) {
         return false;
     }
+}
+
+function isReestrDzWssDocsUrl(rawUrl) {
+    try {
+        const url = new URL(String(rawUrl || ''));
+        return ['http:', 'https:'].includes(url.protocol) && String(url.hostname || '').toLowerCase() === 'wssdocs.vostok-electra.ru';
+    } catch (error) {
+        return false;
+    }
+}
+
+async function closeReestrDzOrphanTabs(sourceTabId) {
+    if (!Number.isInteger(sourceTabId)) return false;
+    const tracked = new Set();
+    const pool = getReestrDzWssWorkerPool(sourceTabId, false);
+    if (pool) for (const tabId of pool.values()) if (Number.isInteger(tabId)) tracked.add(tabId);
+    const review = reestrDzWriteOffReviewSessions.get(sourceTabId);
+    if (review && Number.isInteger(review.reviewTabId)) tracked.add(review.reviewTabId);
+    const tabs = await queryTabsAsync({});
+    const staleTabIds = tabs
+        .filter((tab) => Number.isInteger(tab && tab.id) && tab.openerTabId === sourceTabId && tab.active !== true &&
+            !tracked.has(tab.id) && isReestrDzWssDocsUrl(tab.url))
+        .map((tab) => tab.id);
+    const results = await Promise.all(staleTabIds.map((tabId) => removeTabAsync(tabId).then(() => true).catch(() => false)));
+    return results.some(Boolean);
+}
+
+async function ensureReestrDzSourceTabsCleaned(sourceTabId) {
+    if (!Number.isInteger(sourceTabId)) return false;
+    let cleanup = reestrDzWssSourceCleanupPromises.get(sourceTabId);
+    if (!cleanup) {
+        cleanup = closeReestrDzOrphanTabs(sourceTabId).catch((error) => {
+            reestrDzWssSourceCleanupPromises.delete(sourceTabId);
+            throw error;
+        });
+        reestrDzWssSourceCleanupPromises.set(sourceTabId, cleanup);
+    }
+    return cleanup;
 }
 
 function normalizeReestrDzWssWorkerKey(rawKey) {
@@ -2072,13 +2130,16 @@ async function loadReestrDzWssDataInWorker(sourceTab, url, kind, expectedNumber,
                     }
                     const findFieldRow = (label) => Array.from(document.querySelectorAll('.dbf_listform_title'))
                         .find((element) => normalize(element.textContent) === label)?.closest('tr') || null;
-                    const readFieldText = (label) => {
-                        const row = findFieldRow(label);
-                        if (!row) return '';
-                        const valueContainer = row.querySelector('.lc_divValueContent') || row.cells && row.cells[row.cells.length - 1];
-                        const input = valueContainer && valueContainer.querySelector('input:not([type="hidden"]), textarea, select');
-                        return normalize(input && 'value' in input ? input.value : valueContainer && valueContainer.textContent);
-                    };
+                    const readFieldText = (label) => Array.from(document.querySelectorAll('.dbf_listform_title'))
+                        .filter((element) => normalize(element.textContent) === label)
+                        .map((element) => element.closest('tr'))
+                        .filter(Boolean)
+                        .map((row) => {
+                            const valueContainer = row.querySelector('.lc_divValueContent') || row.cells && row.cells[row.cells.length - 1];
+                            const input = valueContainer && valueContainer.querySelector('input:not([type="hidden"]), textarea, select');
+                            return normalize(input && 'value' in input ? input.value : valueContainer && valueContainer.textContent);
+                        })
+                        .find(Boolean) || '';
                     const readFieldLinks = (label) => {
                         const row = findFieldRow(label);
                         if (!row) return [];
@@ -2124,6 +2185,12 @@ async function loadReestrDzWssDataInWorker(sourceTab, url, kind, expectedNumber,
                         otherLinks: readFieldLinks('Другие документы'),
                         setsCount: readFieldText('Количество комплектов'),
                         writeOffAmount: readFieldText('Сумма списания задолженности'),
+                        basicDebtAmount: readFieldText('Основной долг'),
+                        stateFeeAmount: readFieldText('Госпошлина'),
+                        penaltyAmount: readFieldText('Пени'),
+                        additionalExpensesAmount: readFieldText('Доп. расходы'),
+                        requestOrderNumber: readFieldText('Номер приказа о списании'),
+                        requestOrderDate: readFieldText('Дата приказа'),
                         responsibleName,
                         writeOffDecisions,
                         cancellationDecisions: readCancellationDecisions(historyTable)
@@ -2222,6 +2289,7 @@ async function loadReestrDzWssDocument(sourceTab, rawUrl, rawKind, rawExpectedNu
 
     const sourceTabId = sourceTab && Number.isInteger(sourceTab.id) ? sourceTab.id : null;
     if (!Number.isInteger(sourceTabId)) throw new Error('NO_SOURCE_TAB');
+    await ensureReestrDzSourceTabsCleaned(sourceTabId).catch(() => false);
     return loadReestrDzWssDataInWorker(sourceTab, url, kind, expectedNumber, normalizeReestrDzWssWorkerKey(rawWorkerKey));
 }
 
@@ -2508,11 +2576,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             session.updatedAt = Date.now();
             updateTabAsync(sourceTabId, { active: true }).catch(() => null);
             sendResponse({ success: true });
-            window.setTimeout(() => {
-                if (reestrDzWriteOffReviewSessions.get(sourceTabId) === session) {
-                    removeTabAsync(reviewTabId).catch(() => null);
-                }
-            }, 120);
+            setTimeout(() => removeTabAsync(reviewTabId).catch(() => null), 120);
             return false;
         }
 
@@ -2742,8 +2806,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 sendResponse({ success: false, error: 'NO_SOURCE_TAB' });
                 return false;
             }
-            closeReestrDzWssWorker(sourceTabId, request.data && request.data.workerKey)
-                .then((closed) => sendResponse({ success: true, closed }))
+            const data = request.data && typeof request.data === 'object' ? request.data : {};
+            const workersOnly = data.workersOnly === true;
+            Promise.all([
+                closeReestrDzWssWorker(sourceTabId, data.workerKey),
+                workersOnly ? Promise.resolve(false) : closeReestrDzWriteOffReview(sourceTabId, false),
+                workersOnly ? Promise.resolve(false) : closeReestrDzOrphanTabs(sourceTabId)
+            ])
+                .then((results) => sendResponse({ success: true, closed: results.some(Boolean) }))
                 .catch((error) => sendResponse({
                     success: false,
                     error: error && error.message ? error.message : String(error)
@@ -3788,6 +3858,7 @@ let pendingEdocids = {};
 chrome.tabs.onRemoved.addListener((tabId) => {
   const sourceWorkerPool = getReestrDzWssWorkerPool(tabId, false);
   reestrDzWssWorkerTabs.delete(tabId);
+  reestrDzWssSourceCleanupPromises.delete(tabId);
   if (sourceWorkerPool) {
     for (const workerTabId of sourceWorkerPool.values()) {
       if (Number.isInteger(workerTabId)) removeTabAsync(workerTabId).catch(() => {});
