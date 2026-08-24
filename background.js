@@ -1979,17 +1979,32 @@ function isAllowedReestrDzUrl(rawUrl) {
     }
 }
 
-async function ensureReestrDzWssWorkerTab(sourceTab) {
+function normalizeReestrDzWssWorkerKey(rawKey) {
+    return String(rawKey || 'default').replace(/[^a-z0-9_.:-]/gi, '_').slice(0, 80) || 'default';
+}
+
+function getReestrDzWssWorkerPool(sourceTabId, create = false) {
+    let pool = reestrDzWssWorkerTabs.get(sourceTabId);
+    if (!(pool instanceof Map) && create) {
+        pool = new Map();
+        reestrDzWssWorkerTabs.set(sourceTabId, pool);
+    }
+    return pool instanceof Map ? pool : null;
+}
+
+async function ensureReestrDzWssWorkerTab(sourceTab, rawWorkerKey) {
     const sourceTabId = sourceTab && Number.isInteger(sourceTab.id) ? sourceTab.id : null;
     if (!Number.isInteger(sourceTabId)) throw new Error('NO_SOURCE_TAB');
+    const workerKey = normalizeReestrDzWssWorkerKey(rawWorkerKey);
+    const workerPool = getReestrDzWssWorkerPool(sourceTabId, true);
 
-    const storedTabId = reestrDzWssWorkerTabs.get(sourceTabId);
+    const storedTabId = workerPool.get(workerKey);
     if (Number.isInteger(storedTabId)) {
         try {
             await getTabAsync(storedTabId);
             return storedTabId;
         } catch (error) {
-            reestrDzWssWorkerTabs.delete(sourceTabId);
+            workerPool.delete(workerKey);
         }
     }
 
@@ -2010,12 +2025,12 @@ async function ensureReestrDzWssWorkerTab(sourceTab) {
     }
     const workerTabId = workerTab && Number.isInteger(workerTab.id) ? workerTab.id : null;
     if (!Number.isInteger(workerTabId)) throw new Error('NO_WSS_WORKER_TAB');
-    reestrDzWssWorkerTabs.set(sourceTabId, workerTabId);
+    workerPool.set(workerKey, workerTabId);
     return workerTabId;
 }
 
-async function loadReestrDzWssDataInWorker(sourceTab, url, kind, expectedNumber) {
-    const workerTabId = await ensureReestrDzWssWorkerTab(sourceTab);
+async function loadReestrDzWssDataInWorker(sourceTab, url, kind, expectedNumber, workerKey) {
+    const workerTabId = await ensureReestrDzWssWorkerTab(sourceTab, workerKey);
     await updateTabAsync(workerTabId, { url, active: false });
     const startedAt = Date.now();
     let lastResult = null;
@@ -2197,7 +2212,7 @@ async function loadReestrDzWssDataInWorker(sourceTab, url, kind, expectedNumber)
     throw new Error(lastResult && lastResult.error ? lastResult.error : 'WSS_DOCUMENT_UNAVAILABLE');
 }
 
-async function loadReestrDzWssDocument(sourceTab, rawUrl, rawKind, rawExpectedNumber) {
+async function loadReestrDzWssDocument(sourceTab, rawUrl, rawKind, rawExpectedNumber, rawWorkerKey) {
     const url = String(rawUrl || '').trim();
     const kind = String(rawKind || '').trim();
     const expectedNumber = String(rawExpectedNumber || '').replace(/\s+/g, ' ').trim();
@@ -2207,19 +2222,29 @@ async function loadReestrDzWssDocument(sourceTab, rawUrl, rawKind, rawExpectedNu
 
     const sourceTabId = sourceTab && Number.isInteger(sourceTab.id) ? sourceTab.id : null;
     if (!Number.isInteger(sourceTabId)) throw new Error('NO_SOURCE_TAB');
-    return loadReestrDzWssDataInWorker(sourceTab, url, kind, expectedNumber);
+    return loadReestrDzWssDataInWorker(sourceTab, url, kind, expectedNumber, normalizeReestrDzWssWorkerKey(rawWorkerKey));
 }
 
-async function closeReestrDzWssWorker(sourceTabId) {
-    const tabId = reestrDzWssWorkerTabs.get(sourceTabId);
-    reestrDzWssWorkerTabs.delete(sourceTabId);
-    if (!Number.isInteger(tabId)) return false;
-    try {
-        await removeTabAsync(tabId);
-        return true;
-    } catch (error) {
-        return false;
-    }
+async function closeReestrDzWssWorker(sourceTabId, rawWorkerKey = '') {
+    const pool = getReestrDzWssWorkerPool(sourceTabId, false);
+    if (!pool) return false;
+    const workerKey = String(rawWorkerKey || '').trim() ? normalizeReestrDzWssWorkerKey(rawWorkerKey) : '';
+    const tabIds = workerKey
+        ? [pool.get(workerKey)].filter(Number.isInteger)
+        : Array.from(pool.values()).filter(Number.isInteger);
+    if (workerKey) pool.delete(workerKey);
+    else reestrDzWssWorkerTabs.delete(sourceTabId);
+    if (!pool.size) reestrDzWssWorkerTabs.delete(sourceTabId);
+    if (!tabIds.length) return false;
+    const results = await Promise.all(tabIds.map(async (tabId) => {
+        try {
+            await removeTabAsync(tabId);
+            return true;
+        } catch (error) {
+            return false;
+        }
+    }));
+    return results.some(Boolean);
 }
 
 async function closeReestrDzWriteOffReview(sourceTabId, activateSource = false) {
@@ -2367,7 +2392,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 sender && sender.tab,
                 request.data && request.data.url,
                 request.data && request.data.kind,
-                request.data && request.data.expectedNumber
+                request.data && request.data.expectedNumber,
+                request.data && request.data.workerKey
             )
                 .then(sendResponse)
                 .catch((error) => sendResponse({
@@ -2684,7 +2710,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 sendResponse({ success: false, error: 'NO_SOURCE_TAB' });
                 return false;
             }
-            closeReestrDzWssWorker(sourceTabId)
+            closeReestrDzWssWorker(sourceTabId, request.data && request.data.workerKey)
                 .then((closed) => sendResponse({ success: true, closed }))
                 .catch((error) => sendResponse({
                     success: false,
@@ -3728,13 +3754,18 @@ let pendingEdocids = {};
 
 // Очищаем временное хранилище при закрытии вкладки.
 chrome.tabs.onRemoved.addListener((tabId) => {
-  const reestrDzWorkerTabId = reestrDzWssWorkerTabs.get(tabId);
+  const sourceWorkerPool = getReestrDzWssWorkerPool(tabId, false);
   reestrDzWssWorkerTabs.delete(tabId);
-  if (Number.isInteger(reestrDzWorkerTabId)) {
-    removeTabAsync(reestrDzWorkerTabId).catch(() => {});
+  if (sourceWorkerPool) {
+    for (const workerTabId of sourceWorkerPool.values()) {
+      if (Number.isInteger(workerTabId)) removeTabAsync(workerTabId).catch(() => {});
+    }
   }
-  for (const [sourceTabId, workerTabId] of reestrDzWssWorkerTabs.entries()) {
-    if (workerTabId === tabId) reestrDzWssWorkerTabs.delete(sourceTabId);
+  for (const [sourceTabId, workerPool] of reestrDzWssWorkerTabs.entries()) {
+    for (const [workerKey, workerTabId] of workerPool.entries()) {
+      if (workerTabId === tabId) workerPool.delete(workerKey);
+    }
+    if (!workerPool.size) reestrDzWssWorkerTabs.delete(sourceTabId);
   }
   const reviewSourceTabId = reestrDzWriteOffReviewSources.get(tabId);
   if (Number.isInteger(reviewSourceTabId)) {

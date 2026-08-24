@@ -296,6 +296,8 @@
   const REESTR_DZ_PRINCIPAL_CURRENT_ROW_CLASS = 'dup-reestr-dz-principal-current-row';
   const REESTR_DZ_PRINCIPAL_ATTENTION_ROW_CLASS = 'dup-reestr-dz-principal-attention-row';
   const REESTR_DZ_PRINCIPAL_DAILY_STORAGE_KEY = 'dup_reestr_dz_principal_daily_runs';
+  const REESTR_DZ_PARALLEL_WORKERS_STORAGE_KEY = 'dup_reestr_dz_parallel_workers_v1';
+  const REESTR_DZ_PARALLEL_WORKERS_DEFAULT = 5;
   const REESTR_DZ_PRINCIPAL_DAILY_STORAGE_VERSION = 2;
   const REESTR_DZ_CHECK_MENU_ID = 'dup-reestr-dz-check-menu';
   const REESTR_DZ_WRITE_OFF_OVERLAY_ID = 'dup-reestr-dz-write-off-overlay';
@@ -2283,6 +2285,9 @@
       metaText: run.metaText,
       stage: run.stage,
       warning: run.warning,
+      parallelWorkers: normalizeReestrDzParallelWorkers(run.parallelWorkers),
+      preparedResults: run.preparedResults,
+      preparedThroughIndex: Number.isInteger(run.preparedThroughIndex) ? run.preparedThroughIndex : 0,
       recoverableError: run.recoverableError === true,
       updatedAt: Date.now()
     }, null);
@@ -2358,6 +2363,9 @@
       current: candidates[nextIndex] || null,
       department: cloneReestrDzPrincipalStorageValue(snapshot.department, getReestrDzCurrentDepartment()),
       period: cloneReestrDzPrincipalStorageValue(snapshot.period, null),
+      parallelWorkers: normalizeReestrDzParallelWorkers(snapshot.parallelWorkers),
+      preparedResults: cloneReestrDzPrincipalStorageValue(snapshot.preparedResults, {}),
+      preparedThroughIndex: Math.max(nextIndex, Number.parseInt(String(snapshot.preparedThroughIndex || nextIndex), 10) || nextIndex),
       overlayDismissed: false,
       reportDownloaded: false,
       recoverableError: wasError,
@@ -2376,9 +2384,35 @@
     return timestamp !== null && timestamp >= period.from && timestamp <= period.to;
   }
 
-  function askReestrDzPrincipalPeriod() {
+  function normalizeReestrDzParallelWorkers(value) {
+    const parsed = Number.parseInt(String(value || ''), 10);
+    return Number.isInteger(parsed) ? Math.min(5, Math.max(1, parsed)) : REESTR_DZ_PARALLEL_WORKERS_DEFAULT;
+  }
+
+  async function getReestrDzParallelWorkersPreference() {
+    const stored = await chromeStorageGet([REESTR_DZ_PARALLEL_WORKERS_STORAGE_KEY]).catch(() => ({}));
+    return normalizeReestrDzParallelWorkers(stored && stored[REESTR_DZ_PARALLEL_WORKERS_STORAGE_KEY]);
+  }
+
+  async function saveReestrDzParallelWorkersPreference(value) {
+    const parallelWorkers = normalizeReestrDzParallelWorkers(value);
+    const saved = await chromeStorageSet({ [REESTR_DZ_PARALLEL_WORKERS_STORAGE_KEY]: parallelWorkers }).catch(() => false);
+    if (!saved) {
+      await new Promise((resolve) => {
+        try {
+          chrome.storage.local.set({ [REESTR_DZ_PARALLEL_WORKERS_STORAGE_KEY]: parallelWorkers }, () => resolve());
+        } catch (error) {
+          resolve();
+        }
+      });
+    }
+    return parallelWorkers;
+  }
+
+  async function askReestrDzPrincipalPeriod() {
     ensureReestrDzPrincipalStyle();
     document.getElementById(REESTR_DZ_PRINCIPAL_PERIOD_DIALOG_ID)?.remove();
+    const savedParallelWorkers = await getReestrDzParallelWorkersPreference();
     return new Promise((resolve) => {
       const dialog = document.createElement('div');
       dialog.id = REESTR_DZ_PRINCIPAL_PERIOD_DIALOG_ID;
@@ -2389,6 +2423,10 @@
           <p class="dup-rdz-period-help">Отбор по полю «Дата запуска поручения на списание». Оставьте поле пустым, чтобы проверить все строки.</p>
           <label class="dup-rdz-period-label" for="dup-rdz-period-input">Период</label>
           <input id="dup-rdz-period-input" class="dup-rdz-period-input" type="text" inputmode="numeric" maxlength="21" autocomplete="off" placeholder="дд.мм.гггг-дд.мм.гггг" aria-describedby="dup-rdz-period-error">
+          <label class="dup-rdz-period-label" for="dup-rdz-workers-input">Параллельных проверок WSS</label>
+          <select id="dup-rdz-workers-input" class="dup-rdz-period-input" aria-describedby="dup-rdz-period-error">
+            ${[1, 2, 3, 4, 5].map((value) => `<option value="${value}"${value === savedParallelWorkers ? ' selected' : ''}>${value}</option>`).join('')}
+          </select>
           <div id="dup-rdz-period-error" class="dup-rdz-period-error" aria-live="polite"></div>
           <div class="dup-rdz-period-actions">
             <button type="button" class="btn btn-default btn-sm" data-action="cancel">Отмена</button>
@@ -2396,7 +2434,8 @@
           </div>
         </form>`;
       const form = dialog.querySelector('form');
-      const input = dialog.querySelector('input');
+      const input = dialog.querySelector('#dup-rdz-period-input');
+      const workersInput = dialog.querySelector('#dup-rdz-workers-input');
       const error = dialog.querySelector('.dup-rdz-period-error');
       let settled = false;
       const finish = (result) => {
@@ -2424,10 +2463,12 @@
         input.value = formatReestrDzPeriodMask(digits.join(''));
         input.setSelectionRange(input.value.length, input.value.length);
       });
-      form.addEventListener('submit', (event) => {
+      form.addEventListener('submit', async (event) => {
         event.preventDefault();
         try {
-          finish({ cancelled: false, period: parseReestrDzPeriod(input.value) });
+          const period = parseReestrDzPeriod(input.value);
+          const parallelWorkers = await saveReestrDzParallelWorkersPreference(workersInput && workersInput.value);
+          finish({ cancelled: false, period, parallelWorkers });
         } catch (validationError) {
           error.textContent = validationError && validationError.message ? validationError.message : String(validationError);
           input.focus();
@@ -2478,6 +2519,7 @@
         font: 14px/1.2 Consolas, monospace;
       }
       .dup-rdz-period-input:focus { border-color: #337ab7; outline: 0; box-shadow: 0 0 0 2px rgba(51,122,183,.14); }
+      .dup-rdz-period-input + .dup-rdz-period-label { margin-top: 12px; }
       .dup-rdz-period-error { min-height: 17px; margin-top: 5px; color: #c9302c; font-size: 12px; }
       .dup-rdz-period-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 10px; }
       #${REESTR_DZ_CHECK_MENU_ID} {
@@ -2885,8 +2927,8 @@
     setText('badge', badge);
     setText('number', current ? `№ ${current.id}` : '—');
     setText('meta', current
-      ? `${current.cell.RequestNumber || 'Поручение не указано'} · страница ${current.page} из ${run.gridState.lastpage || 1}`
-      : (run.metaText || 'Собираю строки грида'));
+      ? `${current.cell.RequestNumber || 'Поручение не указано'} · страница ${current.page} из ${run.gridState.lastpage || 1} · WSS ×${normalizeReestrDzParallelWorkers(run.parallelWorkers)}`
+      : `${run.metaText || 'Собираю строки грида'} · WSS ×${normalizeReestrDzParallelWorkers(run.parallelWorkers)}`);
     setText('stage', run.stage || 'Подготовка запуска…');
     setText('processed', `${stats.processed}/${total}`);
     setText('found', stats.found);
@@ -2944,6 +2986,9 @@
     for (let index = run.results.length - 1; index >= 0; index -= 1) {
       const item = run.results[index];
       if (item && item.error === true && (!failedCandidate || String(item.id) === String(failedCandidate.id))) {
+        if (item.discoveryError === true && failedCandidate && run.preparedResults) {
+          delete run.preparedResults[String(failedCandidate.id)];
+        }
         run.results.splice(index, 1);
         break;
       }
@@ -3139,13 +3184,14 @@
     throw new Error(`Строка № ${candidate.id} не появилась после загрузки страницы ${candidate.page}.`);
   }
 
-  async function loadReestrDzWssDocument(url, kind, expectedNumber) {
+  async function loadReestrDzWssDocument(url, kind, expectedNumber, workerKey = 'default') {
     const response = await sendRuntimeMessage({
       action: 'REESTR_DZ_LOAD_WSS_DOCUMENT',
       data: {
         url: String(url || ''),
         kind: String(kind || ''),
-        expectedNumber: normalizeReestrDzText(expectedNumber)
+        expectedNumber: normalizeReestrDzText(expectedNumber),
+        workerKey: String(workerKey || 'default')
       }
     });
     if (!response || response.success === false) {
@@ -3339,13 +3385,72 @@
     return saveReestrDzPrincipalComment(run, candidate, enrichedCell, generatedComment);
   }
 
-  async function processReestrDzPrincipalCandidate(run, candidate) {
+  function ensureReestrDzPreparedResults(run) {
+    if (!run.preparedResults || typeof run.preparedResults !== 'object' || Array.isArray(run.preparedResults)) {
+      run.preparedResults = {};
+    }
+    return run.preparedResults;
+  }
+
+  async function prepareReestrDzParallelBatch(run, candidates, inspector, persist, sync, label) {
+    const preparedResults = ensureReestrDzPreparedResults(run);
+    const missing = candidates.map((candidate, slot) => ({ candidate, slot }))
+      .filter(({ candidate }) => !Object.prototype.hasOwnProperty.call(preparedResults, String(candidate.id)));
+    run.parallelProgress = { completed: candidates.length - missing.length, total: candidates.length };
+    run.stage = `${label}: ${run.parallelProgress.completed} из ${run.parallelProgress.total}…`;
+    sync(run);
+    await Promise.all(missing.map(async ({ candidate, slot }) => {
+      let prepared;
+      try {
+        prepared = { success: true, value: await inspector(run, candidate, `slot-${slot + 1}`) };
+      } catch (error) {
+        prepared = { success: false, error: error && error.message ? error.message : String(error) };
+      }
+      preparedResults[String(candidate.id)] = prepared;
+      run.parallelProgress.completed += 1;
+      run.stage = `${label}: ${run.parallelProgress.completed} из ${run.parallelProgress.total}…`;
+      sync(run);
+    }));
+    if (run.controller && run.controller.signal && run.controller.signal.aborted) {
+      throw new DOMException('Проверка остановлена', 'AbortError');
+    }
+    await persist(run);
+    return candidates.map((candidate) => preparedResults[String(candidate.id)]);
+  }
+
+  async function inspectReestrDzPrincipalCandidate(run, candidate, workerKey) {
+    if (isReestrDzWriteOffExcludedClaimant(candidate.cell)) {
+      return { kind: 'excluded', workerKey, actionable: false };
+    }
+    const requestUrl = new URL('/api/wss/doclink/redirect', window.location.origin);
+    requestUrl.searchParams.set('RegNumber', candidate.cell.RequestNumber);
+    const requestDocument = await loadReestrDzWssDocument(
+      requestUrl.toString(), 'request', candidate.cell.RequestNumber, workerKey
+    );
+    const links = parseReestrDzOutgoingLinks(requestDocument);
+    const cancellationComments = getReestrDzCancellationComments(requestDocument);
+    if (!links.length) {
+      return { kind: 'not_found', workerKey, requestDocument, links, cancellationComments, actionable: cancellationComments.length > 0 };
+    }
+    if (links.length > 1) {
+      return { kind: 'attention', workerKey, requestDocument, links, cancellationComments, actionable: true };
+    }
+    const attachment = parseReestrDzPrincipalAttachment(requestDocument);
+    const outgoingDocument = await loadReestrDzWssDocument(links[0].href, 'outgoing', links[0].text, workerKey);
+    const outgoing = parseReestrDzOutgoingHeader(outgoingDocument, links[0].text);
+    if (normalizeReestrDzText(outgoing.number) === normalizeReestrDzText(candidate.cell.RequestNumber)) {
+      throw new Error(`Полученный номер исходящего совпал с номером поручения ${candidate.cell.RequestNumber}; сохранение остановлено для ручной проверки.`);
+    }
+    return { kind: 'found', workerKey, requestDocument, links, cancellationComments, attachment, outgoing, actionable: true };
+  }
+
+  async function processReestrDzPrincipalCandidate(run, candidate, preparedInspection = null) {
     if (isReestrDzWriteOffExcludedClaimant(candidate.cell)) {
       return buildReestrDzExcludedClaimantResult(candidate);
     }
+    let inspection = preparedInspection;
     while (true) {
       await waitForReestrDzPrincipalResume(run);
-      await showReestrDzPrincipalCandidate(run, candidate, false);
       updateReestrDzPrincipalStage(run, `Проверяю текущее состояние строки № ${candidate.id}…`);
       const liveRow = await loadReestrDzRowById(run.gridState, candidate.id, run.controller.signal);
       const liveCell = liveRow && liveRow.cell ? liveRow.cell : candidate.cell;
@@ -3353,9 +3458,8 @@
       const hasNumber = !!normalizeReestrDzText(liveCell.PrincipalNumber);
       if (hasDate && hasNumber) {
         updateReestrDzPrincipalStage(run, `Читаю историю поручения ${candidate.cell.RequestNumber}…`);
-        const requestUrl = new URL('/api/wss/doclink/redirect', window.location.origin);
-        requestUrl.searchParams.set('RegNumber', candidate.cell.RequestNumber);
-        const requestDocument = await loadReestrDzWssDocument(requestUrl.toString(), 'request', candidate.cell.RequestNumber);
+        inspection = inspection || await inspectReestrDzPrincipalCandidate(run, candidate, 'default');
+        const requestDocument = inspection.requestDocument;
         const attachment = parseReestrDzPrincipalAttachment(requestDocument);
         let enrichedCell = await applyReestrDzPrincipalAttachment(run, candidate, { ...candidate.cell, ...liveCell }, liveCell.SendDate, attachment);
         enrichedCell = await applyReestrDzCancellationComments(
@@ -3382,11 +3486,21 @@
       }
 
       updateReestrDzPrincipalStage(run, `Открываю поручение ${candidate.cell.RequestNumber}…`);
-      const requestUrl = new URL('/api/wss/doclink/redirect', window.location.origin);
-      requestUrl.searchParams.set('RegNumber', candidate.cell.RequestNumber);
-      const requestDocument = await loadReestrDzWssDocument(requestUrl.toString(), 'request', candidate.cell.RequestNumber);
-      const links = parseReestrDzOutgoingLinks(requestDocument);
+      inspection = inspection || await inspectReestrDzPrincipalCandidate(run, candidate, 'default');
+      const requestDocument = inspection.requestDocument;
+      const links = inspection.links || [];
       if (!links.length) {
+        if (!getReestrDzCancellationComments(requestDocument).length) {
+          return {
+            cell: { ...candidate.cell, ...liveCell },
+            result: 'Исходящий не найден',
+            description: 'Поле «Ссылка на исходящий документ» не заполнено.',
+            found: false,
+            saved: false,
+            skipped: true,
+            error: false
+          };
+        }
         const commentedCell = await applyReestrDzCancellationComments(
           run, candidate, { ...candidate.cell, ...liveCell }, requestDocument, saveReestrDzPrincipalComment
         );
@@ -3407,17 +3521,14 @@
           message: `В поручении ${candidate.cell.RequestNumber} найдено ${links.length} исходящих. Проверьте строку № ${candidate.id} вручную и нажмите «Старт».`
         });
         await waitForReestrDzPrincipalResume(run);
+        inspection = await inspectReestrDzPrincipalCandidate(run, candidate, inspection.workerKey || 'slot-1');
         continue;
       }
 
-      const attachment = parseReestrDzPrincipalAttachment(requestDocument);
-
-      updateReestrDzPrincipalStage(run, `Читаю дату создания исходящего ${links[0].text}…`);
-      const outgoingDocument = await loadReestrDzWssDocument(links[0].href, 'outgoing', links[0].text);
-      const outgoing = parseReestrDzOutgoingHeader(outgoingDocument, links[0].text);
-      if (normalizeReestrDzText(outgoing.number) === normalizeReestrDzText(candidate.cell.RequestNumber)) {
-        throw new Error(`Полученный номер исходящего совпал с номером поручения ${candidate.cell.RequestNumber}; сохранение остановлено для ручной проверки.`);
-      }
+      const attachment = inspection.attachment || parseReestrDzPrincipalAttachment(requestDocument);
+      const outgoing = inspection.outgoing;
+      if (!outgoing) throw new Error(`Не подготовлены сведения исходящего для строки № ${candidate.id}.`);
+      await showReestrDzPrincipalCandidate(run, candidate, false);
       const savedCell = await saveReestrDzPrincipalInfo(run, candidate, outgoing);
       let enrichedCell = await applyReestrDzPrincipalAttachment(run, candidate, savedCell, outgoing.date, attachment);
       enrichedCell = await applyReestrDzCancellationComments(
@@ -3593,48 +3704,80 @@
 
   async function runReestrDzPrincipalAutofill(run) {
     try {
-      const startIndex = Math.max(0, Number.isInteger(run.nextIndex) ? run.nextIndex : 0);
-      for (let index = startIndex; index < run.candidates.length; index += 1) {
-        run.currentIndex = index;
-        run.nextIndex = index;
-        const candidate = run.candidates[index];
-        if (isReestrDzWriteOffExcludedClaimant(candidate.cell)) {
-          run.results.push({ id: candidate.id, ...buildReestrDzExcludedClaimantResult(candidate) });
-          run.nextIndex = index + 1;
-          await persistReestrDzPrincipalDailyRun(run);
-          continue;
-        }
-        run.current = candidate;
-        run.stage = `Готовлю строку № ${candidate.id} к проверке…`;
-        syncReestrDzPrincipalOverlay(run);
+      while (run.nextIndex < run.candidates.length) {
         await waitForReestrDzPrincipalResume(run);
-        try {
-          const result = await processReestrDzPrincipalCandidate(run, candidate);
-          run.results.push({ id: candidate.id, ...result });
-          run.nextIndex = index + 1;
-          await persistReestrDzPrincipalDailyRun(run);
-        } catch (error) {
-          const message = error && error.message ? error.message : String(error);
-          run.results.push({
-            id: candidate.id,
-            cell: { ...candidate.cell },
-            result: 'Ошибка',
-            description: message,
-            found: false,
-            saved: false,
-            skipped: false,
-            error: true
-          });
-          run.status = 'error';
-          run.recoverableError = true;
-          run.canContinue = false;
-          run.stage = `Обработка остановлена на строке № ${candidate.id}. После проверки ошибки нажмите «Продолжить».`;
-          run.warning = message;
-          syncReestrDzPrincipalOverlay(run);
-          await persistReestrDzPrincipalDailyRun(run);
-          throw error;
-        }
+        const batchStart = run.nextIndex;
+        const configuredEnd = Math.min(run.candidates.length, batchStart + normalizeReestrDzParallelWorkers(run.parallelWorkers));
+        const rememberedEnd = Math.min(run.candidates.length, Number(run.preparedThroughIndex) || 0);
+        const batchEnd = rememberedEnd > batchStart ? rememberedEnd : configuredEnd;
+        const batchCandidates = run.candidates.slice(batchStart, batchEnd);
+        run.preparedThroughIndex = batchEnd;
+        run.current = null;
+        const preparedBatch = await prepareReestrDzParallelBatch(
+          run,
+          batchCandidates,
+          inspectReestrDzPrincipalCandidate,
+          persistReestrDzPrincipalDailyRun,
+          syncReestrDzPrincipalOverlay,
+          'Параллельно проверяю WSS'
+        );
+        run.parallelProgress = null;
+        run.stage = `Проверка группы завершена. Обрабатываю ${batchCandidates.length} строк по порядку грида…`;
         syncReestrDzPrincipalOverlay(run);
+
+        for (let offset = 0; offset < batchCandidates.length; offset += 1) {
+          const index = batchStart + offset;
+          const candidate = batchCandidates[offset];
+          const prepared = preparedBatch[offset];
+          run.currentIndex = index;
+          run.nextIndex = index;
+          if (isReestrDzWriteOffExcludedClaimant(candidate.cell)) {
+            run.results.push({ id: candidate.id, ...buildReestrDzExcludedClaimantResult(candidate) });
+            delete run.preparedResults[String(candidate.id)];
+            run.nextIndex = index + 1;
+            await persistReestrDzPrincipalDailyRun(run);
+            continue;
+          }
+          run.current = candidate;
+          run.stage = `Обрабатываю подготовленную строку № ${candidate.id}…`;
+          syncReestrDzPrincipalOverlay(run);
+          await waitForReestrDzPrincipalResume(run);
+          try {
+            if (!prepared || prepared.success !== true) {
+              const discoveryError = new Error(prepared && prepared.error || `Не удалось проверить WSS для строки № ${candidate.id}.`);
+              discoveryError.discoveryError = true;
+              throw discoveryError;
+            }
+            const result = await processReestrDzPrincipalCandidate(run, candidate, prepared.value);
+            run.results.push({ id: candidate.id, ...result });
+            delete run.preparedResults[String(candidate.id)];
+            run.nextIndex = index + 1;
+            await persistReestrDzPrincipalDailyRun(run);
+          } catch (error) {
+            const message = error && error.message ? error.message : String(error);
+            run.results.push({
+              id: candidate.id,
+              cell: { ...candidate.cell },
+              result: 'Ошибка',
+              description: message,
+              found: false,
+              saved: false,
+              skipped: false,
+              discoveryError: error && error.discoveryError === true,
+              error: true
+            });
+            run.status = 'error';
+            run.recoverableError = true;
+            run.canContinue = false;
+            run.stage = `Обработка остановлена на строке № ${candidate.id}. После проверки ошибки нажмите «Продолжить».`;
+            run.warning = message;
+            syncReestrDzPrincipalOverlay(run);
+            await persistReestrDzPrincipalDailyRun(run);
+            throw error;
+          }
+          syncReestrDzPrincipalOverlay(run);
+        }
+        run.preparedThroughIndex = run.nextIndex;
       }
       run.status = 'completed';
       run.nextIndex = run.candidates.length;
@@ -3730,6 +3873,9 @@
       current: null,
       department: currentDepartment,
       period: selectedPeriod,
+      parallelWorkers: normalizeReestrDzParallelWorkers(periodChoice.parallelWorkers),
+      preparedResults: {},
+      preparedThroughIndex: 0,
       overlayDismissed: false,
       reportDownloaded: false,
       recoverableError: false,
@@ -3789,7 +3935,8 @@
       const confirmed = window.confirm(
         `Найдено строк для проверки: ${candidates.length}.\n` +
         `Период: ${selectedPeriod ? selectedPeriod.text : 'все даты'}.\n\n` +
-        'Расширение будет последовательно открывать карточки WSS Docs и сохранять найденные дату и номер исходящего. Начать обработку?'
+        `Параллельных проверок WSS: ${preparingRun.parallelWorkers}.\n\n` +
+        'Поручения будут проверяться параллельно группами, а найденные сведения сохраняться строго по порядку грида. Начать обработку?'
       );
       if (!confirmed) {
         preparingRun.status = 'completed';
@@ -3800,7 +3947,7 @@
         return;
       }
       preparingRun.status = 'running';
-      preparingRun.stage = 'Начинаю последовательную проверку…';
+      preparingRun.stage = `Начинаю проверку группами по ${preparingRun.parallelWorkers}…`;
       syncReestrDzPrincipalOverlay(preparingRun);
       await persistReestrDzPrincipalDailyRun(preparingRun);
       setReestrDzPrincipalLaunchButtonDisabled(false);
@@ -4006,6 +4153,9 @@
       stage: run.stage,
       warning: run.warning,
       currentReview: run.currentReview || null,
+      parallelWorkers: normalizeReestrDzParallelWorkers(run.parallelWorkers),
+      preparedResults: run.preparedResults,
+      preparedThroughIndex: Number.isInteger(run.preparedThroughIndex) ? run.preparedThroughIndex : 0,
       recoverableError: run.recoverableError === true,
       updatedAt: Date.now()
     }, null);
@@ -4064,6 +4214,9 @@
       currentIndex: nextIndex,
       current: candidates[nextIndex] || null,
       currentReview: cloneReestrDzPrincipalStorageValue(snapshot.currentReview, null),
+      parallelWorkers: normalizeReestrDzParallelWorkers(snapshot.parallelWorkers),
+      preparedResults: cloneReestrDzPrincipalStorageValue(snapshot.preparedResults, {}),
+      preparedThroughIndex: Math.max(nextIndex, Number.parseInt(String(snapshot.preparedThroughIndex || nextIndex), 10) || nextIndex),
       department: cloneReestrDzPrincipalStorageValue(snapshot.department, getReestrDzCurrentDepartment()),
       period: cloneReestrDzPrincipalStorageValue(snapshot.period, null),
       recoverableError: wasError,
@@ -4136,7 +4289,11 @@
       const element = overlay.querySelector(`[data-role="${role}"]`);
       if (element instanceof HTMLElement) element.textContent = String(value);
     };
-    set('meta', run.paused ? 'Пауза' : run.status === 'completed' ? 'Завершено' : `Департамент ${run.department && run.department.depid || '—'}`);
+    set('meta', run.paused
+      ? `Пауза · WSS ×${normalizeReestrDzParallelWorkers(run.parallelWorkers)}`
+      : run.status === 'completed'
+        ? 'Завершено'
+        : `Департамент ${run.department && run.department.depid || '—'} · WSS ×${normalizeReestrDzParallelWorkers(run.parallelWorkers)}`);
     set('stage', run.stage || 'Подготовка…');
     set('row', run.current ? `№ ${run.current.id} · ${run.current.cell.RequestNumber || 'без поручения'}` : '—');
     set('progress', `${results.length} / ${total}`);
@@ -4186,6 +4343,9 @@
     for (let index = run.results.length - 1; index >= 0; index -= 1) {
       if (run.results[index] && run.results[index].error && (!failed || String(run.results[index].id) === String(failed.id))) {
         if (failed && run.results[index].informationWritten === true) failed._informationWritten = true;
+        if (run.results[index].discoveryError === true && failed && run.preparedResults) {
+          delete run.preparedResults[String(failed.id)];
+        }
         run.results.splice(index, 1);
         break;
       }
@@ -4353,21 +4513,51 @@
     );
   }
 
-  async function processReestrDzWriteOffCandidate(run, candidate) {
+  async function inspectReestrDzWriteOffCandidate(run, candidate, workerKey) {
+    if (isReestrDzWriteOffExcludedClaimant(candidate.cell)) {
+      return { kind: 'excluded', workerKey, actionable: false };
+    }
+    const requestUrl = new URL('/api/wss/doclink/redirect', window.location.origin);
+    requestUrl.searchParams.set('RegNumber', candidate.cell.RequestNumber);
+    const requestDocument = await loadReestrDzWssDocument(
+      requestUrl.toString(), 'writeoff_request', candidate.cell.RequestNumber, workerKey
+    );
+    const review = parseReestrDzWriteOffRequest(requestDocument, candidate);
+    const cancellationComments = getReestrDzCancellationComments(requestDocument);
+    return {
+      kind: review.notFound ? 'not_found' : 'review',
+      workerKey,
+      requestDocument,
+      review,
+      cancellationComments,
+      actionable: !review.notFound || cancellationComments.length > 0
+    };
+  }
+
+  async function processReestrDzWriteOffCandidate(run, candidate, preparedInspection = null) {
     if (isReestrDzWriteOffExcludedClaimant(candidate.cell)) {
       return {
         ...buildReestrDzExcludedClaimantResult(candidate),
         review: null
       };
     }
-    await showReestrDzWriteOffCandidate(run, candidate, false);
     updateReestrDzWriteOffStage(run, `Открываю поручение ${candidate.cell.RequestNumber}…`);
-    const requestUrl = new URL('/api/wss/doclink/redirect', window.location.origin);
-    requestUrl.searchParams.set('RegNumber', candidate.cell.RequestNumber);
-    const requestDocument = await loadReestrDzWssDocument(requestUrl.toString(), 'writeoff_request', candidate.cell.RequestNumber);
-    const review = parseReestrDzWriteOffRequest(requestDocument, candidate);
+    const inspection = preparedInspection || await inspectReestrDzWriteOffCandidate(run, candidate, 'default');
+    const requestDocument = inspection.requestDocument;
+    const review = inspection.review;
     run.currentReview = review;
     await persistReestrDzWriteOffRun(run);
+    if (inspection.actionable) await showReestrDzWriteOffCandidate(run, candidate, false);
+    if (review.notFound && !getReestrDzCancellationComments(requestDocument).length) {
+      updateReestrDzWriteOffStage(run, `По строке № ${candidate.id} решение и документы не найдены. Перехожу дальше…`);
+      return {
+        cell: { ...candidate.cell },
+        review,
+        result: 'Не найдено',
+        description: 'Решение о списании, входящий и другие документы отсутствуют.',
+        informationWritten: candidate._informationWritten === true
+      };
+    }
     let live = await loadReestrDzRowById(run.gridState, candidate.id, run.controller.signal);
     let cell = live && live.cell ? { ...candidate.cell, ...live.cell } : { ...candidate.cell };
     const originalCell = { ...cell };
@@ -4533,25 +4723,62 @@
     if (!run || run.workerActive) return;
     run.workerActive = true;
     try {
-      for (let index = run.nextIndex; index < run.candidates.length; index += 1) {
-        run.currentIndex = index;
-        run.nextIndex = index;
-        const candidate = run.candidates[index];
-        if (isReestrDzWriteOffExcludedClaimant(candidate.cell)) {
-          run.current = null;
-          run.results.push({ id: candidate.id, ...buildReestrDzExcludedClaimantResult(candidate), review: null });
-          run.nextIndex = index + 1;
-          run.currentReview = null;
-          await persistReestrDzWriteOffRun(run);
-          continue;
-        }
-        run.current = candidate;
+      while (run.nextIndex < run.candidates.length) {
         await waitForReestrDzWriteOffResume(run);
-        if (normalizeReestrDzText(candidate.cell && candidate.cell.Note)) {
-          run.stage = `Строка № ${candidate.id} уже содержит комментарий. Ожидаю подтверждение…`;
-          syncReestrDzWriteOffProgressOverlay(run);
-          const shouldProcess = await confirmReestrDzWriteOffCommentedCandidate(candidate);
-          if (!shouldProcess) {
+        const batchStart = run.nextIndex;
+        const configuredEnd = Math.min(run.candidates.length, batchStart + normalizeReestrDzParallelWorkers(run.parallelWorkers));
+        const rememberedEnd = Math.min(run.candidates.length, Number(run.preparedThroughIndex) || 0);
+        const batchEnd = rememberedEnd > batchStart ? rememberedEnd : configuredEnd;
+        const batchCandidates = run.candidates.slice(batchStart, batchEnd);
+        run.preparedThroughIndex = batchEnd;
+        const preparedResults = ensureReestrDzPreparedResults(run);
+
+        for (const candidate of batchCandidates) {
+          const key = String(candidate.id);
+          if (Object.prototype.hasOwnProperty.call(preparedResults, key) || isReestrDzWriteOffExcludedClaimant(candidate.cell)) continue;
+          if (normalizeReestrDzText(candidate.cell && candidate.cell.Note)) {
+            run.current = candidate;
+            run.stage = `Строка № ${candidate.id} уже содержит комментарий. Ожидаю подтверждение до открытия WSS…`;
+            syncReestrDzWriteOffProgressOverlay(run);
+            const shouldProcess = await confirmReestrDzWriteOffCommentedCandidate(candidate);
+            if (!shouldProcess) {
+              preparedResults[key] = { success: true, value: { kind: 'skip_comment', actionable: false } };
+            }
+          }
+        }
+
+        run.current = null;
+        run.currentReview = null;
+        const preparedBatch = await prepareReestrDzParallelBatch(
+          run,
+          batchCandidates,
+          inspectReestrDzWriteOffCandidate,
+          persistReestrDzWriteOffRun,
+          syncReestrDzWriteOffProgressOverlay,
+          'Параллельно проверяю поручения WSS'
+        );
+        run.parallelProgress = null;
+        run.stage = `Проверка группы завершена. Обрабатываю ${batchCandidates.length} строк по порядку грида…`;
+        syncReestrDzWriteOffProgressOverlay(run);
+
+        for (let offset = 0; offset < batchCandidates.length; offset += 1) {
+          const index = batchStart + offset;
+          const candidate = batchCandidates[offset];
+          const prepared = preparedBatch[offset];
+          run.currentIndex = index;
+          run.nextIndex = index;
+          run.current = candidate;
+          await waitForReestrDzWriteOffResume(run);
+          if (isReestrDzWriteOffExcludedClaimant(candidate.cell)) {
+            run.current = null;
+            run.results.push({ id: candidate.id, ...buildReestrDzExcludedClaimantResult(candidate), review: null });
+            delete run.preparedResults[String(candidate.id)];
+            run.nextIndex = index + 1;
+            run.currentReview = null;
+            await persistReestrDzWriteOffRun(run);
+            continue;
+          }
+          if (prepared && prepared.success === true && prepared.value && prepared.value.kind === 'skip_comment') {
             run.results.push({
               id: candidate.id,
               cell: { ...candidate.cell },
@@ -4562,58 +4789,65 @@
               informationWritten: false,
               error: false
             });
+            delete run.preparedResults[String(candidate.id)];
             run.nextIndex = index + 1;
             run.currentReview = null;
-            run.stage = `Строка № ${candidate.id} пропущена. Перехожу дальше…`;
             await persistReestrDzWriteOffRun(run);
-            syncReestrDzWriteOffProgressOverlay(run);
             continue;
           }
-          run.stage = `Повторная обработка строки № ${candidate.id} подтверждена…`;
-          syncReestrDzWriteOffProgressOverlay(run);
-        }
-        try {
-          const result = await processReestrDzWriteOffCandidate(run, run.current);
-          delete run.current._writeOffBaselineCell;
-          delete run.current._informationWritten;
-          run.results.push({ id: run.current.id, ...result, error: false });
-          run.nextIndex = index + 1;
-          run.currentReview = null;
-          await persistReestrDzWriteOffRun(run);
-        } catch (error) {
-          if (error && (error.name === 'AbortError' || error.code === 'WRITE_OFF_CANCELLED')) {
-            clearReestrDzWriteOffDraft();
-            await discardReestrDzWriteOffRun(run.department.depid);
-            reestrDzWriteOffRun = null;
-            document.getElementById(REESTR_DZ_WRITE_OFF_OVERLAY_ID)?.remove();
+          try {
+            if (!prepared || prepared.success !== true) {
+              const discoveryError = new Error(prepared && prepared.error || `Не удалось проверить WSS для строки № ${candidate.id}.`);
+              discoveryError.discoveryError = true;
+              throw discoveryError;
+            }
+            const result = await processReestrDzWriteOffCandidate(run, run.current, prepared.value);
+            delete run.current._writeOffBaselineCell;
+            delete run.current._informationWritten;
+            run.results.push({ id: run.current.id, ...result, error: false });
+            delete run.preparedResults[String(candidate.id)];
+            run.nextIndex = index + 1;
+            run.currentReview = null;
+            await persistReestrDzWriteOffRun(run);
+          } catch (error) {
+            if (error && (error.name === 'AbortError' || error.code === 'WRITE_OFF_CANCELLED')) {
+              clearReestrDzWriteOffDraft();
+              await discardReestrDzWriteOffRun(run.department.depid);
+              await sendRuntimeMessage({ action: 'REESTR_DZ_CLOSE_WSS_SESSION' }).catch(() => null);
+              reestrDzWriteOffRun = null;
+              document.getElementById(REESTR_DZ_WRITE_OFF_OVERLAY_ID)?.remove();
+              return;
+            }
+            const baselineCell = run.current._writeOffBaselineCell || run.current.cell;
+            let errorCell = { ...baselineCell };
+            try {
+              const latest = await loadReestrDzRowById(run.gridState, run.current.id, run.controller.signal);
+              if (latest && latest.cell) errorCell = { ...errorCell, ...latest.cell };
+            } catch (readError) {
+              // Если грид недоступен, сохраняем исходный снимок; после продолжения строка будет проверена повторно.
+            }
+            run.results.push({
+              id: run.current.id,
+              cell: errorCell,
+              result: 'Проблема',
+              description: error && error.message ? error.message : String(error),
+              informationWritten: run.current._informationWritten === true || didReestrDzWriteOffInformationChange(baselineCell, errorCell),
+              discoveryError: error && error.discoveryError === true,
+              error: true
+            });
+            delete run.current._writeOffBaselineCell;
+            run.status = 'error';
+            run.recoverableError = true;
+            run.warning = error && error.message ? error.message : String(error);
+            run.stage = `Проверка остановлена на строке № ${run.current.id}.`;
+            await sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_CANCEL_REVIEW' }).catch(() => null);
+            await sendRuntimeMessage({ action: 'REESTR_DZ_CLOSE_WSS_SESSION' }).catch(() => null);
+            await showReestrDzWriteOffCandidate(run, run.current, true).catch(() => null);
+            await persistReestrDzWriteOffRun(run);
             return;
           }
-          const baselineCell = run.current._writeOffBaselineCell || run.current.cell;
-          let errorCell = { ...baselineCell };
-          try {
-            const latest = await loadReestrDzRowById(run.gridState, run.current.id, run.controller.signal);
-            if (latest && latest.cell) errorCell = { ...errorCell, ...latest.cell };
-          } catch (readError) {
-            // Если грид недоступен, сохраняем исходный снимок; после продолжения строка будет проверена повторно.
-          }
-          run.results.push({
-            id: run.current.id,
-            cell: errorCell,
-            result: 'Проблема',
-            description: error && error.message ? error.message : String(error),
-            informationWritten: run.current._informationWritten === true || didReestrDzWriteOffInformationChange(baselineCell, errorCell),
-            error: true
-          });
-          delete run.current._writeOffBaselineCell;
-          run.status = 'error';
-          run.recoverableError = true;
-          run.warning = error && error.message ? error.message : String(error);
-          run.stage = `Проверка остановлена на строке № ${run.current.id}.`;
-          await sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_CANCEL_REVIEW' }).catch(() => null);
-          await showReestrDzWriteOffCandidate(run, run.current, true).catch(() => null);
-          await persistReestrDzWriteOffRun(run);
-          return;
         }
+        run.preparedThroughIndex = run.nextIndex;
       }
       run.status = 'completed';
       run.current = null;
@@ -4625,6 +4859,22 @@
       clearReestrDzPrincipalRowHighlight();
       await persistReestrDzWriteOffRun(run);
       await sendRuntimeMessage({ action: 'REESTR_DZ_CLOSE_WSS_SESSION' }).catch(() => null);
+      syncReestrDzWriteOffProgressOverlay(run);
+    } catch (error) {
+      if (error && (error.name === 'AbortError' || error.code === 'WRITE_OFF_CANCELLED')) {
+        clearReestrDzWriteOffDraft();
+        await discardReestrDzWriteOffRun(run.department.depid);
+        await sendRuntimeMessage({ action: 'REESTR_DZ_CLOSE_WSS_SESSION' }).catch(() => null);
+        reestrDzWriteOffRun = null;
+        document.getElementById(REESTR_DZ_WRITE_OFF_OVERLAY_ID)?.remove();
+        return;
+      }
+      run.status = 'error';
+      run.recoverableError = false;
+      run.warning = error && error.message ? error.message : String(error);
+      run.stage = 'Проверка остановлена из-за ошибки параллельной обработки.';
+      await sendRuntimeMessage({ action: 'REESTR_DZ_CLOSE_WSS_SESSION' }).catch(() => null);
+      await persistReestrDzWriteOffRun(run);
       syncReestrDzWriteOffProgressOverlay(run);
     } finally {
       run.workerActive = false;
@@ -4674,6 +4924,7 @@
       status: 'preparing', paused: false, pauseReason: '', resumeWaiters: [], controller: new AbortController(),
       gridState: { lastpage: 1 }, candidates: [], results: [], nextIndex: 0, currentIndex: 0, current: null,
       currentReview: null, department, period: periodChoice.period, recoverableError: false, canContinue: false,
+      parallelWorkers: normalizeReestrDzParallelWorkers(periodChoice.parallelWorkers), preparedResults: {}, preparedThroughIndex: 0,
       stage: 'Собираю строки текущего грида…', warning: '', overlayDismissed: false, workerActive: false
     };
     reestrDzWriteOffRun = run;
@@ -4714,8 +4965,9 @@
       }
       const confirmed = window.confirm(
         `Найдено строк для проверки списания: ${run.candidates.length}.\n` +
-        `Период: ${run.period ? run.period.text : 'все даты'}.\n\n` +
-        'Расширение будет открывать документы по одной строке и ждать ручного подтверждения. Начать?'
+        `Период: ${run.period ? run.period.text : 'все даты'}.\n` +
+        `Параллельных проверок WSS: ${run.parallelWorkers}.\n\n` +
+        'Поручения будут подготавливаться параллельно группами, а ручная проверка и сохранение выполняться строго по порядку грида. Начать?'
       );
       if (!confirmed) {
         reestrDzWriteOffRun = null;
@@ -4723,7 +4975,7 @@
         return;
       }
       run.status = 'running';
-      run.stage = 'Начинаю проверку первой строки…';
+      run.stage = `Начинаю проверку группами по ${run.parallelWorkers}…`;
       await persistReestrDzWriteOffRun(run);
       await runReestrDzWriteOffCheck(run);
     } catch (error) {
