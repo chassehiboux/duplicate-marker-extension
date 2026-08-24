@@ -2295,8 +2295,10 @@ async function openReestrDzWriteOffReview(sourceTab, rawData) {
         reviewTabId,
         status: 'reviewing',
         paused: false,
+        mode: 'order',
+        completionMode: '',
         currentDocumentIndex: 0,
-        fields: { orderDate: '', orderNumber: '' },
+        fields: { orderDate: '', orderNumber: '', comment: String(data.decision || '').trim() },
         position: null,
         attachmentsByUrl: {},
         data: { ...data, documents },
@@ -2436,10 +2438,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             const data = request.data && typeof request.data === 'object' ? request.data : {};
             if (data.fields && typeof data.fields === 'object') {
                 session.fields = {
-                    orderDate: String(data.fields.orderDate || '').trim(),
-                    orderNumber: String(data.fields.orderNumber || '').trim()
+                    orderDate: data.fields.orderDate === undefined ? String(session.fields.orderDate || '') : String(data.fields.orderDate || '').trim(),
+                    orderNumber: data.fields.orderNumber === undefined ? String(session.fields.orderNumber || '') : String(data.fields.orderNumber || '').trim(),
+                    comment: data.fields.comment === undefined ? String(session.fields.comment || '') : String(data.fields.comment || '').trim()
                 };
             }
+            if (data.mode === 'comment' || data.mode === 'order') session.mode = data.mode;
             if (typeof data.paused === 'boolean') session.paused = data.paused;
             if (data.position && Number.isFinite(Number(data.position.left)) && Number.isFinite(Number(data.position.top))) {
                 session.position = { left: Number(data.position.left), top: Number(data.position.top) };
@@ -2480,10 +2484,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 return false;
             }
             const fields = request.data && request.data.fields && typeof request.data.fields === 'object' ? request.data.fields : {};
+            const completionMode = request.data && request.data.mode === 'comment' ? 'comment' : 'order';
             session.fields = {
                 orderDate: String(fields.orderDate || '').trim(),
-                orderNumber: String(fields.orderNumber || '').trim()
+                orderNumber: String(fields.orderNumber || '').trim(),
+                comment: String(fields.comment || '').trim()
             };
+            if (completionMode === 'comment' && !session.fields.comment) {
+                sendResponse({ success: false, error: 'WRITE_OFF_COMMENT_REQUIRED' });
+                return false;
+            }
+            session.mode = completionMode;
+            session.completionMode = completionMode;
             session.status = 'done';
             session.paused = false;
             session.updatedAt = Date.now();
@@ -2520,7 +2532,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 sendResponse({ success: false, error: 'NO_WRITE_OFF_REVIEW' });
                 return false;
             }
-            const response = { success: true, status: session.status, fields: { ...session.fields }, paused: session.paused };
+            const response = {
+                success: true,
+                status: session.status,
+                mode: session.completionMode || session.mode || 'order',
+                fields: { ...session.fields },
+                paused: session.paused
+            };
             if (session.status === 'done' || session.status === 'cancelled') {
                 reestrDzWriteOffReviewSessions.delete(sourceTabId);
                 reestrDzWriteOffReviewSources.delete(session.reviewTabId);

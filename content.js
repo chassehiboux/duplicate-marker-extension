@@ -2827,10 +2827,19 @@
       .dup-wo-field label { display: block; margin-bottom: 4px; color: #536571; font-size: 10px; font-weight: 600; }
       .dup-wo-field input { box-sizing: border-box; width: 100%; height: 31px; padding: 5px 8px; border: 1px solid #aeb8c1; border-radius: 3px; background: #fff; color: #1f2f3c; font: 12px/1 Consolas, monospace; }
       .dup-wo-field input:focus { border-color: #337ab7; outline: 0; box-shadow: 0 0 0 2px rgba(51,122,183,.13); }
+      .dup-wo-comment-mode { margin-top: 11px; padding-top: 10px; border-top: 1px solid #d7dde2; animation: dupWoCommentReveal .18s ease-out both; }
+      .dup-wo-comment-mode label { display: block; margin-bottom: 5px; color: #536571; font-size: 10px; font-weight: 650; }
+      .dup-wo-comment-mode textarea { box-sizing: border-box; width: 100%; min-height: 94px; padding: 8px 9px; resize: vertical; border: 1px solid #aeb8c1; border-radius: 3px; background: #fffdf6; color: #283b48; font: 11px/1.45 "Segoe UI", sans-serif; }
+      .dup-wo-comment-mode textarea:focus { border-color: #c58218; outline: 0; box-shadow: 0 0 0 2px rgba(197,130,24,.15); }
+      .dup-wo-comment-hint { margin-top: 5px; color: #7c6a4a; font-size: 9px; line-height: 1.35; }
       .dup-wo-error { min-height: 15px; color: #bd302c; font-size: 10px; line-height: 1.35; }
       .dup-wo-actions { display: flex; gap: 6px; margin-top: 9px; }
       .dup-wo-actions button { min-height: 30px; padding: 5px 10px; border: 1px solid #aeb8c1; border-radius: 3px; background: #fff; color: #344b5d; font: 600 11px/1 Bahnschrift, "Segoe UI", sans-serif; cursor: pointer; }
       .dup-wo-actions button[data-action="done"] { margin-left: auto; border-color: #286090; background: #337ab7; color: #fff; }
+      .dup-wo-actions button[data-action="skip-order"] { border-color: #c58218; background: #fff5dc; color: #79500c; }
+      .dup-wo-actions button[data-action="cancel-skip"] { margin-left: auto; border-color: #286090; background: #337ab7; color: #fff; }
+      .dup-wo-actions button[data-action="save-comment"] { border-color: #2b7d46; background: #36975a; color: #fff; }
+      @keyframes dupWoCommentReveal { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
       .dup-wo-actions button[data-action="report"] { margin-left: auto; border-color: #3c763d; background: #4f8a52; color: #fff; }
       .dup-wo-actions button[disabled] { opacity: .45; cursor: default; }
       #${REESTR_DZ_WRITE_OFF_COMMENT_CONFIRM_ID} {
@@ -2885,7 +2894,7 @@
       .dup-wo-dictionary-back { min-width: 86px; min-height: 32px; border-radius: 4px; cursor: pointer; font: 650 11px Bahnschrift, "Segoe UI", sans-serif; }
       @keyframes dupWoConfirmEnter { from { opacity: 0; transform: translate3d(34px,0,0) scale(.985); } to { opacity: 1; transform: translate3d(0,0,0) scale(1); } }
       @keyframes dupWoConfirmLeave { from { opacity: 1; transform: translate3d(0,0,0); } to { opacity: 0; transform: translate3d(-34px,0,0); } }
-      @media (prefers-reduced-motion: reduce) { .dup-wo-confirm-overlay .dup-wo-confirm-card, .dup-wo-confirm-overlay .dup-wo-confirm-card.is-leaving { animation-duration: .01ms; } }
+      @media (prefers-reduced-motion: reduce) { .dup-wo-comment-mode, .dup-wo-confirm-overlay .dup-wo-confirm-card, .dup-wo-confirm-overlay .dup-wo-confirm-card.is-leaving { animation-duration: .01ms; } }
       .${REESTR_DZ_WRITE_OFF_HIGHLIGHT_CLASS} { padding: 0 1px; border-radius: 2px; background: #ffe066 !important; color: #241b00 !important; box-shadow: 0 0 0 1px rgba(190,130,0,.25); }
       #list tr.${REESTR_DZ_PRINCIPAL_CURRENT_ROW_CLASS} > td {
         background: #fff0a6 !important;
@@ -4611,10 +4620,23 @@
     };
   }
 
-  async function saveReestrDzWriteOffComment(run, candidate, cell, decision) {
+  async function saveReestrDzWriteOffComment(run, candidate, cell, decision, options = {}) {
     const expected = normalizeReestrDzText(decision);
     const currentNote = String(cell && cell.Note || '').trim();
-    if (hasReestrDzExactNoteLine(currentNote, expected)) return cell;
+    const useBlockMatch = options && options.matchMode === 'block';
+    const normalizeBlock = (value) => String(value || '')
+      .split(/\r?\n/)
+      .map((line) => normalizeReestrDzText(line))
+      .filter(Boolean)
+      .join('\n');
+    const expectedBlock = normalizeBlock(decision);
+    const hasExpectedComment = (note) => {
+      if (!useBlockMatch) return hasReestrDzExactNoteLine(note, expected);
+      const noteBlock = normalizeBlock(note);
+      return noteBlock === expectedBlock || noteBlock.startsWith(`${expectedBlock}\n`) ||
+        noteBlock.endsWith(`\n${expectedBlock}`) || noteBlock.includes(`\n${expectedBlock}\n`);
+    };
+    if (hasExpectedComment(currentNote)) return cell;
     const updatedNote = currentNote ? `${currentNote}\n${decision}` : decision;
     await showReestrDzWriteOffCandidate(run, candidate, false);
     updateReestrDzWriteOffStage(run, `Открываю штатный комментарий строки № ${candidate.id}…`);
@@ -4629,7 +4651,7 @@
       await new Promise((resolve) => window.setTimeout(resolve, attempt ? 500 : 250));
       const verified = await loadReestrDzRowById(run.gridState, candidate.id, run.controller.signal);
       const verifiedCell = verified && verified.cell;
-      if (verifiedCell && hasReestrDzExactNoteLine(verifiedCell.Note, expected)) {
+      if (verifiedCell && hasExpectedComment(verifiedCell.Note)) {
         await waitForReestrDzGridReady('', 20000);
         closeReestrDzPrincipalNativeDialog(nativeForm.frame);
         return { ...cell, ...verifiedCell };
@@ -4668,7 +4690,9 @@
     while (true) {
       await waitForReestrDzWriteOffResume(run);
       const response = await sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_POLL_REVIEW' });
-      if (response && response.success && response.status === 'done') return response.fields || {};
+      if (response && response.success && response.status === 'done') {
+        return { mode: response.mode === 'comment' ? 'comment' : 'order', ...(response.fields || {}) };
+      }
       if (response && response.success && response.status === 'cancelled') {
         const error = new Error('Проверка остановлена пользователем.');
         error.code = 'WRITE_OFF_CANCELLED';
@@ -4771,6 +4795,7 @@
       action: 'REESTR_DZ_WRITE_OFF_OPEN_REVIEW',
       data: {
         rowId: candidate.id,
+        depid: run.department && run.department.depid || '',
         progressText: `${run.currentIndex + 1} / ${run.candidates.length}`,
         outgoingNumber: review.outgoingNumber,
         setsCount: review.setsCount,
@@ -4781,6 +4806,27 @@
     });
     if (!opened || opened.success === false) throw new Error(`Не удалось открыть документы: ${opened && opened.error || 'нет ответа'}.`);
     const fields = await waitForReestrDzWriteOffReview(run);
+    if (fields.mode === 'comment') {
+      const comment = String(fields.comment || '').trim();
+      if (!normalizeReestrDzText(comment)) throw new Error('Ручная проверка вернула пустой комментарий.');
+      updateReestrDzWriteOffStage(run, `Сохраняю комментарий без реквизитов приказа для строки № ${candidate.id}…`);
+      const beforeComment = cell;
+      cell = await saveReestrDzWriteOffComment(run, candidate, cell, comment, { matchMode: 'block' });
+      candidate._informationWritten = candidate._informationWritten === true || didReestrDzWriteOffInformationChange(beforeComment, cell);
+      const beforeCancellation = cell;
+      cell = await applyReestrDzCancellationComments(
+        run, candidate, cell, requestDocument, saveReestrDzWriteOffComment
+      );
+      candidate._informationWritten = candidate._informationWritten === true || didReestrDzWriteOffInformationChange(beforeCancellation, cell);
+      return {
+        cell,
+        review,
+        fields: { orderDate: '', orderNumber: '' },
+        result: 'Комментарий сохранён',
+        description: 'Реквизиты приказа пропущены пользователем; сохранён комментарий ручной проверки.',
+        informationWritten: candidate._informationWritten === true || didReestrDzWriteOffInformationChange(originalCell, cell)
+      };
+    }
     const orderDate = normalizeReestrDzText(fields.orderDate);
     const orderNumber = normalizeReestrDzText(fields.orderNumber);
     if (parseReestrDzDate(orderDate) === null || !/^\d{2}\.\d{2}\.\d{4}$/.test(orderDate) || !orderNumber) {
@@ -5512,7 +5558,12 @@
       dateKey: getReestrDzPrincipalLocalDateKey(),
       depid: String(session.data.depid || ''),
       rowId: String(session.data.rowId || ''),
-      fields: { orderDate: String(fields.orderDate || ''), orderNumber: String(fields.orderNumber || '') },
+      mode: session.mode === 'comment' ? 'comment' : 'order',
+      fields: {
+        orderDate: String(fields.orderDate || ''),
+        orderNumber: String(fields.orderNumber || ''),
+        comment: String(fields.comment || '')
+      },
       position: session.position && typeof session.position === 'object' ? { ...session.position } : null,
       updatedAt: Date.now()
     };
@@ -5620,9 +5671,17 @@
   async function navigateReestrDzWriteOffReview(url, documentIndex) {
     const dateInput = document.querySelector(`#${REESTR_DZ_WRITE_OFF_OVERLAY_ID} [name="orderDate"]`);
     const numberInput = document.querySelector(`#${REESTR_DZ_WRITE_OFF_OVERLAY_ID} [name="orderNumber"]`);
+    const commentInput = document.querySelector(`#${REESTR_DZ_WRITE_OFF_OVERLAY_ID} [name="skipComment"]`);
     await sendRuntimeMessage({
       action: 'REESTR_DZ_WRITE_OFF_UPDATE_REVIEW',
-      data: { fields: { orderDate: dateInput && dateInput.value || '', orderNumber: numberInput && numberInput.value || '' } }
+      data: {
+        mode: reestrDzWriteOffReviewState && reestrDzWriteOffReviewState.mode === 'comment' ? 'comment' : 'order',
+        fields: {
+          orderDate: dateInput && dateInput.value || '',
+          orderNumber: numberInput && numberInput.value || '',
+          comment: commentInput && commentInput.value || ''
+        }
+      }
     });
     await sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_NAVIGATE_REVIEW', data: { url, documentIndex } });
   }
@@ -5635,6 +5694,7 @@
     const documents = Array.isArray(data.documents) ? data.documents : [];
     const currentDocumentIndex = Math.max(0, Number(session.currentDocumentIndex) || 0);
     const currentDocument = documents[currentDocumentIndex] || null;
+    const initialMode = session.mode === 'comment' ? 'comment' : 'order';
     const attachments = collectReestrDzWriteOffAttachments();
     void sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_UPDATE_REVIEW', data: { attachments, pageUrl: window.location.href } });
     const knownAttachments = Object.values(session.attachmentsByUrl || {}).flat().filter((item) => item && item.href);
@@ -5650,7 +5710,7 @@
     overlay.innerHTML = `
       <div class="dup-wo-head"><div><strong>Проверка списания</strong><small>Реестр № ${data.rowId || '—'} · ${data.progressText || '—'}</small></div><button type="button" class="dup-wo-close" data-action="close" aria-label="Остановить проверку">×</button></div>
       <div class="dup-wo-body">
-        <div class="dup-wo-stage">Проверьте документ и заполните реквизиты приказа.</div>
+        <div class="dup-wo-stage" data-role="stage"></div>
         <dl class="dup-wo-grid">
           <dt>Исходящий</dt><dd>${data.outgoingNumber || '—'}</dd>
           <dt>Комплектов</dt><dd>${data.setsCount || '—'}</dd>
@@ -5660,12 +5720,23 @@
         </dl>
         <div class="dup-wo-docs" data-role="documents"></div>
         <div class="dup-wo-files" data-role="files"></div>
-        <div class="dup-wo-form">
+        <div class="dup-wo-form" data-panel="order">
           <div class="dup-wo-field"><label for="dup-wo-order-date">Дата приказа о списании</label><input id="dup-wo-order-date" name="orderDate" inputmode="numeric" maxlength="10" autocomplete="off" placeholder="дд.мм.гггг" value="${String(session.fields && session.fields.orderDate || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;')}"></div>
           <div class="dup-wo-field"><label for="dup-wo-order-number">Номер приказа о списании</label><input id="dup-wo-order-number" name="orderNumber" autocomplete="off" value="${String(session.fields && session.fields.orderNumber || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;')}"></div>
         </div>
+        <div class="dup-wo-comment-mode" data-panel="comment" hidden>
+          <label for="dup-wo-skip-comment">Комментарий к реестру</label>
+          <textarea id="dup-wo-skip-comment" name="skipComment"></textarea>
+          <div class="dup-wo-comment-hint">Реквизиты приказа сохраняться не будут. Ctrl+Enter — сохранить комментарий.</div>
+        </div>
         <div class="dup-wo-error" data-role="error"></div>
-        <div class="dup-wo-actions"><button type="button" data-action="pause">${session.paused ? 'Продолжить' : 'Пауза'}</button><button type="button" data-action="done" ${session.paused ? 'disabled' : ''}>Готово</button></div>
+        <div class="dup-wo-actions">
+          <button type="button" data-action="pause">${session.paused ? 'Продолжить' : 'Пауза'}</button>
+          <button type="button" data-action="skip-order" ${session.paused ? 'disabled' : ''}>Пропустить</button>
+          <button type="button" data-action="done" ${session.paused ? 'disabled' : ''}>Готово</button>
+          <button type="button" data-action="cancel-skip" hidden>Отмена</button>
+          <button type="button" data-action="save-comment" hidden ${session.paused ? 'disabled' : ''}>Сохранить комментарий</button>
+        </div>
       </div>`;
     const docsHost = overlay.querySelector('[data-role="documents"]');
     documents.forEach((item, index) => {
@@ -5687,13 +5758,53 @@
     if (!fileMap.size) filesHost.remove();
     const dateInput = overlay.querySelector('[name="orderDate"]');
     const numberInput = overlay.querySelector('[name="orderNumber"]');
+    const commentInput = overlay.querySelector('[name="skipComment"]');
+    if (commentInput instanceof HTMLTextAreaElement) {
+      commentInput.value = String(session.fields && session.fields.comment || data.decision || '').trim();
+    }
+    const orderPanel = overlay.querySelector('[data-panel="order"]');
+    const commentPanel = overlay.querySelector('[data-panel="comment"]');
+    const stageElement = overlay.querySelector('[data-role="stage"]');
     const errorElement = overlay.querySelector('[data-role="error"]');
     const persistFields = () => {
-      const fields = { orderDate: dateInput.value, orderNumber: numberInput.value };
+      const fields = {
+        orderDate: dateInput.value,
+        orderNumber: numberInput.value,
+        comment: commentInput instanceof HTMLTextAreaElement ? commentInput.value : ''
+      };
       persistReestrDzWriteOffDraft(session, fields);
-      return sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_UPDATE_REVIEW', data: { fields } });
+      return sendRuntimeMessage({
+        action: 'REESTR_DZ_WRITE_OFF_UPDATE_REVIEW',
+        data: { mode: session.mode === 'comment' ? 'comment' : 'order', fields }
+      });
     };
-    const finish = async () => {
+    const setReviewMode = (mode, persist = true) => {
+      session.mode = mode === 'comment' ? 'comment' : 'order';
+      reestrDzWriteOffReviewState.mode = session.mode;
+      const commentMode = session.mode === 'comment';
+      if (orderPanel instanceof HTMLElement) orderPanel.hidden = commentMode;
+      if (commentPanel instanceof HTMLElement) commentPanel.hidden = !commentMode;
+      if (stageElement instanceof HTMLElement) stageElement.textContent = commentMode
+        ? 'Дополните решение комментарием. Дата и номер приказа заполняться не будут.'
+        : 'Проверьте документ и заполните реквизиты приказа.';
+      const skipButton = overlay.querySelector('[data-action="skip-order"]');
+      const doneButton = overlay.querySelector('[data-action="done"]');
+      const cancelButton = overlay.querySelector('[data-action="cancel-skip"]');
+      const saveButton = overlay.querySelector('[data-action="save-comment"]');
+      if (skipButton instanceof HTMLButtonElement) skipButton.hidden = commentMode;
+      if (doneButton instanceof HTMLButtonElement) doneButton.hidden = commentMode;
+      if (cancelButton instanceof HTMLButtonElement) cancelButton.hidden = !commentMode;
+      if (saveButton instanceof HTMLButtonElement) saveButton.hidden = !commentMode;
+      errorElement.textContent = '';
+      if (persist) void persistFields();
+      if (commentMode && commentInput instanceof HTMLTextAreaElement) {
+        window.setTimeout(() => {
+          commentInput.focus();
+          commentInput.setSelectionRange(commentInput.value.length, commentInput.value.length);
+        }, 0);
+      }
+    };
+    const finishOrder = async () => {
       const date = normalizeReestrDzText(dateInput.value);
       const number = normalizeReestrDzText(numberInput.value);
       if (!/^\d{2}\.\d{2}\.\d{4}$/.test(date) || parseReestrDzDate(date) === null) {
@@ -5707,8 +5818,26 @@
         return;
       }
       errorElement.textContent = '';
-      const response = await sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_FINISH_REVIEW', data: { fields: { orderDate: date, orderNumber: number } } });
+      const response = await sendRuntimeMessage({
+        action: 'REESTR_DZ_WRITE_OFF_FINISH_REVIEW',
+        data: { mode: 'order', fields: { orderDate: date, orderNumber: number, comment: commentInput && commentInput.value || '' } }
+      });
       if (!response || response.success === false) errorElement.textContent = 'Не удалось передать реквизиты в Пирамиду.';
+      else clearReestrDzWriteOffDraft();
+    };
+    const finishComment = async () => {
+      const comment = String(commentInput instanceof HTMLTextAreaElement ? commentInput.value : '').trim();
+      if (!normalizeReestrDzText(comment)) {
+        errorElement.textContent = 'Комментарий не может быть пустым.';
+        commentInput?.focus();
+        return;
+      }
+      errorElement.textContent = '';
+      const response = await sendRuntimeMessage({
+        action: 'REESTR_DZ_WRITE_OFF_FINISH_REVIEW',
+        data: { mode: 'comment', fields: { orderDate: '', orderNumber: '', comment } }
+      });
+      if (!response || response.success === false) errorElement.textContent = 'Не удалось передать комментарий в Пирамиду.';
       else clearReestrDzWriteOffDraft();
     };
     dateInput.addEventListener('input', () => { dateInput.value = formatReestrDzSingleDateMask(dateInput.value); errorElement.textContent = ''; void persistFields(); });
@@ -5729,19 +5858,41 @@
       }
       if (event.key !== 'Enter') return;
       event.preventDefault();
-      void finish();
+      void finishOrder();
     }));
+    commentInput?.addEventListener('input', () => { errorElement.textContent = ''; void persistFields(); });
+    commentInput?.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setReviewMode('order');
+      } else if (event.key === 'Enter' && event.ctrlKey) {
+        event.preventDefault();
+        void finishComment();
+      }
+    });
     overlay.addEventListener('click', (event) => {
       const button = event.target instanceof Element ? event.target.closest('[data-action]') : null;
       if (!(button instanceof HTMLButtonElement)) return;
-      if (button.dataset.action === 'done') void finish();
+      if (button.dataset.action === 'done') void finishOrder();
+      if (button.dataset.action === 'skip-order') setReviewMode('comment');
+      if (button.dataset.action === 'cancel-skip') setReviewMode('order');
+      if (button.dataset.action === 'save-comment') void finishComment();
       if (button.dataset.action === 'pause') {
         const paused = !reestrDzWriteOffReviewState.paused;
         reestrDzWriteOffReviewState.paused = paused;
         button.textContent = paused ? 'Продолжить' : 'Пауза';
-        const done = overlay.querySelector('[data-action="done"]');
-        if (done instanceof HTMLButtonElement) done.disabled = paused;
-        void sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_UPDATE_REVIEW', data: { paused, fields: { orderDate: dateInput.value, orderNumber: numberInput.value } } });
+        ['done', 'skip-order', 'save-comment'].forEach((action) => {
+          const actionButton = overlay.querySelector(`[data-action="${action}"]`);
+          if (actionButton instanceof HTMLButtonElement) actionButton.disabled = paused;
+        });
+        void sendRuntimeMessage({
+          action: 'REESTR_DZ_WRITE_OFF_UPDATE_REVIEW',
+          data: {
+            paused,
+            mode: session.mode,
+            fields: { orderDate: dateInput.value, orderNumber: numberInput.value, comment: commentInput && commentInput.value || '' }
+          }
+        });
       }
       if (button.dataset.action === 'close' && window.confirm('Остановить проверку списания и вернуться в Пирамиду?')) {
         clearReestrDzWriteOffDraft();
@@ -5751,10 +5902,15 @@
     makeReestrDzWriteOffOverlayDraggable(overlay, (position) => {
       session.position = position;
       reestrDzWriteOffReviewState.position = position;
-      persistReestrDzWriteOffDraft(session, { orderDate: dateInput.value, orderNumber: numberInput.value });
+      persistReestrDzWriteOffDraft(session, {
+        orderDate: dateInput.value,
+        orderNumber: numberInput.value,
+        comment: commentInput && commentInput.value || ''
+      });
       void sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_UPDATE_REVIEW', data: { position } });
     });
     (document.body || document.documentElement).appendChild(overlay);
+    setReviewMode(initialMode, false);
     highlightReestrDzWriteOffText(data.outgoingNumber, data.writeOffAmount);
   }
 
@@ -5768,8 +5924,12 @@
       String(draft.depid || '') === String(response.session.data && response.session.data.depid || '') &&
       String(draft.rowId || '') === String(response.session.data && response.session.data.rowId || '')) {
       response.session.fields = cloneReestrDzPrincipalStorageValue(draft.fields, response.session.fields || {});
+      response.session.mode = draft.mode === 'comment' ? 'comment' : 'order';
       if (draft.position && typeof draft.position === 'object') response.session.position = cloneReestrDzPrincipalStorageValue(draft.position, null);
-      void sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_UPDATE_REVIEW', data: { fields: response.session.fields, position: response.session.position } });
+      void sendRuntimeMessage({
+        action: 'REESTR_DZ_WRITE_OFF_UPDATE_REVIEW',
+        data: { mode: response.session.mode, fields: response.session.fields, position: response.session.position }
+      });
     }
     renderReestrDzWriteOffReviewOverlay(response.session);
   }
