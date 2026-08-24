@@ -2825,6 +2825,16 @@
       .dup-wo-amount strong { color: #243947; font-weight: 650; white-space: nowrap; }
       .dup-wo-docs, .dup-wo-files { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
       .dup-wo-files { max-height: 104px; padding-right: 2px; overflow: auto; }
+      .dup-wo-archive-progress { margin-top: 8px; padding: 7px 8px; border: 1px solid #c8d3da; border-left: 3px solid #d99100; border-radius: 3px; background: #f5f8fa; }
+      .dup-wo-archive-progress[data-state="done"] { border-left-color: #3d9b67; }
+      .dup-wo-archive-progress[data-state="error"] { border-left-color: #d43f3a; background: #fff5f4; }
+      .dup-wo-archive-progress-head { display: flex; justify-content: space-between; gap: 8px; color: #344955; font-size: 10px; font-weight: 650; }
+      .dup-wo-archive-progress-track { height: 5px; margin-top: 5px; overflow: hidden; border-radius: 99px; background: #dbe3e8; }
+      .dup-wo-archive-progress-track span { display: block; width: 0; height: 100%; border-radius: inherit; background: #3282a8; transition: width .18s ease; }
+      .dup-wo-archive-progress[data-indeterminate="true"] .dup-wo-archive-progress-track span { width: 38%; animation: dup-wo-archive-progress 1.1s ease-in-out infinite; }
+      .dup-wo-archive-progress-text { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-top: 4px; color: #647580; font-size: 9px; line-height: 1.25; }
+      .dup-wo-archive-progress-text button { flex: 0 0 auto; min-height: 20px; padding: 2px 6px; border: 1px solid #b9c4cc; border-radius: 3px; background: #fff; color: #334955; font: 600 9px "Segoe UI", sans-serif; cursor: pointer; }
+      @keyframes dup-wo-archive-progress { 0% { transform: translateX(-115%); } 100% { transform: translateX(300%); } }
       .dup-wo-docs button, .dup-wo-files button {
         min-height: 27px;
         padding: 4px 8px;
@@ -5594,6 +5604,7 @@
               clearReestrDzWriteOffDraft();
               await discardReestrDzWriteOffRun(run.department.depid);
               await sendRuntimeMessage({ action: 'REESTR_DZ_CLOSE_WSS_SESSION' }).catch(() => null);
+              await sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_CLEAR_ARCHIVE_CACHE' }).catch(() => null);
               reestrDzWriteOffRun = null;
               document.getElementById(REESTR_DZ_WRITE_OFF_OVERLAY_ID)?.remove();
               return;
@@ -5639,12 +5650,14 @@
       clearReestrDzWriteOffDraft();
       await persistReestrDzWriteOffRun(run);
       await sendRuntimeMessage({ action: 'REESTR_DZ_CLOSE_WSS_SESSION' }).catch(() => null);
+      await sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_CLEAR_ARCHIVE_CACHE' }).catch(() => null);
       syncReestrDzWriteOffProgressOverlay(run);
     } catch (error) {
       if (error && (error.name === 'AbortError' || error.code === 'WRITE_OFF_CANCELLED')) {
         clearReestrDzWriteOffDraft();
         await discardReestrDzWriteOffRun(run.department.depid);
         await sendRuntimeMessage({ action: 'REESTR_DZ_CLOSE_WSS_SESSION' }).catch(() => null);
+        await sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_CLEAR_ARCHIVE_CACHE' }).catch(() => null);
         reestrDzWriteOffRun = null;
         document.getElementById(REESTR_DZ_WRITE_OFF_OVERLAY_ID)?.remove();
         return;
@@ -5699,6 +5712,7 @@
       setReestrDzPrincipalLaunchButtonDisabled(false);
       return;
     }
+    await sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_CLEAR_ARCHIVE_CACHE' }).catch(() => null);
     const processed = new Set(Object.keys(daily.processed && typeof daily.processed === 'object' ? daily.processed : {}));
     const run = {
       status: 'preparing', paused: false, pauseReason: '', resumeWaiters: [], controller: new AbortController(),
@@ -5853,12 +5867,15 @@
 
   function collectReestrDzWriteOffAttachments() {
     const unique = new Map();
-    const fileNamePattern = /\.pdf$/i;
-    const fileUrlPattern = /\.pdf(?:$|[?#])/i;
+    const pdfNamePattern = /\.pdf$/i;
+    const pdfUrlPattern = /\.pdf(?:$|[?#])/i;
+    const archiveNamePattern = /\.(?:zip|rar|7z|tar|tgz|tbz2?|txz|tar\.(?:gz|bz2|xz)|gz|bz2|xz)$/i;
+    const archiveUrlPattern = /\.(?:zip|rar|7z|tar|tgz|tbz2?|txz|tar\.(?:gz|bz2|xz)|gz|bz2|xz)(?:$|[?#])/i;
     document.querySelectorAll('a[href]').forEach((anchor) => {
       if (anchor.closest(`#${REESTR_DZ_WRITE_OFF_OVERLAY_ID}`)) return;
       const href = String(anchor.href || '').trim();
-      if (!href || !/^https?:/i.test(href)) return;
+      const localPdf = anchor.dataset.dupArchivePdf === 'true' && /^blob:/i.test(href);
+      if (!href || (!/^https?:/i.test(href) && !localPdf)) return;
       const containerText = normalizeReestrDzText(
         anchor.closest('.files-fileAndCommentDiv')?.querySelector('.files-filespan')?.textContent
       );
@@ -5869,9 +5886,13 @@
         // malformed escaping in a WSS URL must not hide other attachments
       }
       const text = normalizeReestrDzText(anchor.textContent) || containerText || normalizeReestrDzText(fallbackText);
-      if (!fileNamePattern.test(text) && !fileUrlPattern.test(href)) return;
+      const type = localPdf || pdfNamePattern.test(text) || pdfUrlPattern.test(href)
+        ? 'pdf'
+        : (archiveNamePattern.test(text) || archiveUrlPattern.test(href) ? 'archive' : '');
+      if (!type) return;
       const previous = unique.get(href);
-      if (!previous || (previous.text === 'Документ' && text !== 'Документ')) unique.set(href, { text, href });
+      const item = { text, href, type, localPdf };
+      if (!previous || (previous.text === 'Документ' && text !== 'Документ')) unique.set(href, item);
     });
     return Array.from(unique.values());
   }
@@ -5941,7 +5962,7 @@
       data: {
         url,
         documentIndex,
-        pdfAttachment: options.pdfAttachment === true,
+        attachmentType: ['pdf', 'archive'].includes(options.attachmentType) ? options.attachmentType : '',
         fileName: normalizeReestrDzText(options.fileName)
       }
     });
@@ -6102,10 +6123,16 @@
     const currentDocumentIndex = Math.max(0, Number(session.currentDocumentIndex) || 0);
     const currentDocument = documents[currentDocumentIndex] || null;
     const initialMode = session.mode === 'comment' ? 'comment' : 'order';
-    const knownAttachments = Object.values(session.attachmentsByUrl || {}).flat().filter((item) => {
-      if (!item || !item.href) return false;
-      return /\.pdf$/i.test(normalizeReestrDzText(item.text)) || /\.pdf(?:$|[?#])/i.test(String(item.href));
-    });
+    const knownAttachments = Object.values(session.attachmentsByUrl || {}).flat().map((item) => {
+      if (!item || !item.href) return null;
+      if (['pdf', 'archive'].includes(item.type)) return item;
+      const label = `${normalizeReestrDzText(item.text)} ${String(item.href)}`;
+      if (/\.pdf(?:\s|$|[?#])/i.test(label)) return { ...item, type: 'pdf', localPdf: false };
+      if (/\.(?:zip|rar|7z|tar|tgz|tbz2?|txz|tar\.(?:gz|bz2|xz)|gz|bz2|xz)(?:\s|$|[?#])/i.test(label)) {
+        return { ...item, type: 'archive', localPdf: false };
+      }
+      return null;
+    }).filter(Boolean);
     const fileMap = new Map(knownAttachments.map((item) => [item.href, item]));
     const overlay = document.createElement('section');
     overlay.id = REESTR_DZ_WRITE_OFF_OVERLAY_ID;
@@ -6139,6 +6166,11 @@
           </div>
         </div>
         <div class="dup-wo-docs" data-role="documents"></div>
+        <div class="dup-wo-archive-progress" data-role="archive-progress" data-state="working" hidden>
+          <div class="dup-wo-archive-progress-head"><span data-role="archive-name">Архив</span><span data-role="archive-percent"></span></div>
+          <div class="dup-wo-archive-progress-track" data-role="archive-track" role="progressbar" aria-label="Обработка архива" aria-valuemin="0" aria-valuemax="100"><span data-role="archive-bar"></span></div>
+          <div class="dup-wo-archive-progress-text"><span data-role="archive-text"></span><button type="button" data-action="retry-archive" hidden>Повторить</button></div>
+        </div>
         <div class="dup-wo-files" data-role="files"></div>
         <div class="dup-wo-form" data-panel="order">
           <div class="dup-wo-field"><label for="dup-wo-order-date">Дата приказа о списании</label><input id="dup-wo-order-date" name="orderDate" inputmode="numeric" maxlength="10" autocomplete="off" placeholder="дд.мм.гггг" value="${String(session.fields && session.fields.orderDate || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;')}"></div>
@@ -6197,11 +6229,47 @@
       docsHost.appendChild(button);
     });
     const filesHost = overlay.querySelector('[data-role="files"]');
+    const archiveProgress = overlay.querySelector('[data-role="archive-progress"]');
+    const renderArchiveProgress = (rawState) => {
+      const state = rawState && typeof rawState === 'object' ? rawState : null;
+      if (!state || !(archiveProgress instanceof HTMLElement)) return;
+      const percent = Math.min(100, Math.max(0, Number(state.percent) || 0));
+      archiveProgress.hidden = false;
+      archiveProgress.dataset.state = ['done', 'error'].includes(state.state) ? state.state : 'working';
+      archiveProgress.dataset.indeterminate = state.indeterminate ? 'true' : 'false';
+      const nameHost = archiveProgress.querySelector('[data-role="archive-name"]');
+      const percentHost = archiveProgress.querySelector('[data-role="archive-percent"]');
+      const track = archiveProgress.querySelector('[data-role="archive-track"]');
+      const bar = archiveProgress.querySelector('[data-role="archive-bar"]');
+      const textHost = archiveProgress.querySelector('[data-role="archive-text"]');
+      const retry = archiveProgress.querySelector('[data-action="retry-archive"]');
+      if (nameHost) nameHost.textContent = normalizeReestrDzText(state.fileName) || 'Архив';
+      if (percentHost) percentHost.textContent = state.indeterminate ? '…' : `${Math.round(percent)}%`;
+      if (track instanceof HTMLElement) {
+        if (state.indeterminate) track.removeAttribute('aria-valuenow');
+        else track.setAttribute('aria-valuenow', String(Math.round(percent)));
+        track.setAttribute('aria-valuetext', normalizeReestrDzText(state.text));
+      }
+      if (bar instanceof HTMLElement && !state.indeterminate) bar.style.width = `${percent}%`;
+      if (textHost) textHost.textContent = normalizeReestrDzText(state.text);
+      if (retry instanceof HTMLButtonElement) retry.hidden = state.state !== 'error';
+    };
+    const handleArchiveProgress = (event) => renderArchiveProgress(event && event.detail);
+    window.addEventListener('dup-reestr-dz-archive-progress', handleArchiveProgress);
+    renderArchiveProgress(window.__dupReestrDzArchiveProgress);
+    archiveProgress?.querySelector('[data-action="retry-archive"]')?.addEventListener('click', () => {
+      window.dispatchEvent(new Event('dup-reestr-dz-retry-archive'));
+    });
     let attachmentSignature = null;
+    let autoArchiveStarted = false;
     const refreshAttachmentButtons = () => {
       const pageAttachments = collectReestrDzWriteOffAttachments();
+      const currentLocalPdfUrls = new Set(pageAttachments.filter((item) => item.localPdf).map((item) => item.href));
+      Array.from(fileMap.entries()).forEach(([href, item]) => {
+        if (item.localPdf && !currentLocalPdfUrls.has(href)) fileMap.delete(href);
+      });
       pageAttachments.forEach((item) => fileMap.set(item.href, item));
-      const signature = Array.from(fileMap.values()).map((item) => `${item.href}\n${item.text}`).sort().join('\n---\n');
+      const signature = Array.from(fileMap.values()).map((item) => `${item.type}\n${item.href}\n${item.text}`).sort().join('\n---\n');
       if (signature === attachmentSignature) return;
       attachmentSignature = signature;
       if (filesHost instanceof HTMLElement) {
@@ -6209,19 +6277,40 @@
         Array.from(fileMap.values()).forEach((item) => {
           const button = document.createElement('button');
           button.type = 'button';
-          button.textContent = `📎 ${item.text || 'Файл'}`;
-          button.addEventListener('click', () => void navigateReestrDzWriteOffReview(item.href, currentDocumentIndex, {
-            pdfAttachment: true,
-            fileName: item.text
-          }));
+          button.textContent = `${item.type === 'archive' ? '🗜️' : '📎'} ${item.text || 'Файл'}`;
+          button.addEventListener('click', () => {
+            if (item.localPdf === true && /^blob:/i.test(item.href)) {
+              window.dispatchEvent(new CustomEvent('dup-reestr-dz-open-local-pdf', {
+                detail: { url: item.href, fileName: item.text }
+              }));
+              return;
+            }
+            void navigateReestrDzWriteOffReview(item.href, currentDocumentIndex, {
+              attachmentType: item.type,
+              fileName: item.text
+            });
+          });
           filesHost.appendChild(button);
         });
         filesHost.hidden = !fileMap.size;
       }
-      void sendRuntimeMessage({
+      const syncPromise = sendRuntimeMessage({
         action: 'REESTR_DZ_WRITE_OFF_UPDATE_REVIEW',
         data: { attachments: pageAttachments, pageUrl: window.location.href }
       });
+      const processedArchiveUrls = new Set(Array.isArray(session.processedArchiveUrls) ? session.processedArchiveUrls : []);
+      const automaticZip = !autoArchiveStarted && /^https?:/i.test(window.location.href)
+        ? pageAttachments.find((item) => item.type === 'archive' && !processedArchiveUrls.has(item.href) && (
+          /\.zip$/i.test(normalizeReestrDzText(item.text)) || /\.zip(?:$|[?#])/i.test(item.href)
+        ))
+        : null;
+      if (automaticZip) {
+        autoArchiveStarted = true;
+        void Promise.resolve(syncPromise).then(() => navigateReestrDzWriteOffReview(automaticZip.href, currentDocumentIndex, {
+          attachmentType: 'archive',
+          fileName: automaticZip.text
+        }));
+      }
     };
     refreshAttachmentButtons();
     const dateInput = overlay.querySelector('[name="orderDate"]');

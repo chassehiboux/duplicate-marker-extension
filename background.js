@@ -2335,13 +2335,18 @@ async function closeReestrDzWriteOffReview(sourceTabId, activateSource = false) 
     return true;
 }
 
-async function openReestrDzWriteOffPdfViewer(sourceTabId, session, currentReviewTab, targetUrl, fileName) {
+async function openReestrDzWriteOffAttachmentViewer(sourceTabId, session, currentReviewTab, targetUrl, fileName, attachmentType) {
     if (!Number.isInteger(sourceTabId) || !session || !isReestrDzWssDocsUrl(targetUrl)) {
-        throw new Error('INVALID_WRITE_OFF_PDF_URL');
+        throw new Error('INVALID_WRITE_OFF_ATTACHMENT_URL');
     }
     const normalizedFileName = String(fileName || '').trim();
-    if (!/\.pdf$/i.test(normalizedFileName) && !/\.pdf(?:$|[?#])/i.test(targetUrl)) {
-        throw new Error('WRITE_OFF_ATTACHMENT_IS_NOT_PDF');
+    const normalizedType = attachmentType === 'archive' ? 'archive' : 'pdf';
+    const archivePattern = /\.(?:zip|rar|7z|tar|tgz|tbz2?|txz|tar\.(?:gz|bz2|xz)|gz|bz2|xz)(?:$|[?#])/i;
+    const isValidAttachment = normalizedType === 'archive'
+        ? archivePattern.test(normalizedFileName) || archivePattern.test(targetUrl)
+        : /\.pdf$/i.test(normalizedFileName) || /\.pdf(?:$|[?#])/i.test(targetUrl);
+    if (!isValidAttachment) {
+        throw new Error(normalizedType === 'archive' ? 'WRITE_OFF_ATTACHMENT_IS_NOT_ARCHIVE' : 'WRITE_OFF_ATTACHMENT_IS_NOT_PDF');
     }
     const oldReviewTabId = session.reviewTabId;
     const createProperties = {
@@ -2362,9 +2367,15 @@ async function openReestrDzWriteOffPdfViewer(sourceTabId, session, currentReview
     const viewerTabId = viewerTab && Number.isInteger(viewerTab.id) ? viewerTab.id : null;
     if (!Number.isInteger(viewerTabId)) throw new Error('NO_WRITE_OFF_PDF_VIEWER_TAB');
 
+    const currentDocument = Array.isArray(session.data && session.data.documents)
+        ? session.data.documents[Math.max(0, Number(session.currentDocumentIndex) || 0)]
+        : null;
+    const documentCacheKey = String(currentDocument && (currentDocument.text || currentDocument.label) || targetUrl).trim();
     const viewerUrl = chrome.runtime.getURL('reestr_dz_pdf_viewer.html') + '#' + new URLSearchParams({
         url: targetUrl,
-        name: normalizedFileName || 'Документ.pdf'
+        name: normalizedFileName || (normalizedType === 'archive' ? 'Архив' : 'Документ.pdf'),
+        mode: normalizedType,
+        cacheKey: `${sourceTabId}:${documentCacheKey}`
     }).toString();
     reestrDzWriteOffReviewSources.delete(oldReviewTabId);
     reestrDzWriteOffReviewSources.set(viewerTabId, sourceTabId);
@@ -2383,6 +2394,16 @@ async function openReestrDzWriteOffPdfViewer(sourceTabId, session, currentReview
         setTimeout(() => removeTabAsync(oldReviewTabId).catch(() => null), 180);
     }
     return { success: true, reviewTabId: viewerTabId };
+}
+
+function clearReestrDzWriteOffArchiveCache() {
+    if (typeof indexedDB === 'undefined') return Promise.resolve(false);
+    return new Promise((resolve) => {
+        const request = indexedDB.deleteDatabase('dupReestrDzWriteOffArchiveCache');
+        request.onsuccess = () => resolve(true);
+        request.onerror = () => resolve(false);
+        request.onblocked = () => resolve(false);
+    });
 }
 
 async function openReestrDzWriteOffReview(sourceTab, rawData) {
@@ -2423,6 +2444,7 @@ async function openReestrDzWriteOffReview(sourceTab, rawData) {
         },
         position: null,
         attachmentsByUrl: {},
+        processedArchiveUrls: [],
         data: { ...data, documents },
         updatedAt: Date.now()
     };
@@ -2562,6 +2584,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             return false;
         }
 
+        case 'REESTR_DZ_WRITE_OFF_CLEAR_ARCHIVE_CACHE': {
+            clearReestrDzWriteOffArchiveCache()
+                .then((cleared) => sendResponse({ success: true, cleared }))
+                .catch((error) => sendResponse({ success: false, error: error && error.message ? error.message : String(error) }));
+            return true;
+        }
+
         case 'REESTR_DZ_WRITE_OFF_UPDATE_REVIEW': {
             const reviewTabId = sender && sender.tab && Number.isInteger(sender.tab.id) ? sender.tab.id : null;
             const sourceTabId = Number.isInteger(reviewTabId) ? reestrDzWriteOffReviewSources.get(reviewTabId) : null;
@@ -2587,6 +2616,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 const pageUrl = String(data.pageUrl || sender.tab.url || '');
                 session.attachmentsByUrl[pageUrl] = data.attachments.filter((item) => item && isAllowedReestrDzUrl(item.href));
             }
+            if (data.processedArchiveUrl && isAllowedReestrDzUrl(data.processedArchiveUrl)) {
+                const processedArchiveUrls = new Set(Array.isArray(session.processedArchiveUrls) ? session.processedArchiveUrls : []);
+                processedArchiveUrls.add(String(data.processedArchiveUrl));
+                session.processedArchiveUrls = Array.from(processedArchiveUrls);
+            }
             session.updatedAt = Date.now();
             sendResponse({ success: true, session: JSON.parse(JSON.stringify(session)) });
             return false;
@@ -2604,13 +2638,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             const documentIndex = Number.parseInt(String(request.data && request.data.documentIndex), 10);
             if (Number.isInteger(documentIndex) && documentIndex >= 0) session.currentDocumentIndex = documentIndex;
             session.updatedAt = Date.now();
-            if (request.data && request.data.pdfAttachment === true) {
-                openReestrDzWriteOffPdfViewer(
+            const attachmentType = request.data && String(request.data.attachmentType || '');
+            if (attachmentType === 'pdf' || attachmentType === 'archive') {
+                openReestrDzWriteOffAttachmentViewer(
                     sourceTabId,
                     session,
                     sender && sender.tab,
                     targetUrl,
-                    request.data && request.data.fileName
+                    request.data && request.data.fileName,
+                    attachmentType
                 )
                     .then(sendResponse)
                     .catch((error) => sendResponse({ success: false, error: error && error.message ? error.message : String(error) }));

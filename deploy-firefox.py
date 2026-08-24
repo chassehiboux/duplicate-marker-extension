@@ -99,6 +99,12 @@ DIR_FILES = {
         'vzid_capture_preview.js',
         'vzid_create_send.js',
     ],
+    'vendor/libarchive': [
+        'libarchive.js',
+        'worker-bundle.js',
+        'libarchive.wasm',
+        'LICENSE',
+    ],
 }
 
 FIREFOX_BACKGROUND_IMPORTS = [
