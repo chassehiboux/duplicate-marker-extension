@@ -2800,7 +2800,9 @@
       #${REESTR_DZ_WRITE_OFF_OVERLAY_ID}[data-state="completed"] { --dup-wo-accent: #3d9b67; }
       #${REESTR_DZ_WRITE_OFF_OVERLAY_ID}.dup-wo-full-height { top: 8px; height: calc(100vh - 16px); display: flex; flex-direction: column; }
       #${REESTR_DZ_WRITE_OFF_OVERLAY_ID}.dup-wo-full-height .dup-wo-head { flex: 0 0 auto; }
-      #${REESTR_DZ_WRITE_OFF_OVERLAY_ID}.dup-wo-full-height .dup-wo-body { flex: 1 1 auto; min-height: 0; max-height: none; }
+      #${REESTR_DZ_WRITE_OFF_OVERLAY_ID}.dup-wo-full-height .dup-wo-body { box-sizing: border-box; display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; max-height: none; overflow: hidden; }
+      #${REESTR_DZ_WRITE_OFF_OVERLAY_ID}.dup-wo-full-height .dup-wo-body > * { flex: 0 0 auto; }
+      #${REESTR_DZ_WRITE_OFF_OVERLAY_ID}.dup-wo-full-height .dup-wo-body > .dup-wo-files { flex: 1 1 150px; min-height: 72px; max-height: none; }
       .dup-wo-head {
         display: grid;
         grid-template-columns: 1fr auto;
@@ -2830,7 +2832,7 @@
       .dup-wo-amount span { color: #71808a; }
       .dup-wo-amount strong { color: #243947; font-weight: 650; white-space: nowrap; }
       .dup-wo-docs { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
-      .dup-wo-files { display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 3px; width: 100%; max-height: min(36vh, 340px); margin-top: 9px; padding-right: 3px; overflow: auto; scrollbar-width: thin; }
+      .dup-wo-files { box-sizing: border-box; display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 3px; width: 100%; max-height: min(36vh, 340px); margin-top: 9px; padding-right: 3px; overflow-x: hidden; overflow-y: auto; scrollbar-width: thin; }
       .dup-wo-archive-progress { margin-top: 8px; padding: 7px 8px; border: 1px solid #c8d3da; border-left: 3px solid #d99100; border-radius: 3px; background: #f5f8fa; }
       .dup-wo-archive-progress[data-state="done"] { border-left-color: #3d9b67; }
       .dup-wo-archive-progress[data-state="error"] { border-left-color: #d43f3a; background: #fff5f4; }
@@ -2852,6 +2854,7 @@
         cursor: pointer;
       }
       .dup-wo-files button {
+        box-sizing: border-box;
         display: block;
         width: 100%;
         min-height: 21px;
@@ -2869,7 +2872,7 @@
       }
       .dup-wo-files button:hover { border-color: #8fa5b3; background: #f4f8fa; }
       .dup-wo-docs button[aria-current="page"] { border-color: #d38c18; background: #fff4d9; color: #6f4807; }
-      .dup-wo-form { display: grid; gap: 8px; margin-top: 11px; padding-top: 10px; border-top: 1px solid #d7dde2; }
+      .dup-wo-form { display: grid; gap: 8px; margin-top: 9px; padding-top: 8px; border-top: 1px solid #d7dde2; background: #f8fafb; }
       .dup-wo-field label { display: block; margin-bottom: 4px; color: #536571; font-size: 10px; font-weight: 600; }
       .dup-wo-field input { box-sizing: border-box; width: 100%; height: 31px; padding: 5px 8px; border: 1px solid #aeb8c1; border-radius: 3px; background: #fff; color: #1f2f3c; font: 12px/1 Consolas, monospace; }
       .dup-wo-field input:focus { border-color: #337ab7; outline: 0; box-shadow: 0 0 0 2px rgba(51,122,183,.13); }
@@ -2883,7 +2886,7 @@
       .dup-wo-actions button[data-action="confirm-decision"] { margin-left: auto; border-color: #2b7d46; background: #36975a; color: #fff; }
       .dup-wo-actions button[data-action="finish-decision-skip"] { border-color: #2b7d46; background: #36975a; color: #fff; }
       .dup-wo-error { min-height: 15px; color: #bd302c; font-size: 10px; line-height: 1.35; }
-      .dup-wo-actions { display: flex; gap: 6px; margin-top: 9px; }
+      .dup-wo-actions { display: flex; gap: 6px; margin-top: 7px; background: #f8fafb; }
       .dup-wo-actions button { min-height: 30px; padding: 5px 10px; border: 1px solid #aeb8c1; border-radius: 3px; background: #fff; color: #344b5d; font: 600 11px/1 Bahnschrift, "Segoe UI", sans-serif; cursor: pointer; }
       .dup-wo-actions button[data-action="done"] { margin-left: auto; border-color: #286090; background: #337ab7; color: #fff; }
       .dup-wo-actions button[data-action="skip-order"] { border-color: #c58218; background: #fff5dc; color: #79500c; }
