@@ -297,6 +297,7 @@
   const REESTR_DZ_PRINCIPAL_ATTENTION_ROW_CLASS = 'dup-reestr-dz-principal-attention-row';
   const REESTR_DZ_PRINCIPAL_DAILY_STORAGE_KEY = 'dup_reestr_dz_principal_daily_runs';
   const REESTR_DZ_PARALLEL_WORKERS_STORAGE_KEY = 'dup_reestr_dz_parallel_workers_v1';
+  const REESTR_DZ_WRITE_OFF_COMMENT_SKIP_RULES_STORAGE_KEY = 'dup_reestr_dz_write_off_comment_skip_rules_v1';
   const REESTR_DZ_PARALLEL_WORKERS_DEFAULT = 5;
   const REESTR_DZ_PRINCIPAL_DAILY_STORAGE_VERSION = 2;
   const REESTR_DZ_CHECK_MENU_ID = 'dup-reestr-dz-check-menu';
@@ -2409,6 +2410,54 @@
     return parallelWorkers;
   }
 
+  function normalizeReestrDzWriteOffCommentRule(value) {
+    return normalizeReestrDzText(value).toLocaleLowerCase('ru-RU');
+  }
+
+  function normalizeReestrDzWriteOffCommentSkipRules(value) {
+    const rules = Array.isArray(value) ? value : [];
+    const unique = new Map();
+    rules.forEach((rule) => {
+      const text = normalizeReestrDzText(rule);
+      const normalized = normalizeReestrDzWriteOffCommentRule(text);
+      if (normalized.length < 3 || unique.has(normalized)) return;
+      unique.set(normalized, text);
+    });
+    return Array.from(unique.values());
+  }
+
+  async function getReestrDzWriteOffCommentSkipRules() {
+    const stored = await chromeStorageGet([REESTR_DZ_WRITE_OFF_COMMENT_SKIP_RULES_STORAGE_KEY]).catch(() => ({}));
+    return normalizeReestrDzWriteOffCommentSkipRules(
+      stored && stored[REESTR_DZ_WRITE_OFF_COMMENT_SKIP_RULES_STORAGE_KEY]
+    );
+  }
+
+  async function saveReestrDzWriteOffCommentSkipRules(value) {
+    const rules = normalizeReestrDzWriteOffCommentSkipRules(value);
+    const saved = await chromeStorageSet({ [REESTR_DZ_WRITE_OFF_COMMENT_SKIP_RULES_STORAGE_KEY]: rules }).catch(() => false);
+    if (saved) return rules;
+    const fallbackSaved = await new Promise((resolve) => {
+      try {
+        chrome.storage.local.set({ [REESTR_DZ_WRITE_OFF_COMMENT_SKIP_RULES_STORAGE_KEY]: rules }, () => {
+          resolve(!(chrome.runtime && chrome.runtime.lastError));
+        });
+      } catch (error) {
+        resolve(false);
+      }
+    });
+    if (!fallbackSaved) throw new Error('Не удалось сохранить словарь автопропуска.');
+    return rules;
+  }
+
+  function findReestrDzWriteOffCommentSkipRule(comment, rules) {
+    const normalizedComment = normalizeReestrDzWriteOffCommentRule(comment);
+    if (!normalizedComment) return '';
+    return normalizeReestrDzWriteOffCommentSkipRules(rules).find((rule) =>
+      normalizedComment.includes(normalizeReestrDzWriteOffCommentRule(rule))
+    ) || '';
+  }
+
   async function askReestrDzPrincipalPeriod() {
     ensureReestrDzPrincipalStyle();
     document.getElementById(REESTR_DZ_PRINCIPAL_PERIOD_DIALOG_ID)?.remove();
@@ -2807,6 +2856,36 @@
       .dup-wo-confirm-actions { display: flex; justify-content: flex-end; gap: 7px; }
       .dup-wo-confirm-actions button { min-width: 78px; min-height: 32px; border: 1px solid #aeb8c1; border-radius: 4px; background: #fff; color: #344b5d; font: 650 11px/1 Bahnschrift, "Segoe UI", sans-serif; cursor: pointer; }
       .dup-wo-confirm-actions button[aria-pressed="true"] { border-color: #286090; outline: 2px solid rgba(51, 122, 183, .2); background: #337ab7; color: #fff; }
+      .dup-wo-confirm-overlay .dup-wo-confirm-card { animation: dupWoConfirmEnter .24s cubic-bezier(.2,.8,.2,1) both; }
+      .dup-wo-confirm-overlay .dup-wo-confirm-card.is-leaving { pointer-events: none; animation: dupWoConfirmLeave .18s ease-in both; }
+      .dup-wo-confirm-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+      .dup-wo-confirm-position { flex: 0 0 auto; padding: 5px 8px; border: 1px solid rgba(255,255,255,.22); border-radius: 999px; background: rgba(255,255,255,.08); color: #e8f0f5; font: 650 10px/1 Bahnschrift, "Segoe UI", sans-serif; white-space: nowrap; }
+      .dup-wo-confirm-note-input { box-sizing: border-box; width: 100%; min-height: 88px; margin-top: 11px; padding: 9px 10px; resize: vertical; border: 1px solid #6f8798; border-radius: 4px; outline: 0; background: #fff; color: #1f3443; font: 11px/1.45 "Segoe UI", sans-serif; }
+      .dup-wo-confirm-note-input:focus { border-color: #286090; box-shadow: 0 0 0 3px rgba(51,122,183,.16); }
+      .dup-wo-confirm-validation { min-height: 16px; margin: 5px 0 0; color: #b7352d; font: 650 10px/1.35 "Segoe UI", sans-serif; }
+      .dup-wo-confirm-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 10px; }
+      .dup-wo-confirm-dictionary { border: 0; background: transparent; color: #286090; font: 650 10px/1 Bahnschrift, "Segoe UI", sans-serif; cursor: pointer; }
+      .dup-wo-confirm-actions button[data-action="learn"] { border-color: #c88620; background: #fff8e8; color: #7d4b05; }
+      .dup-wo-confirm-actions button[data-action="learn-cancel"], .dup-wo-dictionary-back { border-color: #286090; background: #337ab7; color: #fff; }
+      .dup-wo-confirm-actions button[data-action="learn-save"] { border-color: #2b7d46; background: #36975a; color: #fff; }
+      .dup-wo-dictionary-panel[hidden], .dup-wo-decision-panel[hidden] { display: none !important; }
+      .dup-wo-dictionary-title { margin: 0; color: #233646; font: 700 13px/1.25 Bahnschrift, "Segoe UI", sans-serif; }
+      .dup-wo-dictionary-help { margin: 5px 0 10px; color: #6f7f8a; font: 10px/1.4 "Segoe UI", sans-serif; }
+      .dup-wo-dictionary-list { display: grid; gap: 6px; max-height: 255px; overflow: auto; }
+      .dup-wo-dictionary-empty { padding: 18px 10px; border: 1px dashed #c8d1d8; border-radius: 4px; color: #7c8992; text-align: center; font-size: 11px; }
+      .dup-wo-dictionary-row { display: grid; grid-template-columns: minmax(0,1fr) 30px 30px; gap: 5px; align-items: center; padding: 7px 8px; border: 1px solid #d5dde2; border-radius: 4px; background: #fff; }
+      .dup-wo-dictionary-rule { min-width: 0; color: #263d4c; font: 600 11px/1.35 "Segoe UI", sans-serif; overflow-wrap: anywhere; }
+      .dup-wo-dictionary-row button { width: 30px; height: 28px; padding: 0; border: 1px solid #c7d0d6; border-radius: 4px; background: #f7f9fa; cursor: pointer; }
+      .dup-wo-dictionary-editor { display: grid; grid-template-columns: minmax(0,1fr) auto auto; gap: 6px; align-items: center; }
+      .dup-wo-dictionary-editor input { min-width: 0; height: 30px; box-sizing: border-box; border: 1px solid #6f8798; border-radius: 4px; padding: 0 8px; font: 11px "Segoe UI", sans-serif; }
+      .dup-wo-dictionary-editor button { min-width: 68px; height: 30px; border: 1px solid #aeb8c1; border-radius: 4px; font: 650 10px Bahnschrift, "Segoe UI", sans-serif; cursor: pointer; }
+      .dup-wo-dictionary-editor [data-action="dictionary-edit-cancel"] { border-color: #286090; background: #337ab7; color: #fff; }
+      .dup-wo-dictionary-editor [data-action="dictionary-edit-save"] { border-color: #2b7d46; background: #36975a; color: #fff; }
+      .dup-wo-dictionary-footer { display: flex; justify-content: flex-end; margin-top: 12px; }
+      .dup-wo-dictionary-back { min-width: 86px; min-height: 32px; border-radius: 4px; cursor: pointer; font: 650 11px Bahnschrift, "Segoe UI", sans-serif; }
+      @keyframes dupWoConfirmEnter { from { opacity: 0; transform: translate3d(34px,0,0) scale(.985); } to { opacity: 1; transform: translate3d(0,0,0) scale(1); } }
+      @keyframes dupWoConfirmLeave { from { opacity: 1; transform: translate3d(0,0,0); } to { opacity: 0; transform: translate3d(-34px,0,0); } }
+      @media (prefers-reduced-motion: reduce) { .dup-wo-confirm-overlay .dup-wo-confirm-card, .dup-wo-confirm-overlay .dup-wo-confirm-card.is-leaving { animation-duration: .01ms; } }
       .${REESTR_DZ_WRITE_OFF_HIGHLIGHT_CLASS} { padding: 0 1px; border-radius: 2px; background: #ffe066 !important; color: #241b00 !important; box-shadow: 0 0 0 1px rgba(190,130,0,.25); }
       #list tr.${REESTR_DZ_PRINCIPAL_CURRENT_ROW_CLASS} > td {
         background: #fff0a6 !important;
@@ -3443,9 +3522,16 @@
 
   async function prepareReestrDzParallelBatch(run, candidates, inspector, persist, sync, label) {
     const preparedResults = ensureReestrDzPreparedResults(run);
-    const missing = candidates.map((candidate, slot) => ({ candidate, slot }))
-      .filter(({ candidate }) => !Object.prototype.hasOwnProperty.call(preparedResults, String(candidate.id)));
-    run.parallelProgress = { completed: candidates.length - missing.length, total: candidates.length };
+    candidates.forEach((candidate) => {
+      const key = String(candidate.id);
+      if (!Object.prototype.hasOwnProperty.call(preparedResults, key) && isReestrDzWriteOffExcludedClaimant(candidate.cell)) {
+        preparedResults[key] = { success: true, value: { kind: 'excluded', actionable: false } };
+      }
+    });
+    const missing = candidates
+      .filter((candidate) => !Object.prototype.hasOwnProperty.call(preparedResults, String(candidate.id)))
+      .map((candidate, slot) => ({ candidate, slot }));
+    run.parallelProgress = { completed: 0, total: missing.length };
     run.stage = `${label}: ${run.parallelProgress.completed} из ${run.parallelProgress.total}…`;
     sync(run);
     await Promise.all(missing.map(async ({ candidate, slot }) => {
@@ -3470,12 +3556,14 @@
   function getReestrDzParallelBatchEnd(run, batchStart) {
     const candidates = run && Array.isArray(run.candidates) ? run.candidates : [];
     if (batchStart >= candidates.length) return candidates.length;
-    const limit = Math.min(candidates.length, batchStart + normalizeReestrDzParallelWorkers(run.parallelWorkers));
+    const workerLimit = normalizeReestrDzParallelWorkers(run.parallelWorkers);
     const page = Math.max(1, Number.parseInt(String(candidates[batchStart] && candidates[batchStart].page || 1), 10) || 1);
     let batchEnd = batchStart;
-    while (batchEnd < limit) {
+    let activeCount = 0;
+    while (batchEnd < candidates.length && activeCount < workerLimit) {
       const candidatePage = Math.max(1, Number.parseInt(String(candidates[batchEnd] && candidates[batchEnd].page || 1), 10) || 1);
       if (candidatePage !== page) break;
+      if (!isReestrDzWriteOffExcludedClaimant(candidates[batchEnd].cell)) activeCount += 1;
       batchEnd += 1;
     }
     return Math.max(batchStart + 1, batchEnd);
@@ -4719,13 +4807,14 @@
     };
   }
 
-  function confirmReestrDzWriteOffCommentedCandidate(candidate) {
+  async function confirmReestrDzWriteOffCommentedCandidate(candidate, context = {}) {
     document.getElementById(REESTR_DZ_WRITE_OFF_COMMENT_CONFIRM_ID)?.remove();
+    let rules = await getReestrDzWriteOffCommentSkipRules();
     return new Promise((resolve) => {
       const cell = candidate && candidate.cell && typeof candidate.cell === 'object' ? candidate.cell : {};
       const overlay = document.createElement('section');
       overlay.id = REESTR_DZ_WRITE_OFF_COMMENT_CONFIRM_ID;
-      overlay.className = 'dup-reestr-dz-principal-ui';
+      overlay.className = 'dup-reestr-dz-principal-ui dup-wo-confirm-overlay';
       overlay.setAttribute('role', 'dialog');
       overlay.setAttribute('aria-modal', 'true');
       overlay.setAttribute('aria-label', `Повторная обработка реестра № ${candidate && candidate.id || '—'}`);
@@ -4733,20 +4822,36 @@
       const card = document.createElement('div');
       card.className = 'dup-wo-confirm-card';
       card.innerHTML = `
-        <div class="dup-wo-confirm-head"><strong>В строке уже есть комментарий</strong><small>Проверьте сведения перед повторной обработкой</small></div>
+        <div class="dup-wo-confirm-head">
+          <div><strong>В строке уже есть комментарий</strong><small data-field="subtitle"></small></div>
+          <span class="dup-wo-confirm-position" data-field="position"></span>
+        </div>
         <div class="dup-wo-confirm-body">
-          <dl class="dup-wo-confirm-grid">
-            <dt>Реестр</dt><dd data-field="id"></dd>
-            <dt>Взыскатель</dt><dd data-field="claimant"></dd>
-            <dt>Поручение</dt><dd data-field="request"></dd>
-            <dt>Исходящий</dt><dd data-field="outgoing"></dd>
-            <dt>Дата запуска</dt><dd data-field="request-date"></dd>
-          </dl>
-          <div class="dup-wo-confirm-note" data-field="note"></div>
-          <div class="dup-wo-confirm-question">Обрабатывать эту строку?</div>
-          <div class="dup-wo-confirm-actions">
-            <button type="button" data-choice="no" aria-pressed="true">Нет</button>
-            <button type="button" data-choice="yes" aria-pressed="false">Да</button>
+          <div class="dup-wo-decision-panel" data-panel="decision">
+            <dl class="dup-wo-confirm-grid">
+              <dt>Реестр</dt><dd data-field="id"></dd>
+              <dt>Взыскатель</dt><dd data-field="claimant"></dd>
+              <dt>Поручение</dt><dd data-field="request"></dd>
+              <dt>Исходящий</dt><dd data-field="outgoing"></dd>
+              <dt>Дата запуска</dt><dd data-field="request-date"></dd>
+            </dl>
+            <div class="dup-wo-confirm-note" data-field="note"></div>
+            <textarea class="dup-wo-confirm-note-input" data-field="rule-input" hidden aria-label="Правило автопропуска"></textarea>
+            <div class="dup-wo-confirm-validation" data-field="validation"></div>
+            <div class="dup-wo-confirm-toolbar">
+              <button type="button" class="dup-wo-confirm-dictionary" data-action="dictionary"></button>
+            </div>
+            <div class="dup-wo-confirm-question" data-field="question">Обрабатывать эту строку?</div>
+            <div class="dup-wo-confirm-actions" data-field="actions"></div>
+          </div>
+          <div class="dup-wo-dictionary-panel" data-panel="dictionary" hidden>
+            <h3 class="dup-wo-dictionary-title">Словарь автопропуска</h3>
+            <p class="dup-wo-dictionary-help">Совпадение ищется внутри комментария без учёта регистра и лишних пробелов.</p>
+            <div class="dup-wo-confirm-validation" data-field="dictionary-validation"></div>
+            <div class="dup-wo-dictionary-list" data-field="dictionary-list"></div>
+            <div class="dup-wo-dictionary-footer">
+              <button type="button" class="dup-wo-dictionary-back" data-action="dictionary-back">Назад</button>
+            </div>
           </div>
         </div>`;
       overlay.appendChild(card);
@@ -4761,29 +4866,248 @@
       setText('outgoing', cell.PrincipalNumber);
       setText('request-date', cell.RequestDate);
       setText('note', cell.Note);
+      setText('subtitle', `Реестр № ${candidate && candidate.id || '—'}`);
+      const position = Math.max(1, Number.parseInt(String(context.position || 1), 10) || 1);
+      const total = Math.max(position, Number.parseInt(String(context.total || position), 10) || position);
+      setText('position', `${position} / ${total}`);
 
-      const noButton = overlay.querySelector('[data-choice="no"]');
-      const yesButton = overlay.querySelector('[data-choice="yes"]');
+      const decisionPanel = overlay.querySelector('[data-panel="decision"]');
+      const dictionaryPanel = overlay.querySelector('[data-panel="dictionary"]');
+      const noteElement = overlay.querySelector('[data-field="note"]');
+      const ruleInput = overlay.querySelector('[data-field="rule-input"]');
+      const validation = overlay.querySelector('[data-field="validation"]');
+      const actions = overlay.querySelector('[data-field="actions"]');
+      const question = overlay.querySelector('[data-field="question"]');
+      const dictionaryButton = overlay.querySelector('[data-action="dictionary"]');
+      const dictionaryList = overlay.querySelector('[data-field="dictionary-list"]');
+      const dictionaryValidation = overlay.querySelector('[data-field="dictionary-validation"]');
       let selected = 'no';
       let settled = false;
+      let mode = 'decision';
+      let editingRuleIndex = -1;
+      const updateDictionaryCount = () => {
+        if (dictionaryButton instanceof HTMLButtonElement) dictionaryButton.textContent = `Словарь (${rules.length})`;
+      };
       const select = (choice, focus = true) => {
         selected = choice === 'yes' ? 'yes' : 'no';
+        const noButton = overlay.querySelector('[data-choice="no"]');
+        const yesButton = overlay.querySelector('[data-choice="yes"]');
         noButton?.setAttribute('aria-pressed', String(selected === 'no'));
         yesButton?.setAttribute('aria-pressed', String(selected === 'yes'));
         if (focus) (selected === 'yes' ? yesButton : noButton)?.focus();
       };
-      const finish = (accepted) => {
+      const finish = (result) => {
         if (settled) return;
         settled = true;
-        overlay.remove();
-        resolve(accepted === true);
+        card.classList.add('is-leaving');
+        window.setTimeout(() => {
+          overlay.remove();
+          resolve(result);
+        }, 180);
+      };
+      const renderDecisionActions = () => {
+        if (!(actions instanceof HTMLElement)) return;
+        if (mode === 'learn') {
+          actions.innerHTML = `
+            <button type="button" data-action="learn-cancel">Отмена</button>
+            <button type="button" data-action="learn-save">Сохранить</button>`;
+          return;
+        }
+        actions.innerHTML = `
+          <button type="button" data-choice="no" aria-pressed="true">Нет</button>
+          <button type="button" data-choice="yes" aria-pressed="false">Да</button>
+          <button type="button" data-action="learn">Пропустить</button>`;
+        select(selected, false);
+      };
+      const setDecisionMode = (nextMode) => {
+        mode = nextMode === 'learn' ? 'learn' : 'decision';
+        if (noteElement instanceof HTMLElement) noteElement.hidden = mode === 'learn';
+        if (ruleInput instanceof HTMLTextAreaElement) ruleInput.hidden = mode !== 'learn';
+        if (validation instanceof HTMLElement) validation.textContent = '';
+        if (question instanceof HTMLElement) question.textContent = mode === 'learn'
+          ? 'Сохранить этот фрагмент как правило автопропуска?'
+          : 'Обрабатывать эту строку?';
+        renderDecisionActions();
+        if (mode === 'learn' && ruleInput instanceof HTMLTextAreaElement) {
+          ruleInput.value = normalizeReestrDzText(cell.Note);
+          window.setTimeout(() => {
+            ruleInput.focus();
+            ruleInput.select();
+          }, 0);
+        }
+      };
+      const renderDictionary = () => {
+        updateDictionaryCount();
+        if (!(dictionaryList instanceof HTMLElement)) return;
+        dictionaryList.replaceChildren();
+        if (!rules.length) {
+          const empty = document.createElement('div');
+          empty.className = 'dup-wo-dictionary-empty';
+          empty.textContent = 'Сохранённых правил пока нет.';
+          dictionaryList.appendChild(empty);
+          return;
+        }
+        rules.forEach((rule, index) => {
+          if (editingRuleIndex === index) {
+            const editor = document.createElement('div');
+            editor.className = 'dup-wo-dictionary-editor';
+            editor.dataset.ruleIndex = String(index);
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.value = rule;
+            input.dataset.field = 'dictionary-edit-input';
+            const cancel = document.createElement('button');
+            cancel.type = 'button';
+            cancel.dataset.action = 'dictionary-edit-cancel';
+            cancel.textContent = 'Отмена';
+            const save = document.createElement('button');
+            save.type = 'button';
+            save.dataset.action = 'dictionary-edit-save';
+            save.textContent = 'Сохранить';
+            editor.append(input, cancel, save);
+            dictionaryList.appendChild(editor);
+            window.setTimeout(() => { input.focus(); input.select(); }, 0);
+            return;
+          }
+          const row = document.createElement('div');
+          row.className = 'dup-wo-dictionary-row';
+          row.dataset.ruleIndex = String(index);
+          const text = document.createElement('div');
+          text.className = 'dup-wo-dictionary-rule';
+          text.textContent = rule;
+          const edit = document.createElement('button');
+          edit.type = 'button';
+          edit.dataset.action = 'dictionary-edit';
+          edit.title = 'Редактировать правило';
+          edit.setAttribute('aria-label', `Редактировать правило ${rule}`);
+          edit.textContent = '✏️';
+          const remove = document.createElement('button');
+          remove.type = 'button';
+          remove.dataset.action = 'dictionary-delete';
+          remove.title = 'Удалить правило';
+          remove.setAttribute('aria-label', `Удалить правило ${rule}`);
+          remove.textContent = '❌';
+          row.append(text, edit, remove);
+          dictionaryList.appendChild(row);
+        });
+      };
+      const showDictionary = () => {
+        mode = 'dictionary';
+        editingRuleIndex = -1;
+        if (decisionPanel instanceof HTMLElement) decisionPanel.hidden = true;
+        if (dictionaryPanel instanceof HTMLElement) dictionaryPanel.hidden = false;
+        if (dictionaryValidation instanceof HTMLElement) dictionaryValidation.textContent = '';
+        renderDictionary();
+      };
+      const showDecision = () => {
+        mode = 'decision';
+        if (dictionaryPanel instanceof HTMLElement) dictionaryPanel.hidden = true;
+        if (decisionPanel instanceof HTMLElement) decisionPanel.hidden = false;
+        setDecisionMode('decision');
+        window.setTimeout(() => select('no'), 0);
       };
       overlay.addEventListener('click', (event) => {
         const button = event.target instanceof Element ? event.target.closest('[data-choice]') : null;
-        if (!(button instanceof HTMLButtonElement)) return;
-        finish(button.dataset.choice === 'yes');
+        if (button instanceof HTMLButtonElement) {
+          finish({ action: button.dataset.choice === 'yes' ? 'process' : 'skip' });
+          return;
+        }
+        const actionButton = event.target instanceof Element ? event.target.closest('[data-action]') : null;
+        if (!(actionButton instanceof HTMLButtonElement)) return;
+        const action = String(actionButton.dataset.action || '');
+        if (action === 'learn') {
+          setDecisionMode('learn');
+          return;
+        }
+        if (action === 'learn-cancel') {
+          setDecisionMode('decision');
+          window.setTimeout(() => select('no'), 0);
+          return;
+        }
+        if (action === 'dictionary') {
+          showDictionary();
+          return;
+        }
+        if (action === 'dictionary-back') {
+          showDecision();
+          return;
+        }
+        void (async () => {
+          try {
+            if (action === 'learn-save') {
+              const rule = normalizeReestrDzText(ruleInput instanceof HTMLTextAreaElement ? ruleInput.value : '');
+              if (normalizeReestrDzWriteOffCommentRule(rule).length < 3) {
+                if (validation instanceof HTMLElement) validation.textContent = 'Введите не менее трёх символов.';
+                ruleInput?.focus();
+                return;
+              }
+              rules = await saveReestrDzWriteOffCommentSkipRules([...rules, rule]);
+              finish({ action: 'rule', rule });
+              return;
+            }
+            const holder = actionButton.closest('[data-rule-index]');
+            const index = Number.parseInt(String(holder && holder.dataset.ruleIndex || '-1'), 10);
+            if (!Number.isInteger(index) || index < 0 || index >= rules.length) return;
+            if (action === 'dictionary-edit') {
+              editingRuleIndex = index;
+              renderDictionary();
+              return;
+            }
+            if (action === 'dictionary-edit-cancel') {
+              editingRuleIndex = -1;
+              renderDictionary();
+              return;
+            }
+            if (action === 'dictionary-delete') {
+              rules = await saveReestrDzWriteOffCommentSkipRules(rules.filter((_, ruleIndex) => ruleIndex !== index));
+              editingRuleIndex = -1;
+              renderDictionary();
+              return;
+            }
+            if (action === 'dictionary-edit-save') {
+              const input = holder && holder.querySelector('[data-field="dictionary-edit-input"]');
+              const nextRule = normalizeReestrDzText(input instanceof HTMLInputElement ? input.value : '');
+              if (normalizeReestrDzWriteOffCommentRule(nextRule).length < 3) {
+                if (dictionaryValidation instanceof HTMLElement) dictionaryValidation.textContent = 'Введите не менее трёх символов.';
+                input?.focus();
+                return;
+              }
+              const nextRules = [...rules];
+              nextRules[index] = nextRule;
+              rules = await saveReestrDzWriteOffCommentSkipRules(nextRules);
+              editingRuleIndex = -1;
+              if (dictionaryValidation instanceof HTMLElement) dictionaryValidation.textContent = '';
+              renderDictionary();
+            }
+          } catch (error) {
+            const target = mode === 'dictionary' ? dictionaryValidation : validation;
+            if (target instanceof HTMLElement) target.textContent = error && error.message ? error.message : String(error);
+          }
+        })();
       });
       overlay.addEventListener('keydown', (event) => {
+        if (mode === 'learn') {
+          if (event.key === 'Escape') {
+            event.preventDefault();
+            setDecisionMode('decision');
+            window.setTimeout(() => select('no'), 0);
+          } else if (event.key === 'Enter' && event.ctrlKey) {
+            event.preventDefault();
+            overlay.querySelector('[data-action="learn-save"]')?.click();
+          }
+          return;
+        }
+        if (mode === 'dictionary') {
+          if (event.key === 'Escape') {
+            event.preventDefault();
+            showDecision();
+          } else if (event.key === 'Enter' && event.target instanceof HTMLInputElement) {
+            event.preventDefault();
+            event.target.closest('[data-rule-index]')?.querySelector('[data-action="dictionary-edit-save"]')?.click();
+          }
+          return;
+        }
+        if (event.target instanceof HTMLButtonElement && event.target.dataset.action) return;
         if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
           event.preventDefault();
           select('yes');
@@ -4792,15 +5116,96 @@
           select('no');
         } else if (event.key === 'Enter') {
           event.preventDefault();
-          finish(selected === 'yes');
+          finish({ action: selected === 'yes' ? 'process' : 'skip' });
         } else if (event.key === 'Escape') {
           event.preventDefault();
-          finish(false);
+          finish({ action: 'skip' });
         }
       });
       (document.body || document.documentElement).appendChild(overlay);
+      updateDictionaryCount();
+      renderDecisionActions();
       window.setTimeout(() => select('no'), 0);
     });
+  }
+
+  async function collectReestrDzWriteOffBatch(run) {
+    const candidates = Array.isArray(run && run.candidates) ? run.candidates : [];
+    const batchStart = Math.max(0, Number.parseInt(String(run && run.nextIndex || 0), 10) || 0);
+    if (batchStart >= candidates.length) return [];
+    const page = Math.max(1, Number.parseInt(String(candidates[batchStart].page || 1), 10) || 1);
+    const workerLimit = normalizeReestrDzParallelWorkers(run.parallelWorkers);
+    const preparedResults = ensureReestrDzPreparedResults(run);
+    let rules = await getReestrDzWriteOffCommentSkipRules();
+    const batchCandidates = [];
+    let activeCount = 0;
+    let index = batchStart;
+
+    while (index < candidates.length && activeCount < workerLimit) {
+      await waitForReestrDzWriteOffResume(run);
+      const candidate = candidates[index];
+      const candidatePage = Math.max(1, Number.parseInt(String(candidate && candidate.page || 1), 10) || 1);
+      if (candidatePage !== page) break;
+      batchCandidates.push(candidate);
+      const key = String(candidate.id);
+      const prepared = preparedResults[key];
+      if (isReestrDzWriteOffExcludedClaimant(candidate.cell)) {
+        index += 1;
+        continue;
+      }
+      if (prepared && prepared.success === true && prepared.value && prepared.value.kind === 'skip_comment') {
+        index += 1;
+        continue;
+      }
+      const note = normalizeReestrDzText(candidate.cell && candidate.cell.Note);
+      const matchedRule = note ? findReestrDzWriteOffCommentSkipRule(note, rules) : '';
+      if (matchedRule) {
+        preparedResults[key] = {
+          success: true,
+          value: { kind: 'skip_comment', actionable: false, skipReason: 'dictionary', rule: matchedRule }
+        };
+        run.current = candidate;
+        run.stage = `Строка № ${candidate.id} пропущена по правилу «${matchedRule}». Добираю группу…`;
+        syncReestrDzWriteOffProgressOverlay(run);
+        index += 1;
+        continue;
+      }
+      if (prepared) {
+        activeCount += 1;
+        index += 1;
+        continue;
+      }
+      if (!note) {
+        activeCount += 1;
+        index += 1;
+        continue;
+      }
+
+      await showReestrDzWriteOffCandidate(run, candidate, false);
+      run.stage = `Строка № ${candidate.id} уже содержит комментарий. Ожидаю решение до открытия WSS…`;
+      syncReestrDzWriteOffProgressOverlay(run);
+      const decision = await confirmReestrDzWriteOffCommentedCandidate(candidate, {
+        position: index + 1,
+        total: candidates.length
+      });
+      rules = await getReestrDzWriteOffCommentSkipRules();
+      if (!decision || decision.action !== 'process') {
+        preparedResults[key] = {
+          success: true,
+          value: {
+            kind: 'skip_comment',
+            actionable: false,
+            skipReason: decision && decision.action === 'rule' ? 'rule_saved' : 'manual',
+            rule: decision && decision.rule || ''
+          }
+        };
+        index += 1;
+        continue;
+      }
+      activeCount += 1;
+      index += 1;
+    }
+    return batchCandidates;
   }
 
   async function runReestrDzWriteOffCheck(run) {
@@ -4810,26 +5215,10 @@
       while (run.nextIndex < run.candidates.length) {
         await waitForReestrDzWriteOffResume(run);
         const batchStart = run.nextIndex;
-        const configuredEnd = getReestrDzParallelBatchEnd(run, batchStart);
-        const rememberedEnd = Math.min(configuredEnd, Number(run.preparedThroughIndex) || 0);
-        const batchEnd = rememberedEnd > batchStart ? rememberedEnd : configuredEnd;
-        const batchCandidates = run.candidates.slice(batchStart, batchEnd);
+        const batchCandidates = await collectReestrDzWriteOffBatch(run);
+        const batchEnd = batchStart + batchCandidates.length;
         run.preparedThroughIndex = batchEnd;
         const preparedResults = ensureReestrDzPreparedResults(run);
-
-        for (const candidate of batchCandidates) {
-          const key = String(candidate.id);
-          if (Object.prototype.hasOwnProperty.call(preparedResults, key) || isReestrDzWriteOffExcludedClaimant(candidate.cell)) continue;
-          if (normalizeReestrDzText(candidate.cell && candidate.cell.Note)) {
-            run.current = candidate;
-            run.stage = `Строка № ${candidate.id} уже содержит комментарий. Ожидаю подтверждение до открытия WSS…`;
-            syncReestrDzWriteOffProgressOverlay(run);
-            const shouldProcess = await confirmReestrDzWriteOffCommentedCandidate(candidate);
-            if (!shouldProcess) {
-              preparedResults[key] = { success: true, value: { kind: 'skip_comment', actionable: false } };
-            }
-          }
-        }
 
         run.current = null;
         run.currentReview = null;
@@ -4883,12 +5272,18 @@
             continue;
           }
           if (prepared && prepared.success === true && prepared.value && prepared.value.kind === 'skip_comment') {
+            const skipReason = normalizeReestrDzText(prepared.value.skipReason);
+            const rule = normalizeReestrDzText(prepared.value.rule);
             run.results.push({
               id: candidate.id,
               cell: { ...candidate.cell },
               review: null,
-              result: 'Пропущено по комментарию',
-              description: 'Пользователь отказался от повторной обработки строки с заполненным комментарием.',
+              result: skipReason === 'dictionary' ? 'Пропущено по словарю' : 'Пропущено по комментарию',
+              description: skipReason === 'dictionary'
+                ? `Комментарий содержит правило автопропуска «${rule}».`
+                : skipReason === 'rule_saved'
+                  ? `Строка пропущена; сохранено правило автопропуска «${rule}».`
+                  : 'Пользователь отказался от повторной обработки строки с заполненным комментарием.',
               skipped: true,
               informationWritten: false,
               error: false

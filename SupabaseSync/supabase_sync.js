@@ -65,7 +65,8 @@
     'dup_execution_analysis_state_v1',
     'dup_id_card_check_state_v1',
     'dup_epgu_retry_excluded_claimants_v1',
-    'dup_reestr_dz_parallel_workers_v1'
+    'dup_reestr_dz_parallel_workers_v1',
+    'dup_reestr_dz_write_off_comment_skip_rules_v1'
   ]);
 
   const SUPPORT_REMINDER_OPERATION_TYPES = new Set([
@@ -79,7 +80,8 @@
     'dup_execution_analysis_params_v1',
     'dup_execution_analysis_state_v1',
     'dup_id_card_check_state_v1',
-    'dup_reestr_dz_parallel_workers_v1'
+    'dup_reestr_dz_parallel_workers_v1',
+    'dup_reestr_dz_write_off_comment_skip_rules_v1'
   ]);
 
   const STRUCTURED_SYNC_KEYS = new Set([
