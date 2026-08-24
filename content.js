@@ -2893,6 +2893,7 @@
       .dup-wo-actions button[data-action="verify-decision"] { margin-left: auto; border-color: #b13a34; background: #d9534f; color: #fff; }
       .dup-wo-actions button[data-action="cancel-skip"] { margin-left: auto; border-color: #286090; background: #337ab7; color: #fff; }
       .dup-wo-actions button[data-action="save-comment"] { border-color: #2b7d46; background: #36975a; color: #fff; }
+      .dup-wo-actions button[data-action="save-mismatch-comment"] { margin-left: auto; border-color: #2b7d46; background: #36975a; color: #fff; }
       @keyframes dupWoCommentReveal { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
       .dup-wo-actions button[data-action="report"] { margin-left: auto; border-color: #3c763d; background: #4f8a52; color: #fff; }
       .dup-wo-actions button[disabled] { opacity: .45; cursor: default; }
@@ -4726,7 +4727,21 @@
     const outgoingNumber = normalizeReestrDzText(outgoingLinks[0].text);
     const gridOutgoing = normalizeReestrDzText(candidate && candidate.cell && candidate.cell.PrincipalNumber);
     if (gridOutgoing && outgoingNumber !== gridOutgoing) {
-      throw new Error(`Исходящий в поручении (${outgoingNumber}) не совпадает со строкой грида (${gridOutgoing}).`);
+      const outgoingMismatchMessage = `Исходящий в поручении (${outgoingNumber}) не совпадает со строкой грида (${gridOutgoing}).`;
+      return {
+        outgoingNumber,
+        gridOutgoingNumber: gridOutgoing,
+        setsCount: '',
+        writeOffAmount: '',
+        responsibleName: '',
+        decision: '',
+        decisionDate: '',
+        documents: [],
+        notFound: false,
+        requiresOutgoingMismatchComment: true,
+        outgoingMismatchMessage,
+        suggestedComment: outgoingMismatchMessage
+      };
     }
     const setsCount = normalizeReestrDzText(documentData && documentData.setsCount);
     const writeOffAmount = normalizeReestrDzText(documentData && documentData.writeOffAmount);
@@ -4946,6 +4961,58 @@
     const review = inspection.review;
     run.currentReview = review;
     await persistReestrDzWriteOffRun(run);
+    if (review.requiresOutgoingMismatchComment) {
+      updateReestrDzWriteOffStage(run, `Открываю поручение ${candidate.cell.RequestNumber} для проверки несовпадения исходящих…`);
+      const opened = await sendRuntimeMessage({
+        action: 'REESTR_DZ_WRITE_OFF_OPEN_REVIEW',
+        data: {
+          reviewType: 'outgoing_mismatch',
+          rowId: candidate.id,
+          depid: run.department && run.department.depid || '',
+          progressText: `${run.currentIndex + 1} / ${run.candidates.length}`,
+          requestNumber: candidate.cell.RequestNumber,
+          outgoingNumber: review.outgoingNumber,
+          gridOutgoingNumber: review.gridOutgoingNumber,
+          errorMessage: review.outgoingMismatchMessage,
+          suggestedComment: review.suggestedComment,
+          documents: [{
+            type: 'request',
+            label: 'Поручение',
+            text: candidate.cell.RequestNumber,
+            href: requestDocument.url
+          }]
+        }
+      });
+      if (!opened || opened.success === false) {
+        throw new Error(`Не удалось открыть поручение для проверки исходящих: ${opened && opened.error || 'нет ответа'}.`);
+      }
+      const verification = await waitForReestrDzWriteOffReview(run);
+      if (verification.mode !== 'comment' || !normalizeReestrDzText(verification.comment)) {
+        throw new Error('Комментарий о несовпадении исходящих не был сохранён.');
+      }
+      let live = await loadReestrDzRowById(run.gridState, candidate.id, run.controller.signal);
+      let cell = live && live.cell ? { ...candidate.cell, ...live.cell } : { ...candidate.cell };
+      const originalCell = { ...cell };
+      candidate._writeOffBaselineCell = originalCell;
+      updateReestrDzWriteOffStage(run, `Сохраняю комментарий о несовпадении исходящих строки № ${candidate.id}…`);
+      cell = await saveReestrDzWriteOffComment(run, candidate, cell, verification.comment, { matchMode: 'block' });
+      cell = await applyReestrDzCancellationComments(
+        run, candidate, cell, requestDocument, saveReestrDzWriteOffComment
+      );
+      const informationWritten = didReestrDzWriteOffInformationChange(originalCell, cell);
+      candidate._informationWritten = candidate._informationWritten === true || informationWritten;
+      return {
+        cell,
+        review,
+        fields: { orderDate: '', orderNumber: '' },
+        result: informationWritten ? 'Несовпадение исходящих — комментарий сохранён' : 'Несовпадение исходящих — комментарий уже был',
+        description: informationWritten
+          ? 'Комментарий о несовпадении исходящего в поручении и гриде сохранён; приказ не изменялся.'
+          : 'Такой комментарий о несовпадении исходящих уже содержался в строке; приказ не изменялся.',
+        skipped: true,
+        informationWritten: candidate._informationWritten === true
+      };
+    }
     if (review.requiresDecisionConfirmation) {
       await waitForReestrDzWriteOffDecisionVerification(run, review);
       updateReestrDzWriteOffStage(run, `Открываю поручение ${candidate.cell.RequestNumber} для ручной проверки решения…`);
@@ -6003,6 +6070,125 @@
     }
   }
 
+  function renderReestrDzWriteOffOutgoingMismatchOverlay(session) {
+    const data = session.data || {};
+    const overlay = document.createElement('section');
+    overlay.id = REESTR_DZ_WRITE_OFF_OVERLAY_ID;
+    overlay.className = 'dup-reestr-dz-principal-ui';
+    overlay.dataset.state = 'error';
+    if (session.position && Number.isFinite(Number(session.position.left)) && Number.isFinite(Number(session.position.top))) {
+      overlay.style.left = `${Number(session.position.left)}px`;
+      overlay.style.top = `${Number(session.position.top)}px`;
+      overlay.style.right = 'auto';
+    }
+    overlay.innerHTML = `
+      <div class="dup-wo-head"><div><strong>Несовпадение исходящих</strong><small>Реестр № <span data-role="row-id">—</span> · <span data-role="progress">—</span></small></div><button type="button" class="dup-wo-close" data-action="close" aria-label="Остановить проверку">×</button></div>
+      <div class="dup-wo-body">
+        <div class="dup-wo-mismatch" data-role="mismatch"></div>
+        <dl class="dup-wo-grid">
+          <dt>Поручение</dt><dd data-role="request">—</dd>
+          <dt>Исходящий в поручении</dt><dd class="dup-wo-decision" data-role="request-outgoing">—</dd>
+          <dt>Исходящий в гриде</dt><dd class="dup-wo-decision" data-role="grid-outgoing">—</dd>
+        </dl>
+        <div class="dup-wo-comment-mode">
+          <label for="dup-wo-outgoing-mismatch-comment">Комментарий к реестру</label>
+          <textarea id="dup-wo-outgoing-mismatch-comment" name="skipComment"></textarea>
+          <div class="dup-wo-comment-hint">Комментарий сохранится штатной формой Пирамиды, приказ не изменится. Ctrl+Enter — сохранить и перейти дальше.</div>
+        </div>
+        <div class="dup-wo-error" data-role="error"></div>
+        <div class="dup-wo-actions">
+          <button type="button" data-action="pause">${session.paused ? 'Продолжить' : 'Пауза'}</button>
+          <button type="button" data-action="save-mismatch-comment" ${session.paused ? 'disabled' : ''}>Сохранить и дальше</button>
+        </div>
+      </div>`;
+    const set = (role, value) => {
+      const element = overlay.querySelector(`[data-role="${role}"]`);
+      if (element instanceof HTMLElement) element.textContent = normalizeReestrDzText(value) || '—';
+    };
+    set('row-id', data.rowId);
+    set('progress', data.progressText);
+    set('mismatch', data.errorMessage);
+    set('request', data.requestNumber);
+    set('request-outgoing', data.outgoingNumber);
+    set('grid-outgoing', data.gridOutgoingNumber);
+    const commentInput = overlay.querySelector('[name="skipComment"]');
+    const errorElement = overlay.querySelector('[data-role="error"]');
+    if (commentInput instanceof HTMLTextAreaElement) {
+      commentInput.value = String(session.fields && session.fields.comment || data.suggestedComment || data.errorMessage || '').trim();
+    }
+    const persist = () => {
+      const fields = { orderDate: '', orderNumber: '', comment: commentInput instanceof HTMLTextAreaElement ? commentInput.value : '' };
+      persistReestrDzWriteOffDraft(session, fields);
+      return sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_UPDATE_REVIEW', data: { mode: 'comment', fields } });
+    };
+    const finish = async () => {
+      const comment = String(commentInput instanceof HTMLTextAreaElement ? commentInput.value : '').trim();
+      if (!normalizeReestrDzText(comment)) {
+        if (errorElement instanceof HTMLElement) errorElement.textContent = 'Комментарий не может быть пустым.';
+        commentInput?.focus();
+        return;
+      }
+      if (errorElement instanceof HTMLElement) errorElement.textContent = '';
+      const response = await sendRuntimeMessage({
+        action: 'REESTR_DZ_WRITE_OFF_FINISH_REVIEW',
+        data: { mode: 'comment', fields: { orderDate: '', orderNumber: '', comment } }
+      });
+      if (!response || response.success === false) {
+        if (errorElement instanceof HTMLElement) errorElement.textContent = 'Не удалось передать комментарий в Пирамиду.';
+      } else {
+        clearReestrDzWriteOffDraft();
+      }
+    };
+    commentInput?.addEventListener('input', () => {
+      if (errorElement instanceof HTMLElement) errorElement.textContent = '';
+      void persist();
+    });
+    commentInput?.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && event.ctrlKey) {
+        event.preventDefault();
+        void finish();
+      }
+    });
+    overlay.addEventListener('click', (event) => {
+      const button = event.target instanceof Element ? event.target.closest('[data-action]') : null;
+      if (!(button instanceof HTMLButtonElement)) return;
+      if (button.dataset.action === 'save-mismatch-comment') void finish();
+      if (button.dataset.action === 'pause') {
+        const paused = !reestrDzWriteOffReviewState.paused;
+        reestrDzWriteOffReviewState.paused = paused;
+        button.textContent = paused ? 'Продолжить' : 'Пауза';
+        const saveButton = overlay.querySelector('[data-action="save-mismatch-comment"]');
+        if (saveButton instanceof HTMLButtonElement) saveButton.disabled = paused;
+        void sendRuntimeMessage({
+          action: 'REESTR_DZ_WRITE_OFF_UPDATE_REVIEW',
+          data: {
+            paused,
+            mode: 'comment',
+            fields: { orderDate: '', orderNumber: '', comment: commentInput && commentInput.value || '' }
+          }
+        });
+      }
+      if (button.dataset.action === 'close' && window.confirm('Остановить проверку списания и вернуться в Пирамиду?')) {
+        clearReestrDzWriteOffDraft();
+        void sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_STOP_REVIEW' });
+      }
+    });
+    makeReestrDzWriteOffOverlayDraggable(overlay, (position) => {
+      session.position = position;
+      reestrDzWriteOffReviewState.position = position;
+      persistReestrDzWriteOffDraft(session, { orderDate: '', orderNumber: '', comment: commentInput && commentInput.value || '' });
+      void sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_UPDATE_REVIEW', data: { position } });
+    });
+    (document.body || document.documentElement).appendChild(overlay);
+    highlightReestrDzWriteOffText(data.outgoingNumber, '', [data.gridOutgoingNumber]);
+    window.setTimeout(() => {
+      if (commentInput instanceof HTMLTextAreaElement) {
+        commentInput.focus();
+        commentInput.setSelectionRange(commentInput.value.length, commentInput.value.length);
+      }
+    }, 0);
+  }
+
   function renderReestrDzWriteOffDecisionMismatchOverlay(session) {
     const data = session.data || {};
     const overlay = document.createElement('section');
@@ -6147,6 +6333,10 @@
     document.getElementById(REESTR_DZ_WRITE_OFF_OVERLAY_ID)?.remove();
     reestrDzWriteOffReviewState = session;
     const data = session.data || {};
+    if (data.reviewType === 'outgoing_mismatch') {
+      renderReestrDzWriteOffOutgoingMismatchOverlay(session);
+      return;
+    }
     if (data.reviewType === 'decision_mismatch') {
       renderReestrDzWriteOffDecisionMismatchOverlay(session);
       return;
@@ -6596,9 +6786,10 @@
       String(draft.depid || '') === String(response.session.data && response.session.data.depid || '') &&
       String(draft.rowId || '') === String(response.session.data && response.session.data.rowId || '')) {
       response.session.fields = cloneReestrDzPrincipalStorageValue(draft.fields, response.session.fields || {});
-      response.session.mode = response.session.data && response.session.data.reviewType === 'decision_mismatch'
+      const reviewType = response.session.data && response.session.data.reviewType;
+      response.session.mode = reviewType === 'decision_mismatch'
         ? (draft.mode === 'decision_skip' ? 'decision_skip' : 'decision_confirm')
-        : (draft.mode === 'comment' ? 'comment' : 'order');
+        : reviewType === 'outgoing_mismatch' ? 'comment' : (draft.mode === 'comment' ? 'comment' : 'order');
       if (draft.position && typeof draft.position === 'object') response.session.position = cloneReestrDzPrincipalStorageValue(draft.position, null);
       void sendRuntimeMessage({
         action: 'REESTR_DZ_WRITE_OFF_UPDATE_REVIEW',

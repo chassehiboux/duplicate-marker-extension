@@ -2477,13 +2477,15 @@ async function openReestrDzWriteOffReview(sourceTab, rawData) {
         reviewTabId,
         status: 'reviewing',
         paused: false,
-        mode: data.reviewType === 'decision_mismatch' ? 'decision_confirm' : 'order',
+        mode: data.reviewType === 'decision_mismatch'
+            ? 'decision_confirm'
+            : data.reviewType === 'outgoing_mismatch' ? 'comment' : 'order',
         completionMode: '',
         currentDocumentIndex: 0,
         fields: {
             orderDate: '',
             orderNumber: '',
-            comment: String(data.suggestedDecisionText || data.decision || '').trim()
+            comment: String(data.suggestedComment || data.suggestedDecisionText || data.decision || '').trim()
         },
         position: null,
         attachmentsByUrl: {},
