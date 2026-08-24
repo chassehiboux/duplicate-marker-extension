@@ -2335,6 +2335,56 @@ async function closeReestrDzWriteOffReview(sourceTabId, activateSource = false) 
     return true;
 }
 
+async function openReestrDzWriteOffPdfViewer(sourceTabId, session, currentReviewTab, targetUrl, fileName) {
+    if (!Number.isInteger(sourceTabId) || !session || !isReestrDzWssDocsUrl(targetUrl)) {
+        throw new Error('INVALID_WRITE_OFF_PDF_URL');
+    }
+    const normalizedFileName = String(fileName || '').trim();
+    if (!/\.pdf$/i.test(normalizedFileName) && !/\.pdf(?:$|[?#])/i.test(targetUrl)) {
+        throw new Error('WRITE_OFF_ATTACHMENT_IS_NOT_PDF');
+    }
+    const oldReviewTabId = session.reviewTabId;
+    const createProperties = {
+        url: 'about:blank',
+        active: true,
+        openerTabId: sourceTabId
+    };
+    if (currentReviewTab && Number.isInteger(currentReviewTab.windowId)) createProperties.windowId = currentReviewTab.windowId;
+    if (currentReviewTab && currentReviewTab.cookieStoreId) createProperties.cookieStoreId = currentReviewTab.cookieStoreId;
+
+    let viewerTab;
+    try {
+        viewerTab = await createTabAsync(createProperties);
+    } catch (error) {
+        delete createProperties.cookieStoreId;
+        viewerTab = await createTabAsync(createProperties);
+    }
+    const viewerTabId = viewerTab && Number.isInteger(viewerTab.id) ? viewerTab.id : null;
+    if (!Number.isInteger(viewerTabId)) throw new Error('NO_WRITE_OFF_PDF_VIEWER_TAB');
+
+    const viewerUrl = chrome.runtime.getURL('reestr_dz_pdf_viewer.html') + '#' + new URLSearchParams({
+        url: targetUrl,
+        name: normalizedFileName || 'Документ.pdf'
+    }).toString();
+    reestrDzWriteOffReviewSources.delete(oldReviewTabId);
+    reestrDzWriteOffReviewSources.set(viewerTabId, sourceTabId);
+    session.reviewTabId = viewerTabId;
+    session.updatedAt = Date.now();
+    try {
+        await updateTabAsync(viewerTabId, { url: viewerUrl, active: true });
+    } catch (error) {
+        reestrDzWriteOffReviewSources.delete(viewerTabId);
+        session.reviewTabId = oldReviewTabId;
+        if (Number.isInteger(oldReviewTabId)) reestrDzWriteOffReviewSources.set(oldReviewTabId, sourceTabId);
+        await removeTabAsync(viewerTabId).catch(() => null);
+        throw error;
+    }
+    if (Number.isInteger(oldReviewTabId) && oldReviewTabId !== viewerTabId) {
+        setTimeout(() => removeTabAsync(oldReviewTabId).catch(() => null), 180);
+    }
+    return { success: true, reviewTabId: viewerTabId };
+}
+
 async function openReestrDzWriteOffReview(sourceTab, rawData) {
     const sourceTabId = sourceTab && Number.isInteger(sourceTab.id) ? sourceTab.id : null;
     if (!Number.isInteger(sourceTabId)) throw new Error('NO_SOURCE_TAB');
@@ -2414,18 +2464,31 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         case 'REESTR_DZ_SET_GRID_PAGE': {
             const tabId = sender && sender.tab && Number.isInteger(sender.tab.id) ? sender.tab.id : null;
             const page = Math.max(1, Number.parseInt(String(request.data && request.data.page || 1), 10) || 1);
+            const forcePager = request.data && request.data.forcePager === true;
             if (!Number.isInteger(tabId)) {
                 sendResponse({ success: false, error: 'NO_SOURCE_TAB' });
                 return false;
             }
-            executeScriptInTabAsync(tabId, (targetPage) => {
+            executeScriptInTabAsync(tabId, (targetPage, usePager) => {
                 if (!(window.jQuery && window.jQuery.fn && window.jQuery.fn.jqGrid)) {
                     return { success: false, error: 'JQGRID_UNAVAILABLE' };
                 }
                 const grid = window.jQuery('#list');
-                grid.jqGrid('setGridParam', { page: targetPage }).trigger('reloadGrid');
-                return { success: true, page: targetPage };
-            }, [page], { world: 'MAIN' }).then(sendResponse).catch((error) => {
+                if (!grid.length) return { success: false, error: 'GRID_UNAVAILABLE' };
+                if (usePager) {
+                    const pagerInput = window.jQuery('#pager .ui-pg-input, .ui-jqgrid-pager .ui-pg-input').first();
+                    if (!pagerInput.length) return { success: false, error: 'GRID_PAGER_UNAVAILABLE' };
+                    pagerInput.val(String(targetPage));
+                    const enterEvent = window.jQuery.Event('keydown');
+                    enterEvent.which = 13;
+                    enterEvent.keyCode = 13;
+                    pagerInput.trigger(enterEvent);
+                    return { success: true, page: targetPage, method: 'pager' };
+                }
+                grid.jqGrid('setGridParam', { page: targetPage });
+                grid.trigger('reloadGrid', [{ page: targetPage }]);
+                return { success: true, page: targetPage, method: 'reloadGrid' };
+            }, [page, forcePager], { world: 'MAIN' }).then(sendResponse).catch((error) => {
                 sendResponse({ success: false, error: error && error.message ? error.message : String(error) });
             });
             return true;
@@ -2541,6 +2604,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             const documentIndex = Number.parseInt(String(request.data && request.data.documentIndex), 10);
             if (Number.isInteger(documentIndex) && documentIndex >= 0) session.currentDocumentIndex = documentIndex;
             session.updatedAt = Date.now();
+            if (request.data && request.data.pdfAttachment === true) {
+                openReestrDzWriteOffPdfViewer(
+                    sourceTabId,
+                    session,
+                    sender && sender.tab,
+                    targetUrl,
+                    request.data && request.data.fileName
+                )
+                    .then(sendResponse)
+                    .catch((error) => sendResponse({ success: false, error: error && error.message ? error.message : String(error) }));
+                return true;
+            }
             updateTabAsync(reviewTabId, { url: targetUrl, active: true })
                 .then(() => sendResponse({ success: true }))
                 .catch((error) => sendResponse({ success: false, error: error && error.message ? error.message : String(error) }));

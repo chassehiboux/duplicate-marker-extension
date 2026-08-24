@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Просмотр PDF · Проверка списания</title>
+  <link rel="stylesheet" href="reestr_dz_pdf_viewer.css">
+  <script defer src="extension_ui_config.js"></script>
+  <script defer src="content.js"></script>
+  <script defer src="reestr_dz_pdf_viewer.js"></script>
+</head>
+<body>
+  <main class="pdf-stage">
+    <iframe class="pdf-frame" data-role="pdf-frame" title="PDF-вложение" hidden></iframe>
+    <section class="pdf-status" data-role="status" aria-live="polite">
+      <div class="pdf-spinner" data-role="spinner" aria-hidden="true"></div>
+      <div class="pdf-kicker">Проверка списания</div>
+      <h1 data-role="file-name">PDF-вложение</h1>
+      <p data-role="message">Получаю документ из WSS…</p>
+      <button type="button" data-action="retry" hidden>Повторить</button>
+    </section>
+  </main>
+</body>
+</html>

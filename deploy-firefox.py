@@ -38,6 +38,9 @@ ROOT_FILES = [
     'id_card_check_nav_bootstrap.js',
     'popup.html',
     'popup.js',
+    'reestr_dz_pdf_viewer.css',
+    'reestr_dz_pdf_viewer.html',
+    'reestr_dz_pdf_viewer.js',
     'version.json',
 ]
 

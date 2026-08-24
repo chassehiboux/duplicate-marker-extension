@@ -583,6 +583,7 @@
         html.dup-ui-hide-reestr-dz-principal-autofill #${REESTR_DZ_CHECK_MENU_ID},
         html.dup-ui-hide-reestr-dz-principal-autofill #${REESTR_DZ_WRITE_OFF_OVERLAY_ID},
         html.dup-ui-hide-reestr-dz-principal-autofill #${REESTR_DZ_WRITE_OFF_COMMENT_CONFIRM_ID},
+        html.dup-ui-hide-reestr-dz-principal-autofill .pdf-status,
         html.dup-ui-hide-reestr-dz-principal-autofill .${REESTR_DZ_WRITE_OFF_HIGHLIGHT_CLASS},
         html.dup-ui-hide-reestr-dz-principal-autofill .${REESTR_DZ_PRINCIPAL_CURRENT_ROW_CLASS},
         html.dup-ui-hide-reestr-dz-principal-autofill .${REESTR_DZ_PRINCIPAL_ATTENTION_ROW_CLASS} {
@@ -2815,6 +2816,7 @@
       .dup-wo-reference-title { margin-bottom: 6px; color: #526776; font: 650 9px/1 Bahnschrift, "Segoe UI", sans-serif; letter-spacing: .045em; text-transform: uppercase; }
       .dup-wo-amounts { display: grid; grid-template-columns: 1fr 1fr; gap: 5px 9px; }
       .dup-wo-amount { display: flex; justify-content: space-between; gap: 7px; min-width: 0; font-size: 10px; }
+      .dup-wo-amount[data-amount-info="total"] { grid-column: 1 / -1; padding-bottom: 5px; border-bottom: 1px solid #d5dde2; }
       .dup-wo-amount span { color: #71808a; }
       .dup-wo-amount strong { color: #243947; font-weight: 650; white-space: nowrap; }
       .dup-wo-docs, .dup-wo-files { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
@@ -3127,6 +3129,23 @@
     return run && Array.isArray(run.activeBatchCandidates) ? run.activeBatchCandidates : [];
   }
 
+  async function waitForReestrDzActiveBatchRows(page, candidates, timeoutMs = 20000) {
+    const rowIds = (Array.isArray(candidates) ? candidates : []).map((candidate) => String(candidate && candidate.id || ''));
+    const startedAt = Date.now();
+    let stableChecks = 0;
+    while (Date.now() - startedAt < timeoutMs) {
+      const pageInput = document.querySelector('#pager .ui-pg-input, .ui-jqgrid-pager .ui-pg-input');
+      const currentPage = Math.max(1, Number.parseInt(pageInput && pageInput.value || '1', 10) || 1);
+      const rows = rowIds.map((rowId) => findReestrDzPrincipalRow(rowId));
+      const ready = currentPage === page && !isReestrDzGridLoading() &&
+        rows.length === rowIds.length && rows.every((row) => row instanceof HTMLElement && row.isConnected);
+      stableChecks = ready ? stableChecks + 1 : 0;
+      if (stableChecks >= 3) return rows;
+      await new Promise((resolve) => window.setTimeout(resolve, 180));
+    }
+    return null;
+  }
+
   async function showReestrDzActiveBatch(run, candidates, waitForResume, sync, label) {
     const activeCandidates = (Array.isArray(candidates) ? candidates : [])
       .filter((candidate) => candidate && candidate.id && !isReestrDzWriteOffExcludedClaimant(candidate.cell));
@@ -3151,13 +3170,19 @@
       const pageInput = document.querySelector('#pager .ui-pg-input, .ui-jqgrid-pager .ui-pg-input');
       const currentPage = Math.max(1, Number.parseInt(pageInput && pageInput.value || '1', 10) || 1);
       if (currentPage !== page) await setReestrDzGridPage(page);
-      const firstRow = await waitForReestrDzGridReady(pageCandidates[0].id);
+      let visibleRows = await waitForReestrDzActiveBatchRows(page, pageCandidates, currentPage === page ? 3500 : 20000);
+      if (!visibleRows) {
+        run.stage = `${label}: повторно загружаю страницу ${page} и жду строки группы…`;
+        sync(run);
+        await setReestrDzGridPage(page, true);
+        visibleRows = await waitForReestrDzActiveBatchRows(page, pageCandidates, 25000);
+      }
       clearReestrDzPrincipalRowHighlight();
-      const visibleRows = pageCandidates.map((candidate) => findReestrDzPrincipalRow(candidate.id));
-      if (!(firstRow instanceof HTMLElement) || visibleRows.some((row) => !(row instanceof HTMLElement))) {
+      if (!visibleRows) {
         throw new Error(`Не удалось показать все активные строки группы на странице ${page}.`);
       }
       visibleRows.forEach((row) => row.classList.add(REESTR_DZ_PRINCIPAL_CURRENT_ROW_CLASS));
+      const firstRow = visibleRows[0];
       firstRow.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' });
       await new Promise((resolve) => window.setTimeout(resolve, 650));
     }
@@ -3279,8 +3304,8 @@
       : null;
   }
 
-  async function setReestrDzGridPage(page) {
-    const response = await sendRuntimeMessage({ action: 'REESTR_DZ_SET_GRID_PAGE', data: { page } });
+  async function setReestrDzGridPage(page, forcePager = false) {
+    const response = await sendRuntimeMessage({ action: 'REESTR_DZ_SET_GRID_PAGE', data: { page, forcePager } });
     if (response && response.success) return true;
     const input = document.querySelector('#pager .ui-pg-input, .ui-jqgrid-pager .ui-pg-input');
     if (!(input instanceof HTMLInputElement)) return false;
@@ -5779,8 +5804,8 @@
 
   function collectReestrDzWriteOffAttachments() {
     const unique = new Map();
-    const fileNamePattern = /\.(?:pdf|docx?|xlsx?|xls|rtf|tiff?|jpe?g|png)$/i;
-    const fileUrlPattern = /\.(?:pdf|docx?|xlsx?|xls|rtf|tiff?|jpe?g|png)(?:$|[?#])/i;
+    const fileNamePattern = /\.pdf$/i;
+    const fileUrlPattern = /\.pdf(?:$|[?#])/i;
     document.querySelectorAll('a[href]').forEach((anchor) => {
       if (anchor.closest(`#${REESTR_DZ_WRITE_OFF_OVERLAY_ID}`)) return;
       const href = String(anchor.href || '').trim();
@@ -5847,7 +5872,7 @@
     });
   }
 
-  async function navigateReestrDzWriteOffReview(url, documentIndex) {
+  async function navigateReestrDzWriteOffReview(url, documentIndex, options = {}) {
     const dateInput = document.querySelector(`#${REESTR_DZ_WRITE_OFF_OVERLAY_ID} [name="orderDate"]`);
     const numberInput = document.querySelector(`#${REESTR_DZ_WRITE_OFF_OVERLAY_ID} [name="orderNumber"]`);
     const commentInput = document.querySelector(`#${REESTR_DZ_WRITE_OFF_OVERLAY_ID} [name="skipComment"]`);
@@ -5862,7 +5887,18 @@
         }
       }
     });
-    await sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_NAVIGATE_REVIEW', data: { url, documentIndex } });
+    const navigationResponse = await sendRuntimeMessage({
+      action: 'REESTR_DZ_WRITE_OFF_NAVIGATE_REVIEW',
+      data: {
+        url,
+        documentIndex,
+        pdfAttachment: options.pdfAttachment === true,
+        fileName: normalizeReestrDzText(options.fileName)
+      }
+    });
+    if (!navigationResponse || navigationResponse.success === false) {
+      window.alert(`Не удалось открыть документ проверки: ${navigationResponse && navigationResponse.error || 'нет ответа расширения'}.`);
+    }
   }
 
   function renderReestrDzWriteOffDecisionMismatchOverlay(session) {
@@ -6017,7 +6053,10 @@
     const currentDocumentIndex = Math.max(0, Number(session.currentDocumentIndex) || 0);
     const currentDocument = documents[currentDocumentIndex] || null;
     const initialMode = session.mode === 'comment' ? 'comment' : 'order';
-    const knownAttachments = Object.values(session.attachmentsByUrl || {}).flat().filter((item) => item && item.href);
+    const knownAttachments = Object.values(session.attachmentsByUrl || {}).flat().filter((item) => {
+      if (!item || !item.href) return false;
+      return /\.pdf$/i.test(normalizeReestrDzText(item.text)) || /\.pdf(?:$|[?#])/i.test(String(item.href));
+    });
     const fileMap = new Map(knownAttachments.map((item) => [item.href, item]));
     const overlay = document.createElement('section');
     overlay.id = REESTR_DZ_WRITE_OFF_OVERLAY_ID;
@@ -6043,6 +6082,7 @@
         <div class="dup-wo-reference" data-role="amount-reference" hidden>
           <div class="dup-wo-reference-title">Состав суммы списания</div>
           <div class="dup-wo-amounts">
+            <div class="dup-wo-amount" data-amount-info="total" hidden><span>Общая сумма</span><strong data-role="total-amount"></strong></div>
             <div class="dup-wo-amount" data-amount-info="basic" hidden><span>Основной долг</span><strong data-role="basic-debt"></strong></div>
             <div class="dup-wo-amount" data-amount-info="fee" hidden><span>Госпошлина</span><strong data-role="state-fee"></strong></div>
             <div class="dup-wo-amount" data-amount-info="penalty" hidden><span>Пени</span><strong data-role="penalty"></strong></div>
@@ -6082,6 +6122,7 @@
     showReferenceValue('[data-order-info="date"]', data.requestOrderDate);
     showReferenceValue('[data-order-info="number"]', data.requestOrderNumber);
     const hasAmountDetails = [
+      ['total', 'total-amount', data.writeOffAmount],
       ['basic', 'basic-debt', data.basicDebtAmount],
       ['fee', 'state-fee', data.stateFeeAmount],
       ['penalty', 'penalty', data.penaltyAmount],
@@ -6120,7 +6161,10 @@
           const button = document.createElement('button');
           button.type = 'button';
           button.textContent = `📎 ${item.text || 'Файл'}`;
-          button.addEventListener('click', () => void navigateReestrDzWriteOffReview(item.href, currentDocumentIndex));
+          button.addEventListener('click', () => void navigateReestrDzWriteOffReview(item.href, currentDocumentIndex, {
+            pdfAttachment: true,
+            fileName: item.text
+          }));
           filesHost.appendChild(button);
         });
         filesHost.hidden = !fileMap.size;
@@ -9634,6 +9678,7 @@
       html.${SCREENSHOT_MODE_CLASS} #${REESTR_DZ_CHECK_MENU_ID},
       html.${SCREENSHOT_MODE_CLASS} #${REESTR_DZ_WRITE_OFF_OVERLAY_ID},
       html.${SCREENSHOT_MODE_CLASS} #${REESTR_DZ_WRITE_OFF_COMMENT_CONFIRM_ID},
+      html.${SCREENSHOT_MODE_CLASS} .pdf-status,
       html.${SCREENSHOT_MODE_CLASS} .${REESTR_DZ_WRITE_OFF_HIGHLIGHT_CLASS},
       html.${SCREENSHOT_MODE_CLASS} .${REESTR_DZ_PRINCIPAL_CURRENT_ROW_CLASS},
       html.${SCREENSHOT_MODE_CLASS} .${REESTR_DZ_PRINCIPAL_ATTENTION_ROW_CLASS},
