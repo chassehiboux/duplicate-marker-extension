@@ -2818,7 +2818,7 @@
       .dup-wo-grid { display: grid; grid-template-columns: 104px 1fr; gap: 5px 8px; align-items: baseline; font-size: 11px; }
       .dup-wo-grid dt { color: #73818c; }
       .dup-wo-grid dd { min-width: 0; margin: 0; color: #1f2f3c; font-weight: 600; overflow-wrap: anywhere; }
-      .dup-wo-decision { color: #8b5a09 !important; }
+      .dup-wo-decision, .dup-wo-accent-value { color: #8b5a09 !important; }
       .dup-wo-reference { margin-top: 9px; padding: 8px 9px; border: 1px solid #d5dde2; border-radius: 3px; background: #f4f7f8; }
       .dup-wo-reference-title { margin-bottom: 6px; color: #526776; font: 650 9px/1 Bahnschrift, "Segoe UI", sans-serif; letter-spacing: .045em; text-transform: uppercase; }
       .dup-wo-amounts { display: grid; grid-template-columns: 1fr 1fr; gap: 5px 9px; }
@@ -6162,8 +6162,8 @@
           <dt>Исходящий</dt><dd>${data.outgoingNumber || '—'}</dd>
           <dt>Комплектов</dt><dd>${data.setsCount || '—'}</dd>
           <dt>Сумма</dt><dd>${data.writeOffAmount || '—'}</dd>
-          <dt data-order-info="date" hidden>Дата приказа в СДЗ</dt><dd data-order-info="date" data-role="request-order-date" hidden></dd>
-          <dt data-order-info="number" hidden>Номер приказа в СДЗ</dt><dd data-order-info="number" data-role="request-order-number" hidden></dd>
+          <dt data-order-info="date" hidden>Дата приказа в СДЗ</dt><dd class="dup-wo-accent-value" data-order-info="date" data-role="request-order-date" hidden></dd>
+          <dt data-order-info="number" hidden>Номер приказа в СДЗ</dt><dd class="dup-wo-accent-value" data-order-info="number" data-role="request-order-number" hidden></dd>
           <dt>Решение</dt><dd class="dup-wo-decision">${data.decision || '—'}</dd>
           <dt>Документ</dt><dd>${currentDocument ? `${currentDocument.label}: ${currentDocument.text}` : document.title}</dd>
         </dl>
