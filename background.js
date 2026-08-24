@@ -2377,9 +2377,16 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 grid.jqGrid('setSelection', String(targetRowId), true);
                 const selected = grid.jqGrid('getGridParam', 'selarrrow') || [];
                 const checkbox = row.querySelector('input.cbox[type="checkbox"]');
+                const checkedRows = Array.from(document.querySelectorAll('#list tr.jqgrow input.cbox[type="checkbox"]:checked'));
+                const selectedIds = selected.map(String);
                 return {
-                    success: selected.map(String).includes(String(targetRowId)) && !!(checkbox && checkbox.checked),
-                    selected: selected.map(String)
+                    success: selectedIds.length === 1 &&
+                        selectedIds[0] === String(targetRowId) &&
+                        checkedRows.length === 1 &&
+                        checkedRows[0] === checkbox &&
+                        !!checkbox.checked,
+                    selected: selectedIds,
+                    checkedCount: checkedRows.length
                 };
             }, [rowId], { world: 'MAIN' }).then(sendResponse).catch((error) => {
                 sendResponse({ success: false, error: error && error.message ? error.message : String(error) });

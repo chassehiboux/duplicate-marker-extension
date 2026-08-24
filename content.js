@@ -2911,6 +2911,8 @@
     const stats = getReestrDzPrincipalStats(run);
     const total = Array.isArray(run.candidates) ? run.candidates.length : 0;
     const current = run.current || null;
+    const activeBatch = getReestrDzActiveBatchCandidates(run);
+    const activeBatchLabel = activeBatch.map((candidate) => `№ ${candidate.id}`).join(', ');
     const progress = total ? Math.min(100, Math.round((stats.processed / total) * 100)) : 0;
     let state = 'running';
     let badge = 'Работа';
@@ -2925,10 +2927,12 @@
       if (element instanceof HTMLElement) element.textContent = String(value);
     };
     setText('badge', badge);
-    setText('number', current ? `№ ${current.id}` : '—');
+    setText('number', current ? `№ ${current.id}` : activeBatch.length ? activeBatchLabel : '—');
     setText('meta', current
       ? `${current.cell.RequestNumber || 'Поручение не указано'} · страница ${current.page} из ${run.gridState.lastpage || 1} · WSS ×${normalizeReestrDzParallelWorkers(run.parallelWorkers)}`
-      : `${run.metaText || 'Собираю строки грида'} · WSS ×${normalizeReestrDzParallelWorkers(run.parallelWorkers)}`);
+      : activeBatch.length
+        ? `Активная группа · страница ${run.activeBatchPage || '—'} из ${run.gridState.lastpage || 1} · WSS ×${normalizeReestrDzParallelWorkers(run.parallelWorkers)}`
+        : `${run.metaText || 'Собираю строки грида'} · WSS ×${normalizeReestrDzParallelWorkers(run.parallelWorkers)}`);
     setText('stage', run.stage || 'Подготовка запуска…');
     setText('processed', `${stats.processed}/${total}`);
     setText('found', stats.found);
@@ -3019,6 +3023,46 @@
     });
   }
 
+  function getReestrDzActiveBatchCandidates(run) {
+    return run && Array.isArray(run.activeBatchCandidates) ? run.activeBatchCandidates : [];
+  }
+
+  async function showReestrDzActiveBatch(run, candidates, waitForResume, sync, label) {
+    const activeCandidates = (Array.isArray(candidates) ? candidates : [])
+      .filter((candidate) => candidate && candidate.id && !isReestrDzWriteOffExcludedClaimant(candidate.cell));
+    run.activeBatchCandidates = activeCandidates;
+    run.activeBatchPage = null;
+    sync(run);
+    if (!activeCandidates.length) return;
+
+    const byPage = new Map();
+    activeCandidates.forEach((candidate) => {
+      const page = Math.max(1, Number.parseInt(String(candidate.page || 1), 10) || 1);
+      if (!byPage.has(page)) byPage.set(page, []);
+      byPage.get(page).push(candidate);
+    });
+
+    for (const [page, pageCandidates] of byPage.entries()) {
+      await waitForResume(run);
+      run.current = null;
+      run.activeBatchPage = page;
+      run.stage = `${label}: показываю строки № ${pageCandidates.map((candidate) => candidate.id).join(', ')} на странице ${page}…`;
+      sync(run);
+      const pageInput = document.querySelector('#pager .ui-pg-input, .ui-jqgrid-pager .ui-pg-input');
+      const currentPage = Math.max(1, Number.parseInt(pageInput && pageInput.value || '1', 10) || 1);
+      if (currentPage !== page) await setReestrDzGridPage(page);
+      const firstRow = await waitForReestrDzGridReady(pageCandidates[0].id);
+      clearReestrDzPrincipalRowHighlight();
+      const visibleRows = pageCandidates.map((candidate) => findReestrDzPrincipalRow(candidate.id));
+      if (!(firstRow instanceof HTMLElement) || visibleRows.some((row) => !(row instanceof HTMLElement))) {
+        throw new Error(`Не удалось показать все активные строки группы на странице ${page}.`);
+      }
+      visibleRows.forEach((row) => row.classList.add(REESTR_DZ_PRINCIPAL_CURRENT_ROW_CLASS));
+      firstRow.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' });
+      await new Promise((resolve) => window.setTimeout(resolve, 650));
+    }
+  }
+
   async function selectReestrDzPrincipalGridRow(row, candidate) {
     const startedAt = Date.now();
     let currentRow = row;
@@ -3032,7 +3076,12 @@
             data: { rowId: candidate.id }
           });
           await new Promise((resolve) => window.setTimeout(resolve, 120));
-          if (response && response.success === true && targetCheckbox.checked && currentRow.isConnected) {
+          const selectedIds = response && Array.isArray(response.selected) ? response.selected.map(String) : [];
+          const checkedRows = Array.from(document.querySelectorAll('#list tr.jqgrow input.cbox[type="checkbox"]:checked'));
+          if (response && response.success === true &&
+              selectedIds.length === 1 && selectedIds[0] === String(candidate.id) &&
+              checkedRows.length === 1 && checkedRows[0] === targetCheckbox &&
+              targetCheckbox.checked && currentRow.isConnected) {
             return currentRow;
           }
         }
@@ -3418,6 +3467,20 @@
     return candidates.map((candidate) => preparedResults[String(candidate.id)]);
   }
 
+  function getReestrDzParallelBatchEnd(run, batchStart) {
+    const candidates = run && Array.isArray(run.candidates) ? run.candidates : [];
+    if (batchStart >= candidates.length) return candidates.length;
+    const limit = Math.min(candidates.length, batchStart + normalizeReestrDzParallelWorkers(run.parallelWorkers));
+    const page = Math.max(1, Number.parseInt(String(candidates[batchStart] && candidates[batchStart].page || 1), 10) || 1);
+    let batchEnd = batchStart;
+    while (batchEnd < limit) {
+      const candidatePage = Math.max(1, Number.parseInt(String(candidates[batchEnd] && candidates[batchEnd].page || 1), 10) || 1);
+      if (candidatePage !== page) break;
+      batchEnd += 1;
+    }
+    return Math.max(batchStart + 1, batchEnd);
+  }
+
   async function inspectReestrDzPrincipalCandidate(run, candidate, workerKey) {
     if (isReestrDzWriteOffExcludedClaimant(candidate.cell)) {
       return { kind: 'excluded', workerKey, actionable: false };
@@ -3451,6 +3514,7 @@
     let inspection = preparedInspection;
     while (true) {
       await waitForReestrDzPrincipalResume(run);
+      await showReestrDzPrincipalCandidate(run, candidate, false);
       updateReestrDzPrincipalStage(run, `Проверяю текущее состояние строки № ${candidate.id}…`);
       const liveRow = await loadReestrDzRowById(run.gridState, candidate.id, run.controller.signal);
       const liveCell = liveRow && liveRow.cell ? liveRow.cell : candidate.cell;
@@ -3528,7 +3592,6 @@
       const attachment = inspection.attachment || parseReestrDzPrincipalAttachment(requestDocument);
       const outgoing = inspection.outgoing;
       if (!outgoing) throw new Error(`Не подготовлены сведения исходящего для строки № ${candidate.id}.`);
-      await showReestrDzPrincipalCandidate(run, candidate, false);
       const savedCell = await saveReestrDzPrincipalInfo(run, candidate, outgoing);
       let enrichedCell = await applyReestrDzPrincipalAttachment(run, candidate, savedCell, outgoing.date, attachment);
       enrichedCell = await applyReestrDzCancellationComments(
@@ -3707,13 +3770,13 @@
       while (run.nextIndex < run.candidates.length) {
         await waitForReestrDzPrincipalResume(run);
         const batchStart = run.nextIndex;
-        const configuredEnd = Math.min(run.candidates.length, batchStart + normalizeReestrDzParallelWorkers(run.parallelWorkers));
-        const rememberedEnd = Math.min(run.candidates.length, Number(run.preparedThroughIndex) || 0);
+        const configuredEnd = getReestrDzParallelBatchEnd(run, batchStart);
+        const rememberedEnd = Math.min(configuredEnd, Number(run.preparedThroughIndex) || 0);
         const batchEnd = rememberedEnd > batchStart ? rememberedEnd : configuredEnd;
         const batchCandidates = run.candidates.slice(batchStart, batchEnd);
         run.preparedThroughIndex = batchEnd;
         run.current = null;
-        const preparedBatch = await prepareReestrDzParallelBatch(
+        const preparationPromise = prepareReestrDzParallelBatch(
           run,
           batchCandidates,
           inspectReestrDzPrincipalCandidate,
@@ -3721,7 +3784,23 @@
           syncReestrDzPrincipalOverlay,
           'Параллельно проверяю WSS'
         );
+        const activeBatchCandidates = batchCandidates.filter((candidate) => !isReestrDzWriteOffExcludedClaimant(candidate.cell));
+        const [preparationResult, visualizationResult] = await Promise.allSettled([
+          preparationPromise,
+          showReestrDzActiveBatch(
+            run,
+            activeBatchCandidates,
+            waitForReestrDzPrincipalResume,
+            syncReestrDzPrincipalOverlay,
+            'Активная группа'
+          )
+        ]);
+        if (preparationResult.status === 'rejected') throw preparationResult.reason;
+        if (visualizationResult.status === 'rejected') throw visualizationResult.reason;
+        const preparedBatch = preparationResult.value;
         run.parallelProgress = null;
+        run.activeBatchCandidates = [];
+        run.activeBatchPage = null;
         run.stage = `Проверка группы завершена. Обрабатываю ${batchCandidates.length} строк по порядку грида…`;
         syncReestrDzPrincipalOverlay(run);
 
@@ -4285,6 +4364,7 @@
     overlay.dataset.state = run.status === 'error' ? 'error' : run.status === 'completed' ? 'completed' : 'running';
     const results = Array.isArray(run.results) ? run.results : [];
     const total = Array.isArray(run.candidates) ? run.candidates.length : 0;
+    const activeBatch = getReestrDzActiveBatchCandidates(run);
     const set = (role, value) => {
       const element = overlay.querySelector(`[data-role="${role}"]`);
       if (element instanceof HTMLElement) element.textContent = String(value);
@@ -4295,7 +4375,11 @@
         ? 'Завершено'
         : `Департамент ${run.department && run.department.depid || '—'} · WSS ×${normalizeReestrDzParallelWorkers(run.parallelWorkers)}`);
     set('stage', run.stage || 'Подготовка…');
-    set('row', run.current ? `№ ${run.current.id} · ${run.current.cell.RequestNumber || 'без поручения'}` : '—');
+    set('row', run.current
+      ? `№ ${run.current.id} · ${run.current.cell.RequestNumber || 'без поручения'}`
+      : activeBatch.length
+        ? `${activeBatch.map((candidate) => `№ ${candidate.id}`).join(', ')} · страница ${run.activeBatchPage || '—'}`
+        : '—');
     set('progress', `${results.length} / ${total}`);
     set('saved', results.filter((item) => item && !item.error).length);
     set('problems', results.filter((item) => item && item.error).length);
@@ -4542,12 +4626,12 @@
       };
     }
     updateReestrDzWriteOffStage(run, `Открываю поручение ${candidate.cell.RequestNumber}…`);
+    await showReestrDzWriteOffCandidate(run, candidate, false);
     const inspection = preparedInspection || await inspectReestrDzWriteOffCandidate(run, candidate, 'default');
     const requestDocument = inspection.requestDocument;
     const review = inspection.review;
     run.currentReview = review;
     await persistReestrDzWriteOffRun(run);
-    if (inspection.actionable) await showReestrDzWriteOffCandidate(run, candidate, false);
     if (review.notFound && !getReestrDzCancellationComments(requestDocument).length) {
       updateReestrDzWriteOffStage(run, `По строке № ${candidate.id} решение и документы не найдены. Перехожу дальше…`);
       return {
@@ -4726,8 +4810,8 @@
       while (run.nextIndex < run.candidates.length) {
         await waitForReestrDzWriteOffResume(run);
         const batchStart = run.nextIndex;
-        const configuredEnd = Math.min(run.candidates.length, batchStart + normalizeReestrDzParallelWorkers(run.parallelWorkers));
-        const rememberedEnd = Math.min(run.candidates.length, Number(run.preparedThroughIndex) || 0);
+        const configuredEnd = getReestrDzParallelBatchEnd(run, batchStart);
+        const rememberedEnd = Math.min(configuredEnd, Number(run.preparedThroughIndex) || 0);
         const batchEnd = rememberedEnd > batchStart ? rememberedEnd : configuredEnd;
         const batchCandidates = run.candidates.slice(batchStart, batchEnd);
         run.preparedThroughIndex = batchEnd;
@@ -4749,7 +4833,7 @@
 
         run.current = null;
         run.currentReview = null;
-        const preparedBatch = await prepareReestrDzParallelBatch(
+        const preparationPromise = prepareReestrDzParallelBatch(
           run,
           batchCandidates,
           inspectReestrDzWriteOffCandidate,
@@ -4757,7 +4841,27 @@
           syncReestrDzWriteOffProgressOverlay,
           'Параллельно проверяю поручения WSS'
         );
+        const activeBatchCandidates = batchCandidates.filter((candidate) => {
+          if (isReestrDzWriteOffExcludedClaimant(candidate.cell)) return false;
+          const prepared = preparedResults[String(candidate.id)];
+          return !(prepared && prepared.success === true && prepared.value && prepared.value.kind === 'skip_comment');
+        });
+        const [preparationResult, visualizationResult] = await Promise.allSettled([
+          preparationPromise,
+          showReestrDzActiveBatch(
+            run,
+            activeBatchCandidates,
+            waitForReestrDzWriteOffResume,
+            syncReestrDzWriteOffProgressOverlay,
+            'Активная группа'
+          )
+        ]);
+        if (preparationResult.status === 'rejected') throw preparationResult.reason;
+        if (visualizationResult.status === 'rejected') throw visualizationResult.reason;
+        const preparedBatch = preparationResult.value;
         run.parallelProgress = null;
+        run.activeBatchCandidates = [];
+        run.activeBatchPage = null;
         run.stage = `Проверка группы завершена. Обрабатываю ${batchCandidates.length} строк по порядку грида…`;
         syncReestrDzWriteOffProgressOverlay(run);
 
