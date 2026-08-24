@@ -2885,6 +2885,9 @@
       .dup-wo-substitute { margin-top: 10px; padding: 8px 9px; border: 1px solid #e2c685; border-radius: 3px; background: #fffaf0; color: #5f481a; font-size: 10px; line-height: 1.4; }
       .dup-wo-substitute select { box-sizing: border-box; width: 100%; height: 30px; margin-top: 6px; padding: 4px 7px; border: 1px solid #bda76e; border-radius: 3px; background: #fff; color: #344b5d; font: 11px/1.2 "Segoe UI", sans-serif; }
       .dup-wo-substitute select:focus { border-color: #c58218; outline: 0; box-shadow: 0 0 0 2px rgba(197,130,24,.15); }
+      .dup-wo-substitute textarea { box-sizing: border-box; width: 100%; min-height: 68px; margin-top: 6px; padding: 6px 7px; resize: vertical; border: 1px solid #bda76e; border-radius: 3px; background: #fff; color: #344b5d; font: 11px/1.35 "Segoe UI", sans-serif; }
+      .dup-wo-substitute textarea:focus { border-color: #c58218; outline: 0; box-shadow: 0 0 0 2px rgba(197,130,24,.15); }
+      .dup-wo-substitute-comment-label { display: block; margin-top: 10px; }
       .dup-wo-substitute small { display: block; margin-top: 5px; color: #7c6a4a; font-size: 9px; }
       .dup-wo-actions button[data-action="confirm-decision"] { margin-left: auto; border-color: #2b7d46; background: #36975a; color: #fff; }
       .dup-wo-actions button[data-action="finish-decision-skip"] { border-color: #2b7d46; background: #36975a; color: #fff; }
@@ -4684,6 +4687,9 @@
               <option value="Задолженность списана частично">Задолженность списана частично</option>
             </select>
             <small>Выбор появился только после завершения проверки входящего/другого документа.</small>
+            <strong class="dup-wo-substitute-comment-label">Дополнительный комментарий</strong>
+            <textarea name="additionalDecisionComment" aria-label="Дополнительный комментарий" placeholder="Необязательно: дополните выбранное решение"></textarea>
+            <small>Текст будет добавлен в комментарий к реестру после выбранного решения. Ctrl+Enter — продолжить.</small>
           </div>
           <div class="dup-wo-error" data-role="error"></div>
           <div class="dup-wo-confirm-actions">
@@ -4692,6 +4698,7 @@
         </div>`;
       overlay.appendChild(card);
       const select = card.querySelector('[name="confirmedDecision"]');
+      const commentInput = card.querySelector('[name="additionalDecisionComment"]');
       const finishButton = card.querySelector('[data-action="finish"]');
       const errorElement = card.querySelector('[data-role="error"]');
       let settled = false;
@@ -4712,7 +4719,10 @@
         if (settled) return;
         settled = true;
         cleanup();
-        resolve(decision);
+        resolve({
+          decision,
+          comment: commentInput instanceof HTMLTextAreaElement ? String(commentInput.value || '').trim() : ''
+        });
       };
       const abort = () => {
         if (settled) return;
@@ -4728,6 +4738,12 @@
       });
       select?.addEventListener('keydown', (event) => {
         if (event.key === 'Enter') {
+          event.preventDefault();
+          commentInput?.focus();
+        }
+      });
+      commentInput?.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' && event.ctrlKey) {
           event.preventDefault();
           complete();
         }
@@ -5237,11 +5253,24 @@
     if (!opened || opened.success === false) throw new Error(`Не удалось открыть документы: ${opened && opened.error || 'нет ответа'}.`);
     const fields = await waitForReestrDzWriteOffReview(run);
     const decisionSelectedAfterReview = review.requiresDecisionSelectionAfterReview === true;
+    let selectedDecisionComment = '';
     if (decisionSelectedAfterReview) {
-      review.decision = await chooseReestrDzWriteOffDecisionAfterDocumentReview(run, candidate);
+      const selected = await chooseReestrDzWriteOffDecisionAfterDocumentReview(run, candidate);
+      review.decision = normalizeReestrDzText(selected && selected.decision);
+      selectedDecisionComment = String(selected && selected.comment || '').trim();
       review.decisionText = review.decision;
       review.requiresDecisionSelectionAfterReview = false;
     }
+    const saveSelectedDecisionComment = async () => {
+      const normalizedComment = normalizeReestrDzText(selectedDecisionComment);
+      if (!normalizedComment || normalizedComment === normalizeReestrDzText(review.decision)) return;
+      const beforeAdditionalComment = cell;
+      cell = await saveReestrDzWriteOffComment(
+        run, candidate, cell, selectedDecisionComment, { matchMode: 'block' }
+      );
+      candidate._informationWritten = candidate._informationWritten === true
+        || didReestrDzWriteOffInformationChange(beforeAdditionalComment, cell);
+    };
     if (review.decision === 'Отказ в списании') {
       updateReestrDzWriteOffStage(run, `Сохраняю подтверждённый отказ в комментарии строки № ${candidate.id}…`);
       const beforeDecision = cell;
@@ -5253,6 +5282,7 @@
         cell = await saveReestrDzWriteOffComment(run, candidate, cell, manualComment, { matchMode: 'block' });
         candidate._informationWritten = candidate._informationWritten === true || didReestrDzWriteOffInformationChange(beforeManualComment, cell);
       }
+      await saveSelectedDecisionComment();
       const beforeCancellation = cell;
       cell = await applyReestrDzCancellationComments(
         run, candidate, cell, requestDocument, saveReestrDzWriteOffComment
@@ -5278,6 +5308,7 @@
       const beforeComment = cell;
       cell = await saveReestrDzWriteOffComment(run, candidate, cell, comment, { matchMode: 'block' });
       candidate._informationWritten = candidate._informationWritten === true || didReestrDzWriteOffInformationChange(beforeComment, cell);
+      await saveSelectedDecisionComment();
       const beforeCancellation = cell;
       cell = await applyReestrDzCancellationComments(
         run, candidate, cell, requestDocument, saveReestrDzWriteOffComment
@@ -5304,6 +5335,7 @@
     const beforeOrder = cell;
     cell = await saveReestrDzWriteOffOrder(run, candidate, cell, { orderDate, orderNumber });
     candidate._informationWritten = candidate._informationWritten === true || didReestrDzWriteOffInformationChange(beforeOrder, cell);
+    await saveSelectedDecisionComment();
     const beforeCancellation = cell;
     cell = await applyReestrDzCancellationComments(
       run, candidate, cell, requestDocument, saveReestrDzWriteOffComment
