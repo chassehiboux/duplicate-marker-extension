@@ -2375,7 +2375,7 @@ async function openReestrDzWriteOffAttachmentViewer(sourceTabId, session, curren
         url: targetUrl,
         name: normalizedFileName || (normalizedType === 'archive' ? 'Архив' : 'Документ.pdf'),
         mode: normalizedType,
-        cacheKey: `${sourceTabId}:${documentCacheKey}`
+        cacheKey: `${String(session.data && session.data.depid || '')}:${documentCacheKey}`
     }).toString();
     reestrDzWriteOffReviewSources.delete(oldReviewTabId);
     reestrDzWriteOffReviewSources.set(viewerTabId, sourceTabId);
@@ -2396,13 +2396,56 @@ async function openReestrDzWriteOffAttachmentViewer(sourceTabId, session, curren
     return { success: true, reviewTabId: viewerTabId };
 }
 
-function clearReestrDzWriteOffArchiveCache() {
-    if (typeof indexedDB === 'undefined') return Promise.resolve(false);
+function getReestrDzArchiveLocalDateKey(value = new Date()) {
+    const year = value.getFullYear();
+    const month = String(value.getMonth() + 1).padStart(2, '0');
+    const day = String(value.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+}
+
+function pruneReestrDzWriteOffArchiveCache() {
+    if (typeof indexedDB === 'undefined') return Promise.resolve(0);
+    const today = getReestrDzArchiveLocalDateKey();
     return new Promise((resolve) => {
-        const request = indexedDB.deleteDatabase('dupReestrDzWriteOffArchiveCache');
-        request.onsuccess = () => resolve(true);
-        request.onerror = () => resolve(false);
-        request.onblocked = () => resolve(false);
+        const request = indexedDB.open('dupReestrDzWriteOffArchiveCache', 1);
+        request.onupgradeneeded = () => {
+            const database = request.result;
+            if (!database.objectStoreNames.contains('archives')) {
+                database.createObjectStore('archives', { keyPath: 'key' });
+            }
+        };
+        request.onerror = () => resolve(0);
+        request.onsuccess = () => {
+            const database = request.result;
+            let removed = 0;
+            let settled = false;
+            const finish = () => {
+                if (settled) return;
+                settled = true;
+                database.close();
+                resolve(removed);
+            };
+            let transaction;
+            try {
+                transaction = database.transaction('archives', 'readwrite');
+                const cursorRequest = transaction.objectStore('archives').openCursor();
+                cursorRequest.onsuccess = () => {
+                    const cursor = cursorRequest.result;
+                    if (!cursor) return;
+                    if (String(cursor.value && cursor.value.dateKey || '') !== today) {
+                        cursor.delete();
+                        removed += 1;
+                    }
+                    cursor.continue();
+                };
+                cursorRequest.onerror = finish;
+                transaction.oncomplete = finish;
+                transaction.onerror = finish;
+                transaction.onabort = finish;
+            } catch (error) {
+                finish();
+            }
+        };
     });
 }
 
@@ -2584,9 +2627,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             return false;
         }
 
-        case 'REESTR_DZ_WRITE_OFF_CLEAR_ARCHIVE_CACHE': {
-            clearReestrDzWriteOffArchiveCache()
-                .then((cleared) => sendResponse({ success: true, cleared }))
+        case 'REESTR_DZ_WRITE_OFF_PRUNE_ARCHIVE_CACHE': {
+            pruneReestrDzWriteOffArchiveCache()
+                .then((removed) => sendResponse({ success: true, removed }))
                 .catch((error) => sendResponse({ success: false, error: error && error.message ? error.message : String(error) }));
             return true;
         }

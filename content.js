@@ -5632,7 +5632,6 @@
               clearReestrDzWriteOffDraft();
               await discardReestrDzWriteOffRun(run.department.depid);
               await sendRuntimeMessage({ action: 'REESTR_DZ_CLOSE_WSS_SESSION' }).catch(() => null);
-              await sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_CLEAR_ARCHIVE_CACHE' }).catch(() => null);
               reestrDzWriteOffRun = null;
               document.getElementById(REESTR_DZ_WRITE_OFF_OVERLAY_ID)?.remove();
               return;
@@ -5678,14 +5677,12 @@
       clearReestrDzWriteOffDraft();
       await persistReestrDzWriteOffRun(run);
       await sendRuntimeMessage({ action: 'REESTR_DZ_CLOSE_WSS_SESSION' }).catch(() => null);
-      await sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_CLEAR_ARCHIVE_CACHE' }).catch(() => null);
       syncReestrDzWriteOffProgressOverlay(run);
     } catch (error) {
       if (error && (error.name === 'AbortError' || error.code === 'WRITE_OFF_CANCELLED')) {
         clearReestrDzWriteOffDraft();
         await discardReestrDzWriteOffRun(run.department.depid);
         await sendRuntimeMessage({ action: 'REESTR_DZ_CLOSE_WSS_SESSION' }).catch(() => null);
-        await sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_CLEAR_ARCHIVE_CACHE' }).catch(() => null);
         reestrDzWriteOffRun = null;
         document.getElementById(REESTR_DZ_WRITE_OFF_OVERLAY_ID)?.remove();
         return;
@@ -5715,6 +5712,7 @@
     }
     setReestrDzPrincipalLaunchButtonDisabled(true);
     const department = getReestrDzCurrentDepartment();
+    await sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_PRUNE_ARCHIVE_CACHE' }).catch(() => null);
     let daily = await getReestrDzWriteOffDepartment(department.depid);
     if (daily.activeRun) {
       const saved = daily.activeRun;
@@ -5740,7 +5738,6 @@
       setReestrDzPrincipalLaunchButtonDisabled(false);
       return;
     }
-    await sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_CLEAR_ARCHIVE_CACHE' }).catch(() => null);
     const processed = new Set(Object.keys(daily.processed && typeof daily.processed === 'object' ? daily.processed : {}));
     const run = {
       status: 'preparing', paused: false, pauseReason: '', resumeWaiters: [], controller: new AbortController(),

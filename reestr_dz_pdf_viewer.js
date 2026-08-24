@@ -221,13 +221,23 @@
     });
   }
 
+  function getArchiveLocalDateKey(value = new Date()) {
+    const year = value.getFullYear();
+    const month = String(value.getMonth() + 1).padStart(2, '0');
+    const day = String(value.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
   async function readCachedArchive() {
     if (!documentCacheKey) return null;
     const database = await openArchiveCache();
     try {
       return await new Promise((resolve, reject) => {
         const request = database.transaction('archives', 'readonly').objectStore('archives').get(archiveCacheKey);
-        request.onsuccess = () => resolve(request.result || null);
+        request.onsuccess = () => {
+          const record = request.result || null;
+          resolve(record && record.dateKey === getArchiveLocalDateKey() ? record : null);
+        };
         request.onerror = () => reject(request.error || new Error('Не удалось прочитать кэш архива.'));
       });
     } finally {
@@ -241,7 +251,12 @@
     try {
       await new Promise((resolve, reject) => {
         const transaction = database.transaction('archives', 'readwrite');
-        transaction.objectStore('archives').put({ key: archiveCacheKey, pdfs, updatedAt: Date.now() });
+        transaction.objectStore('archives').put({
+          key: archiveCacheKey,
+          dateKey: getArchiveLocalDateKey(),
+          pdfs,
+          updatedAt: Date.now()
+        });
         transaction.oncomplete = () => resolve();
         transaction.onerror = () => reject(transaction.error || new Error('Не удалось сохранить кэш архива.'));
         transaction.onabort = () => reject(transaction.error || new Error('Сохранение кэша архива отменено.'));
