@@ -2071,17 +2071,19 @@ async function loadReestrDzWssDataInWorker(sourceTab, url, kind, expectedNumber)
                     if (!responsibleName || !historyTable) {
                         return { ...base, success: false, pending: true, error: 'WSS_REQUEST_AUDIT_DATA_LOADING' };
                     }
-                    const allowedDecisions = new Set([
+                    const allowedDecisions = [
+                        'Задолженность списана частично',
                         'Задолженность списана',
-                        'Отказ в списании',
-                        'Задолженность списана частично'
-                    ]);
+                        'Отказ в списании'
+                    ];
                     const writeOffDecisions = Array.from(historyTable.querySelectorAll('tr')).map((row) => {
                         const cells = Array.from(row.cells || []).map(readVisibleText);
-                        if (cells.length < 2 || !allowedDecisions.has(cells[1])) return null;
+                        if (cells.length < 2) return null;
+                        const decision = allowedDecisions.find((value) => cells[1] === value || cells[1].startsWith(`${value} `));
+                        if (!decision) return null;
                         const match = cells[0].match(/^(\d{2}\.\d{2}\.\d{4})\s+(\d{2}:\d{2})\s+(.+)$/);
                         if (!match) return null;
-                        return { date: match[1], time: match[2], user: normalize(match[3]), decision: cells[1] };
+                        return { date: match[1], time: match[2], user: normalize(match[3]), decision };
                     }).filter(Boolean);
                     return {
                         ...base,

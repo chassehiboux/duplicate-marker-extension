@@ -4148,11 +4148,7 @@
     if (!setsCount) throw new Error('В поручении не найдено значение «Количество комплектов».');
     if (!writeOffAmount) throw new Error('В поручении не найдена «Сумма списания задолженности».');
     const responsibleName = normalizeReestrDzText(documentData && documentData.responsibleName);
-    const decisions = (documentData && Array.isArray(documentData.writeOffDecisions) ? documentData.writeOffDecisions : [])
-      .filter((item) => normalizeReestrDzText(item && item.user).localeCompare(responsibleName, 'ru', { sensitivity: 'base' }) === 0 && REESTR_DZ_WRITE_OFF_DECISIONS.includes(normalizeReestrDzText(item && item.decision)));
     if (!responsibleName) throw new Error('Не найден ответственный за отражение списания в биллинговом ПК.');
-    if (!decisions.length) throw new Error(`Не найдено решение о списании ответственного ${responsibleName}.`);
-    if (decisions.length > 1) throw new Error(`Найдено несколько решений о списании ответственного ${responsibleName}; требуется ручная проверка.`);
     const documents = [];
     const appendDocuments = (items, type, label) => {
       (Array.isArray(items) ? items : []).forEach((item, index) => {
@@ -4164,6 +4160,27 @@
     };
     appendDocuments(documentData && documentData.incomingLinks, 'incoming', 'Входящий');
     appendDocuments(documentData && documentData.otherLinks, 'other', 'Другой документ');
+    const decisions = (documentData && Array.isArray(documentData.writeOffDecisions) ? documentData.writeOffDecisions : [])
+      .filter((item) => normalizeReestrDzText(item && item.user).localeCompare(responsibleName, 'ru', { sensitivity: 'base' }) === 0 && REESTR_DZ_WRITE_OFF_DECISIONS.includes(normalizeReestrDzText(item && item.decision)));
+    if (decisions.length > 1) throw new Error(`Найдено несколько решений о списании ответственного ${responsibleName}; требуется ручная проверка.`);
+    if (!decisions.length && !documents.length) {
+      return {
+        outgoingNumber,
+        setsCount,
+        writeOffAmount,
+        responsibleName,
+        decision: '',
+        decisionDate: '',
+        documents,
+        notFound: true
+      };
+    }
+    if (!decisions.length) {
+      throw new Error(`Найдены входящие или другие документы, но не найдено решение о списании ответственного ${responsibleName}.`);
+    }
+    if (!documents.length) {
+      throw new Error(`Найдено решение «${normalizeReestrDzText(decisions[0].decision)}» ответственного ${responsibleName}, но не найдены входящие или другие документы.`);
+    }
     return {
       outgoingNumber,
       setsCount,
@@ -4171,7 +4188,8 @@
       responsibleName,
       decision: normalizeReestrDzText(decisions[0].decision),
       decisionDate: normalizeReestrDzText(decisions[0].date),
-      documents
+      documents,
+      notFound: false
     };
   }
 
@@ -4260,12 +4278,20 @@
     await persistReestrDzWriteOffRun(run);
     let live = await loadReestrDzRowById(run.gridState, candidate.id, run.controller.signal);
     let cell = live && live.cell ? { ...candidate.cell, ...live.cell } : { ...candidate.cell };
+    if (review.notFound) {
+      updateReestrDzWriteOffStage(run, `По строке № ${candidate.id} решение и документы не найдены. Перехожу дальше…`);
+      return {
+        cell,
+        review,
+        result: 'Не найдено',
+        description: 'Решение о списании, входящий и другие документы отсутствуют.'
+      };
+    }
     if (review.decision === 'Отказ в списании') {
       updateReestrDzWriteOffStage(run, `Сохраняю отказ в комментарии строки № ${candidate.id}…`);
       cell = await saveReestrDzWriteOffComment(run, candidate, cell, review.decision);
       return { cell, review, result: 'Отказ сохранён' };
     }
-    if (!review.documents.length) throw new Error('Для решения о списании не найдены входящие или другие документы.');
     updateReestrDzWriteOffStage(run, `Открываю ручную проверку документов строки № ${candidate.id}…`);
     const opened = await sendRuntimeMessage({
       action: 'REESTR_DZ_WRITE_OFF_OPEN_REVIEW',
