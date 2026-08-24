@@ -302,7 +302,7 @@
     ['Status', 'Статус'],
     ['CreateDate', 'Дата создания реестра'],
     ['ClaimantName', 'Взыскатель'],
-    ['EDocsCount', 'Количество'],
+    ['EDocsCount', 'Количество ИД без учета солидарных ответчиков'],
     ['EmployeeFullName', 'Исполнитель ОВЗИД'],
     ['RequestDate', 'Дата запуска поручения на списание'],
     ['RequestNumber', 'Номер поручения'],
@@ -3164,23 +3164,31 @@
       sharedStringIndex.set(text, index);
       return index;
     };
+    const countColumnIndex = REESTR_DZ_PRINCIPAL_REPORT_HEADERS.findIndex(([key]) => key === 'EDocsCount');
     const sheetRows = rows.map((row, rowIndex) => {
       const rowNumber = rowIndex + 1;
       const cells = row.map((value, colIndex) => {
         const ref = `${columnIndexToName(colIndex)}${rowNumber}`;
-        const style = rowIndex === 0 ? ' s="1"' : '';
-        return `<c r="${ref}" t="s"${style}><v>${getSharedIndex(value)}</v></c>`;
+        if (rowIndex > 0 && colIndex === countColumnIndex) {
+          const count = Number.parseInt(String(value).replace(/\s+/g, ''), 10);
+          if (Number.isFinite(count)) return `<c r="${ref}" s="3"><v>${count}</v></c>`;
+        }
+        const style = rowIndex === 0 ? 1 : (colIndex === 0 || colIndex === 2 || colIndex === 8 || colIndex === 10 ? 2 : 0);
+        if (value === '' || value === undefined || value === null) return `<c r="${ref}" s="${style}"/>`;
+        return `<c r="${ref}" t="s" s="${style}"><v>${getSharedIndex(value)}</v></c>`;
       }).join('');
-      return `<row r="${rowNumber}">${cells}</row>`;
+      return `<row r="${rowNumber}" ht="${rowIndex === 0 ? 32 : 17}" customHeight="1">${cells}</row>`;
     }).join('');
-    const widths = rows[0].map((_, index) => `<col min="${index + 1}" max="${index + 1}" width="${index === 3 || index === 14 || index === 16 ? 34 : 18}" customWidth="1"/>`).join('');
+    const columnWidths = [8, 15, 12, 27, 16, 20, 16, 22, 14, 23, 14, 22, 17, 28, 25, 17, 38];
+    const widths = rows[0].map((_, index) => `<col min="${index + 1}" max="${index + 1}" width="${columnWidths[index] || 16}" customWidth="1"/>`).join('');
+    const lastColumn = columnIndexToName(rows[0].length - 1);
     const sharedStringsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="${sharedStrings.length}" uniqueCount="${sharedStrings.length}">${sharedStrings.map((value) => `<si><t>${escapeExecutionAnalysisXml(value)}</t></si>`).join('')}</sst>`;
-    const sheetXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><cols>${widths}</cols><sheetData>${sheetRows}</sheetData><autoFilter ref="A1:Q${rows.length}"/></worksheet>`;
+    const sheetXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0" showGridLines="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="17"/><cols>${widths}</cols><sheetData>${sheetRows}</sheetData><autoFilter ref="A1:${lastColumn}${rows.length}"/><pageMargins left="0.25" right="0.25" top="0.5" bottom="0.5" header="0.2" footer="0.2"/><pageSetup orientation="landscape" fitToWidth="1" fitToHeight="0"/></worksheet>`;
     const workbookXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Обработка" sheetId="1" r:id="rId1"/></sheets></workbook>';
     const workbookRels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>';
     const rootRels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>';
     const contentTypes = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>';
-    const styles = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Aptos"/></font><font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Aptos"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF17395F"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="1" borderId="0" xfId="0" applyFont="1" applyFill="1"/></cellXfs></styleSheet>';
+    const styles = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="9"/><color rgb="FF334155"/><name val="Aptos"/></font><font><b/><sz val="9"/><color rgb="FF1E293B"/><name val="Aptos"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE2E8F0"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="2"><border/><border><left/><right/><top/><bottom style="thin"><color rgb="FFCBD5E1"/></bottom><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="4"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyFont="1"><alignment vertical="center"/></xf><xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf><xf numFmtId="3" fontId="0" fillId="0" borderId="0" xfId="0" applyFont="1" applyNumberFormat="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf></cellXfs><cellStyles count="1"><cellStyle name="Обычный" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
     return buildStoredZip([
       { name: '[Content_Types].xml', content: contentTypes },
       { name: '_rels/.rels', content: rootRels },
