@@ -2126,6 +2126,7 @@
       found: false,
       saved: false,
       skipped: true,
+      informationWritten: false,
       error: false
     };
   }
@@ -2739,6 +2740,7 @@
       .dup-wo-actions { display: flex; gap: 6px; margin-top: 9px; }
       .dup-wo-actions button { min-height: 30px; padding: 5px 10px; border: 1px solid #aeb8c1; border-radius: 3px; background: #fff; color: #344b5d; font: 600 11px/1 Bahnschrift, "Segoe UI", sans-serif; cursor: pointer; }
       .dup-wo-actions button[data-action="done"] { margin-left: auto; border-color: #286090; background: #337ab7; color: #fff; }
+      .dup-wo-actions button[data-action="report"] { margin-left: auto; border-color: #3c763d; background: #4f8a52; color: #fff; }
       .dup-wo-actions button[disabled] { opacity: .45; cursor: default; }
       #${REESTR_DZ_WRITE_OFF_COMMENT_CONFIRM_ID} {
         position: fixed;
@@ -3433,13 +3435,12 @@
     }
   }
 
-  function buildReestrDzPrincipalReportRows(run) {
-    const headers = [...REESTR_DZ_PRINCIPAL_REPORT_HEADERS.map((item) => item[1]), 'Результат обработки', 'Описание'];
+  function getSortedReestrDzReportResults(run) {
     const parseSendDate = (value) => {
       const match = normalizeReestrDzText(value).match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
       return match ? Date.UTC(Number(match[3]), Number(match[2]) - 1, Number(match[1])) : Number.NEGATIVE_INFINITY;
     };
-    const sortedResults = (run && Array.isArray(run.results) ? run.results : [])
+    return (run && Array.isArray(run.results) ? run.results : [])
       .map((item, sourceIndex) => ({ item, sourceIndex }))
       .sort((left, right) => {
         const dateDifference = parseSendDate(right.item.cell && right.item.cell.SendDate) - parseSendDate(left.item.cell && left.item.cell.SendDate);
@@ -3449,6 +3450,10 @@
         return claimantDifference || left.sourceIndex - right.sourceIndex;
       })
       .map(({ item }) => item);
+  }
+
+  function buildReestrDzPrincipalReportRows(run, sortedResults = getSortedReestrDzReportResults(run)) {
+    const headers = [...REESTR_DZ_PRINCIPAL_REPORT_HEADERS.map((item) => item[1]), 'Результат обработки', 'Описание'];
     const rows = sortedResults.map((item) => [
       ...REESTR_DZ_PRINCIPAL_REPORT_HEADERS.map(([key]) => normalizeReestrDzText(item.cell && item.cell[key])),
       normalizeReestrDzText(item.result),
@@ -3457,8 +3462,11 @@
     return [headers, ...rows];
   }
 
-  function buildReestrDzPrincipalXlsxBlob(run) {
-    const rows = buildReestrDzPrincipalReportRows(run);
+  function buildReestrDzPrincipalXlsxBlob(run, options = {}) {
+    const sortedResults = getSortedReestrDzReportResults(run);
+    const rows = buildReestrDzPrincipalReportRows(run, sortedResults);
+    const highlightInformationWritten = options.highlightInformationWritten === true;
+    const sheetName = normalizeReestrDzText(options.sheetName) || 'Обработка';
     const sharedStrings = [];
     const sharedStringIndex = new Map();
     const getSharedIndex = (value) => {
@@ -3481,13 +3489,15 @@
     ]);
     const sheetRows = rows.map((row, rowIndex) => {
       const rowNumber = rowIndex + 1;
+      const highlightRow = rowIndex > 0 && highlightInformationWritten && sortedResults[rowIndex - 1] && sortedResults[rowIndex - 1].informationWritten === true;
       const cells = row.map((value, colIndex) => {
         const ref = `${columnIndexToName(colIndex)}${rowNumber}`;
         if (rowIndex > 0 && colIndex === countColumnIndex) {
           const count = Number.parseInt(String(value).replace(/\s+/g, ''), 10);
-          if (Number.isFinite(count)) return `<c r="${ref}" s="3"><v>${count}</v></c>`;
+          if (Number.isFinite(count)) return `<c r="${ref}" s="${highlightRow ? 7 : 3}"><v>${count}</v></c>`;
         }
-        const style = rowIndex === 0 ? 1 : (centeredColumnIndexes.has(colIndex) ? 2 : (wrappedColumnIndexes.has(colIndex) ? 4 : 0));
+        const baseStyle = rowIndex === 0 ? 1 : (centeredColumnIndexes.has(colIndex) ? 2 : (wrappedColumnIndexes.has(colIndex) ? 4 : 0));
+        const style = highlightRow ? ({ 0: 5, 2: 6, 4: 8 }[baseStyle] || 5) : baseStyle;
         if (value === '' || value === undefined || value === null) return `<c r="${ref}" s="${style}"/>`;
         return `<c r="${ref}" t="s" s="${style}"><v>${getSharedIndex(value)}</v></c>`;
       }).join('');
@@ -3499,11 +3509,11 @@
     const lastColumn = columnIndexToName(rows[0].length - 1);
     const sharedStringsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="${sharedStrings.length}" uniqueCount="${sharedStrings.length}">${sharedStrings.map((value) => `<si><t>${escapeExecutionAnalysisXml(value)}</t></si>`).join('')}</sst>`;
     const sheetXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0" showGridLines="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="17"/><cols>${widths}</cols><sheetData>${sheetRows}</sheetData><autoFilter ref="A1:${lastColumn}${rows.length}"/><pageMargins left="0.25" right="0.25" top="0.5" bottom="0.5" header="0.2" footer="0.2"/><pageSetup orientation="landscape" fitToWidth="1" fitToHeight="0"/></worksheet>`;
-    const workbookXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Обработка" sheetId="1" r:id="rId1"/></sheets></workbook>';
+    const workbookXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="${escapeExecutionAnalysisXml(sheetName)}" sheetId="1" r:id="rId1"/></sheets></workbook>`;
     const workbookRels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>';
     const rootRels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>';
     const contentTypes = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>';
-    const styles = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="9"/><color rgb="FF334155"/><name val="Aptos"/></font><font><b/><sz val="9"/><color rgb="FF1E293B"/><name val="Aptos"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE2E8F0"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="2"><border/><border><left/><right/><top/><bottom style="thin"><color rgb="FFCBD5E1"/></bottom><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="5"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyFont="1"><alignment vertical="center"/></xf><xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf><xf numFmtId="3" fontId="0" fillId="0" borderId="0" xfId="0" applyFont="1" applyNumberFormat="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf></cellXfs><cellStyles count="1"><cellStyle name="Обычный" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
+    const styles = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="9"/><color rgb="FF334155"/><name val="Aptos"/></font><font><b/><sz val="9"/><color rgb="FF1E293B"/><name val="Aptos"/></font></fonts><fills count="4"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE2E8F0"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFDFF2E3"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="2"><border/><border><left/><right/><top/><bottom style="thin"><color rgb="FFCBD5E1"/></bottom><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="9"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyFont="1"><alignment vertical="center"/></xf><xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf><xf numFmtId="3" fontId="0" fillId="0" borderId="0" xfId="0" applyFont="1" applyNumberFormat="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="0" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1"><alignment vertical="center"/></xf><xf numFmtId="0" fontId="0" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf><xf numFmtId="3" fontId="0" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1" applyNumberFormat="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf><xf numFmtId="0" fontId="0" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf></cellXfs><cellStyles count="1"><cellStyle name="Обычный" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
     return buildStoredZip([
       { name: '[Content_Types].xml', content: contentTypes },
       { name: '_rels/.rels', content: rootRels },
@@ -3543,9 +3553,8 @@
       .replace(/^_+|_+$/g, '') || 'без-названия';
   }
 
-  function downloadReestrDzPrincipalReport(run) {
+  function downloadReestrDzXlsxReport(run, blob, fileNameSuffix) {
     if (!run || !Array.isArray(run.results) || !run.results.length) return false;
-    const blob = buildReestrDzPrincipalXlsxBlob(run);
     const link = document.createElement('a');
     const objectUrl = URL.createObjectURL(blob);
     const now = new Date();
@@ -3556,7 +3565,7 @@
       stamp,
       sanitizeReestrDzFileNamePart(department.label),
       sanitizeReestrDzFileNamePart(department.depid),
-      'проверка_исходящих_реестров_ДЗ.xlsx'
+      fileNameSuffix
     ].join('_');
     link.style.display = 'none';
     (document.body || document.documentElement).appendChild(link);
@@ -3566,6 +3575,20 @@
       link.remove();
     }, 1000);
     return true;
+  }
+
+  function downloadReestrDzPrincipalReport(run) {
+    if (!run || !Array.isArray(run.results) || !run.results.length) return false;
+    return downloadReestrDzXlsxReport(run, buildReestrDzPrincipalXlsxBlob(run), 'проверка_исходящих_реестров_ДЗ.xlsx');
+  }
+
+  function downloadReestrDzWriteOffReport(run) {
+    if (!run || !Array.isArray(run.results) || !run.results.length) return false;
+    const blob = buildReestrDzPrincipalXlsxBlob(run, {
+      highlightInformationWritten: true,
+      sheetName: 'Проверка списания'
+    });
+    return downloadReestrDzXlsxReport(run, blob, 'проверка_списания_реестров_ДЗ.xlsx');
   }
 
   async function runReestrDzPrincipalAutofill(run) {
@@ -4072,6 +4095,7 @@
         <div class="dup-wo-actions">
           <button type="button" data-action="pause">Пауза</button>
           <button type="button" data-action="resume" disabled>Продолжить</button>
+          <button type="button" data-action="report" hidden>📥 Excel</button>
         </div>
       </div>`;
     overlay.addEventListener('click', (event) => {
@@ -4082,6 +4106,7 @@
         if (reestrDzWriteOffRun.status === 'error') continueReestrDzWriteOffRun(reestrDzWriteOffRun);
         else resumeReestrDzWriteOffRun(reestrDzWriteOffRun);
       }
+      if (button.dataset.action === 'report') downloadReestrDzWriteOffReport(reestrDzWriteOffRun);
       if (button.dataset.action === 'close') {
         if (reestrDzWriteOffRun.status === 'completed') {
           reestrDzWriteOffRun = null;
@@ -4120,8 +4145,10 @@
     set('warning', run.warning || run.storageWarning || '');
     const pauseButton = overlay.querySelector('[data-action="pause"]');
     const resumeButton = overlay.querySelector('[data-action="resume"]');
+    const reportButton = overlay.querySelector('[data-action="report"]');
     if (pauseButton instanceof HTMLButtonElement) pauseButton.disabled = run.paused || ['error', 'completed'].includes(run.status);
     if (resumeButton instanceof HTMLButtonElement) resumeButton.disabled = !(run.paused || (run.status === 'error' && run.recoverableError));
+    if (reportButton instanceof HTMLButtonElement) reportButton.hidden = run.status !== 'completed' || !results.length;
   }
 
   function updateReestrDzWriteOffStage(run, stage, warning = '') {
@@ -4158,6 +4185,7 @@
     const failed = run.candidates[run.nextIndex] || run.current;
     for (let index = run.results.length - 1; index >= 0; index -= 1) {
       if (run.results[index] && run.results[index].error && (!failed || String(run.results[index].id) === String(failed.id))) {
+        if (failed && run.results[index].informationWritten === true) failed._informationWritten = true;
         run.results.splice(index, 1);
         break;
       }
@@ -4319,6 +4347,12 @@
     }
   }
 
+  function didReestrDzWriteOffInformationChange(beforeCell, afterCell) {
+    return ['Note', 'OrderDate', 'OrderNumber'].some((key) =>
+      normalizeReestrDzText(beforeCell && beforeCell[key]) !== normalizeReestrDzText(afterCell && afterCell[key])
+    );
+  }
+
   async function processReestrDzWriteOffCandidate(run, candidate) {
     if (isReestrDzWriteOffExcludedClaimant(candidate.cell)) {
       return {
@@ -4336,25 +4370,39 @@
     await persistReestrDzWriteOffRun(run);
     let live = await loadReestrDzRowById(run.gridState, candidate.id, run.controller.signal);
     let cell = live && live.cell ? { ...candidate.cell, ...live.cell } : { ...candidate.cell };
+    const originalCell = { ...cell };
+    candidate._writeOffBaselineCell = originalCell;
     if (review.notFound) {
       updateReestrDzWriteOffStage(run, `По строке № ${candidate.id} решение и документы не найдены. Перехожу дальше…`);
+      const beforeCancellation = cell;
       cell = await applyReestrDzCancellationComments(
         run, candidate, cell, requestDocument, saveReestrDzWriteOffComment
       );
+      candidate._informationWritten = candidate._informationWritten === true || didReestrDzWriteOffInformationChange(beforeCancellation, cell);
       return {
         cell,
         review,
         result: 'Не найдено',
-        description: 'Решение о списании, входящий и другие документы отсутствуют.'
+        description: 'Решение о списании, входящий и другие документы отсутствуют.',
+        informationWritten: candidate._informationWritten === true || didReestrDzWriteOffInformationChange(originalCell, cell)
       };
     }
     if (review.decision === 'Отказ в списании') {
       updateReestrDzWriteOffStage(run, `Сохраняю отказ в комментарии строки № ${candidate.id}…`);
+      const beforeDecision = cell;
       cell = await saveReestrDzWriteOffComment(run, candidate, cell, review.decision);
+      candidate._informationWritten = candidate._informationWritten === true || didReestrDzWriteOffInformationChange(beforeDecision, cell);
+      const beforeCancellation = cell;
       cell = await applyReestrDzCancellationComments(
         run, candidate, cell, requestDocument, saveReestrDzWriteOffComment
       );
-      return { cell, review, result: 'Отказ сохранён' };
+      candidate._informationWritten = candidate._informationWritten === true || didReestrDzWriteOffInformationChange(beforeCancellation, cell);
+      return {
+        cell,
+        review,
+        result: 'Отказ сохранён',
+        informationWritten: candidate._informationWritten === true || didReestrDzWriteOffInformationChange(originalCell, cell)
+      };
     }
     updateReestrDzWriteOffStage(run, `Открываю ручную проверку документов строки № ${candidate.id}…`);
     const opened = await sendRuntimeMessage({
@@ -4377,12 +4425,24 @@
       throw new Error('Ручная проверка вернула некорректные реквизиты приказа.');
     }
     updateReestrDzWriteOffStage(run, `Сохраняю решение строки № ${candidate.id}…`);
+    const beforeDecision = cell;
     cell = await saveReestrDzWriteOffComment(run, candidate, cell, review.decision);
+    candidate._informationWritten = candidate._informationWritten === true || didReestrDzWriteOffInformationChange(beforeDecision, cell);
+    const beforeOrder = cell;
     cell = await saveReestrDzWriteOffOrder(run, candidate, cell, { orderDate, orderNumber });
+    candidate._informationWritten = candidate._informationWritten === true || didReestrDzWriteOffInformationChange(beforeOrder, cell);
+    const beforeCancellation = cell;
     cell = await applyReestrDzCancellationComments(
       run, candidate, cell, requestDocument, saveReestrDzWriteOffComment
     );
-    return { cell, review, fields: { orderDate, orderNumber }, result: 'Приказ сохранён' };
+    candidate._informationWritten = candidate._informationWritten === true || didReestrDzWriteOffInformationChange(beforeCancellation, cell);
+    return {
+      cell,
+      review,
+      fields: { orderDate, orderNumber },
+      result: 'Приказ сохранён',
+      informationWritten: candidate._informationWritten === true || didReestrDzWriteOffInformationChange(originalCell, cell)
+    };
   }
 
   function confirmReestrDzWriteOffCommentedCandidate(candidate) {
@@ -4499,6 +4559,7 @@
               result: 'Пропущено по комментарию',
               description: 'Пользователь отказался от повторной обработки строки с заполненным комментарием.',
               skipped: true,
+              informationWritten: false,
               error: false
             });
             run.nextIndex = index + 1;
@@ -4513,6 +4574,8 @@
         }
         try {
           const result = await processReestrDzWriteOffCandidate(run, run.current);
+          delete run.current._writeOffBaselineCell;
+          delete run.current._informationWritten;
           run.results.push({ id: run.current.id, ...result, error: false });
           run.nextIndex = index + 1;
           run.currentReview = null;
@@ -4525,7 +4588,23 @@
             document.getElementById(REESTR_DZ_WRITE_OFF_OVERLAY_ID)?.remove();
             return;
           }
-          run.results.push({ id: run.current.id, cell: run.current.cell, result: 'Проблема', description: error && error.message ? error.message : String(error), error: true });
+          const baselineCell = run.current._writeOffBaselineCell || run.current.cell;
+          let errorCell = { ...baselineCell };
+          try {
+            const latest = await loadReestrDzRowById(run.gridState, run.current.id, run.controller.signal);
+            if (latest && latest.cell) errorCell = { ...errorCell, ...latest.cell };
+          } catch (readError) {
+            // Если грид недоступен, сохраняем исходный снимок; после продолжения строка будет проверена повторно.
+          }
+          run.results.push({
+            id: run.current.id,
+            cell: errorCell,
+            result: 'Проблема',
+            description: error && error.message ? error.message : String(error),
+            informationWritten: run.current._informationWritten === true || didReestrDzWriteOffInformationChange(baselineCell, errorCell),
+            error: true
+          });
+          delete run.current._writeOffBaselineCell;
           run.status = 'error';
           run.recoverableError = true;
           run.warning = error && error.message ? error.message : String(error);
@@ -4539,7 +4618,8 @@
       run.status = 'completed';
       run.current = null;
       run.currentReview = null;
-      run.stage = `Проверка завершена. Обработано строк: ${run.results.length}.`;
+      run.reportDownloaded = downloadReestrDzWriteOffReport(run);
+      run.stage = `Проверка завершена. Обработано строк: ${run.results.length}.${run.reportDownloaded ? ' Итоговый отчёт скачан.' : ''}`;
       run.warning = '';
       clearReestrDzWriteOffDraft();
       clearReestrDzPrincipalRowHighlight();
@@ -4625,7 +4705,8 @@
         run.nextIndex = run.candidates.length;
         run.status = 'completed';
         run.current = null;
-        run.stage = `Проверка завершена. Исключённых строк пропущено: ${run.results.length}.`;
+        run.reportDownloaded = downloadReestrDzWriteOffReport(run);
+        run.stage = `Проверка завершена. Исключённых строк пропущено: ${run.results.length}.${run.reportDownloaded ? ' Итоговый отчёт скачан.' : ''}`;
         run.warning = '';
         await persistReestrDzWriteOffRun(run);
         syncReestrDzWriteOffProgressOverlay(run);
