@@ -4829,11 +4829,29 @@
 
   function parseReestrDzWriteOffRequest(documentData, candidate) {
     const outgoingLinks = parseReestrDzOutgoingLinks({ links: documentData && documentData.outgoingLinks });
-    if (outgoingLinks.length !== 1) {
-      throw new Error(outgoingLinks.length ? 'В поручении найдено несколько исходящих; требуется ручная проверка.' : 'В поручении не найдена ссылка на исходящий документ.');
+    const gridOutgoing = normalizeReestrDzText(candidate && candidate.cell && candidate.cell.PrincipalNumber);
+    if (outgoingLinks.length > 1) {
+      throw new Error('В поручении найдено несколько исходящих; требуется ручная проверка.');
+    }
+    if (!outgoingLinks.length) {
+      const outgoingMissingMessage = 'В поручении не найдена ссылка на исходящий документ.';
+      return {
+        outgoingNumber: '',
+        gridOutgoingNumber: gridOutgoing,
+        setsCount: '',
+        writeOffAmount: '',
+        responsibleName: '',
+        decision: '',
+        decisionDate: '',
+        documents: [],
+        notFound: false,
+        requiresOutgoingMismatchComment: true,
+        outgoingIssueType: 'missing',
+        outgoingMismatchMessage: outgoingMissingMessage,
+        suggestedComment: outgoingMissingMessage
+      };
     }
     const outgoingNumber = normalizeReestrDzText(outgoingLinks[0].text);
-    const gridOutgoing = normalizeReestrDzText(candidate && candidate.cell && candidate.cell.PrincipalNumber);
     if (gridOutgoing && outgoingNumber !== gridOutgoing) {
       const outgoingMismatchMessage = `Исходящий в поручении (${outgoingNumber}) не совпадает со строкой грида (${gridOutgoing}).`;
       return {
@@ -4847,6 +4865,7 @@
         documents: [],
         notFound: false,
         requiresOutgoingMismatchComment: true,
+        outgoingIssueType: 'mismatch',
         outgoingMismatchMessage,
         suggestedComment: outgoingMismatchMessage
       };
@@ -5070,7 +5089,11 @@
     run.currentReview = review;
     await persistReestrDzWriteOffRun(run);
     if (review.requiresOutgoingMismatchComment) {
-      updateReestrDzWriteOffStage(run, `Открываю поручение ${candidate.cell.RequestNumber} для проверки несовпадения исходящих…`);
+      const outgoingMissing = review.outgoingIssueType === 'missing';
+      updateReestrDzWriteOffStage(
+        run,
+        `Открываю поручение ${candidate.cell.RequestNumber} для проверки ${outgoingMissing ? 'отсутствующего исходящего' : 'несовпадения исходящих'}…`
+      );
       const opened = await sendRuntimeMessage({
         action: 'REESTR_DZ_WRITE_OFF_OPEN_REVIEW',
         data: {
@@ -5079,6 +5102,7 @@
           depid: run.department && run.department.depid || '',
           progressText: `${run.currentIndex + 1} / ${run.candidates.length}`,
           requestNumber: candidate.cell.RequestNumber,
+          outgoingIssueType: review.outgoingIssueType,
           outgoingNumber: review.outgoingNumber,
           gridOutgoingNumber: review.gridOutgoingNumber,
           errorMessage: review.outgoingMismatchMessage,
@@ -5096,13 +5120,13 @@
       }
       const verification = await waitForReestrDzWriteOffReview(run);
       if (verification.mode !== 'comment' || !normalizeReestrDzText(verification.comment)) {
-        throw new Error('Комментарий о несовпадении исходящих не был сохранён.');
+        throw new Error('Комментарий о проблеме с исходящим не был сохранён.');
       }
       let live = await loadReestrDzRowById(run.gridState, candidate.id, run.controller.signal);
       let cell = live && live.cell ? { ...candidate.cell, ...live.cell } : { ...candidate.cell };
       const originalCell = { ...cell };
       candidate._writeOffBaselineCell = originalCell;
-      updateReestrDzWriteOffStage(run, `Сохраняю комментарий о несовпадении исходящих строки № ${candidate.id}…`);
+      updateReestrDzWriteOffStage(run, `Сохраняю комментарий об исходящем строки № ${candidate.id}…`);
       cell = await saveReestrDzWriteOffComment(run, candidate, cell, verification.comment, { matchMode: 'block' });
       cell = await applyReestrDzCancellationComments(
         run, candidate, cell, requestDocument, saveReestrDzWriteOffComment
@@ -5113,10 +5137,12 @@
         cell,
         review,
         fields: { orderDate: '', orderNumber: '' },
-        result: informationWritten ? 'Несовпадение исходящих — комментарий сохранён' : 'Несовпадение исходящих — комментарий уже был',
+        result: outgoingMissing
+          ? (informationWritten ? 'Исходящий не найден — комментарий сохранён' : 'Исходящий не найден — комментарий уже был')
+          : (informationWritten ? 'Несовпадение исходящих — комментарий сохранён' : 'Несовпадение исходящих — комментарий уже был'),
         description: informationWritten
-          ? 'Комментарий о несовпадении исходящего в поручении и гриде сохранён; приказ не изменялся.'
-          : 'Такой комментарий о несовпадении исходящих уже содержался в строке; приказ не изменялся.',
+          ? `${outgoingMissing ? 'Комментарий об отсутствии исходящего в поручении' : 'Комментарий о несовпадении исходящего в поручении и гриде'} сохранён; приказ не изменялся.`
+          : `${outgoingMissing ? 'Такой комментарий об отсутствии исходящего' : 'Такой комментарий о несовпадении исходящих'} уже содержался в строке; приказ не изменялся.`,
         skipped: true,
         informationWritten: candidate._informationWritten === true
       };
@@ -6232,6 +6258,7 @@
 
   function renderReestrDzWriteOffOutgoingMismatchOverlay(session) {
     const data = session.data || {};
+    const outgoingMissing = data.outgoingIssueType === 'missing';
     const overlay = document.createElement('section');
     overlay.id = REESTR_DZ_WRITE_OFF_OVERLAY_ID;
     overlay.className = 'dup-reestr-dz-principal-ui';
@@ -6242,12 +6269,12 @@
       overlay.style.right = 'auto';
     }
     overlay.innerHTML = `
-      <div class="dup-wo-head"><div><strong>Несовпадение исходящих</strong><small>Реестр № <span data-role="row-id">—</span> · <span data-role="progress">—</span></small></div><button type="button" class="dup-wo-close" data-action="close" aria-label="Остановить проверку">×</button></div>
+      <div class="dup-wo-head"><div><strong>${outgoingMissing ? 'Исходящий не найден' : 'Несовпадение исходящих'}</strong><small>Реестр № <span data-role="row-id">—</span> · <span data-role="progress">—</span></small></div><button type="button" class="dup-wo-close" data-action="close" aria-label="Остановить проверку">×</button></div>
       <div class="dup-wo-body">
         <div class="dup-wo-mismatch" data-role="mismatch"></div>
         <dl class="dup-wo-grid">
           <dt>Поручение</dt><dd data-role="request">—</dd>
-          <dt>Исходящий в поручении</dt><dd class="dup-wo-decision" data-role="request-outgoing">—</dd>
+          ${outgoingMissing ? '' : '<dt>Исходящий в поручении</dt><dd class="dup-wo-decision" data-role="request-outgoing">—</dd>'}
           <dt>Исходящий в гриде</dt><dd class="dup-wo-decision" data-role="grid-outgoing">—</dd>
         </dl>
         <div class="dup-wo-comment-mode">
