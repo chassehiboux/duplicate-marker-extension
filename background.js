@@ -2032,6 +2032,21 @@ async function loadReestrDzWssDataInWorker(sourceTab, url, kind, expectedNumber)
                         tables.find((table) => table.querySelectorAll('tr').length > 1) ||
                         null;
                 };
+                const readCancellationDecisions = (historyTable) => historyTable
+                    ? Array.from(historyTable.querySelectorAll('tr')).map((row) => {
+                        const cells = Array.from(row.cells || []).map(readVisibleText);
+                        if (cells.length < 2) return null;
+                        const decisionMatch = cells[1].match(/^Аннулировать(?:\s+(.+))?$/i);
+                        const historyMatch = cells[0].match(/^(\d{2}\.\d{2}\.\d{4})\s+(\d{2}:\d{2})\s+(.+)$/);
+                        if (!decisionMatch || !historyMatch) return null;
+                        return {
+                            date: historyMatch[1],
+                            time: historyMatch[2],
+                            user: normalize(historyMatch[3]),
+                            text: normalize(decisionMatch[1])
+                        };
+                    }).filter(Boolean)
+                    : [];
                 const expected = normalize(expectedDocumentNumber);
                 const base = { url: window.location.href, title: document.title, kind: documentKind };
                 if (document.readyState !== 'complete') return { ...base, success: false, pending: true, error: 'WSS_PAGE_LOADING' };
@@ -2095,7 +2110,8 @@ async function loadReestrDzWssDataInWorker(sourceTab, url, kind, expectedNumber)
                         setsCount: readFieldText('Количество комплектов'),
                         writeOffAmount: readFieldText('Сумма списания задолженности'),
                         responsibleName,
-                        writeOffDecisions
+                        writeOffDecisions,
+                        cancellationDecisions: readCancellationDecisions(historyTable)
                     };
                 }
                 if (documentKind === 'request') {
@@ -2117,9 +2133,6 @@ async function loadReestrDzWssDataInWorker(sourceTab, url, kind, expectedNumber)
                             // ignore malformed WSS link
                         }
                     });
-                    if (!unique.size) {
-                        return { ...base, success: true, expectedNumber: expected, links: [] };
-                    }
                     const responsibleLabel = Array.from(document.querySelectorAll('.dbf_listform_title'))
                         .find((element) => normalize(element.textContent) === 'Ответственный за отражение списания в биллинговом ПК');
                     const responsibleRow = responsibleLabel && responsibleLabel.closest('tr');
@@ -2128,6 +2141,16 @@ async function loadReestrDzWssDataInWorker(sourceTab, url, kind, expectedNumber)
                         : [];
                     const responsibleName = responsibleValues.find((value) => value !== 'Ответственный за отражение списания в биллинговом ПК') || '';
                     const historyTable = findSolutionHistoryTable();
+                    if (!unique.size) {
+                        if (!historyTable) return { ...base, success: false, pending: true, error: 'WSS_REQUEST_AUDIT_DATA_LOADING' };
+                        return {
+                            ...base,
+                            success: true,
+                            expectedNumber: expected,
+                            links: [],
+                            cancellationDecisions: readCancellationDecisions(historyTable)
+                        };
+                    }
                     if (!responsibleLabel || !historyTable) {
                         return { ...base, success: false, pending: true, error: 'WSS_REQUEST_AUDIT_DATA_LOADING' };
                     }
@@ -2144,7 +2167,8 @@ async function loadReestrDzWssDataInWorker(sourceTab, url, kind, expectedNumber)
                         expectedNumber: expected,
                         links: Array.from(unique.values()),
                         responsibleName,
-                        completedDecisions
+                        completedDecisions,
+                        cancellationDecisions: readCancellationDecisions(historyTable)
                     };
                 }
                 if (documentKind === 'outgoing') {

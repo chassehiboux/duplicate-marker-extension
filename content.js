@@ -299,6 +299,7 @@
   const REESTR_DZ_PRINCIPAL_DAILY_STORAGE_VERSION = 2;
   const REESTR_DZ_CHECK_MENU_ID = 'dup-reestr-dz-check-menu';
   const REESTR_DZ_WRITE_OFF_OVERLAY_ID = 'dup-reestr-dz-write-off-overlay';
+  const REESTR_DZ_WRITE_OFF_COMMENT_CONFIRM_ID = 'dup-reestr-dz-write-off-comment-confirm';
   const REESTR_DZ_WRITE_OFF_DAILY_STORAGE_KEY = 'dup_reestr_dz_write_off_daily_runs';
   const REESTR_DZ_WRITE_OFF_DAILY_STORAGE_VERSION = 1;
   const REESTR_DZ_WRITE_OFF_DRAFT_STORAGE_KEY = 'dup_reestr_dz_write_off_review_draft';
@@ -578,6 +579,7 @@
         html.dup-ui-hide-reestr-dz-principal-autofill #${REESTR_DZ_PRINCIPAL_PERIOD_DIALOG_ID},
         html.dup-ui-hide-reestr-dz-principal-autofill #${REESTR_DZ_CHECK_MENU_ID},
         html.dup-ui-hide-reestr-dz-principal-autofill #${REESTR_DZ_WRITE_OFF_OVERLAY_ID},
+        html.dup-ui-hide-reestr-dz-principal-autofill #${REESTR_DZ_WRITE_OFF_COMMENT_CONFIRM_ID},
         html.dup-ui-hide-reestr-dz-principal-autofill .${REESTR_DZ_WRITE_OFF_HIGHLIGHT_CLASS},
         html.dup-ui-hide-reestr-dz-principal-autofill .${REESTR_DZ_PRINCIPAL_CURRENT_ROW_CLASS},
         html.dup-ui-hide-reestr-dz-principal-autofill .${REESTR_DZ_PRINCIPAL_ATTENTION_ROW_CLASS} {
@@ -2133,6 +2135,30 @@
     return String(note || '').split(/\r?\n/).some((line) => normalizeReestrDzText(line) === expected);
   }
 
+  function getReestrDzCancellationComments(documentData) {
+    const unique = new Map();
+    const decisions = documentData && Array.isArray(documentData.cancellationDecisions)
+      ? documentData.cancellationDecisions
+      : [];
+    decisions.forEach((item) => {
+      const date = normalizeReestrDzText(item && item.date);
+      const text = normalizeReestrDzText(item && item.text);
+      if (!/^\d{2}\.\d{2}\.\d{4}$/.test(date)) return;
+      const comment = `${date} поручение к реестру аннулировано.${text ? ` ${text}` : ''}`;
+      unique.set(normalizeReestrDzText(comment), comment);
+    });
+    return Array.from(unique.values());
+  }
+
+  async function applyReestrDzCancellationComments(run, candidate, cell, documentData, saveComment) {
+    let updatedCell = cell && typeof cell === 'object' ? { ...cell } : {};
+    for (const comment of getReestrDzCancellationComments(documentData)) {
+      if (hasReestrDzExactNoteLine(updatedCell.Note, comment)) continue;
+      updatedCell = await saveComment(run, candidate, updatedCell, comment);
+    }
+    return updatedCell;
+  }
+
   function parseReestrDzDate(value) {
     const match = normalizeReestrDzText(value).match(/(?:^|\D)(\d{2})\.(\d{2})\.(\d{4})(?:\D|$)/);
     if (!match) return null;
@@ -2714,6 +2740,29 @@
       .dup-wo-actions button { min-height: 30px; padding: 5px 10px; border: 1px solid #aeb8c1; border-radius: 3px; background: #fff; color: #344b5d; font: 600 11px/1 Bahnschrift, "Segoe UI", sans-serif; cursor: pointer; }
       .dup-wo-actions button[data-action="done"] { margin-left: auto; border-color: #286090; background: #337ab7; color: #fff; }
       .dup-wo-actions button[disabled] { opacity: .45; cursor: default; }
+      #${REESTR_DZ_WRITE_OFF_COMMENT_CONFIRM_ID} {
+        position: fixed;
+        z-index: 2147483006;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        padding: 18px;
+        background: rgba(19, 31, 42, .56);
+        font-family: Bahnschrift, "Segoe UI", sans-serif;
+      }
+      .dup-wo-confirm-card { box-sizing: border-box; width: min(500px, calc(100vw - 28px)); max-height: calc(100vh - 36px); overflow: auto; border: 1px solid #aeb8c1; border-top: 4px solid #e59b20; border-radius: 6px; background: #f8fafb; color: #273746; box-shadow: 0 18px 52px rgba(15, 27, 38, .38); }
+      .dup-wo-confirm-head { padding: 12px 14px 10px; background: #233646; color: #fff; }
+      .dup-wo-confirm-head strong { display: block; font-size: 15px; }
+      .dup-wo-confirm-head small { display: block; margin-top: 4px; color: #c1ccd5; font-size: 10px; }
+      .dup-wo-confirm-body { padding: 12px 14px 14px; }
+      .dup-wo-confirm-grid { display: grid; grid-template-columns: 120px 1fr; gap: 6px 10px; margin: 0; font-size: 11px; }
+      .dup-wo-confirm-grid dt { color: #73818c; }
+      .dup-wo-confirm-grid dd { min-width: 0; margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+      .dup-wo-confirm-note { margin-top: 11px; padding: 9px 10px; border: 1px solid #d3dbe1; border-radius: 4px; background: #fff; white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.45 "Segoe UI", sans-serif; }
+      .dup-wo-confirm-question { margin: 12px 0 8px; font-size: 12px; font-weight: 650; }
+      .dup-wo-confirm-actions { display: flex; justify-content: flex-end; gap: 7px; }
+      .dup-wo-confirm-actions button { min-width: 78px; min-height: 32px; border: 1px solid #aeb8c1; border-radius: 4px; background: #fff; color: #344b5d; font: 650 11px/1 Bahnschrift, "Segoe UI", sans-serif; cursor: pointer; }
+      .dup-wo-confirm-actions button[aria-pressed="true"] { border-color: #286090; outline: 2px solid rgba(51, 122, 183, .2); background: #337ab7; color: #fff; }
       .${REESTR_DZ_WRITE_OFF_HIGHLIGHT_CLASS} { padding: 0 1px; border-radius: 2px; background: #ffe066 !important; color: #241b00 !important; box-shadow: 0 0 0 1px rgba(190,130,0,.25); }
       #list tr.${REESTR_DZ_PRINCIPAL_CURRENT_ROW_CLASS} > td {
         background: #fff0a6 !important;
@@ -3306,7 +3355,10 @@
         requestUrl.searchParams.set('RegNumber', candidate.cell.RequestNumber);
         const requestDocument = await loadReestrDzWssDocument(requestUrl.toString(), 'request', candidate.cell.RequestNumber);
         const attachment = parseReestrDzPrincipalAttachment(requestDocument);
-        const enrichedCell = await applyReestrDzPrincipalAttachment(run, candidate, { ...candidate.cell, ...liveCell }, liveCell.SendDate, attachment);
+        let enrichedCell = await applyReestrDzPrincipalAttachment(run, candidate, { ...candidate.cell, ...liveCell }, liveCell.SendDate, attachment);
+        enrichedCell = await applyReestrDzCancellationComments(
+          run, candidate, enrichedCell, requestDocument, saveReestrDzPrincipalComment
+        );
         return {
           cell: enrichedCell,
           result: 'Проверено вручную',
@@ -3333,8 +3385,11 @@
       const requestDocument = await loadReestrDzWssDocument(requestUrl.toString(), 'request', candidate.cell.RequestNumber);
       const links = parseReestrDzOutgoingLinks(requestDocument);
       if (!links.length) {
+        const commentedCell = await applyReestrDzCancellationComments(
+          run, candidate, { ...candidate.cell, ...liveCell }, requestDocument, saveReestrDzPrincipalComment
+        );
         return {
-          cell: { ...candidate.cell },
+          cell: commentedCell,
           result: 'Исходящий не найден',
           description: 'Поле «Ссылка на исходящий документ» не заполнено.',
           found: false,
@@ -3362,7 +3417,10 @@
         throw new Error(`Полученный номер исходящего совпал с номером поручения ${candidate.cell.RequestNumber}; сохранение остановлено для ручной проверки.`);
       }
       const savedCell = await saveReestrDzPrincipalInfo(run, candidate, outgoing);
-      const enrichedCell = await applyReestrDzPrincipalAttachment(run, candidate, savedCell, outgoing.date, attachment);
+      let enrichedCell = await applyReestrDzPrincipalAttachment(run, candidate, savedCell, outgoing.date, attachment);
+      enrichedCell = await applyReestrDzCancellationComments(
+        run, candidate, enrichedCell, requestDocument, saveReestrDzPrincipalComment
+      );
       return {
         cell: enrichedCell,
         result: 'Сохранено',
@@ -4280,6 +4338,9 @@
     let cell = live && live.cell ? { ...candidate.cell, ...live.cell } : { ...candidate.cell };
     if (review.notFound) {
       updateReestrDzWriteOffStage(run, `По строке № ${candidate.id} решение и документы не найдены. Перехожу дальше…`);
+      cell = await applyReestrDzCancellationComments(
+        run, candidate, cell, requestDocument, saveReestrDzWriteOffComment
+      );
       return {
         cell,
         review,
@@ -4290,6 +4351,9 @@
     if (review.decision === 'Отказ в списании') {
       updateReestrDzWriteOffStage(run, `Сохраняю отказ в комментарии строки № ${candidate.id}…`);
       cell = await saveReestrDzWriteOffComment(run, candidate, cell, review.decision);
+      cell = await applyReestrDzCancellationComments(
+        run, candidate, cell, requestDocument, saveReestrDzWriteOffComment
+      );
       return { cell, review, result: 'Отказ сохранён' };
     }
     updateReestrDzWriteOffStage(run, `Открываю ручную проверку документов строки № ${candidate.id}…`);
@@ -4315,7 +4379,94 @@
     updateReestrDzWriteOffStage(run, `Сохраняю решение строки № ${candidate.id}…`);
     cell = await saveReestrDzWriteOffComment(run, candidate, cell, review.decision);
     cell = await saveReestrDzWriteOffOrder(run, candidate, cell, { orderDate, orderNumber });
+    cell = await applyReestrDzCancellationComments(
+      run, candidate, cell, requestDocument, saveReestrDzWriteOffComment
+    );
     return { cell, review, fields: { orderDate, orderNumber }, result: 'Приказ сохранён' };
+  }
+
+  function confirmReestrDzWriteOffCommentedCandidate(candidate) {
+    document.getElementById(REESTR_DZ_WRITE_OFF_COMMENT_CONFIRM_ID)?.remove();
+    return new Promise((resolve) => {
+      const cell = candidate && candidate.cell && typeof candidate.cell === 'object' ? candidate.cell : {};
+      const overlay = document.createElement('section');
+      overlay.id = REESTR_DZ_WRITE_OFF_COMMENT_CONFIRM_ID;
+      overlay.className = 'dup-reestr-dz-principal-ui';
+      overlay.setAttribute('role', 'dialog');
+      overlay.setAttribute('aria-modal', 'true');
+      overlay.setAttribute('aria-label', `Повторная обработка реестра № ${candidate && candidate.id || '—'}`);
+
+      const card = document.createElement('div');
+      card.className = 'dup-wo-confirm-card';
+      card.innerHTML = `
+        <div class="dup-wo-confirm-head"><strong>В строке уже есть комментарий</strong><small>Проверьте сведения перед повторной обработкой</small></div>
+        <div class="dup-wo-confirm-body">
+          <dl class="dup-wo-confirm-grid">
+            <dt>Реестр</dt><dd data-field="id"></dd>
+            <dt>Взыскатель</dt><dd data-field="claimant"></dd>
+            <dt>Поручение</dt><dd data-field="request"></dd>
+            <dt>Исходящий</dt><dd data-field="outgoing"></dd>
+            <dt>Дата запуска</dt><dd data-field="request-date"></dd>
+          </dl>
+          <div class="dup-wo-confirm-note" data-field="note"></div>
+          <div class="dup-wo-confirm-question">Обрабатывать эту строку?</div>
+          <div class="dup-wo-confirm-actions">
+            <button type="button" data-choice="no" aria-pressed="true">Нет</button>
+            <button type="button" data-choice="yes" aria-pressed="false">Да</button>
+          </div>
+        </div>`;
+      overlay.appendChild(card);
+
+      const setText = (field, value) => {
+        const target = overlay.querySelector(`[data-field="${field}"]`);
+        if (target) target.textContent = normalizeReestrDzText(value) || '—';
+      };
+      setText('id', `№ ${candidate && candidate.id || '—'}`);
+      setText('claimant', cell.ClaimantName || cell.Claimant || cell.ClaimantFullName);
+      setText('request', cell.RequestNumber);
+      setText('outgoing', cell.PrincipalNumber);
+      setText('request-date', cell.RequestDate);
+      setText('note', cell.Note);
+
+      const noButton = overlay.querySelector('[data-choice="no"]');
+      const yesButton = overlay.querySelector('[data-choice="yes"]');
+      let selected = 'no';
+      let settled = false;
+      const select = (choice, focus = true) => {
+        selected = choice === 'yes' ? 'yes' : 'no';
+        noButton?.setAttribute('aria-pressed', String(selected === 'no'));
+        yesButton?.setAttribute('aria-pressed', String(selected === 'yes'));
+        if (focus) (selected === 'yes' ? yesButton : noButton)?.focus();
+      };
+      const finish = (accepted) => {
+        if (settled) return;
+        settled = true;
+        overlay.remove();
+        resolve(accepted === true);
+      };
+      overlay.addEventListener('click', (event) => {
+        const button = event.target instanceof Element ? event.target.closest('[data-choice]') : null;
+        if (!(button instanceof HTMLButtonElement)) return;
+        finish(button.dataset.choice === 'yes');
+      });
+      overlay.addEventListener('keydown', (event) => {
+        if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+          event.preventDefault();
+          select('yes');
+        } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+          event.preventDefault();
+          select('no');
+        } else if (event.key === 'Enter') {
+          event.preventDefault();
+          finish(selected === 'yes');
+        } else if (event.key === 'Escape') {
+          event.preventDefault();
+          finish(false);
+        }
+      });
+      (document.body || document.documentElement).appendChild(overlay);
+      window.setTimeout(() => select('no'), 0);
+    });
   }
 
   async function runReestrDzWriteOffCheck(run) {
@@ -4336,6 +4487,30 @@
         }
         run.current = candidate;
         await waitForReestrDzWriteOffResume(run);
+        if (normalizeReestrDzText(candidate.cell && candidate.cell.Note)) {
+          run.stage = `Строка № ${candidate.id} уже содержит комментарий. Ожидаю подтверждение…`;
+          syncReestrDzWriteOffProgressOverlay(run);
+          const shouldProcess = await confirmReestrDzWriteOffCommentedCandidate(candidate);
+          if (!shouldProcess) {
+            run.results.push({
+              id: candidate.id,
+              cell: { ...candidate.cell },
+              review: null,
+              result: 'Пропущено по комментарию',
+              description: 'Пользователь отказался от повторной обработки строки с заполненным комментарием.',
+              skipped: true,
+              error: false
+            });
+            run.nextIndex = index + 1;
+            run.currentReview = null;
+            run.stage = `Строка № ${candidate.id} пропущена. Перехожу дальше…`;
+            await persistReestrDzWriteOffRun(run);
+            syncReestrDzWriteOffProgressOverlay(run);
+            continue;
+          }
+          run.stage = `Повторная обработка строки № ${candidate.id} подтверждена…`;
+          syncReestrDzWriteOffProgressOverlay(run);
+        }
         try {
           const result = await processReestrDzWriteOffCandidate(run, run.current);
           run.results.push({ id: run.current.id, ...result, error: false });
@@ -8081,6 +8256,7 @@
       html.${SCREENSHOT_MODE_CLASS} #${REESTR_DZ_PRINCIPAL_PERIOD_DIALOG_ID},
       html.${SCREENSHOT_MODE_CLASS} #${REESTR_DZ_CHECK_MENU_ID},
       html.${SCREENSHOT_MODE_CLASS} #${REESTR_DZ_WRITE_OFF_OVERLAY_ID},
+      html.${SCREENSHOT_MODE_CLASS} #${REESTR_DZ_WRITE_OFF_COMMENT_CONFIRM_ID},
       html.${SCREENSHOT_MODE_CLASS} .${REESTR_DZ_WRITE_OFF_HIGHLIGHT_CLASS},
       html.${SCREENSHOT_MODE_CLASS} .${REESTR_DZ_PRINCIPAL_CURRENT_ROW_CLASS},
       html.${SCREENSHOT_MODE_CLASS} .${REESTR_DZ_PRINCIPAL_ATTENTION_ROW_CLASS},
