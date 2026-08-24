@@ -2883,6 +2883,9 @@
       .dup-wo-comment-hint { margin-top: 5px; color: #7c6a4a; font-size: 9px; line-height: 1.35; }
       .dup-wo-mismatch { margin-bottom: 10px; padding: 8px 9px; border-left: 3px solid #d9534f; background: #fff0ef; color: #8c2925; font-size: 10px; line-height: 1.4; }
       .dup-wo-substitute { margin-top: 10px; padding: 8px 9px; border: 1px solid #e2c685; border-radius: 3px; background: #fffaf0; color: #5f481a; font-size: 10px; line-height: 1.4; }
+      .dup-wo-substitute select { box-sizing: border-box; width: 100%; height: 30px; margin-top: 6px; padding: 4px 7px; border: 1px solid #bda76e; border-radius: 3px; background: #fff; color: #344b5d; font: 11px/1.2 "Segoe UI", sans-serif; }
+      .dup-wo-substitute select:focus { border-color: #c58218; outline: 0; box-shadow: 0 0 0 2px rgba(197,130,24,.15); }
+      .dup-wo-substitute small { display: block; margin-top: 5px; color: #7c6a4a; font-size: 9px; }
       .dup-wo-actions button[data-action="confirm-decision"] { margin-left: auto; border-color: #2b7d46; background: #36975a; color: #fff; }
       .dup-wo-actions button[data-action="finish-decision-skip"] { border-color: #2b7d46; background: #36975a; color: #fff; }
       .dup-wo-error { min-height: 15px; color: #bd302c; font-size: 10px; line-height: 1.35; }
@@ -5070,9 +5073,12 @@
           informationWritten: candidate._informationWritten === true
         };
       }
-      if (verification.mode !== 'decision_confirm' || !normalizeReestrDzText(review.decision)) {
+      const confirmedDecision = normalizeReestrDzText(verification.decision || review.decision);
+      if (verification.mode !== 'decision_confirm' || !REESTR_DZ_WRITE_OFF_DECISIONS.includes(confirmedDecision)) {
         throw new Error('Замещающее решение не было подтверждено.');
       }
+      review.decision = confirmedDecision;
+      if (!normalizeReestrDzText(review.decisionText)) review.decisionText = confirmedDecision;
       review.requiresDecisionConfirmation = false;
     }
     if (review.notFound && !getReestrDzCancellationComments(requestDocument).length) {
@@ -6210,7 +6216,16 @@
           <dt>Решение нашёл</dt><dd data-role="decision-user">—</dd>
           <dt>Дата решения</dt><dd data-role="decision-date">—</dd>
         </dl>
-        <div class="dup-wo-substitute" data-panel="candidate"><strong>Предлагаемое решение:</strong><br><span data-role="decision-text">Не найдено</span></div>
+        <div class="dup-wo-substitute" data-panel="candidate">
+          <strong>Подтверждаемое решение</strong>
+          <select name="confirmedDecision" aria-label="Подтверждаемое решение">
+            <option value="">Выберите решение</option>
+            <option value="Задолженность списана">Задолженность списана</option>
+            <option value="Отказ в списании">Отказ в списании</option>
+            <option value="Задолженность списана частично">Задолженность списана частично</option>
+          </select>
+          <small data-role="decision-text">Автоматически не распознано — выберите вручную.</small>
+        </div>
         <div class="dup-wo-comment-mode" data-panel="skip" hidden>
           <label for="dup-wo-mismatch-comment">Комментарий к реестру</label>
           <textarea id="dup-wo-mismatch-comment" name="skipComment"></textarea>
@@ -6220,7 +6235,7 @@
         <div class="dup-wo-actions">
           <button type="button" data-action="pause">${session.paused ? 'Продолжить' : 'Пауза'}</button>
           <button type="button" data-action="skip-decision" ${session.paused ? 'disabled' : ''}>Пропустить</button>
-          <button type="button" data-action="confirm-decision" ${session.paused || !normalizeReestrDzText(data.decision) ? 'disabled' : ''}>Подтвердить</button>
+          <button type="button" data-action="confirm-decision" ${session.paused ? 'disabled' : ''}>Подтвердить</button>
           <button type="button" data-action="cancel-decision-skip" hidden>Отмена</button>
           <button type="button" data-action="finish-decision-skip" hidden ${session.paused ? 'disabled' : ''}>Перейти дальше</button>
         </div>
@@ -6236,14 +6251,26 @@
     set('responsible', data.responsibleName);
     set('decision-user', data.decisionUser);
     set('decision-date', data.decisionDate);
-    set('decision-text', data.suggestedDecisionText || data.decision || 'Не найдено');
+    set('decision-text', normalizeReestrDzText(data.suggestedDecisionText || data.decision)
+      ? `Найдено автоматически: ${normalizeReestrDzText(data.suggestedDecisionText || data.decision)}`
+      : 'Автоматически не распознано — выберите вручную.');
     const candidatePanel = overlay.querySelector('[data-panel="candidate"]');
     const skipPanel = overlay.querySelector('[data-panel="skip"]');
     const commentInput = overlay.querySelector('[name="skipComment"]');
+    const decisionSelect = overlay.querySelector('[name="confirmedDecision"]');
     const errorElement = overlay.querySelector('[data-role="error"]');
     if (commentInput instanceof HTMLTextAreaElement) commentInput.value = String(session.fields && session.fields.comment || '');
+    if (decisionSelect instanceof HTMLSelectElement) {
+      const initialDecision = normalizeReestrDzText(session.fields && session.fields.decision || data.decision);
+      decisionSelect.value = REESTR_DZ_WRITE_OFF_DECISIONS.includes(initialDecision) ? initialDecision : '';
+    }
     const persist = () => {
-      const fields = { orderDate: '', orderNumber: '', comment: commentInput instanceof HTMLTextAreaElement ? commentInput.value : '' };
+      const fields = {
+        orderDate: '',
+        orderNumber: '',
+        comment: commentInput instanceof HTMLTextAreaElement ? commentInput.value : '',
+        decision: decisionSelect instanceof HTMLSelectElement ? decisionSelect.value : ''
+      };
       persistReestrDzWriteOffDraft(session, fields);
       return sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_UPDATE_REVIEW', data: { mode: session.mode, fields } });
     };
@@ -6261,6 +6288,10 @@
         const button = overlay.querySelector(`[data-action="${action}"]`);
         if (button instanceof HTMLButtonElement) button.hidden = !skipMode;
       });
+      const confirmButton = overlay.querySelector('[data-action="confirm-decision"]');
+      if (confirmButton instanceof HTMLButtonElement) {
+        confirmButton.disabled = session.paused || !(decisionSelect instanceof HTMLSelectElement && REESTR_DZ_WRITE_OFF_DECISIONS.includes(decisionSelect.value));
+      }
       if (errorElement instanceof HTMLElement) errorElement.textContent = '';
       if (shouldPersist) void persist();
       if (skipMode && commentInput instanceof HTMLTextAreaElement) {
@@ -6272,9 +6303,15 @@
     };
     const finish = async (mode) => {
       const comment = mode === 'decision_skip' && commentInput instanceof HTMLTextAreaElement ? commentInput.value.trim() : '';
+      const decision = decisionSelect instanceof HTMLSelectElement ? normalizeReestrDzText(decisionSelect.value) : '';
+      if (mode === 'decision_confirm' && !REESTR_DZ_WRITE_OFF_DECISIONS.includes(decision)) {
+        if (errorElement instanceof HTMLElement) errorElement.textContent = 'Выберите подтверждаемое решение.';
+        decisionSelect?.focus();
+        return;
+      }
       const response = await sendRuntimeMessage({
         action: 'REESTR_DZ_WRITE_OFF_FINISH_REVIEW',
-        data: { mode, fields: { orderDate: '', orderNumber: '', comment } }
+        data: { mode, fields: { orderDate: '', orderNumber: '', comment, decision } }
       });
       if (!response || response.success === false) {
         if (errorElement instanceof HTMLElement) errorElement.textContent = 'Не удалось передать результат проверки в Пирамиду.';
@@ -6282,6 +6319,14 @@
         clearReestrDzWriteOffDraft();
       }
     };
+    decisionSelect?.addEventListener('change', () => {
+      if (errorElement instanceof HTMLElement) errorElement.textContent = '';
+      const confirmButton = overlay.querySelector('[data-action="confirm-decision"]');
+      if (confirmButton instanceof HTMLButtonElement) {
+        confirmButton.disabled = session.paused || !REESTR_DZ_WRITE_OFF_DECISIONS.includes(decisionSelect.value);
+      }
+      void persist();
+    });
     commentInput?.addEventListener('input', () => { if (errorElement instanceof HTMLElement) errorElement.textContent = ''; void persist(); });
     commentInput?.addEventListener('keydown', (event) => {
       if (event.key === 'Escape') {
@@ -6305,11 +6350,22 @@
         button.textContent = paused ? 'Продолжить' : 'Пауза';
         ['skip-decision', 'confirm-decision', 'finish-decision-skip'].forEach((action) => {
           const actionButton = overlay.querySelector(`[data-action="${action}"]`);
-          if (actionButton instanceof HTMLButtonElement) actionButton.disabled = paused || (action === 'confirm-decision' && !normalizeReestrDzText(data.decision));
+          if (actionButton instanceof HTMLButtonElement) {
+            actionButton.disabled = paused || (action === 'confirm-decision' && !(decisionSelect instanceof HTMLSelectElement && REESTR_DZ_WRITE_OFF_DECISIONS.includes(decisionSelect.value)));
+          }
         });
         void sendRuntimeMessage({
           action: 'REESTR_DZ_WRITE_OFF_UPDATE_REVIEW',
-          data: { paused, mode: session.mode, fields: { orderDate: '', orderNumber: '', comment: commentInput && commentInput.value || '' } }
+          data: {
+            paused,
+            mode: session.mode,
+            fields: {
+              orderDate: '',
+              orderNumber: '',
+              comment: commentInput && commentInput.value || '',
+              decision: decisionSelect instanceof HTMLSelectElement ? decisionSelect.value : ''
+            }
+          }
         });
       }
       if (button.dataset.action === 'close' && window.confirm('Остановить проверку списания и вернуться в Пирамиду?')) {
@@ -6320,7 +6376,12 @@
     makeReestrDzWriteOffOverlayDraggable(overlay, (position) => {
       session.position = position;
       reestrDzWriteOffReviewState.position = position;
-      persistReestrDzWriteOffDraft(session, { orderDate: '', orderNumber: '', comment: commentInput && commentInput.value || '' });
+      persistReestrDzWriteOffDraft(session, {
+        orderDate: '',
+        orderNumber: '',
+        comment: commentInput && commentInput.value || '',
+        decision: decisionSelect instanceof HTMLSelectElement ? decisionSelect.value : ''
+      });
       void sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_UPDATE_REVIEW', data: { position } });
     });
     (document.body || document.documentElement).appendChild(overlay);
