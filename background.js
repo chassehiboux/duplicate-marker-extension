@@ -2113,7 +2113,7 @@ async function loadReestrDzWssDataInWorker(sourceTab, url, kind, expectedNumber,
                         if (!decision) return null;
                         const match = cells[0].match(/^(\d{2}\.\d{2}\.\d{4})\s+(\d{2}:\d{2})\s+(.+)$/);
                         if (!match) return null;
-                        return { date: match[1], time: match[2], user: normalize(match[3]), decision };
+                        return { date: match[1], time: match[2], user: normalize(match[3]), decision, text: cells[1] };
                     }).filter(Boolean);
                     return {
                         ...base,
@@ -2295,10 +2295,14 @@ async function openReestrDzWriteOffReview(sourceTab, rawData) {
         reviewTabId,
         status: 'reviewing',
         paused: false,
-        mode: 'order',
+        mode: data.reviewType === 'decision_mismatch' ? 'decision_confirm' : 'order',
         completionMode: '',
         currentDocumentIndex: 0,
-        fields: { orderDate: '', orderNumber: '', comment: String(data.decision || '').trim() },
+        fields: {
+            orderDate: '',
+            orderNumber: '',
+            comment: String(data.suggestedDecisionText || data.decision || '').trim()
+        },
         position: null,
         attachmentsByUrl: {},
         data: { ...data, documents },
@@ -2443,7 +2447,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     comment: data.fields.comment === undefined ? String(session.fields.comment || '') : String(data.fields.comment || '').trim()
                 };
             }
-            if (data.mode === 'comment' || data.mode === 'order') session.mode = data.mode;
+            if (['comment', 'order', 'decision_confirm', 'decision_skip'].includes(data.mode)) session.mode = data.mode;
             if (typeof data.paused === 'boolean') session.paused = data.paused;
             if (data.position && Number.isFinite(Number(data.position.left)) && Number.isFinite(Number(data.position.top))) {
                 session.position = { left: Number(data.position.left), top: Number(data.position.top) };
@@ -2484,7 +2488,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 return false;
             }
             const fields = request.data && request.data.fields && typeof request.data.fields === 'object' ? request.data.fields : {};
-            const completionMode = request.data && request.data.mode === 'comment' ? 'comment' : 'order';
+            const requestedMode = request.data && String(request.data.mode || '');
+            const completionMode = ['comment', 'decision_confirm', 'decision_skip'].includes(requestedMode)
+                ? requestedMode
+                : 'order';
             session.fields = {
                 orderDate: String(fields.orderDate || '').trim(),
                 orderNumber: String(fields.orderNumber || '').trim(),
