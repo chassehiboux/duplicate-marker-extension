@@ -295,6 +295,8 @@
   const REESTR_DZ_PRINCIPAL_STYLE_ID = 'dup-reestr-dz-principal-style';
   const REESTR_DZ_PRINCIPAL_CURRENT_ROW_CLASS = 'dup-reestr-dz-principal-current-row';
   const REESTR_DZ_PRINCIPAL_ATTENTION_ROW_CLASS = 'dup-reestr-dz-principal-attention-row';
+  const REESTR_DZ_PRINCIPAL_SUCCESS_ROW_CLASS = 'dup-reestr-dz-principal-success-row';
+  const REESTR_DZ_PRINCIPAL_ERROR_ROW_CLASS = 'dup-reestr-dz-principal-error-row';
   const REESTR_DZ_PRINCIPAL_DAILY_STORAGE_KEY = 'dup_reestr_dz_principal_daily_runs';
   const REESTR_DZ_PARALLEL_WORKERS_STORAGE_KEY = 'dup_reestr_dz_parallel_workers_v1';
   const REESTR_DZ_WRITE_OFF_COMMENT_SKIP_RULES_STORAGE_KEY = 'dup_reestr_dz_write_off_comment_skip_rules_v1';
@@ -586,7 +588,9 @@
         html.dup-ui-hide-reestr-dz-principal-autofill .pdf-status,
         html.dup-ui-hide-reestr-dz-principal-autofill .${REESTR_DZ_WRITE_OFF_HIGHLIGHT_CLASS},
         html.dup-ui-hide-reestr-dz-principal-autofill .${REESTR_DZ_PRINCIPAL_CURRENT_ROW_CLASS},
-        html.dup-ui-hide-reestr-dz-principal-autofill .${REESTR_DZ_PRINCIPAL_ATTENTION_ROW_CLASS} {
+        html.dup-ui-hide-reestr-dz-principal-autofill .${REESTR_DZ_PRINCIPAL_ATTENTION_ROW_CLASS},
+        html.dup-ui-hide-reestr-dz-principal-autofill .${REESTR_DZ_PRINCIPAL_SUCCESS_ROW_CLASS},
+        html.dup-ui-hide-reestr-dz-principal-autofill .${REESTR_DZ_PRINCIPAL_ERROR_ROW_CLASS} {
           display: none !important;
         }
       `
@@ -2925,6 +2929,20 @@
       #list tr.${REESTR_DZ_PRINCIPAL_ATTENTION_ROW_CLASS} > td:first-child {
         box-shadow: inset 6px 0 #e9342b;
       }
+      #list tr.${REESTR_DZ_PRINCIPAL_SUCCESS_ROW_CLASS} > td {
+        background: #d9f2df !important;
+        color: #173321 !important;
+      }
+      #list tr.${REESTR_DZ_PRINCIPAL_SUCCESS_ROW_CLASS} > td:first-child {
+        box-shadow: inset 6px 0 #329957;
+      }
+      #list tr.${REESTR_DZ_PRINCIPAL_ERROR_ROW_CLASS} > td {
+        background: #ffd2cf !important;
+        color: #381314 !important;
+      }
+      #list tr.${REESTR_DZ_PRINCIPAL_ERROR_ROW_CLASS} > td:first-child {
+        box-shadow: inset 6px 0 #e9342b;
+      }
     `;
     (document.head || document.documentElement).appendChild(style);
   }
@@ -3120,9 +3138,35 @@
   }
 
   function clearReestrDzPrincipalRowHighlight() {
-    document.querySelectorAll(`.${REESTR_DZ_PRINCIPAL_CURRENT_ROW_CLASS}, .${REESTR_DZ_PRINCIPAL_ATTENTION_ROW_CLASS}`).forEach((row) => {
-      row.classList.remove(REESTR_DZ_PRINCIPAL_CURRENT_ROW_CLASS, REESTR_DZ_PRINCIPAL_ATTENTION_ROW_CLASS);
+    document.querySelectorAll(`.${REESTR_DZ_PRINCIPAL_CURRENT_ROW_CLASS}, .${REESTR_DZ_PRINCIPAL_ATTENTION_ROW_CLASS}, .${REESTR_DZ_PRINCIPAL_SUCCESS_ROW_CLASS}, .${REESTR_DZ_PRINCIPAL_ERROR_ROW_CLASS}`).forEach((row) => {
+      row.classList.remove(
+        REESTR_DZ_PRINCIPAL_CURRENT_ROW_CLASS,
+        REESTR_DZ_PRINCIPAL_ATTENTION_ROW_CLASS,
+        REESTR_DZ_PRINCIPAL_SUCCESS_ROW_CLASS,
+        REESTR_DZ_PRINCIPAL_ERROR_ROW_CLASS
+      );
     });
+  }
+
+  function applyReestrDzBatchRowHighlights(run) {
+    const states = run && run.activeBatchRowStates && typeof run.activeBatchRowStates === 'object'
+      ? run.activeBatchRowStates
+      : {};
+    Object.entries(states).forEach(([rowId, state]) => {
+      const row = findReestrDzPrincipalRow(rowId);
+      if (!(row instanceof HTMLElement)) return;
+      row.classList.add(REESTR_DZ_PRINCIPAL_CURRENT_ROW_CLASS);
+      row.classList.toggle(REESTR_DZ_PRINCIPAL_SUCCESS_ROW_CLASS, state === 'success');
+      row.classList.toggle(REESTR_DZ_PRINCIPAL_ERROR_ROW_CLASS, state === 'error');
+    });
+  }
+
+  function setReestrDzBatchRowResult(run, rowId, error = false) {
+    if (!run || !rowId) return;
+    if (!run.activeBatchRowStates || typeof run.activeBatchRowStates !== 'object' ||
+      !Object.prototype.hasOwnProperty.call(run.activeBatchRowStates, String(rowId))) return;
+    run.activeBatchRowStates[String(rowId)] = error ? 'error' : 'success';
+    applyReestrDzBatchRowHighlights(run);
   }
 
   function getReestrDzActiveBatchCandidates(run) {
@@ -3149,6 +3193,8 @@
   async function showReestrDzActiveBatch(run, candidates, waitForResume, sync, label) {
     const activeCandidates = (Array.isArray(candidates) ? candidates : [])
       .filter((candidate) => candidate && candidate.id && !isReestrDzWriteOffExcludedClaimant(candidate.cell));
+    clearReestrDzPrincipalRowHighlight();
+    run.activeBatchRowStates = Object.fromEntries(activeCandidates.map((candidate) => [String(candidate.id), 'pending']));
     run.activeBatchCandidates = activeCandidates;
     run.activeBatchPage = null;
     sync(run);
@@ -3177,11 +3223,10 @@
         await setReestrDzGridPage(page, true);
         visibleRows = await waitForReestrDzActiveBatchRows(page, pageCandidates, 25000);
       }
-      clearReestrDzPrincipalRowHighlight();
       if (!visibleRows) {
         throw new Error(`Не удалось показать все активные строки группы на странице ${page}.`);
       }
-      visibleRows.forEach((row) => row.classList.add(REESTR_DZ_PRINCIPAL_CURRENT_ROW_CLASS));
+      applyReestrDzBatchRowHighlights(run);
       const firstRow = visibleRows[0];
       firstRow.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' });
       await new Promise((resolve) => window.setTimeout(resolve, 650));
@@ -3347,11 +3392,11 @@
       await setReestrDzGridPage(candidate.page);
     }
     const row = await waitForReestrDzGridReady(candidate.id);
-    clearReestrDzPrincipalRowHighlight();
     if (row instanceof HTMLElement) {
       const selectedRow = await selectReestrDzPrincipalGridRow(row, candidate);
       selectedRow.classList.add(REESTR_DZ_PRINCIPAL_CURRENT_ROW_CLASS);
       selectedRow.classList.toggle(REESTR_DZ_PRINCIPAL_ATTENTION_ROW_CLASS, attention);
+      applyReestrDzBatchRowHighlights(run);
       selectedRow.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' });
       return true;
     }
@@ -3964,6 +4009,7 @@
             }
             const result = await processReestrDzPrincipalCandidate(run, candidate, prepared.value);
             run.results.push({ id: candidate.id, ...result });
+            setReestrDzBatchRowResult(run, candidate.id, false);
             delete run.preparedResults[String(candidate.id)];
             run.nextIndex = index + 1;
             await persistReestrDzPrincipalDailyRun(run);
@@ -3980,6 +4026,7 @@
               discoveryError: error && error.discoveryError === true,
               error: true
             });
+            setReestrDzBatchRowResult(run, candidate.id, true);
             run.status = 'error';
             run.recoverableError = true;
             run.canContinue = false;
@@ -4012,7 +4059,7 @@
       if (run.status === 'error') {
         const row = run.current && findReestrDzPrincipalRow(run.current.id);
         if (row instanceof HTMLElement) row.classList.add(REESTR_DZ_PRINCIPAL_CURRENT_ROW_CLASS, REESTR_DZ_PRINCIPAL_ATTENTION_ROW_CLASS);
-      } else {
+      } else if (run.status !== 'completed') {
         clearReestrDzPrincipalRowHighlight();
       }
       try {
@@ -4624,11 +4671,11 @@
       await setReestrDzGridPage(candidate.page);
     }
     const row = await waitForReestrDzGridReady(candidate.id);
-    clearReestrDzPrincipalRowHighlight();
     if (!(row instanceof HTMLElement)) throw new Error(`Строка № ${candidate.id} не появилась после загрузки страницы ${candidate.page}.`);
     const selected = await selectReestrDzPrincipalGridRow(row, candidate);
     selected.classList.add(REESTR_DZ_PRINCIPAL_CURRENT_ROW_CLASS);
     selected.classList.toggle(REESTR_DZ_PRINCIPAL_ATTENTION_ROW_CLASS, attention);
+    applyReestrDzBatchRowHighlights(run);
     selected.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' });
     return selected;
   }
@@ -5520,6 +5567,7 @@
               informationWritten: false,
               error: false
             });
+            setReestrDzBatchRowResult(run, candidate.id, false);
             delete run.preparedResults[String(candidate.id)];
             run.nextIndex = index + 1;
             run.currentReview = null;
@@ -5536,6 +5584,7 @@
             delete run.current._writeOffBaselineCell;
             delete run.current._informationWritten;
             run.results.push({ id: run.current.id, ...result, error: false });
+            setReestrDzBatchRowResult(run, run.current.id, false);
             delete run.preparedResults[String(candidate.id)];
             run.nextIndex = index + 1;
             run.currentReview = null;
@@ -5566,6 +5615,7 @@
               discoveryError: error && error.discoveryError === true,
               error: true
             });
+            setReestrDzBatchRowResult(run, run.current.id, true);
             delete run.current._writeOffBaselineCell;
             run.status = 'error';
             run.recoverableError = true;
@@ -5587,7 +5637,6 @@
       run.stage = `Проверка завершена. Обработано строк: ${run.results.length}.${run.reportDownloaded ? ' Итоговый отчёт скачан.' : ''}`;
       run.warning = '';
       clearReestrDzWriteOffDraft();
-      clearReestrDzPrincipalRowHighlight();
       await persistReestrDzWriteOffRun(run);
       await sendRuntimeMessage({ action: 'REESTR_DZ_CLOSE_WSS_SESSION' }).catch(() => null);
       syncReestrDzWriteOffProgressOverlay(run);
@@ -9682,6 +9731,8 @@
       html.${SCREENSHOT_MODE_CLASS} .${REESTR_DZ_WRITE_OFF_HIGHLIGHT_CLASS},
       html.${SCREENSHOT_MODE_CLASS} .${REESTR_DZ_PRINCIPAL_CURRENT_ROW_CLASS},
       html.${SCREENSHOT_MODE_CLASS} .${REESTR_DZ_PRINCIPAL_ATTENTION_ROW_CLASS},
+      html.${SCREENSHOT_MODE_CLASS} .${REESTR_DZ_PRINCIPAL_SUCCESS_ROW_CLASS},
+      html.${SCREENSHOT_MODE_CLASS} .${REESTR_DZ_PRINCIPAL_ERROR_ROW_CLASS},
       html.${SCREENSHOT_MODE_CLASS} .ny-snow-container,
       html.${SCREENSHOT_MODE_CLASS} .ny-garland-container,
       html.${SCREENSHOT_MODE_CLASS} .spring-petal-layer,
