@@ -1419,7 +1419,7 @@ async function prepareIdCardCheckEditedocReturnAsync(tabId, edocId, transitionTe
                 };
             }
 
-            window.setTimeout(() => {
+            setTimeout(() => {
                 try {
                     triggerReturn(resolvedPreviousTm.matchedOption.value);
                 } catch (error) {
@@ -1959,6 +1959,8 @@ chrome.runtime.onInstalled.addListener(() => {
 });
 
 const reestrDzWssWorkerTabs = new Map();
+const reestrDzWriteOffReviewSessions = new Map();
+const reestrDzWriteOffReviewSources = new Map();
 
 function isAllowedReestrDzUrl(rawUrl) {
     try {
@@ -2022,9 +2024,78 @@ async function loadReestrDzWssDataInWorker(sourceTab, url, kind, expectedNumber)
         try {
             lastResult = await executeScriptInTabAsync(workerTabId, (documentKind, expectedDocumentNumber) => {
                 const normalize = (value) => String(value === undefined || value === null ? '' : value).replace(/\s+/g, ' ').trim();
+                const readVisibleText = (element) => normalize(element && ('innerText' in element ? element.innerText : element.textContent));
+                const findSolutionHistoryTable = () => {
+                    const tables = Array.from(document.querySelectorAll('#solHistoryTBL'));
+                    return tables.find((table) => table.closest('.wss-solution-history')) ||
+                        document.querySelector('#solutionHistoryTD .wss-solution-history table.wssc-shistory-tb') ||
+                        tables.find((table) => table.querySelectorAll('tr').length > 1) ||
+                        null;
+                };
                 const expected = normalize(expectedDocumentNumber);
                 const base = { url: window.location.href, title: document.title, kind: documentKind };
                 if (document.readyState !== 'complete') return { ...base, success: false, pending: true, error: 'WSS_PAGE_LOADING' };
+                if (documentKind === 'writeoff_request') {
+                    const title = normalize(document.title);
+                    if (expected && !title.includes(expected)) {
+                        return { ...base, success: false, pending: true, error: 'WSS_REQUEST_IDENTITY_MISMATCH' };
+                    }
+                    const findFieldRow = (label) => Array.from(document.querySelectorAll('.dbf_listform_title'))
+                        .find((element) => normalize(element.textContent) === label)?.closest('tr') || null;
+                    const readFieldText = (label) => {
+                        const row = findFieldRow(label);
+                        if (!row) return '';
+                        const valueContainer = row.querySelector('.lc_divValueContent') || row.cells && row.cells[row.cells.length - 1];
+                        const input = valueContainer && valueContainer.querySelector('input:not([type="hidden"]), textarea, select');
+                        return normalize(input && 'value' in input ? input.value : valueContainer && valueContainer.textContent);
+                    };
+                    const readFieldLinks = (label) => {
+                        const row = findFieldRow(label);
+                        if (!row) return [];
+                        const unique = new Map();
+                        row.querySelectorAll('a[href]').forEach((anchor) => {
+                            const text = normalize(anchor.textContent);
+                            const rawHref = String(anchor.getAttribute('href') || '').trim();
+                            if (!text || !rawHref || /^javascript:/i.test(rawHref) || text.toLocaleLowerCase('ru-RU') === 'создать') return;
+                            try {
+                                const href = new URL(rawHref, window.location.href).toString();
+                                unique.set(`${text}\n${href}`, { text, href });
+                            } catch (error) {
+                                // ignore malformed WSS link
+                            }
+                        });
+                        return Array.from(unique.values());
+                    };
+                    const responsibleName = readFieldText('Ответственный за отражение списания в биллинговом ПК');
+                    const historyTable = findSolutionHistoryTable();
+                    if (!responsibleName || !historyTable) {
+                        return { ...base, success: false, pending: true, error: 'WSS_REQUEST_AUDIT_DATA_LOADING' };
+                    }
+                    const allowedDecisions = new Set([
+                        'Задолженность списана',
+                        'Отказ в списании',
+                        'Задолженность списана частично'
+                    ]);
+                    const writeOffDecisions = Array.from(historyTable.querySelectorAll('tr')).map((row) => {
+                        const cells = Array.from(row.cells || []).map(readVisibleText);
+                        if (cells.length < 2 || !allowedDecisions.has(cells[1])) return null;
+                        const match = cells[0].match(/^(\d{2}\.\d{2}\.\d{4})\s+(\d{2}:\d{2})\s+(.+)$/);
+                        if (!match) return null;
+                        return { date: match[1], time: match[2], user: normalize(match[3]), decision: cells[1] };
+                    }).filter(Boolean);
+                    return {
+                        ...base,
+                        success: true,
+                        expectedNumber: expected,
+                        outgoingLinks: readFieldLinks('Ссылка на исходящий документ'),
+                        incomingLinks: readFieldLinks('Ссылка на входящий документ'),
+                        otherLinks: readFieldLinks('Другие документы'),
+                        setsCount: readFieldText('Количество комплектов'),
+                        writeOffAmount: readFieldText('Сумма списания задолженности'),
+                        responsibleName,
+                        writeOffDecisions
+                    };
+                }
                 if (documentKind === 'request') {
                     const title = normalize(document.title);
                     if (expected && !title.includes(expected)) {
@@ -2054,12 +2125,12 @@ async function loadReestrDzWssDataInWorker(sourceTab, url, kind, expectedNumber)
                         ? Array.from(responsibleRow.cells || []).map((cell) => normalize(cell.textContent)).filter(Boolean)
                         : [];
                     const responsibleName = responsibleValues.find((value) => value !== 'Ответственный за отражение списания в биллинговом ПК') || '';
-                    const historyTable = document.querySelector('#solHistoryTBL');
+                    const historyTable = findSolutionHistoryTable();
                     if (!responsibleLabel || !historyTable) {
                         return { ...base, success: false, pending: true, error: 'WSS_REQUEST_AUDIT_DATA_LOADING' };
                     }
                     const completedDecisions = Array.from(historyTable.querySelectorAll('tr')).map((row) => {
-                        const cells = Array.from(row.cells || []).map((cell) => normalize(cell.textContent));
+                        const cells = Array.from(row.cells || []).map(readVisibleText);
                         if (cells.length < 2 || cells[1] !== 'Исполнено') return null;
                         const match = cells[0].match(/^(\d{2}\.\d{2}\.\d{4})\s+(\d{2}:\d{2})\s+(.+)$/);
                         if (!match) return null;
@@ -2105,7 +2176,7 @@ async function loadReestrDzWssDocument(sourceTab, rawUrl, rawKind, rawExpectedNu
     const kind = String(rawKind || '').trim();
     const expectedNumber = String(rawExpectedNumber || '').replace(/\s+/g, ' ').trim();
     if (!isAllowedReestrDzUrl(url)) throw new Error('WSS_URL_NOT_ALLOWED');
-    if (!['request', 'outgoing'].includes(kind)) throw new Error('WSS_DOCUMENT_KIND_UNKNOWN');
+    if (!['request', 'outgoing', 'writeoff_request'].includes(kind)) throw new Error('WSS_DOCUMENT_KIND_UNKNOWN');
     if (!expectedNumber) throw new Error('WSS_EXPECTED_NUMBER_REQUIRED');
 
     const sourceTabId = sourceTab && Number.isInteger(sourceTab.id) ? sourceTab.id : null;
@@ -2123,6 +2194,66 @@ async function closeReestrDzWssWorker(sourceTabId) {
     } catch (error) {
         return false;
     }
+}
+
+async function closeReestrDzWriteOffReview(sourceTabId, activateSource = false) {
+    const session = reestrDzWriteOffReviewSessions.get(sourceTabId);
+    if (!session) return false;
+    reestrDzWriteOffReviewSessions.delete(sourceTabId);
+    reestrDzWriteOffReviewSources.delete(session.reviewTabId);
+    try {
+        if (Number.isInteger(session.reviewTabId)) await removeTabAsync(session.reviewTabId);
+    } catch (error) {
+        // the review tab may already be closed by the user
+    }
+    if (activateSource) {
+        try {
+            await updateTabAsync(sourceTabId, { active: true });
+        } catch (error) {
+            // source tab may have been closed
+        }
+    }
+    return true;
+}
+
+async function openReestrDzWriteOffReview(sourceTab, rawData) {
+    const sourceTabId = sourceTab && Number.isInteger(sourceTab.id) ? sourceTab.id : null;
+    if (!Number.isInteger(sourceTabId)) throw new Error('NO_SOURCE_TAB');
+    await closeReestrDzWriteOffReview(sourceTabId, false);
+    const data = rawData && typeof rawData === 'object' ? JSON.parse(JSON.stringify(rawData)) : {};
+    const documents = Array.isArray(data.documents) ? data.documents.filter((item) => item && isAllowedReestrDzUrl(item.href)) : [];
+    if (!documents.length) throw new Error('WRITE_OFF_DOCUMENTS_NOT_FOUND');
+    const createProperties = {
+        url: documents[0].href,
+        active: true,
+        openerTabId: sourceTabId
+    };
+    if (Number.isInteger(sourceTab.windowId)) createProperties.windowId = sourceTab.windowId;
+    if (sourceTab.cookieStoreId) createProperties.cookieStoreId = sourceTab.cookieStoreId;
+    let reviewTab;
+    try {
+        reviewTab = await createTabAsync(createProperties);
+    } catch (error) {
+        delete createProperties.cookieStoreId;
+        reviewTab = await createTabAsync(createProperties);
+    }
+    const reviewTabId = reviewTab && Number.isInteger(reviewTab.id) ? reviewTab.id : null;
+    if (!Number.isInteger(reviewTabId)) throw new Error('NO_WRITE_OFF_REVIEW_TAB');
+    const session = {
+        sourceTabId,
+        reviewTabId,
+        status: 'reviewing',
+        paused: false,
+        currentDocumentIndex: 0,
+        fields: { orderDate: '', orderNumber: '' },
+        position: null,
+        attachmentsByUrl: {},
+        data: { ...data, documents },
+        updatedAt: Date.now()
+    };
+    reestrDzWriteOffReviewSessions.set(sourceTabId, session);
+    reestrDzWriteOffReviewSources.set(reviewTabId, sourceTabId);
+    return { success: true, reviewTabId };
 }
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -2217,6 +2348,137 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     success: false,
                     error: error && error.message ? error.message : String(error)
                 }));
+            return true;
+        }
+
+        case 'REESTR_DZ_WRITE_OFF_OPEN_REVIEW': {
+            openReestrDzWriteOffReview(sender && sender.tab, request.data)
+                .then(sendResponse)
+                .catch((error) => sendResponse({ success: false, error: error && error.message ? error.message : String(error) }));
+            return true;
+        }
+
+        case 'REESTR_DZ_WRITE_OFF_GET_REVIEW_STATE': {
+            const reviewTabId = sender && sender.tab && Number.isInteger(sender.tab.id) ? sender.tab.id : null;
+            const sourceTabId = Number.isInteger(reviewTabId) ? reestrDzWriteOffReviewSources.get(reviewTabId) : null;
+            const session = Number.isInteger(sourceTabId) ? reestrDzWriteOffReviewSessions.get(sourceTabId) : null;
+            sendResponse(session ? { success: true, session: JSON.parse(JSON.stringify(session)) } : { success: false, error: 'NO_WRITE_OFF_REVIEW' });
+            return false;
+        }
+
+        case 'REESTR_DZ_WRITE_OFF_UPDATE_REVIEW': {
+            const reviewTabId = sender && sender.tab && Number.isInteger(sender.tab.id) ? sender.tab.id : null;
+            const sourceTabId = Number.isInteger(reviewTabId) ? reestrDzWriteOffReviewSources.get(reviewTabId) : null;
+            const session = Number.isInteger(sourceTabId) ? reestrDzWriteOffReviewSessions.get(sourceTabId) : null;
+            if (!session) {
+                sendResponse({ success: false, error: 'NO_WRITE_OFF_REVIEW' });
+                return false;
+            }
+            const data = request.data && typeof request.data === 'object' ? request.data : {};
+            if (data.fields && typeof data.fields === 'object') {
+                session.fields = {
+                    orderDate: String(data.fields.orderDate || '').trim(),
+                    orderNumber: String(data.fields.orderNumber || '').trim()
+                };
+            }
+            if (typeof data.paused === 'boolean') session.paused = data.paused;
+            if (data.position && Number.isFinite(Number(data.position.left)) && Number.isFinite(Number(data.position.top))) {
+                session.position = { left: Number(data.position.left), top: Number(data.position.top) };
+            }
+            if (Array.isArray(data.attachments)) {
+                const pageUrl = String(data.pageUrl || sender.tab.url || '');
+                session.attachmentsByUrl[pageUrl] = data.attachments.filter((item) => item && isAllowedReestrDzUrl(item.href));
+            }
+            session.updatedAt = Date.now();
+            sendResponse({ success: true, session: JSON.parse(JSON.stringify(session)) });
+            return false;
+        }
+
+        case 'REESTR_DZ_WRITE_OFF_NAVIGATE_REVIEW': {
+            const reviewTabId = sender && sender.tab && Number.isInteger(sender.tab.id) ? sender.tab.id : null;
+            const sourceTabId = Number.isInteger(reviewTabId) ? reestrDzWriteOffReviewSources.get(reviewTabId) : null;
+            const session = Number.isInteger(sourceTabId) ? reestrDzWriteOffReviewSessions.get(sourceTabId) : null;
+            const targetUrl = String(request.data && request.data.url || '').trim();
+            if (!session || !isAllowedReestrDzUrl(targetUrl)) {
+                sendResponse({ success: false, error: 'INVALID_WRITE_OFF_REVIEW_URL' });
+                return false;
+            }
+            const documentIndex = Number.parseInt(String(request.data && request.data.documentIndex), 10);
+            if (Number.isInteger(documentIndex) && documentIndex >= 0) session.currentDocumentIndex = documentIndex;
+            session.updatedAt = Date.now();
+            updateTabAsync(reviewTabId, { url: targetUrl, active: true })
+                .then(() => sendResponse({ success: true }))
+                .catch((error) => sendResponse({ success: false, error: error && error.message ? error.message : String(error) }));
+            return true;
+        }
+
+        case 'REESTR_DZ_WRITE_OFF_FINISH_REVIEW': {
+            const reviewTabId = sender && sender.tab && Number.isInteger(sender.tab.id) ? sender.tab.id : null;
+            const sourceTabId = Number.isInteger(reviewTabId) ? reestrDzWriteOffReviewSources.get(reviewTabId) : null;
+            const session = Number.isInteger(sourceTabId) ? reestrDzWriteOffReviewSessions.get(sourceTabId) : null;
+            if (!session) {
+                sendResponse({ success: false, error: 'NO_WRITE_OFF_REVIEW' });
+                return false;
+            }
+            const fields = request.data && request.data.fields && typeof request.data.fields === 'object' ? request.data.fields : {};
+            session.fields = {
+                orderDate: String(fields.orderDate || '').trim(),
+                orderNumber: String(fields.orderNumber || '').trim()
+            };
+            session.status = 'done';
+            session.paused = false;
+            session.updatedAt = Date.now();
+            updateTabAsync(sourceTabId, { active: true }).catch(() => null);
+            sendResponse({ success: true });
+            window.setTimeout(() => {
+                if (reestrDzWriteOffReviewSessions.get(sourceTabId) === session) {
+                    removeTabAsync(reviewTabId).catch(() => null);
+                }
+            }, 120);
+            return false;
+        }
+
+        case 'REESTR_DZ_WRITE_OFF_STOP_REVIEW': {
+            const reviewTabId = sender && sender.tab && Number.isInteger(sender.tab.id) ? sender.tab.id : null;
+            const sourceTabId = Number.isInteger(reviewTabId) ? reestrDzWriteOffReviewSources.get(reviewTabId) : null;
+            const session = Number.isInteger(sourceTabId) ? reestrDzWriteOffReviewSessions.get(sourceTabId) : null;
+            if (!session) {
+                sendResponse({ success: false, error: 'NO_WRITE_OFF_REVIEW' });
+                return false;
+            }
+            session.status = 'cancelled';
+            session.updatedAt = Date.now();
+            updateTabAsync(sourceTabId, { active: true }).catch(() => null);
+            sendResponse({ success: true });
+            setTimeout(() => removeTabAsync(reviewTabId).catch(() => null), 120);
+            return false;
+        }
+
+        case 'REESTR_DZ_WRITE_OFF_POLL_REVIEW': {
+            const sourceTabId = sender && sender.tab && Number.isInteger(sender.tab.id) ? sender.tab.id : null;
+            const session = Number.isInteger(sourceTabId) ? reestrDzWriteOffReviewSessions.get(sourceTabId) : null;
+            if (!session) {
+                sendResponse({ success: false, error: 'NO_WRITE_OFF_REVIEW' });
+                return false;
+            }
+            const response = { success: true, status: session.status, fields: { ...session.fields }, paused: session.paused };
+            if (session.status === 'done' || session.status === 'cancelled') {
+                reestrDzWriteOffReviewSessions.delete(sourceTabId);
+                reestrDzWriteOffReviewSources.delete(session.reviewTabId);
+            }
+            sendResponse(response);
+            return false;
+        }
+
+        case 'REESTR_DZ_WRITE_OFF_CANCEL_REVIEW': {
+            const sourceTabId = sender && sender.tab && Number.isInteger(sender.tab.id) ? sender.tab.id : null;
+            if (!Number.isInteger(sourceTabId)) {
+                sendResponse({ success: false, error: 'NO_SOURCE_TAB' });
+                return false;
+            }
+            closeReestrDzWriteOffReview(sourceTabId, true)
+                .then((closed) => sendResponse({ success: true, closed }))
+                .catch((error) => sendResponse({ success: false, error: error && error.message ? error.message : String(error) }));
             return true;
         }
 
@@ -2330,6 +2592,59 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     await delayAsync(120);
                 }
                 return { success: false, error: 'NOTE_FORM_NOT_FOUND' };
+            })().then(sendResponse).catch((error) => sendResponse({
+                success: false,
+                error: error && error.message ? error.message : String(error)
+            }));
+            return true;
+        }
+
+        case 'REESTR_DZ_FILL_ORDER_FORM': {
+            const sourceTabId = sender && sender.tab && Number.isInteger(sender.tab.id) ? sender.tab.id : null;
+            const rowId = String(request.data && request.data.rowId || '').trim();
+            const orderDate = String(request.data && request.data.orderDate || '').trim();
+            const orderNumber = String(request.data && request.data.orderNumber || '').trim();
+            if (!Number.isInteger(sourceTabId) || !rowId || !orderDate || !orderNumber) {
+                sendResponse({ success: false, error: 'INVALID_ORDER_FORM_DATA' });
+                return false;
+            }
+
+            (async () => {
+                const startedAt = Date.now();
+                while (Date.now() - startedAt < 15000) {
+                    const frameResults = await executeScriptInAllFramesAsync(
+                        sourceTabId,
+                        async (payload) => {
+                            if (window.location.pathname !== '/ovzid/ReestrDz/Order') return { matched: false };
+                            const form = document.querySelector('form[action*="/ovzid/ReestrDz/Order"]');
+                            const idInput = form && form.querySelector('input[name="ReestrDzID"]');
+                            if (!form || String(idInput && idInput.value || '').trim() !== payload.rowId) return { matched: false };
+                            const dateInput = form.querySelector('input[name="OrderDate"]');
+                            const numberInput = form.querySelector('input[name="OrderNumber"]');
+                            const submitButton = form.querySelector('button[type="submit"], input[type="submit"]');
+                            if (!(dateInput instanceof HTMLInputElement) || !(numberInput instanceof HTMLInputElement) || !(submitButton instanceof HTMLElement)) {
+                                return { matched: true, success: false, error: 'ORDER_FORM_NOT_READY' };
+                            }
+                            const setValue = (input, value) => {
+                                input.focus();
+                                input.value = String(value || '');
+                                input.dispatchEvent(new Event('input', { bubbles: true }));
+                                input.dispatchEvent(new Event('change', { bubbles: true }));
+                                input.blur();
+                            };
+                            setValue(dateInput, payload.orderDate);
+                            setValue(numberInput, payload.orderNumber);
+                            setTimeout(() => submitButton.click(), 80);
+                            return { matched: true, success: true };
+                        },
+                        [{ rowId, orderDate, orderNumber }],
+                        { world: 'MAIN' }
+                    );
+                    const successfulFrame = frameResults.find((result) => result && result.matched && result.success);
+                    if (successfulFrame) return successfulFrame;
+                    await delayAsync(120);
+                }
+                return { success: false, error: 'ORDER_FORM_NOT_FOUND' };
             })().then(sendResponse).catch((error) => sendResponse({
                 success: false,
                 error: error && error.message ? error.message : String(error)
@@ -3394,6 +3709,21 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   }
   for (const [sourceTabId, workerTabId] of reestrDzWssWorkerTabs.entries()) {
     if (workerTabId === tabId) reestrDzWssWorkerTabs.delete(sourceTabId);
+  }
+  const reviewSourceTabId = reestrDzWriteOffReviewSources.get(tabId);
+  if (Number.isInteger(reviewSourceTabId)) {
+    reestrDzWriteOffReviewSources.delete(tabId);
+    const reviewSession = reestrDzWriteOffReviewSessions.get(reviewSourceTabId);
+    if (reviewSession && reviewSession.status === 'reviewing') {
+      reviewSession.status = 'cancelled';
+      reviewSession.updatedAt = Date.now();
+    }
+  }
+  const reviewSession = reestrDzWriteOffReviewSessions.get(tabId);
+  if (reviewSession) {
+    reestrDzWriteOffReviewSessions.delete(tabId);
+    reestrDzWriteOffReviewSources.delete(reviewSession.reviewTabId);
+    if (Number.isInteger(reviewSession.reviewTabId)) removeTabAsync(reviewSession.reviewTabId).catch(() => {});
   }
   sendStageCancelForClosedTab(tabId);
   clearStageRequestsForTab(tabId);

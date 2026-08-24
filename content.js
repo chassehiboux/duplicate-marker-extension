@@ -297,6 +297,17 @@
   const REESTR_DZ_PRINCIPAL_ATTENTION_ROW_CLASS = 'dup-reestr-dz-principal-attention-row';
   const REESTR_DZ_PRINCIPAL_DAILY_STORAGE_KEY = 'dup_reestr_dz_principal_daily_runs';
   const REESTR_DZ_PRINCIPAL_DAILY_STORAGE_VERSION = 2;
+  const REESTR_DZ_CHECK_MENU_ID = 'dup-reestr-dz-check-menu';
+  const REESTR_DZ_WRITE_OFF_OVERLAY_ID = 'dup-reestr-dz-write-off-overlay';
+  const REESTR_DZ_WRITE_OFF_DAILY_STORAGE_KEY = 'dup_reestr_dz_write_off_daily_runs';
+  const REESTR_DZ_WRITE_OFF_DAILY_STORAGE_VERSION = 1;
+  const REESTR_DZ_WRITE_OFF_DRAFT_STORAGE_KEY = 'dup_reestr_dz_write_off_review_draft';
+  const REESTR_DZ_WRITE_OFF_HIGHLIGHT_CLASS = 'dup-reestr-dz-write-off-highlight';
+  const REESTR_DZ_WRITE_OFF_DECISIONS = Object.freeze([
+    'Задолженность списана',
+    'Отказ в списании',
+    'Задолженность списана частично'
+  ]);
   const REESTR_DZ_PRINCIPAL_REPORT_HEADERS = Object.freeze([
     ['ReestrDzID', '№'],
     ['Status', 'Статус'],
@@ -557,14 +568,17 @@
     {
       key: 'reestrDzPrincipalAutofill',
       storageKey: 'dup_ui_show_reestr_dz_principal_autofill',
-      label: 'Проверка исходящих реестров ДЗ',
-      description: 'Кнопка, оверлей и подсветка строк при заполнении сведений принципалу.',
+      label: 'Проверки реестров списания ДЗ',
+      description: 'Меню проверки исходящих и приказов, оверлеи и подсветка текущей строки.',
       hideClass: 'dup-ui-hide-reestr-dz-principal-autofill',
       hideCss: `
         html.dup-ui-hide-reestr-dz-principal-autofill #${REESTR_DZ_PRINCIPAL_BUTTON_ID},
         html.dup-ui-hide-reestr-dz-principal-autofill #${REESTR_DZ_PRINCIPAL_SEPARATOR_ID},
         html.dup-ui-hide-reestr-dz-principal-autofill #${REESTR_DZ_PRINCIPAL_OVERLAY_ID},
         html.dup-ui-hide-reestr-dz-principal-autofill #${REESTR_DZ_PRINCIPAL_PERIOD_DIALOG_ID},
+        html.dup-ui-hide-reestr-dz-principal-autofill #${REESTR_DZ_CHECK_MENU_ID},
+        html.dup-ui-hide-reestr-dz-principal-autofill #${REESTR_DZ_WRITE_OFF_OVERLAY_ID},
+        html.dup-ui-hide-reestr-dz-principal-autofill .${REESTR_DZ_WRITE_OFF_HIGHLIGHT_CLASS},
         html.dup-ui-hide-reestr-dz-principal-autofill .${REESTR_DZ_PRINCIPAL_CURRENT_ROW_CLASS},
         html.dup-ui-hide-reestr-dz-principal-autofill .${REESTR_DZ_PRINCIPAL_ATTENTION_ROW_CLASS} {
           display: none !important;
@@ -756,6 +770,10 @@
   let reestrDzPrincipalRun = null;
   let reestrDzPrincipalObserver = null;
   let reestrDzPrincipalDailyWriteChain = Promise.resolve();
+  let reestrDzWriteOffRun = null;
+  let reestrDzWriteOffDailyWriteChain = Promise.resolve();
+  let reestrDzWriteOffReviewState = null;
+  const reestrDzBoundCheckButtons = new WeakSet();
   let stageJumpCachedMenuIndex = null;
   let stageJumpActionMenuEl = null;
   let stageJumpActionMenuAnchor = null;
@@ -2075,6 +2093,34 @@
     return String(value === undefined || value === null ? '' : value).replace(/\s+/g, ' ').trim();
   }
 
+  const REESTR_DZ_WRITE_OFF_EXCLUDED_CLAIMANTS = Object.freeze(new Set([
+    'акционерное общество энергосбытовая компания восток',
+    'ао эк восток',
+    'ао эк восток г оренбург',
+    'ао эк восток ноябрьск',
+    'ао эк восток сургут'
+  ]));
+
+  function normalizeReestrDzClaimant(value) {
+    return normalizeReestrDzText(value)
+      .toLocaleLowerCase('ru-RU')
+      .replace(/ё/g, 'е')
+      .replace(/[«»„“”"'`()]/g, ' ')
+      .replace(/[.,;:]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function isReestrDzWriteOffExcludedClaimant(cell) {
+    const value = cell && (cell.ClaimantName || cell.Claimant || cell.ClaimantFullName);
+    return REESTR_DZ_WRITE_OFF_EXCLUDED_CLAIMANTS.has(normalizeReestrDzClaimant(value));
+  }
+
+  function hasReestrDzExactNoteLine(note, expectedLine) {
+    const expected = normalizeReestrDzText(expectedLine);
+    return String(note || '').split(/\r?\n/).some((line) => normalizeReestrDzText(line) === expected);
+  }
+
   function parseReestrDzDate(value) {
     const match = normalizeReestrDzText(value).match(/(?:^|\D)(\d{2})\.(\d{2})\.(\d{4})(?:\D|$)/);
     if (!match) return null;
@@ -2395,6 +2441,35 @@
       .dup-rdz-period-input:focus { border-color: #337ab7; outline: 0; box-shadow: 0 0 0 2px rgba(51,122,183,.14); }
       .dup-rdz-period-error { min-height: 17px; margin-top: 5px; color: #c9302c; font-size: 12px; }
       .dup-rdz-period-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 10px; }
+      #${REESTR_DZ_CHECK_MENU_ID} {
+        position: fixed;
+        z-index: 2147483002;
+        width: 268px;
+        padding: 5px;
+        border: 1px solid #aeb8c1;
+        border-radius: 4px;
+        background: #fff;
+        box-shadow: 0 12px 32px rgba(20, 35, 50, .22);
+        font-family: "Segoe UI", sans-serif;
+      }
+      #${REESTR_DZ_CHECK_MENU_ID} button {
+        display: grid;
+        grid-template-columns: 24px 1fr;
+        gap: 8px;
+        width: 100%;
+        padding: 9px 10px;
+        border: 0;
+        border-radius: 3px;
+        background: transparent;
+        color: #293846;
+        text-align: left;
+        cursor: pointer;
+      }
+      #${REESTR_DZ_CHECK_MENU_ID} button:hover,
+      #${REESTR_DZ_CHECK_MENU_ID} button:focus { background: #edf3f8; outline: 0; }
+      #${REESTR_DZ_CHECK_MENU_ID} .fa { margin-top: 2px; color: #337ab7; font-size: 16px; text-align: center; }
+      #${REESTR_DZ_CHECK_MENU_ID} strong { display: block; font-size: 12px; font-weight: 600; }
+      #${REESTR_DZ_CHECK_MENU_ID} small { display: block; margin-top: 2px; color: #71808d; font-size: 10px; line-height: 1.3; }
       #${REESTR_DZ_PRINCIPAL_OVERLAY_ID} {
         --dup-rdz-accent: #ffb400;
         --dup-rdz-panel: #0f2134;
@@ -2567,6 +2642,67 @@
         font-size: 17px;
       }
       .dup-rdz-principal-action[hidden] { display: none; }
+      #${REESTR_DZ_WRITE_OFF_OVERLAY_ID} {
+        --dup-wo-accent: #e59b20;
+        position: fixed;
+        z-index: 2147483003;
+        top: 70px;
+        right: 18px;
+        width: min(350px, calc(100vw - 24px));
+        overflow: hidden;
+        border: 1px solid #aeb8c1;
+        border-top: 4px solid var(--dup-wo-accent);
+        border-radius: 5px;
+        background: #f8fafb;
+        color: #273746;
+        font-family: Bahnschrift, "Segoe UI", sans-serif;
+        box-shadow: 0 15px 42px rgba(20, 35, 50, .28);
+      }
+      #${REESTR_DZ_WRITE_OFF_OVERLAY_ID}[data-state="error"] { --dup-wo-accent: #d43f3a; }
+      #${REESTR_DZ_WRITE_OFF_OVERLAY_ID}[data-state="completed"] { --dup-wo-accent: #3d9b67; }
+      .dup-wo-head {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 10px;
+        align-items: start;
+        padding: 10px 12px 9px;
+        border-bottom: 1px solid #d7dde2;
+        background: #233646;
+        color: #fff;
+        cursor: move;
+        user-select: none;
+      }
+      .dup-wo-head strong { display: block; font-size: 14px; font-weight: 650; }
+      .dup-wo-head small { display: block; margin-top: 3px; color: #b9c7d2; font-size: 10px; }
+      .dup-wo-close { width: 24px; height: 24px; padding: 0; border: 1px solid #607586; border-radius: 3px; background: transparent; color: #fff; font-size: 17px; cursor: pointer; }
+      .dup-wo-body { padding: 10px 12px 12px; }
+      .dup-wo-stage { margin-bottom: 9px; padding: 7px 8px; border-left: 3px solid var(--dup-wo-accent); background: #eef2f5; font-size: 11px; line-height: 1.35; }
+      .dup-wo-grid { display: grid; grid-template-columns: 104px 1fr; gap: 5px 8px; align-items: baseline; font-size: 11px; }
+      .dup-wo-grid dt { color: #73818c; }
+      .dup-wo-grid dd { min-width: 0; margin: 0; color: #1f2f3c; font-weight: 600; overflow-wrap: anywhere; }
+      .dup-wo-decision { color: #8b5a09 !important; }
+      .dup-wo-docs, .dup-wo-files { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
+      .dup-wo-docs button, .dup-wo-files button {
+        min-height: 27px;
+        padding: 4px 8px;
+        border: 1px solid #b9c4cc;
+        border-radius: 3px;
+        background: #fff;
+        color: #315b78;
+        font: 600 10px/1.2 Bahnschrift, "Segoe UI", sans-serif;
+        cursor: pointer;
+      }
+      .dup-wo-docs button[aria-current="page"] { border-color: #d38c18; background: #fff4d9; color: #6f4807; }
+      .dup-wo-form { display: grid; gap: 8px; margin-top: 11px; padding-top: 10px; border-top: 1px solid #d7dde2; }
+      .dup-wo-field label { display: block; margin-bottom: 4px; color: #536571; font-size: 10px; font-weight: 600; }
+      .dup-wo-field input { box-sizing: border-box; width: 100%; height: 31px; padding: 5px 8px; border: 1px solid #aeb8c1; border-radius: 3px; background: #fff; color: #1f2f3c; font: 12px/1 Consolas, monospace; }
+      .dup-wo-field input:focus { border-color: #337ab7; outline: 0; box-shadow: 0 0 0 2px rgba(51,122,183,.13); }
+      .dup-wo-error { min-height: 15px; color: #bd302c; font-size: 10px; line-height: 1.35; }
+      .dup-wo-actions { display: flex; gap: 6px; margin-top: 9px; }
+      .dup-wo-actions button { min-height: 30px; padding: 5px 10px; border: 1px solid #aeb8c1; border-radius: 3px; background: #fff; color: #344b5d; font: 600 11px/1 Bahnschrift, "Segoe UI", sans-serif; cursor: pointer; }
+      .dup-wo-actions button[data-action="done"] { margin-left: auto; border-color: #286090; background: #337ab7; color: #fff; }
+      .dup-wo-actions button[disabled] { opacity: .45; cursor: default; }
+      .${REESTR_DZ_WRITE_OFF_HIGHLIGHT_CLASS} { padding: 0 1px; border-radius: 2px; background: #ffe066 !important; color: #241b00 !important; box-shadow: 0 0 0 1px rgba(190,130,0,.25); }
       #list tr.${REESTR_DZ_PRINCIPAL_CURRENT_ROW_CLASS} > td {
         background: #fff0a6 !important;
         color: #182531 !important;
@@ -3063,6 +3199,7 @@
       action: 'REESTR_DZ_FILL_NATIVE_FORM',
       data: {
         rowId: candidate.id,
+        depid: run.department && run.department.depid || '',
         sendDate: outgoing.date,
         principalNumber: outgoing.number
       }
@@ -3146,6 +3283,17 @@
       updateReestrDzPrincipalStage(run, `Проверяю текущее состояние строки № ${candidate.id}…`);
       const liveRow = await loadReestrDzRowById(run.gridState, candidate.id, run.controller.signal);
       const liveCell = liveRow && liveRow.cell ? liveRow.cell : candidate.cell;
+      if (isReestrDzWriteOffExcludedClaimant(liveCell)) {
+        return {
+          cell: { ...candidate.cell, ...liveCell },
+          result: 'Пропущено',
+          description: 'Взыскатель относится к АО «ЭК «Восток»: поручение создаётся без фактического списания.',
+          found: false,
+          saved: false,
+          skipped: true,
+          error: false
+        };
+      }
       const hasDate = !!normalizeReestrDzText(liveCell.SendDate);
       const hasNumber = !!normalizeReestrDzText(liveCell.PrincipalNumber);
       if (hasDate && hasNumber) {
@@ -3572,11 +3720,65 @@
     button.tabIndex = isDisabled ? -1 : 0;
   }
 
+  function closeReestrDzCheckMenu() {
+    document.getElementById(REESTR_DZ_CHECK_MENU_ID)?.remove();
+    document.getElementById(REESTR_DZ_PRINCIPAL_BUTTON_ID)?.setAttribute('aria-expanded', 'false');
+  }
+
+  function toggleReestrDzCheckMenu(button) {
+    const existing = document.getElementById(REESTR_DZ_CHECK_MENU_ID);
+    if (existing instanceof HTMLElement) {
+      closeReestrDzCheckMenu();
+      return;
+    }
+    const rect = button.getBoundingClientRect();
+    const menu = document.createElement('div');
+    menu.id = REESTR_DZ_CHECK_MENU_ID;
+    menu.className = 'dup-reestr-dz-principal-ui';
+    menu.setAttribute('role', 'menu');
+    menu.style.top = `${Math.round(rect.bottom + 5)}px`;
+    menu.style.left = `${Math.max(8, Math.round(rect.left))}px`;
+    menu.innerHTML = `
+      <button type="button" role="menuitem" data-action="principal">
+        <span class="fa fa-envelope-o" aria-hidden="true"></span>
+        <span><strong>Проверить исходящие</strong><small>Заполнить сведения принципалу</small></span>
+      </button>
+      <button type="button" role="menuitem" data-action="write-off">
+        <span class="fa fa-check-square-o" aria-hidden="true"></span>
+        <span><strong>Проверка списания</strong><small>Проверить приказ и сохранить решение</small></span>
+      </button>`;
+    menu.addEventListener('click', (event) => {
+      const actionButton = event.target instanceof Element ? event.target.closest('[data-action]') : null;
+      if (!(actionButton instanceof HTMLButtonElement)) return;
+      const action = actionButton.dataset.action;
+      closeReestrDzCheckMenu();
+      if (action === 'principal') void startReestrDzPrincipalAutofill();
+      if (action === 'write-off') void startReestrDzWriteOffCheck();
+    });
+    (document.body || document.documentElement).appendChild(menu);
+    const menuWidth = menu.offsetWidth || 268;
+    const menuHeight = menu.offsetHeight || 112;
+    const hasRoomBelow = rect.bottom + 5 + menuHeight <= window.innerHeight - 8;
+    const top = hasRoomBelow ? rect.bottom + 5 : rect.top - menuHeight - 5;
+    const left = Math.min(window.innerWidth - menuWidth - 8, Math.max(8, rect.left));
+    menu.style.top = `${Math.max(8, Math.round(top))}px`;
+    menu.style.left = `${Math.max(8, Math.round(left))}px`;
+    button.setAttribute('aria-expanded', 'true');
+    menu.querySelector('button')?.focus();
+    window.setTimeout(() => {
+      document.addEventListener('pointerdown', (event) => {
+        if (menu.contains(event.target) || button.contains(event.target)) return;
+        closeReestrDzCheckMenu();
+      }, { capture: true, once: true });
+    }, 0);
+  }
+
   function ensureReestrDzPrincipalButton() {
     if (!isReestrDzPrincipalPage()) return null;
     ensureReestrDzPrincipalStyle();
     const existing = document.getElementById(REESTR_DZ_PRINCIPAL_BUTTON_ID);
-    if (existing instanceof HTMLElement) return existing;
+    if (existing instanceof HTMLElement && reestrDzBoundCheckButtons.has(existing)) return existing;
+    if (existing instanceof HTMLElement) existing.remove();
     const host = document.querySelector('#pager_left .ui-pg-table.navtable, .ui-jqgrid-pager .ui-pg-table.navtable') || document.querySelector('#pager_left, #pager');
     if (!(host instanceof HTMLElement)) return null;
     document.getElementById(REESTR_DZ_PRINCIPAL_SEPARATOR_ID)?.remove();
@@ -3591,11 +3793,13 @@
     button.tabIndex = 0;
     button.setAttribute('role', 'button');
     button.setAttribute('aria-disabled', 'false');
-    button.innerHTML = '<div class="ui-pg-div"><span class="fa fa-lg fa-fw fa-search"></span><span class="ui-pg-button-text">Проверить исходящие</span></div>';
-    button.title = 'Проверить и заполнить сведения об отправке принципалу';
+    button.setAttribute('aria-haspopup', 'menu');
+    button.setAttribute('aria-expanded', 'false');
+    button.innerHTML = '<div class="ui-pg-div"><span class="fa fa-lg fa-fw fa-search"></span><span class="ui-pg-button-text">Проверка</span><span class="fa fa-caret-down" aria-hidden="true" style="margin-left:4px"></span></div>';
+    button.title = 'Открыть варианты проверки реестров списания';
     const activate = () => {
       if (button.getAttribute('aria-disabled') === 'true') return;
-      void startReestrDzPrincipalAutofill();
+      toggleReestrDzCheckMenu(button);
     };
     button.addEventListener('click', activate);
     button.addEventListener('keydown', (event) => {
@@ -3603,6 +3807,7 @@
       event.preventDefault();
       activate();
     });
+    reestrDzBoundCheckButtons.add(button);
     const exportButton = Array.from(host.querySelectorAll('.ui-pg-button'))
       .find((element) => normalizeReestrDzText(element.textContent) === 'Выгрузить в Excel');
     if (exportButton instanceof HTMLElement) exportButton.after(separator, button);
@@ -3623,6 +3828,870 @@
         100
       );
     }
+  }
+
+  function readReestrDzWriteOffStore() {
+    return new Promise((resolve) => {
+      try {
+        chrome.storage.local.get([REESTR_DZ_WRITE_OFF_DAILY_STORAGE_KEY], (result) => {
+          void (chrome.runtime && chrome.runtime.lastError ? chrome.runtime.lastError.message : '');
+          resolve(result && result[REESTR_DZ_WRITE_OFF_DAILY_STORAGE_KEY] || null);
+        });
+      } catch (error) {
+        resolve(null);
+      }
+    });
+  }
+
+  function writeReestrDzWriteOffStore(store) {
+    return new Promise((resolve) => {
+      try {
+        chrome.storage.local.set({ [REESTR_DZ_WRITE_OFF_DAILY_STORAGE_KEY]: store }, () => {
+          resolve(!(chrome.runtime && chrome.runtime.lastError));
+        });
+      } catch (error) {
+        resolve(false);
+      }
+    });
+  }
+
+  function normalizeReestrDzWriteOffStore(rawStore) {
+    const dateKey = getReestrDzPrincipalLocalDateKey();
+    const raw = rawStore && typeof rawStore === 'object' ? rawStore : {};
+    if (raw.dateKey !== dateKey || raw.version !== REESTR_DZ_WRITE_OFF_DAILY_STORAGE_VERSION) {
+      return { version: REESTR_DZ_WRITE_OFF_DAILY_STORAGE_VERSION, dateKey, departments: {} };
+    }
+    return {
+      version: REESTR_DZ_WRITE_OFF_DAILY_STORAGE_VERSION,
+      dateKey,
+      departments: raw.departments && typeof raw.departments === 'object' ? { ...raw.departments } : {}
+    };
+  }
+
+  async function updateReestrDzWriteOffStore(mutator) {
+    reestrDzWriteOffDailyWriteChain = reestrDzWriteOffDailyWriteChain.catch(() => null).then(async () => {
+      const store = normalizeReestrDzWriteOffStore(await readReestrDzWriteOffStore());
+      const nextStore = typeof mutator === 'function' ? mutator(store) || store : store;
+      return { store: nextStore, saved: await writeReestrDzWriteOffStore(nextStore) };
+    });
+    return reestrDzWriteOffDailyWriteChain;
+  }
+
+  async function getReestrDzWriteOffDepartment(depid) {
+    await reestrDzWriteOffDailyWriteChain.catch(() => null);
+    const store = normalizeReestrDzWriteOffStore(await readReestrDzWriteOffStore());
+    const value = store.departments[String(depid || '')];
+    return value && typeof value === 'object'
+      ? cloneReestrDzPrincipalStorageValue(value, { processed: {}, activeRun: null })
+      : { processed: {}, activeRun: null };
+  }
+
+  function serializeReestrDzWriteOffRun(run) {
+    return cloneReestrDzPrincipalStorageValue({
+      status: run.status,
+      gridState: run.gridState,
+      candidates: run.candidates,
+      results: run.results,
+      nextIndex: run.nextIndex,
+      currentIndex: run.currentIndex,
+      department: run.department,
+      period: run.period,
+      stage: run.stage,
+      warning: run.warning,
+      currentReview: run.currentReview || null,
+      recoverableError: run.recoverableError === true,
+      updatedAt: Date.now()
+    }, null);
+  }
+
+  async function persistReestrDzWriteOffRun(run) {
+    if (!run || !run.department || !run.department.depid) return false;
+    const depid = String(run.department.depid);
+    const snapshot = serializeReestrDzWriteOffRun(run);
+    const completed = run.status === 'completed';
+    const result = await updateReestrDzWriteOffStore((store) => {
+      const previous = store.departments[depid] && typeof store.departments[depid] === 'object' ? store.departments[depid] : {};
+      const processed = previous.processed && typeof previous.processed === 'object' ? { ...previous.processed } : {};
+      (Array.isArray(run.results) ? run.results : []).forEach((item) => {
+        if (!item || item.error === true || !item.id) return;
+        processed[String(item.id)] = { id: String(item.id), result: normalizeReestrDzText(item.result), updatedAt: Date.now() };
+      });
+      store.departments[depid] = {
+        department: cloneReestrDzPrincipalStorageValue(run.department, {}),
+        processed,
+        activeRun: completed ? null : snapshot,
+        updatedAt: Date.now()
+      };
+      return store;
+    });
+    run.storageWarning = result && result.saved ? '' : 'Не удалось сохранить дневной прогресс в памяти Chrome.';
+    syncReestrDzWriteOffProgressOverlay(run);
+    return !!(result && result.saved);
+  }
+
+  async function discardReestrDzWriteOffRun(depid) {
+    return updateReestrDzWriteOffStore((store) => {
+      const key = String(depid || '');
+      const previous = store.departments[key] && typeof store.departments[key] === 'object' ? store.departments[key] : {};
+      store.departments[key] = { ...previous, activeRun: null, updatedAt: Date.now() };
+      return store;
+    });
+  }
+
+  function restoreReestrDzWriteOffRun(snapshot) {
+    if (!snapshot || !Array.isArray(snapshot.candidates) || !snapshot.candidates.length) return null;
+    const nextIndex = Math.max(0, Number.parseInt(String(snapshot.nextIndex || 0), 10) || 0);
+    if (nextIndex >= snapshot.candidates.length) return null;
+    const candidates = cloneReestrDzPrincipalStorageValue(snapshot.candidates, []);
+    const wasError = snapshot.status === 'error';
+    return {
+      status: wasError ? 'error' : 'running',
+      paused: !wasError,
+      pauseReason: wasError ? '' : 'manual',
+      resumeWaiters: [],
+      controller: new AbortController(),
+      gridState: cloneReestrDzPrincipalStorageValue(snapshot.gridState, { lastpage: 1 }),
+      candidates,
+      results: cloneReestrDzPrincipalStorageValue(snapshot.results, []),
+      nextIndex,
+      currentIndex: nextIndex,
+      current: candidates[nextIndex] || null,
+      currentReview: cloneReestrDzPrincipalStorageValue(snapshot.currentReview, null),
+      department: cloneReestrDzPrincipalStorageValue(snapshot.department, getReestrDzCurrentDepartment()),
+      period: cloneReestrDzPrincipalStorageValue(snapshot.period, null),
+      recoverableError: wasError,
+      canContinue: true,
+      stage: wasError ? 'Восстановлена ошибка. Нажмите «Продолжить», чтобы повторить строку.' : 'Дневная проверка восстановлена на паузе.',
+      warning: wasError ? normalizeReestrDzText(snapshot.warning) : '',
+      overlayDismissed: false
+    };
+  }
+
+  function createReestrDzWriteOffProgressOverlay() {
+    ensureReestrDzPrincipalStyle();
+    const existing = document.getElementById(REESTR_DZ_WRITE_OFF_OVERLAY_ID);
+    if (existing instanceof HTMLElement) return existing;
+    const overlay = document.createElement('section');
+    overlay.id = REESTR_DZ_WRITE_OFF_OVERLAY_ID;
+    overlay.className = 'dup-reestr-dz-principal-ui';
+    overlay.innerHTML = `
+      <div class="dup-wo-head"><div><strong>Проверка списания</strong><small data-role="meta">Подготовка</small></div><button type="button" class="dup-wo-close" data-action="close" aria-label="Закрыть">×</button></div>
+      <div class="dup-wo-body">
+        <div class="dup-wo-stage" data-role="stage">Подготовка запуска…</div>
+        <dl class="dup-wo-grid">
+          <dt>Текущая строка</dt><dd data-role="row">—</dd>
+          <dt>Обработано</dt><dd data-role="progress">0 / 0</dd>
+          <dt>Успешно</dt><dd data-role="saved">0</dd>
+          <dt>Проблемы</dt><dd data-role="problems">0</dd>
+        </dl>
+        <div class="dup-wo-error" data-role="warning"></div>
+        <div class="dup-wo-actions">
+          <button type="button" data-action="pause">Пауза</button>
+          <button type="button" data-action="resume" disabled>Продолжить</button>
+        </div>
+      </div>`;
+    overlay.addEventListener('click', (event) => {
+      const button = event.target instanceof Element ? event.target.closest('[data-action]') : null;
+      if (!(button instanceof HTMLButtonElement) || !reestrDzWriteOffRun) return;
+      if (button.dataset.action === 'pause') pauseReestrDzWriteOffRun(reestrDzWriteOffRun);
+      if (button.dataset.action === 'resume') {
+        if (reestrDzWriteOffRun.status === 'error') continueReestrDzWriteOffRun(reestrDzWriteOffRun);
+        else resumeReestrDzWriteOffRun(reestrDzWriteOffRun);
+      }
+      if (button.dataset.action === 'close') {
+        if (reestrDzWriteOffRun.status === 'completed') {
+          reestrDzWriteOffRun = null;
+          overlay.remove();
+        } else if (window.confirm('Остановить текущую проверку списания? Продолжить её после закрытия будет нельзя.')) {
+          reestrDzWriteOffRun.controller.abort();
+          void sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_CANCEL_REVIEW' });
+          void discardReestrDzWriteOffRun(reestrDzWriteOffRun.department.depid);
+          reestrDzWriteOffRun = null;
+          overlay.remove();
+          setReestrDzPrincipalLaunchButtonDisabled(false);
+        }
+      }
+    });
+    makeReestrDzWriteOffOverlayDraggable(overlay);
+    (document.body || document.documentElement).appendChild(overlay);
+    return overlay;
+  }
+
+  function syncReestrDzWriteOffProgressOverlay(run) {
+    if (!run || !isReestrDzPrincipalPage()) return;
+    const overlay = createReestrDzWriteOffProgressOverlay();
+    overlay.dataset.state = run.status === 'error' ? 'error' : run.status === 'completed' ? 'completed' : 'running';
+    const results = Array.isArray(run.results) ? run.results : [];
+    const total = Array.isArray(run.candidates) ? run.candidates.length : 0;
+    const set = (role, value) => {
+      const element = overlay.querySelector(`[data-role="${role}"]`);
+      if (element instanceof HTMLElement) element.textContent = String(value);
+    };
+    set('meta', run.paused ? 'Пауза' : run.status === 'completed' ? 'Завершено' : `Департамент ${run.department && run.department.depid || '—'}`);
+    set('stage', run.stage || 'Подготовка…');
+    set('row', run.current ? `№ ${run.current.id} · ${run.current.cell.RequestNumber || 'без поручения'}` : '—');
+    set('progress', `${results.length} / ${total}`);
+    set('saved', results.filter((item) => item && !item.error).length);
+    set('problems', results.filter((item) => item && item.error).length);
+    set('warning', run.warning || run.storageWarning || '');
+    const pauseButton = overlay.querySelector('[data-action="pause"]');
+    const resumeButton = overlay.querySelector('[data-action="resume"]');
+    if (pauseButton instanceof HTMLButtonElement) pauseButton.disabled = run.paused || ['error', 'completed'].includes(run.status);
+    if (resumeButton instanceof HTMLButtonElement) resumeButton.disabled = !(run.paused || (run.status === 'error' && run.recoverableError));
+  }
+
+  function updateReestrDzWriteOffStage(run, stage, warning = '') {
+    run.stage = String(stage || '');
+    run.warning = String(warning || '');
+    syncReestrDzWriteOffProgressOverlay(run);
+  }
+
+  function pauseReestrDzWriteOffRun(run) {
+    if (!run || ['error', 'completed'].includes(run.status)) return;
+    run.paused = true;
+    run.stage = 'Проверка приостановлена пользователем.';
+    syncReestrDzWriteOffProgressOverlay(run);
+    void persistReestrDzWriteOffRun(run);
+  }
+
+  function resumeReestrDzWriteOffRun(run) {
+    if (!run || !run.paused) return;
+    run.paused = false;
+    run.warning = '';
+    run.stage = 'Продолжаю проверку…';
+    const waiters = run.resumeWaiters.splice(0);
+    waiters.forEach((resolve) => resolve());
+    syncReestrDzWriteOffProgressOverlay(run);
+  }
+
+  async function waitForReestrDzWriteOffResume(run) {
+    while (run && run.paused) await new Promise((resolve) => run.resumeWaiters.push(resolve));
+    if (run && run.controller.signal.aborted) throw new DOMException('Проверка остановлена', 'AbortError');
+  }
+
+  function continueReestrDzWriteOffRun(run) {
+    if (!run || run.status !== 'error' || !run.recoverableError) return;
+    const failed = run.candidates[run.nextIndex] || run.current;
+    for (let index = run.results.length - 1; index >= 0; index -= 1) {
+      if (run.results[index] && run.results[index].error && (!failed || String(run.results[index].id) === String(failed.id))) {
+        run.results.splice(index, 1);
+        break;
+      }
+    }
+    run.status = 'running';
+    run.paused = false;
+    run.warning = '';
+    run.recoverableError = false;
+    run.stage = failed ? `Повторяю строку № ${failed.id}…` : 'Продолжаю проверку…';
+    syncReestrDzWriteOffProgressOverlay(run);
+    void runReestrDzWriteOffCheck(run);
+  }
+
+  async function showReestrDzWriteOffCandidate(run, candidate, attention = false) {
+    await waitForReestrDzWriteOffResume(run);
+    run.current = candidate;
+    syncReestrDzWriteOffProgressOverlay(run);
+    const pageInput = document.querySelector('#pager .ui-pg-input, .ui-jqgrid-pager .ui-pg-input');
+    const currentPage = Math.max(1, Number.parseInt(pageInput && pageInput.value || '1', 10) || 1);
+    if (currentPage !== candidate.page) {
+      updateReestrDzWriteOffStage(run, `Переключаю грид на страницу ${candidate.page}…`);
+      await setReestrDzGridPage(candidate.page);
+    }
+    const row = await waitForReestrDzGridReady(candidate.id);
+    clearReestrDzPrincipalRowHighlight();
+    if (!(row instanceof HTMLElement)) throw new Error(`Строка № ${candidate.id} не появилась после загрузки страницы ${candidate.page}.`);
+    const selected = await selectReestrDzPrincipalGridRow(row, candidate);
+    selected.classList.add(REESTR_DZ_PRINCIPAL_CURRENT_ROW_CLASS);
+    selected.classList.toggle(REESTR_DZ_PRINCIPAL_ATTENTION_ROW_CLASS, attention);
+    selected.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' });
+    return selected;
+  }
+
+  function parseReestrDzWriteOffRequest(documentData, candidate) {
+    const outgoingLinks = parseReestrDzOutgoingLinks({ links: documentData && documentData.outgoingLinks });
+    if (outgoingLinks.length !== 1) {
+      throw new Error(outgoingLinks.length ? 'В поручении найдено несколько исходящих; требуется ручная проверка.' : 'В поручении не найдена ссылка на исходящий документ.');
+    }
+    const outgoingNumber = normalizeReestrDzText(outgoingLinks[0].text);
+    const gridOutgoing = normalizeReestrDzText(candidate && candidate.cell && candidate.cell.PrincipalNumber);
+    if (gridOutgoing && outgoingNumber !== gridOutgoing) {
+      throw new Error(`Исходящий в поручении (${outgoingNumber}) не совпадает со строкой грида (${gridOutgoing}).`);
+    }
+    const setsCount = normalizeReestrDzText(documentData && documentData.setsCount);
+    const writeOffAmount = normalizeReestrDzText(documentData && documentData.writeOffAmount);
+    if (!setsCount) throw new Error('В поручении не найдено значение «Количество комплектов».');
+    if (!writeOffAmount) throw new Error('В поручении не найдена «Сумма списания задолженности».');
+    const responsibleName = normalizeReestrDzText(documentData && documentData.responsibleName);
+    const decisions = (documentData && Array.isArray(documentData.writeOffDecisions) ? documentData.writeOffDecisions : [])
+      .filter((item) => normalizeReestrDzText(item && item.user).localeCompare(responsibleName, 'ru', { sensitivity: 'base' }) === 0 && REESTR_DZ_WRITE_OFF_DECISIONS.includes(normalizeReestrDzText(item && item.decision)));
+    if (!responsibleName) throw new Error('Не найден ответственный за отражение списания в биллинговом ПК.');
+    if (!decisions.length) throw new Error(`Не найдено решение о списании ответственного ${responsibleName}.`);
+    if (decisions.length > 1) throw new Error(`Найдено несколько решений о списании ответственного ${responsibleName}; требуется ручная проверка.`);
+    const documents = [];
+    const appendDocuments = (items, type, label) => {
+      (Array.isArray(items) ? items : []).forEach((item, index) => {
+        const text = normalizeReestrDzText(item && item.text);
+        const href = String(item && item.href || '').trim();
+        if (!text || !href) return;
+        documents.push({ type, label: `${label}${index ? ` ${index + 1}` : ''}`, text, href });
+      });
+    };
+    appendDocuments(documentData && documentData.incomingLinks, 'incoming', 'Входящий');
+    appendDocuments(documentData && documentData.otherLinks, 'other', 'Другой документ');
+    return {
+      outgoingNumber,
+      setsCount,
+      writeOffAmount,
+      responsibleName,
+      decision: normalizeReestrDzText(decisions[0].decision),
+      decisionDate: normalizeReestrDzText(decisions[0].date),
+      documents
+    };
+  }
+
+  async function saveReestrDzWriteOffComment(run, candidate, cell, decision) {
+    const expected = normalizeReestrDzText(decision);
+    const currentNote = String(cell && cell.Note || '').trim();
+    if (hasReestrDzExactNoteLine(currentNote, expected)) return cell;
+    const updatedNote = currentNote ? `${currentNote}\n${decision}` : decision;
+    await showReestrDzWriteOffCandidate(run, candidate, false);
+    updateReestrDzWriteOffStage(run, `Открываю штатный комментарий строки № ${candidate.id}…`);
+    const nativeButton = findReestrDzNativeButton('Комментарий к реестру');
+    if (!(nativeButton instanceof HTMLElement)) throw new Error('Не найдена штатная кнопка «Комментарий к реестру».');
+    nativeButton.click();
+    const nativeForm = await waitForReestrDzNativeForm(candidate, '/ovzid/ReestrDz/SetNote');
+    const response = await sendRuntimeMessage({ action: 'REESTR_DZ_FILL_NOTE_FORM', data: { rowId: candidate.id, note: updatedNote } });
+    if (!response || response.success === false) throw new Error(`Не удалось заполнить комментарий: ${response && response.error || 'нет ответа'}.`);
+    updateReestrDzWriteOffStage(run, `Проверяю сохранение комментария строки № ${candidate.id}…`);
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, attempt ? 500 : 250));
+      const verified = await loadReestrDzRowById(run.gridState, candidate.id, run.controller.signal);
+      const verifiedCell = verified && verified.cell;
+      if (verifiedCell && hasReestrDzExactNoteLine(verifiedCell.Note, expected)) {
+        await waitForReestrDzGridReady('', 20000);
+        closeReestrDzPrincipalNativeDialog(nativeForm.frame);
+        return { ...cell, ...verifiedCell };
+      }
+    }
+    throw new Error(`Пирамида не подтвердила комментарий строки № ${candidate.id}.`);
+  }
+
+  async function saveReestrDzWriteOffOrder(run, candidate, cell, fields) {
+    await showReestrDzWriteOffCandidate(run, candidate, false);
+    updateReestrDzWriteOffStage(run, `Открываю штатную форму приказа строки № ${candidate.id}…`);
+    const nativeButton = findReestrDzNativeButton('Заполнить сведения о приказе по списанию');
+    if (!(nativeButton instanceof HTMLElement)) throw new Error('Не найдена штатная кнопка «Заполнить сведения о приказе по списанию».');
+    nativeButton.click();
+    const nativeForm = await waitForReestrDzNativeForm(candidate, '/ovzid/ReestrDz/Order');
+    const response = await sendRuntimeMessage({
+      action: 'REESTR_DZ_FILL_ORDER_FORM',
+      data: { rowId: candidate.id, orderDate: fields.orderDate, orderNumber: fields.orderNumber }
+    });
+    if (!response || response.success === false) throw new Error(`Не удалось заполнить сведения о приказе: ${response && response.error || 'нет ответа'}.`);
+    updateReestrDzWriteOffStage(run, `Проверяю сохранение приказа строки № ${candidate.id}…`);
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, attempt ? 500 : 250));
+      const verified = await loadReestrDzRowById(run.gridState, candidate.id, run.controller.signal);
+      const verifiedCell = verified && verified.cell;
+      if (verifiedCell && normalizeReestrDzText(verifiedCell.OrderDate) === fields.orderDate && normalizeReestrDzText(verifiedCell.OrderNumber) === fields.orderNumber) {
+        await waitForReestrDzGridReady('', 20000);
+        closeReestrDzPrincipalNativeDialog(nativeForm.frame);
+        return { ...cell, ...verifiedCell };
+      }
+    }
+    throw new Error(`Пирамида не подтвердила приказ строки № ${candidate.id}.`);
+  }
+
+  async function waitForReestrDzWriteOffReview(run) {
+    while (true) {
+      await waitForReestrDzWriteOffResume(run);
+      const response = await sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_POLL_REVIEW' });
+      if (response && response.success && response.status === 'done') return response.fields || {};
+      if (response && response.success && response.status === 'cancelled') {
+        const error = new Error('Проверка остановлена пользователем.');
+        error.code = 'WRITE_OFF_CANCELLED';
+        throw error;
+      }
+      if (!response || response.success === false) throw new Error('Вкладка ручной проверки была закрыта или потеряла связь с Пирамидой.');
+      await new Promise((resolve) => window.setTimeout(resolve, 500));
+    }
+  }
+
+  async function processReestrDzWriteOffCandidate(run, candidate) {
+    await showReestrDzWriteOffCandidate(run, candidate, false);
+    if (isReestrDzWriteOffExcludedClaimant(candidate.cell)) {
+      return {
+        cell: { ...candidate.cell },
+        review: null,
+        result: 'Пропущено: списание не выполняется',
+        description: 'Взыскатель относится к АО «ЭК «Восток».',
+        skipped: true
+      };
+    }
+    updateReestrDzWriteOffStage(run, `Открываю поручение ${candidate.cell.RequestNumber}…`);
+    const requestUrl = new URL('/api/wss/doclink/redirect', window.location.origin);
+    requestUrl.searchParams.set('RegNumber', candidate.cell.RequestNumber);
+    const requestDocument = await loadReestrDzWssDocument(requestUrl.toString(), 'writeoff_request', candidate.cell.RequestNumber);
+    const review = parseReestrDzWriteOffRequest(requestDocument, candidate);
+    run.currentReview = review;
+    await persistReestrDzWriteOffRun(run);
+    let live = await loadReestrDzRowById(run.gridState, candidate.id, run.controller.signal);
+    let cell = live && live.cell ? { ...candidate.cell, ...live.cell } : { ...candidate.cell };
+    if (review.decision === 'Отказ в списании') {
+      updateReestrDzWriteOffStage(run, `Сохраняю отказ в комментарии строки № ${candidate.id}…`);
+      cell = await saveReestrDzWriteOffComment(run, candidate, cell, review.decision);
+      return { cell, review, result: 'Отказ сохранён' };
+    }
+    if (!review.documents.length) throw new Error('Для решения о списании не найдены входящие или другие документы.');
+    updateReestrDzWriteOffStage(run, `Открываю ручную проверку документов строки № ${candidate.id}…`);
+    const opened = await sendRuntimeMessage({
+      action: 'REESTR_DZ_WRITE_OFF_OPEN_REVIEW',
+      data: {
+        rowId: candidate.id,
+        progressText: `${run.currentIndex + 1} / ${run.candidates.length}`,
+        outgoingNumber: review.outgoingNumber,
+        setsCount: review.setsCount,
+        writeOffAmount: review.writeOffAmount,
+        decision: review.decision,
+        documents: review.documents
+      }
+    });
+    if (!opened || opened.success === false) throw new Error(`Не удалось открыть документы: ${opened && opened.error || 'нет ответа'}.`);
+    const fields = await waitForReestrDzWriteOffReview(run);
+    const orderDate = normalizeReestrDzText(fields.orderDate);
+    const orderNumber = normalizeReestrDzText(fields.orderNumber);
+    if (parseReestrDzDate(orderDate) === null || !/^\d{2}\.\d{2}\.\d{4}$/.test(orderDate) || !orderNumber) {
+      throw new Error('Ручная проверка вернула некорректные реквизиты приказа.');
+    }
+    updateReestrDzWriteOffStage(run, `Сохраняю решение строки № ${candidate.id}…`);
+    cell = await saveReestrDzWriteOffComment(run, candidate, cell, review.decision);
+    cell = await saveReestrDzWriteOffOrder(run, candidate, cell, { orderDate, orderNumber });
+    return { cell, review, fields: { orderDate, orderNumber }, result: 'Приказ сохранён' };
+  }
+
+  async function runReestrDzWriteOffCheck(run) {
+    if (!run || run.workerActive) return;
+    run.workerActive = true;
+    try {
+      for (let index = run.nextIndex; index < run.candidates.length; index += 1) {
+        run.currentIndex = index;
+        run.nextIndex = index;
+        run.current = run.candidates[index];
+        await waitForReestrDzWriteOffResume(run);
+        try {
+          const result = await processReestrDzWriteOffCandidate(run, run.current);
+          run.results.push({ id: run.current.id, ...result, error: false });
+          run.nextIndex = index + 1;
+          run.currentReview = null;
+          await persistReestrDzWriteOffRun(run);
+        } catch (error) {
+          if (error && (error.name === 'AbortError' || error.code === 'WRITE_OFF_CANCELLED')) {
+            clearReestrDzWriteOffDraft();
+            await discardReestrDzWriteOffRun(run.department.depid);
+            reestrDzWriteOffRun = null;
+            document.getElementById(REESTR_DZ_WRITE_OFF_OVERLAY_ID)?.remove();
+            return;
+          }
+          run.results.push({ id: run.current.id, cell: run.current.cell, result: 'Проблема', description: error && error.message ? error.message : String(error), error: true });
+          run.status = 'error';
+          run.recoverableError = true;
+          run.warning = error && error.message ? error.message : String(error);
+          run.stage = `Проверка остановлена на строке № ${run.current.id}.`;
+          await sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_CANCEL_REVIEW' }).catch(() => null);
+          await showReestrDzWriteOffCandidate(run, run.current, true).catch(() => null);
+          await persistReestrDzWriteOffRun(run);
+          return;
+        }
+      }
+      run.status = 'completed';
+      run.current = null;
+      run.currentReview = null;
+      run.stage = `Проверка завершена. Обработано строк: ${run.results.length}.`;
+      run.warning = '';
+      clearReestrDzWriteOffDraft();
+      clearReestrDzPrincipalRowHighlight();
+      await persistReestrDzWriteOffRun(run);
+      await sendRuntimeMessage({ action: 'REESTR_DZ_CLOSE_WSS_SESSION' }).catch(() => null);
+      syncReestrDzWriteOffProgressOverlay(run);
+    } finally {
+      run.workerActive = false;
+      setReestrDzPrincipalLaunchButtonDisabled(false);
+    }
+  }
+
+  async function startReestrDzWriteOffCheck() {
+    if (!isReestrDzPrincipalPage() || !isExtensionUiSettingEnabled('reestrDzPrincipalAutofill')) return;
+    if (reestrDzPrincipalRun && reestrDzPrincipalRun.status !== 'completed') {
+      window.alert('Сначала завершите текущую проверку исходящих.');
+      return;
+    }
+    if (reestrDzWriteOffRun && reestrDzWriteOffRun.status !== 'completed') {
+      syncReestrDzWriteOffProgressOverlay(reestrDzWriteOffRun);
+      return;
+    }
+    setReestrDzPrincipalLaunchButtonDisabled(true);
+    const department = getReestrDzCurrentDepartment();
+    let daily = await getReestrDzWriteOffDepartment(department.depid);
+    if (daily.activeRun) {
+      const saved = daily.activeRun;
+      const restore = window.confirm(
+        `Найдена незавершённая проверка списания за сегодня для ${department.label} (${department.depid}).\n` +
+        `Обработано: ${Math.max(0, Number(saved.nextIndex) || 0)} из ${Array.isArray(saved.candidates) ? saved.candidates.length : 0}.\n\n` +
+        'Восстановить её на паузе? «Отмена» удалит незавершённую очередь.'
+      );
+      if (restore) {
+        const restored = restoreReestrDzWriteOffRun(saved);
+        if (restored) {
+          reestrDzWriteOffRun = restored;
+          syncReestrDzWriteOffProgressOverlay(restored);
+          setReestrDzPrincipalLaunchButtonDisabled(false);
+          return;
+        }
+      }
+      await discardReestrDzWriteOffRun(department.depid);
+      daily = await getReestrDzWriteOffDepartment(department.depid);
+    }
+    const periodChoice = await askReestrDzPrincipalPeriod();
+    if (periodChoice.cancelled) {
+      setReestrDzPrincipalLaunchButtonDisabled(false);
+      return;
+    }
+    const processed = new Set(Object.keys(daily.processed && typeof daily.processed === 'object' ? daily.processed : {}));
+    const run = {
+      status: 'preparing', paused: false, pauseReason: '', resumeWaiters: [], controller: new AbortController(),
+      gridState: { lastpage: 1 }, candidates: [], results: [], nextIndex: 0, currentIndex: 0, current: null,
+      currentReview: null, department, period: periodChoice.period, recoverableError: false, canContinue: false,
+      stage: 'Собираю строки текущего грида…', warning: '', overlayDismissed: false, workerActive: false
+    };
+    reestrDzWriteOffRun = run;
+    syncReestrDzWriteOffProgressOverlay(run);
+    try {
+      run.gridState = await getReestrDzGridState();
+      const rows = await loadAllReestrDzRows(run.gridState, run.controller.signal);
+      run.candidates = rows.map((row, index) => ({
+        id: String(row.id || row.cell && row.cell.ReestrDzID || ''),
+        cell: row && row.cell && typeof row.cell === 'object' ? { ...row.cell } : {},
+        sourceIndex: index,
+        page: Math.floor(index / Math.max(1, run.gridState.rowNum || 30)) + 1
+      })).filter((row) => row.id && row.cell.RequestNumber && (normalizeReestrDzText(row.cell.PrincipalNumber) || isReestrDzWriteOffExcludedClaimant(row.cell)) &&
+        (!normalizeReestrDzText(row.cell.OrderDate) || !normalizeReestrDzText(row.cell.OrderNumber)) &&
+        !processed.has(row.id) && isReestrDzRowInPeriod(row.cell, run.period));
+      if (!run.candidates.length) {
+        run.status = 'completed';
+        run.stage = 'Строк с исходящим и незаполненными сведениями о приказе не найдено.';
+        await persistReestrDzWriteOffRun(run);
+        syncReestrDzWriteOffProgressOverlay(run);
+        return;
+      }
+      const confirmed = window.confirm(
+        `Найдено строк для проверки списания: ${run.candidates.length}.\n` +
+        `Период: ${run.period ? run.period.text : 'все даты'}.\n\n` +
+        'Расширение будет открывать документы по одной строке и ждать ручного подтверждения. Начать?'
+      );
+      if (!confirmed) {
+        reestrDzWriteOffRun = null;
+        document.getElementById(REESTR_DZ_WRITE_OFF_OVERLAY_ID)?.remove();
+        return;
+      }
+      run.status = 'running';
+      run.stage = 'Начинаю проверку первой строки…';
+      await persistReestrDzWriteOffRun(run);
+      await runReestrDzWriteOffCheck(run);
+    } catch (error) {
+      run.status = 'error';
+      run.recoverableError = false;
+      run.stage = 'Не удалось начать проверку.';
+      run.warning = error && error.message ? error.message : String(error);
+      syncReestrDzWriteOffProgressOverlay(run);
+    } finally {
+      setReestrDzPrincipalLaunchButtonDisabled(false);
+    }
+  }
+
+  function formatReestrDzSingleDateMask(value) {
+    const digits = String(value || '').replace(/\D/g, '').slice(0, 8);
+    return [digits.slice(0, 2), digits.slice(2, 4), digits.slice(4, 8)].filter(Boolean).join('.');
+  }
+
+  function readReestrDzWriteOffDraft() {
+    return new Promise((resolve) => {
+      try {
+        chrome.storage.local.get([REESTR_DZ_WRITE_OFF_DRAFT_STORAGE_KEY], (result) => {
+          void (chrome.runtime && chrome.runtime.lastError ? chrome.runtime.lastError.message : '');
+          resolve(result && result[REESTR_DZ_WRITE_OFF_DRAFT_STORAGE_KEY] || null);
+        });
+      } catch (error) {
+        resolve(null);
+      }
+    });
+  }
+
+  function persistReestrDzWriteOffDraft(session, fields) {
+    if (!session || !session.data) return;
+    const draft = {
+      dateKey: getReestrDzPrincipalLocalDateKey(),
+      depid: String(session.data.depid || ''),
+      rowId: String(session.data.rowId || ''),
+      fields: { orderDate: String(fields.orderDate || ''), orderNumber: String(fields.orderNumber || '') },
+      position: session.position && typeof session.position === 'object' ? { ...session.position } : null,
+      updatedAt: Date.now()
+    };
+    try {
+      chrome.storage.local.set({ [REESTR_DZ_WRITE_OFF_DRAFT_STORAGE_KEY]: draft });
+    } catch (error) {
+      // draft persistence is best effort; the main run remains recoverable
+    }
+  }
+
+  function clearReestrDzWriteOffDraft() {
+    try {
+      chrome.storage.local.remove(REESTR_DZ_WRITE_OFF_DRAFT_STORAGE_KEY);
+    } catch (error) {
+      // ignore storage cleanup errors
+    }
+  }
+
+  function makeReestrDzWriteOffOverlayDraggable(overlay, onMoved) {
+    const head = overlay && overlay.querySelector('.dup-wo-head');
+    if (!(head instanceof HTMLElement) || head.dataset.dragReady === 'true') return;
+    head.dataset.dragReady = 'true';
+    head.addEventListener('pointerdown', (event) => {
+      if (event.target instanceof Element && event.target.closest('button, input')) return;
+      const rect = overlay.getBoundingClientRect();
+      const startX = event.clientX;
+      const startY = event.clientY;
+      const startLeft = rect.left;
+      const startTop = rect.top;
+      head.setPointerCapture(event.pointerId);
+      const move = (moveEvent) => {
+        const left = Math.min(window.innerWidth - overlay.offsetWidth - 8, Math.max(8, startLeft + moveEvent.clientX - startX));
+        const top = Math.min(window.innerHeight - 48, Math.max(8, startTop + moveEvent.clientY - startY));
+        overlay.style.left = `${left}px`;
+        overlay.style.top = `${top}px`;
+        overlay.style.right = 'auto';
+      };
+      const stop = () => {
+        head.removeEventListener('pointermove', move);
+        head.removeEventListener('pointerup', stop);
+        head.removeEventListener('pointercancel', stop);
+        if (typeof onMoved === 'function') onMoved({
+          left: Number.parseFloat(overlay.style.left) || overlay.getBoundingClientRect().left,
+          top: Number.parseFloat(overlay.style.top) || overlay.getBoundingClientRect().top
+        });
+      };
+      head.addEventListener('pointermove', move);
+      head.addEventListener('pointerup', stop);
+      head.addEventListener('pointercancel', stop);
+    });
+  }
+
+  function collectReestrDzWriteOffAttachments() {
+    const unique = new Map();
+    document.querySelectorAll('a[href]').forEach((anchor) => {
+      if (anchor.closest(`#${REESTR_DZ_WRITE_OFF_OVERLAY_ID}`)) return;
+      const href = String(anchor.href || '').trim();
+      const text = normalizeReestrDzText(anchor.textContent) || decodeURIComponent(href.split('/').pop() || 'Документ');
+      if (!href || !/^https?:/i.test(href) || !/\.(?:pdf|docx?|xlsx?|xls|rtf|tiff?|jpe?g|png)(?:$|[?#])/i.test(href)) return;
+      unique.set(href, { text, href });
+    });
+    return Array.from(unique.values());
+  }
+
+  function highlightReestrDzWriteOffText(outgoingNumber, amount) {
+    document.querySelectorAll(`.${REESTR_DZ_WRITE_OFF_HIGHLIGHT_CLASS}`).forEach((element) => element.replaceWith(document.createTextNode(element.textContent || '')));
+    const outgoing = normalizeReestrDzText(outgoingNumber);
+    const integerDigits = String(amount || '').split(/[.,]/)[0].replace(/\D/g, '');
+    const patterns = [];
+    if (outgoing) patterns.push(outgoing.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    if (integerDigits) patterns.push(`(?<!\\d)${integerDigits.split('').join('[\\s\\u00a0.,]*')}(?:[.,]\\d{1,2})?(?!\\d)`);
+    if (!patterns.length) return;
+    const regex = new RegExp(patterns.join('|'), 'giu');
+    const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        const parent = node.parentElement;
+        if (!parent || !node.nodeValue || !regex.test(node.nodeValue)) { regex.lastIndex = 0; return NodeFilter.FILTER_REJECT; }
+        regex.lastIndex = 0;
+        if (parent.closest(`#${REESTR_DZ_WRITE_OFF_OVERLAY_ID}, script, style, textarea, input, select, option, [contenteditable="true"]`)) return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    });
+    const nodes = [];
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+    nodes.forEach((node) => {
+      const text = node.nodeValue || '';
+      regex.lastIndex = 0;
+      let match;
+      let offset = 0;
+      const fragment = document.createDocumentFragment();
+      while ((match = regex.exec(text))) {
+        fragment.appendChild(document.createTextNode(text.slice(offset, match.index)));
+        const mark = document.createElement('mark');
+        mark.className = REESTR_DZ_WRITE_OFF_HIGHLIGHT_CLASS;
+        mark.textContent = match[0];
+        fragment.appendChild(mark);
+        offset = match.index + match[0].length;
+        if (!match[0].length) regex.lastIndex += 1;
+      }
+      fragment.appendChild(document.createTextNode(text.slice(offset)));
+      node.replaceWith(fragment);
+    });
+  }
+
+  async function navigateReestrDzWriteOffReview(url, documentIndex) {
+    const dateInput = document.querySelector(`#${REESTR_DZ_WRITE_OFF_OVERLAY_ID} [name="orderDate"]`);
+    const numberInput = document.querySelector(`#${REESTR_DZ_WRITE_OFF_OVERLAY_ID} [name="orderNumber"]`);
+    await sendRuntimeMessage({
+      action: 'REESTR_DZ_WRITE_OFF_UPDATE_REVIEW',
+      data: { fields: { orderDate: dateInput && dateInput.value || '', orderNumber: numberInput && numberInput.value || '' } }
+    });
+    await sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_NAVIGATE_REVIEW', data: { url, documentIndex } });
+  }
+
+  function renderReestrDzWriteOffReviewOverlay(session) {
+    ensureReestrDzPrincipalStyle();
+    document.getElementById(REESTR_DZ_WRITE_OFF_OVERLAY_ID)?.remove();
+    reestrDzWriteOffReviewState = session;
+    const data = session.data || {};
+    const documents = Array.isArray(data.documents) ? data.documents : [];
+    const currentDocumentIndex = Math.max(0, Number(session.currentDocumentIndex) || 0);
+    const currentDocument = documents[currentDocumentIndex] || null;
+    const attachments = collectReestrDzWriteOffAttachments();
+    void sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_UPDATE_REVIEW', data: { attachments, pageUrl: window.location.href } });
+    const knownAttachments = Object.values(session.attachmentsByUrl || {}).flat().filter((item) => item && item.href);
+    const fileMap = new Map([...knownAttachments, ...attachments].map((item) => [item.href, item]));
+    const overlay = document.createElement('section');
+    overlay.id = REESTR_DZ_WRITE_OFF_OVERLAY_ID;
+    overlay.className = 'dup-reestr-dz-principal-ui';
+    if (session.position && Number.isFinite(Number(session.position.left)) && Number.isFinite(Number(session.position.top))) {
+      overlay.style.left = `${Number(session.position.left)}px`;
+      overlay.style.top = `${Number(session.position.top)}px`;
+      overlay.style.right = 'auto';
+    }
+    overlay.innerHTML = `
+      <div class="dup-wo-head"><div><strong>Проверка списания</strong><small>Реестр № ${data.rowId || '—'} · ${data.progressText || '—'}</small></div><button type="button" class="dup-wo-close" data-action="close" aria-label="Остановить проверку">×</button></div>
+      <div class="dup-wo-body">
+        <div class="dup-wo-stage">Проверьте документ и заполните реквизиты приказа.</div>
+        <dl class="dup-wo-grid">
+          <dt>Исходящий</dt><dd>${data.outgoingNumber || '—'}</dd>
+          <dt>Комплектов</dt><dd>${data.setsCount || '—'}</dd>
+          <dt>Сумма</dt><dd>${data.writeOffAmount || '—'}</dd>
+          <dt>Решение</dt><dd class="dup-wo-decision">${data.decision || '—'}</dd>
+          <dt>Документ</dt><dd>${currentDocument ? `${currentDocument.label}: ${currentDocument.text}` : document.title}</dd>
+        </dl>
+        <div class="dup-wo-docs" data-role="documents"></div>
+        <div class="dup-wo-files" data-role="files"></div>
+        <div class="dup-wo-form">
+          <div class="dup-wo-field"><label for="dup-wo-order-date">Дата приказа о списании</label><input id="dup-wo-order-date" name="orderDate" inputmode="numeric" maxlength="10" autocomplete="off" placeholder="дд.мм.гггг" value="${String(session.fields && session.fields.orderDate || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;')}"></div>
+          <div class="dup-wo-field"><label for="dup-wo-order-number">Номер приказа о списании</label><input id="dup-wo-order-number" name="orderNumber" autocomplete="off" value="${String(session.fields && session.fields.orderNumber || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;')}"></div>
+        </div>
+        <div class="dup-wo-error" data-role="error"></div>
+        <div class="dup-wo-actions"><button type="button" data-action="pause">${session.paused ? 'Продолжить' : 'Пауза'}</button><button type="button" data-action="done" ${session.paused ? 'disabled' : ''}>Готово</button></div>
+      </div>`;
+    const docsHost = overlay.querySelector('[data-role="documents"]');
+    documents.forEach((item, index) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = item.label || item.text || `Документ ${index + 1}`;
+      button.setAttribute('aria-current', index === currentDocumentIndex ? 'page' : 'false');
+      button.addEventListener('click', () => void navigateReestrDzWriteOffReview(item.href, index));
+      docsHost.appendChild(button);
+    });
+    const filesHost = overlay.querySelector('[data-role="files"]');
+    Array.from(fileMap.values()).forEach((item) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = `📎 ${item.text || 'Файл'}`;
+      button.addEventListener('click', () => void navigateReestrDzWriteOffReview(item.href, currentDocumentIndex));
+      filesHost.appendChild(button);
+    });
+    if (!fileMap.size) filesHost.remove();
+    const dateInput = overlay.querySelector('[name="orderDate"]');
+    const numberInput = overlay.querySelector('[name="orderNumber"]');
+    const errorElement = overlay.querySelector('[data-role="error"]');
+    const persistFields = () => {
+      const fields = { orderDate: dateInput.value, orderNumber: numberInput.value };
+      persistReestrDzWriteOffDraft(session, fields);
+      return sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_UPDATE_REVIEW', data: { fields } });
+    };
+    const finish = async () => {
+      const date = normalizeReestrDzText(dateInput.value);
+      const number = normalizeReestrDzText(numberInput.value);
+      if (!/^\d{2}\.\d{2}\.\d{4}$/.test(date) || parseReestrDzDate(date) === null) {
+        errorElement.textContent = 'Введите корректную дату приказа в формате дд.мм.гггг.';
+        dateInput.focus();
+        return;
+      }
+      if (!number) {
+        errorElement.textContent = 'Введите номер приказа о списании.';
+        numberInput.focus();
+        return;
+      }
+      errorElement.textContent = '';
+      const response = await sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_FINISH_REVIEW', data: { fields: { orderDate: date, orderNumber: number } } });
+      if (!response || response.success === false) errorElement.textContent = 'Не удалось передать реквизиты в Пирамиду.';
+      else clearReestrDzWriteOffDraft();
+    };
+    dateInput.addEventListener('input', () => { dateInput.value = formatReestrDzSingleDateMask(dateInput.value); errorElement.textContent = ''; void persistFields(); });
+    numberInput.addEventListener('input', () => { errorElement.textContent = ''; void persistFields(); });
+    [dateInput, numberInput].forEach((input) => input.addEventListener('keydown', (event) => {
+      if (event.key === 'Tab' && !event.shiftKey) {
+        if (input === dateInput) {
+          event.preventDefault();
+          numberInput.focus();
+        } else {
+          const done = overlay.querySelector('[data-action="done"]');
+          if (done instanceof HTMLButtonElement) {
+            event.preventDefault();
+            done.focus();
+          }
+        }
+        return;
+      }
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      void finish();
+    }));
+    overlay.addEventListener('click', (event) => {
+      const button = event.target instanceof Element ? event.target.closest('[data-action]') : null;
+      if (!(button instanceof HTMLButtonElement)) return;
+      if (button.dataset.action === 'done') void finish();
+      if (button.dataset.action === 'pause') {
+        const paused = !reestrDzWriteOffReviewState.paused;
+        reestrDzWriteOffReviewState.paused = paused;
+        button.textContent = paused ? 'Продолжить' : 'Пауза';
+        const done = overlay.querySelector('[data-action="done"]');
+        if (done instanceof HTMLButtonElement) done.disabled = paused;
+        void sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_UPDATE_REVIEW', data: { paused, fields: { orderDate: dateInput.value, orderNumber: numberInput.value } } });
+      }
+      if (button.dataset.action === 'close' && window.confirm('Остановить проверку списания и вернуться в Пирамиду?')) {
+        clearReestrDzWriteOffDraft();
+        void sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_STOP_REVIEW' });
+      }
+    });
+    makeReestrDzWriteOffOverlayDraggable(overlay, (position) => {
+      session.position = position;
+      reestrDzWriteOffReviewState.position = position;
+      persistReestrDzWriteOffDraft(session, { orderDate: dateInput.value, orderNumber: numberInput.value });
+      void sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_UPDATE_REVIEW', data: { position } });
+    });
+    (document.body || document.documentElement).appendChild(overlay);
+    highlightReestrDzWriteOffText(data.outgoingNumber, data.writeOffAmount);
+  }
+
+  async function initReestrDzWriteOffReviewOverlay() {
+    if (!isExtensionUiSettingEnabled('reestrDzPrincipalAutofill')) return;
+    const response = await sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_GET_REVIEW_STATE' });
+    if (!response || response.success === false || !response.session || response.session.status !== 'reviewing') return;
+    const draft = await readReestrDzWriteOffDraft();
+    if (draft && draft.dateKey !== getReestrDzPrincipalLocalDateKey()) clearReestrDzWriteOffDraft();
+    if (draft && draft.dateKey === getReestrDzPrincipalLocalDateKey() &&
+      String(draft.depid || '') === String(response.session.data && response.session.data.depid || '') &&
+      String(draft.rowId || '') === String(response.session.data && response.session.data.rowId || '')) {
+      response.session.fields = cloneReestrDzPrincipalStorageValue(draft.fields, response.session.fields || {});
+      if (draft.position && typeof draft.position === 'object') response.session.position = cloneReestrDzPrincipalStorageValue(draft.position, null);
+      void sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_UPDATE_REVIEW', data: { fields: response.session.fields, position: response.session.position } });
+    }
+    renderReestrDzWriteOffReviewOverlay(response.session);
   }
 
   async function openExecutionAnalysisTab(url, active) {
@@ -6937,6 +8006,9 @@
       html.${SCREENSHOT_MODE_CLASS} #${REESTR_DZ_PRINCIPAL_SEPARATOR_ID},
       html.${SCREENSHOT_MODE_CLASS} #${REESTR_DZ_PRINCIPAL_OVERLAY_ID},
       html.${SCREENSHOT_MODE_CLASS} #${REESTR_DZ_PRINCIPAL_PERIOD_DIALOG_ID},
+      html.${SCREENSHOT_MODE_CLASS} #${REESTR_DZ_CHECK_MENU_ID},
+      html.${SCREENSHOT_MODE_CLASS} #${REESTR_DZ_WRITE_OFF_OVERLAY_ID},
+      html.${SCREENSHOT_MODE_CLASS} .${REESTR_DZ_WRITE_OFF_HIGHLIGHT_CLASS},
       html.${SCREENSHOT_MODE_CLASS} .${REESTR_DZ_PRINCIPAL_CURRENT_ROW_CLASS},
       html.${SCREENSHOT_MODE_CLASS} .${REESTR_DZ_PRINCIPAL_ATTENTION_ROW_CLASS},
       html.${SCREENSHOT_MODE_CLASS} .ny-snow-container,
@@ -13895,6 +14967,7 @@
   initStageJumpButtons();
   initSlowsearchJumpButtons();
   initReestrDzPrincipalAutofill();
+  void initReestrDzWriteOffReviewOverlay();
   initGridLinksOpenInNewTabs();
   init();
 
