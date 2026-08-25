@@ -2721,7 +2721,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 orderNumber: String(fields.orderNumber || '').trim(),
                 comment: String(fields.comment || '').trim()
             };
-            if (completionMode === 'comment' && !session.fields.comment) {
+            const allowsEmptyOutgoingComment = session.data &&
+                session.data.reviewType === 'outgoing_mismatch' &&
+                session.data.outgoingIssueType === 'missing';
+            if (completionMode === 'comment' && !session.fields.comment && !allowsEmptyOutgoingComment) {
                 sendResponse({ success: false, error: 'WRITE_OFF_COMMENT_REQUIRED' });
                 return false;
             }

@@ -6339,7 +6339,9 @@
         data: { mode: 'comment', fields: { orderDate: '', orderNumber: '', comment } }
       });
       if (!response || response.success === false) {
-        if (errorElement instanceof HTMLElement) errorElement.textContent = 'Не удалось передать комментарий в Пирамиду.';
+        if (errorElement instanceof HTMLElement) {
+          errorElement.textContent = `Не удалось завершить проверку: ${response && response.error || 'нет ответа расширения'}.`;
+        }
       } else {
         clearReestrDzWriteOffDraft();
       }
