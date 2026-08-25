@@ -5288,6 +5288,12 @@
         requestOrderNumber: review.requestOrderNumber,
         requestOrderDate: review.requestOrderDate,
         decision: review.requiresDecisionSelectionAfterReview ? '' : review.decision,
+        requestDocument: {
+          type: 'request',
+          label: 'Поручение',
+          text: candidate.cell.RequestNumber,
+          href: requestDocument.url
+        },
         documents: review.documents
       }
     });
@@ -6570,8 +6576,12 @@
       return;
     }
     const documents = Array.isArray(data.documents) ? data.documents : [];
-    const currentDocumentIndex = Math.max(0, Number(session.currentDocumentIndex) || 0);
-    const currentDocument = documents[currentDocumentIndex] || null;
+    const requestDocument = data.requestDocument && typeof data.requestDocument === 'object'
+      ? data.requestDocument
+      : null;
+    const storedDocumentIndex = Number.parseInt(String(session.currentDocumentIndex), 10);
+    const currentDocumentIndex = storedDocumentIndex === -1 ? -1 : Math.max(0, storedDocumentIndex || 0);
+    const currentDocument = currentDocumentIndex === -1 ? requestDocument : (documents[currentDocumentIndex] || null);
     const initialMode = session.mode === 'comment' ? 'comment' : 'order';
     const initialOrderDate = normalizeReestrDzText(session.fields && session.fields.orderDate) || normalizeReestrDzText(data.requestOrderDate);
     const initialOrderNumber = normalizeReestrDzText(session.fields && session.fields.orderNumber) || normalizeReestrDzText(data.requestOrderNumber);
@@ -6672,6 +6682,14 @@
     const amountReference = overlay.querySelector('[data-role="amount-reference"]');
     if (amountReference instanceof HTMLElement) amountReference.hidden = !hasAmountDetails;
     const docsHost = overlay.querySelector('[data-role="documents"]');
+    if (requestDocument && requestDocument.href) {
+      const requestButton = document.createElement('button');
+      requestButton.type = 'button';
+      requestButton.textContent = requestDocument.label || 'Поручение';
+      requestButton.setAttribute('aria-current', currentDocumentIndex === -1 ? 'page' : 'false');
+      requestButton.addEventListener('click', () => void navigateReestrDzWriteOffReview(requestDocument.href, -1));
+      docsHost.appendChild(requestButton);
+    }
     documents.forEach((item, index) => {
       const button = document.createElement('button');
       button.type = 'button';

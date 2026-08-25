@@ -2681,7 +2681,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 return false;
             }
             const documentIndex = Number.parseInt(String(request.data && request.data.documentIndex), 10);
-            if (Number.isInteger(documentIndex) && documentIndex >= 0) session.currentDocumentIndex = documentIndex;
+            if (Number.isInteger(documentIndex) && documentIndex >= -1) session.currentDocumentIndex = documentIndex;
             session.updatedAt = Date.now();
             const attachmentType = request.data && String(request.data.attachmentType || '');
             if (attachmentType === 'pdf' || attachmentType === 'archive') {
