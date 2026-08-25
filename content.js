@@ -5119,15 +5119,26 @@
         throw new Error(`Не удалось открыть поручение для проверки исходящих: ${opened && opened.error || 'нет ответа'}.`);
       }
       const verification = await waitForReestrDzWriteOffReview(run);
-      if (verification.mode !== 'comment' || !normalizeReestrDzText(verification.comment)) {
+      const outgoingComment = String(verification.comment || '').trim();
+      const commentProvided = Boolean(normalizeReestrDzText(outgoingComment));
+      if (verification.mode !== 'comment' || (!outgoingMissing && !commentProvided)) {
         throw new Error('Комментарий о проблеме с исходящим не был сохранён.');
       }
       let live = await loadReestrDzRowById(run.gridState, candidate.id, run.controller.signal);
       let cell = live && live.cell ? { ...candidate.cell, ...live.cell } : { ...candidate.cell };
       const originalCell = { ...cell };
       candidate._writeOffBaselineCell = originalCell;
-      updateReestrDzWriteOffStage(run, `Сохраняю комментарий об исходящем строки № ${candidate.id}…`);
-      cell = await saveReestrDzWriteOffComment(run, candidate, cell, verification.comment, { matchMode: 'block' });
+      updateReestrDzWriteOffStage(
+        run,
+        commentProvided
+          ? `Сохраняю комментарий об исходящем строки № ${candidate.id}…`
+          : `Пропускаю строку № ${candidate.id} без комментария…`
+      );
+      const beforeOutgoingComment = cell;
+      if (commentProvided) {
+        cell = await saveReestrDzWriteOffComment(run, candidate, cell, outgoingComment, { matchMode: 'block' });
+      }
+      const commentWritten = didReestrDzWriteOffInformationChange(beforeOutgoingComment, cell);
       cell = await applyReestrDzCancellationComments(
         run, candidate, cell, requestDocument, saveReestrDzWriteOffComment
       );
@@ -5138,11 +5149,15 @@
         review,
         fields: { orderDate: '', orderNumber: '' },
         result: outgoingMissing
-          ? (informationWritten ? 'Исходящий не найден — комментарий сохранён' : 'Исходящий не найден — комментарий уже был')
-          : (informationWritten ? 'Несовпадение исходящих — комментарий сохранён' : 'Несовпадение исходящих — комментарий уже был'),
-        description: informationWritten
-          ? `${outgoingMissing ? 'Комментарий об отсутствии исходящего в поручении' : 'Комментарий о несовпадении исходящего в поручении и гриде'} сохранён; приказ не изменялся.`
-          : `${outgoingMissing ? 'Такой комментарий об отсутствии исходящего' : 'Такой комментарий о несовпадении исходящих'} уже содержался в строке; приказ не изменялся.`,
+          ? (!commentProvided
+            ? 'Исходящий не найден — пропущено'
+            : (commentWritten ? 'Исходящий не найден — комментарий сохранён' : 'Исходящий не найден — комментарий уже был'))
+          : (commentWritten ? 'Несовпадение исходящих — комментарий сохранён' : 'Несовпадение исходящих — комментарий уже был'),
+        description: !commentProvided
+          ? 'Строка пропущена пользователем без комментария; приказ не изменялся.'
+          : (commentWritten
+            ? `${outgoingMissing ? 'Комментарий об отсутствии исходящего в поручении' : 'Комментарий о несовпадении исходящего в поручении и гриде'} сохранён; приказ не изменялся.`
+            : `${outgoingMissing ? 'Такой комментарий об отсутствии исходящего' : 'Такой комментарий о несовпадении исходящих'} уже содержался в строке; приказ не изменялся.`),
         skipped: true,
         informationWritten: candidate._informationWritten === true
       };
@@ -6280,11 +6295,12 @@
         <div class="dup-wo-comment-mode">
           <label for="dup-wo-outgoing-mismatch-comment">Комментарий к реестру</label>
           <textarea id="dup-wo-outgoing-mismatch-comment" name="skipComment"></textarea>
-          <div class="dup-wo-comment-hint">Комментарий сохранится штатной формой Пирамиды, приказ не изменится. Ctrl+Enter — сохранить и перейти дальше.</div>
+          <div class="dup-wo-comment-hint">${outgoingMissing ? 'Комментарий необязателен: можно сохранить текст либо пропустить строку без изменений.' : 'Комментарий сохранится штатной формой Пирамиды, приказ не изменится.'} Ctrl+Enter — перейти дальше.</div>
         </div>
         <div class="dup-wo-error" data-role="error"></div>
         <div class="dup-wo-actions">
           <button type="button" data-action="pause">${session.paused ? 'Продолжить' : 'Пауза'}</button>
+          ${outgoingMissing ? `<button type="button" data-action="skip-outgoing-issue" ${session.paused ? 'disabled' : ''}>Пропустить</button>` : ''}
           <button type="button" data-action="save-mismatch-comment" ${session.paused ? 'disabled' : ''}>Сохранить и дальше</button>
         </div>
       </div>`;
@@ -6308,9 +6324,11 @@
       persistReestrDzWriteOffDraft(session, fields);
       return sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_UPDATE_REVIEW', data: { mode: 'comment', fields } });
     };
-    const finish = async () => {
-      const comment = String(commentInput instanceof HTMLTextAreaElement ? commentInput.value : '').trim();
-      if (!normalizeReestrDzText(comment)) {
+    const finish = async (commentOverride = null) => {
+      const comment = String(commentOverride === null && commentInput instanceof HTMLTextAreaElement
+        ? commentInput.value
+        : commentOverride || '').trim();
+      if (!outgoingMissing && !normalizeReestrDzText(comment)) {
         if (errorElement instanceof HTMLElement) errorElement.textContent = 'Комментарий не может быть пустым.';
         commentInput?.focus();
         return;
@@ -6340,12 +6358,15 @@
       const button = event.target instanceof Element ? event.target.closest('[data-action]') : null;
       if (!(button instanceof HTMLButtonElement)) return;
       if (button.dataset.action === 'save-mismatch-comment') void finish();
+      if (button.dataset.action === 'skip-outgoing-issue') void finish('');
       if (button.dataset.action === 'pause') {
         const paused = !reestrDzWriteOffReviewState.paused;
         reestrDzWriteOffReviewState.paused = paused;
         button.textContent = paused ? 'Продолжить' : 'Пауза';
         const saveButton = overlay.querySelector('[data-action="save-mismatch-comment"]');
         if (saveButton instanceof HTMLButtonElement) saveButton.disabled = paused;
+        const skipButton = overlay.querySelector('[data-action="skip-outgoing-issue"]');
+        if (skipButton instanceof HTMLButtonElement) skipButton.disabled = paused;
         void sendRuntimeMessage({
           action: 'REESTR_DZ_WRITE_OFF_UPDATE_REVIEW',
           data: {
