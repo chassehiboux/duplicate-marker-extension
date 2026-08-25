@@ -5029,6 +5029,47 @@
     throw new Error(`Пирамида не подтвердила приказ строки № ${candidate.id}.`);
   }
 
+  async function saveReestrDzWriteOffPrincipalInfo(run, candidate, cell, fields) {
+    const sendDate = normalizeReestrDzText(fields && fields.sendDate);
+    const principalNumber = normalizeReestrDzText(fields && fields.principalNumber);
+    await waitForReestrDzWriteOffResume(run);
+    await showReestrDzWriteOffCandidate(run, candidate, false);
+    updateReestrDzWriteOffStage(run, `Открываю сведения о направлении принципалу строки № ${candidate.id}…`);
+    const nativeButton = findReestrDzNativeButton('Заполнить сведения о направлении инфо принципалу');
+    if (!(nativeButton instanceof HTMLElement)) {
+      throw new Error('Не найдена штатная кнопка «Заполнить сведения о направлении инфо принципалу».');
+    }
+    nativeButton.click();
+    const nativeForm = await waitForReestrDzNativeForm(candidate, '/ovzid/ReestrDz/Send');
+    const response = await sendRuntimeMessage({
+      action: 'REESTR_DZ_FILL_NATIVE_FORM',
+      data: {
+        rowId: candidate.id,
+        depid: run.department && run.department.depid || '',
+        sendDate,
+        principalNumber,
+        allowEmpty: true
+      }
+    });
+    if (!response || response.success === false) {
+      throw new Error(`Не удалось изменить сведения о направлении принципалу: ${response && response.error || 'нет ответа'}.`);
+    }
+    updateReestrDzWriteOffStage(run, `Проверяю сведения о направлении принципалу строки № ${candidate.id}…`);
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, attempt ? 500 : 250));
+      const verified = await loadReestrDzRowById(run.gridState, candidate.id, run.controller.signal);
+      const verifiedCell = verified && verified.cell;
+      if (verifiedCell &&
+        normalizeReestrDzText(verifiedCell.SendDate) === sendDate &&
+        normalizeReestrDzText(verifiedCell.PrincipalNumber) === principalNumber) {
+        await waitForReestrDzGridReady('', 20000);
+        closeReestrDzPrincipalNativeDialog(nativeForm.frame);
+        return { ...cell, ...verifiedCell };
+      }
+    }
+    throw new Error(`Пирамида не подтвердила сведения о направлении принципалу строки № ${candidate.id}.`);
+  }
+
   async function waitForReestrDzWriteOffReview(run) {
     while (true) {
       await waitForReestrDzWriteOffResume(run);
@@ -5048,7 +5089,7 @@
   }
 
   function didReestrDzWriteOffInformationChange(beforeCell, afterCell) {
-    return ['Note', 'OrderDate', 'OrderNumber'].some((key) =>
+    return ['Note', 'OrderDate', 'OrderNumber', 'SendDate', 'PrincipalNumber'].some((key) =>
       normalizeReestrDzText(beforeCell && beforeCell[key]) !== normalizeReestrDzText(afterCell && afterCell[key])
     );
   }
@@ -5090,6 +5131,10 @@
     await persistReestrDzWriteOffRun(run);
     if (review.requiresOutgoingMismatchComment) {
       const outgoingMissing = review.outgoingIssueType === 'missing';
+      const currentIssueRow = await loadReestrDzRowById(run.gridState, candidate.id, run.controller.signal);
+      const currentIssueCell = currentIssueRow && currentIssueRow.cell
+        ? { ...candidate.cell, ...currentIssueRow.cell }
+        : { ...candidate.cell };
       updateReestrDzWriteOffStage(
         run,
         `Открываю поручение ${candidate.cell.RequestNumber} для проверки ${outgoingMissing ? 'отсутствующего исходящего' : 'несовпадения исходящих'}…`
@@ -5104,7 +5149,9 @@
           requestNumber: candidate.cell.RequestNumber,
           outgoingIssueType: review.outgoingIssueType,
           outgoingNumber: review.outgoingNumber,
-          gridOutgoingNumber: review.gridOutgoingNumber,
+          gridOutgoingNumber: currentIssueCell.PrincipalNumber,
+          currentSendDate: currentIssueCell.SendDate,
+          currentPrincipalNumber: currentIssueCell.PrincipalNumber,
           errorMessage: review.outgoingMismatchMessage,
           suggestedComment: review.suggestedComment,
           documents: [{
@@ -5121,21 +5168,29 @@
       const verification = await waitForReestrDzWriteOffReview(run);
       const outgoingComment = String(verification.comment || '').trim();
       const commentProvided = Boolean(normalizeReestrDzText(outgoingComment));
-      if (verification.mode !== 'comment' || (!outgoingMissing && !commentProvided)) {
-        throw new Error('Комментарий о проблеме с исходящим не был сохранён.');
+      if (verification.mode !== 'comment') throw new Error('Ручная проверка исходящего завершилась в неизвестном режиме.');
+      const desiredSendDate = normalizeReestrDzText(verification.sendDate);
+      const desiredPrincipalNumber = normalizeReestrDzText(verification.principalNumber);
+      if (desiredSendDate && (!/^\d{2}\.\d{2}\.\d{4}$/.test(desiredSendDate) || parseReestrDzDate(desiredSendDate) === null)) {
+        throw new Error('Ручная проверка вернула некорректную дату отправки принципалу.');
       }
       let live = await loadReestrDzRowById(run.gridState, candidate.id, run.controller.signal);
       let cell = live && live.cell ? { ...candidate.cell, ...live.cell } : { ...candidate.cell };
       const originalCell = { ...cell };
       candidate._writeOffBaselineCell = originalCell;
-      updateReestrDzWriteOffStage(
-        run,
-        commentProvided
-          ? `Сохраняю комментарий об исходящем строки № ${candidate.id}…`
-          : `Пропускаю строку № ${candidate.id} без комментария…`
-      );
+      const principalInfoChanged =
+        normalizeReestrDzText(cell.SendDate) !== desiredSendDate ||
+        normalizeReestrDzText(cell.PrincipalNumber) !== desiredPrincipalNumber;
+      if (principalInfoChanged) {
+        updateReestrDzWriteOffStage(run, `Сохраняю сведения о направлении принципалу строки № ${candidate.id}…`);
+        cell = await saveReestrDzWriteOffPrincipalInfo(run, candidate, cell, {
+          sendDate: desiredSendDate,
+          principalNumber: desiredPrincipalNumber
+        });
+      }
       const beforeOutgoingComment = cell;
       if (commentProvided) {
+        updateReestrDzWriteOffStage(run, `Сохраняю комментарий об исходящем строки № ${candidate.id}…`);
         cell = await saveReestrDzWriteOffComment(run, candidate, cell, outgoingComment, { matchMode: 'block' });
       }
       const commentWritten = didReestrDzWriteOffInformationChange(beforeOutgoingComment, cell);
@@ -5147,17 +5202,26 @@
       return {
         cell,
         review,
-        fields: { orderDate: '', orderNumber: '' },
-        result: outgoingMissing
-          ? (!commentProvided
-            ? 'Исходящий не найден — пропущено'
-            : (commentWritten ? 'Исходящий не найден — комментарий сохранён' : 'Исходящий не найден — комментарий уже был'))
-          : (commentWritten ? 'Несовпадение исходящих — комментарий сохранён' : 'Несовпадение исходящих — комментарий уже был'),
-        description: !commentProvided
-          ? 'Строка пропущена пользователем без комментария; приказ не изменялся.'
+        fields: {
+          orderDate: '',
+          orderNumber: '',
+          sendDate: desiredSendDate,
+          principalNumber: desiredPrincipalNumber
+        },
+        result: principalInfoChanged
+          ? 'Сведения о направлении принципалу изменены'
           : (commentWritten
-            ? `${outgoingMissing ? 'Комментарий об отсутствии исходящего в поручении' : 'Комментарий о несовпадении исходящего в поручении и гриде'} сохранён; приказ не изменялся.`
-            : `${outgoingMissing ? 'Такой комментарий об отсутствии исходящего' : 'Такой комментарий о несовпадении исходящих'} уже содержался в строке; приказ не изменялся.`),
+            ? `${outgoingMissing ? 'Исходящий не найден' : 'Несовпадение исходящих'} — комментарий сохранён`
+            : (!commentProvided
+              ? `${outgoingMissing ? 'Исходящий не найден' : 'Несовпадение исходящих'} — пропущено`
+              : `${outgoingMissing ? 'Исходящий не найден' : 'Несовпадение исходящих'} — комментарий уже был`)),
+        description: principalInfoChanged
+          ? `Дата отправки принципалу и номер исходящего сохранены в значениях «${desiredSendDate || 'пусто'}» и «${desiredPrincipalNumber || 'пусто'}»${commentWritten ? '; комментарий также сохранён' : ''}.`
+          : (!commentProvided
+            ? 'Строка пропущена пользователем без изменения исходящего и комментария; приказ не изменялся.'
+            : (commentWritten
+              ? `${outgoingMissing ? 'Комментарий об отсутствии исходящего в поручении' : 'Комментарий о несовпадении исходящего в поручении и гриде'} сохранён; приказ не изменялся.`
+              : `${outgoingMissing ? 'Такой комментарий об отсутствии исходящего' : 'Такой комментарий о несовпадении исходящих'} уже содержался в строке; приказ не изменялся.`)),
         skipped: true,
         informationWritten: candidate._informationWritten === true
       };
@@ -6110,6 +6174,8 @@
       fields: {
         orderDate: String(fields.orderDate || ''),
         orderNumber: String(fields.orderNumber || ''),
+        sendDate: String(fields.sendDate === undefined ? session.fields && session.fields.sendDate || '' : fields.sendDate || ''),
+        principalNumber: String(fields.principalNumber === undefined ? session.fields && session.fields.principalNumber || '' : fields.principalNumber || ''),
         comment: String(fields.comment || '')
       },
       position: session.position && typeof session.position === 'object' ? { ...session.position } : null,
@@ -6279,7 +6345,15 @@
 
   function renderReestrDzWriteOffOutgoingMismatchOverlay(session) {
     const data = session.data || {};
-    const outgoingMissing = data.outgoingIssueType === 'missing';
+    const originalSendDate = normalizeReestrDzText(data.currentSendDate);
+    const originalPrincipalNumber = normalizeReestrDzText(data.currentPrincipalNumber);
+    const initialSendDate = session.fields && Object.prototype.hasOwnProperty.call(session.fields, 'sendDate')
+      ? normalizeReestrDzText(session.fields.sendDate)
+      : originalSendDate;
+    const initialPrincipalNumber = session.fields && Object.prototype.hasOwnProperty.call(session.fields, 'principalNumber')
+      ? normalizeReestrDzText(session.fields.principalNumber)
+      : originalPrincipalNumber;
+    const escapeAttribute = (value) => String(value || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;');
     const overlay = document.createElement('section');
     overlay.id = REESTR_DZ_WRITE_OFF_OVERLAY_ID;
     overlay.className = 'dup-reestr-dz-principal-ui';
@@ -6290,24 +6364,28 @@
       overlay.style.right = 'auto';
     }
     overlay.innerHTML = `
-      <div class="dup-wo-head"><div><strong>${outgoingMissing ? 'Исходящий не найден' : 'Несовпадение исходящих'}</strong><small>Реестр № <span data-role="row-id">—</span> · <span data-role="progress">—</span></small></div><button type="button" class="dup-wo-close" data-action="close" aria-label="Остановить проверку">×</button></div>
+      <div class="dup-wo-head"><div><strong>Проверка исходящего</strong><small>Реестр № <span data-role="row-id">—</span> · <span data-role="progress">—</span></small></div><button type="button" class="dup-wo-close" data-action="close" aria-label="Остановить проверку">×</button></div>
       <div class="dup-wo-body">
         <div class="dup-wo-mismatch" data-role="mismatch"></div>
         <dl class="dup-wo-grid">
           <dt>Поручение</dt><dd data-role="request">—</dd>
-          ${outgoingMissing ? '' : '<dt>Исходящий в поручении</dt><dd class="dup-wo-decision" data-role="request-outgoing">—</dd>'}
+          <dt>Исходящий в поручении</dt><dd class="dup-wo-decision" data-role="request-outgoing">—</dd>
           <dt>Исходящий в гриде</dt><dd class="dup-wo-decision" data-role="grid-outgoing">—</dd>
         </dl>
+        <div class="dup-wo-form">
+          <div class="dup-wo-field"><label for="dup-wo-principal-send-date">Дата отправки принципалу</label><input id="dup-wo-principal-send-date" name="sendDate" inputmode="numeric" maxlength="10" autocomplete="off" placeholder="дд.мм.гггг — можно оставить пустым" value="${escapeAttribute(initialSendDate)}"></div>
+          <div class="dup-wo-field"><label for="dup-wo-principal-number">Номер исходящего</label><input id="dup-wo-principal-number" name="principalNumber" autocomplete="off" placeholder="Можно оставить пустым" value="${escapeAttribute(initialPrincipalNumber)}"></div>
+        </div>
         <div class="dup-wo-comment-mode">
           <label for="dup-wo-outgoing-mismatch-comment">Комментарий к реестру</label>
           <textarea id="dup-wo-outgoing-mismatch-comment" name="skipComment"></textarea>
-          <div class="dup-wo-comment-hint">${outgoingMissing ? 'Комментарий необязателен: можно сохранить текст либо пропустить строку без изменений.' : 'Комментарий сохранится штатной формой Пирамиды, приказ не изменится.'} Ctrl+Enter — перейти дальше.</div>
+          <div class="dup-wo-comment-hint">Комментарий необязателен. Дату и номер можно изменить или полностью очистить. Ctrl+Enter — сохранить изменения.</div>
         </div>
         <div class="dup-wo-error" data-role="error"></div>
         <div class="dup-wo-actions">
           <button type="button" data-action="pause">${session.paused ? 'Продолжить' : 'Пауза'}</button>
-          ${outgoingMissing ? `<button type="button" data-action="skip-outgoing-issue" ${session.paused ? 'disabled' : ''}>Пропустить</button>` : ''}
-          <button type="button" data-action="save-mismatch-comment" ${session.paused ? 'disabled' : ''}>Сохранить и дальше</button>
+          <button type="button" data-action="skip-outgoing-issue" ${session.paused ? 'disabled' : ''}>Пропустить</button>
+          <button type="button" data-action="save-mismatch-comment" ${session.paused ? 'disabled' : ''}>Сохранить изменения</button>
         </div>
       </div>`;
     const set = (role, value) => {
@@ -6320,29 +6398,46 @@
     set('request', data.requestNumber);
     set('request-outgoing', data.outgoingNumber);
     set('grid-outgoing', data.gridOutgoingNumber);
+    const sendDateInput = overlay.querySelector('[name="sendDate"]');
+    const principalNumberInput = overlay.querySelector('[name="principalNumber"]');
     const commentInput = overlay.querySelector('[name="skipComment"]');
     const errorElement = overlay.querySelector('[data-role="error"]');
     if (commentInput instanceof HTMLTextAreaElement) {
-      commentInput.value = String(session.fields && session.fields.comment || data.suggestedComment || data.errorMessage || '').trim();
+      commentInput.value = String(session.fields && Object.prototype.hasOwnProperty.call(session.fields, 'comment')
+        ? session.fields.comment
+        : data.suggestedComment || data.errorMessage || '').trim();
     }
     const persist = () => {
-      const fields = { orderDate: '', orderNumber: '', comment: commentInput instanceof HTMLTextAreaElement ? commentInput.value : '' };
+      const fields = {
+        orderDate: '',
+        orderNumber: '',
+        sendDate: sendDateInput instanceof HTMLInputElement ? sendDateInput.value : '',
+        principalNumber: principalNumberInput instanceof HTMLInputElement ? principalNumberInput.value : '',
+        comment: commentInput instanceof HTMLTextAreaElement ? commentInput.value : ''
+      };
       persistReestrDzWriteOffDraft(session, fields);
       return sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_UPDATE_REVIEW', data: { mode: 'comment', fields } });
     };
-    const finish = async (commentOverride = null) => {
-      const comment = String(commentOverride === null && commentInput instanceof HTMLTextAreaElement
-        ? commentInput.value
-        : commentOverride || '').trim();
-      if (!outgoingMissing && !normalizeReestrDzText(comment)) {
-        if (errorElement instanceof HTMLElement) errorElement.textContent = 'Комментарий не может быть пустым.';
-        commentInput?.focus();
+    const finish = async (skip = false) => {
+      const sendDate = skip
+        ? originalSendDate
+        : normalizeReestrDzText(sendDateInput instanceof HTMLInputElement ? sendDateInput.value : '');
+      const principalNumber = skip
+        ? originalPrincipalNumber
+        : normalizeReestrDzText(principalNumberInput instanceof HTMLInputElement ? principalNumberInput.value : '');
+      const comment = skip ? '' : String(commentInput instanceof HTMLTextAreaElement ? commentInput.value : '').trim();
+      if (sendDate && (!/^\d{2}\.\d{2}\.\d{4}$/.test(sendDate) || parseReestrDzDate(sendDate) === null)) {
+        if (errorElement instanceof HTMLElement) errorElement.textContent = 'Введите корректную дату в формате дд.мм.гггг либо очистите поле.';
+        sendDateInput?.focus();
         return;
       }
       if (errorElement instanceof HTMLElement) errorElement.textContent = '';
       const response = await sendRuntimeMessage({
         action: 'REESTR_DZ_WRITE_OFF_FINISH_REVIEW',
-        data: { mode: 'comment', fields: { orderDate: '', orderNumber: '', comment } }
+        data: {
+          mode: 'comment',
+          fields: { orderDate: '', orderNumber: '', sendDate, principalNumber, comment }
+        }
       });
       if (!response || response.success === false) {
         if (errorElement instanceof HTMLElement) {
@@ -6356,17 +6451,38 @@
       if (errorElement instanceof HTMLElement) errorElement.textContent = '';
       void persist();
     });
+    sendDateInput?.addEventListener('input', () => {
+      sendDateInput.value = formatReestrDzSingleDateMask(sendDateInput.value);
+      if (errorElement instanceof HTMLElement) errorElement.textContent = '';
+      void persist();
+    });
+    principalNumberInput?.addEventListener('input', () => {
+      if (errorElement instanceof HTMLElement) errorElement.textContent = '';
+      void persist();
+    });
+    sendDateInput?.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        principalNumberInput?.focus();
+      }
+    });
+    principalNumberInput?.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        commentInput?.focus();
+      }
+    });
     commentInput?.addEventListener('keydown', (event) => {
       if (event.key === 'Enter' && event.ctrlKey) {
         event.preventDefault();
-        void finish();
+        void finish(false);
       }
     });
     overlay.addEventListener('click', (event) => {
       const button = event.target instanceof Element ? event.target.closest('[data-action]') : null;
       if (!(button instanceof HTMLButtonElement)) return;
-      if (button.dataset.action === 'save-mismatch-comment') void finish();
-      if (button.dataset.action === 'skip-outgoing-issue') void finish('');
+      if (button.dataset.action === 'save-mismatch-comment') void finish(false);
+      if (button.dataset.action === 'skip-outgoing-issue') void finish(true);
       if (button.dataset.action === 'pause') {
         const paused = !reestrDzWriteOffReviewState.paused;
         reestrDzWriteOffReviewState.paused = paused;
@@ -6380,7 +6496,13 @@
           data: {
             paused,
             mode: 'comment',
-            fields: { orderDate: '', orderNumber: '', comment: commentInput && commentInput.value || '' }
+            fields: {
+              orderDate: '',
+              orderNumber: '',
+              sendDate: sendDateInput && sendDateInput.value || '',
+              principalNumber: principalNumberInput && principalNumberInput.value || '',
+              comment: commentInput && commentInput.value || ''
+            }
           }
         });
       }
@@ -6392,7 +6514,13 @@
     makeReestrDzWriteOffOverlayDraggable(overlay, (position) => {
       session.position = position;
       reestrDzWriteOffReviewState.position = position;
-      persistReestrDzWriteOffDraft(session, { orderDate: '', orderNumber: '', comment: commentInput && commentInput.value || '' });
+      persistReestrDzWriteOffDraft(session, {
+        orderDate: '',
+        orderNumber: '',
+        sendDate: sendDateInput && sendDateInput.value || '',
+        principalNumber: principalNumberInput && principalNumberInput.value || '',
+        comment: commentInput && commentInput.value || ''
+      });
       void sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_UPDATE_REVIEW', data: { position } });
     });
     (document.body || document.documentElement).appendChild(overlay);
@@ -6562,6 +6690,25 @@
     highlightReestrDzWriteOffText('', '', [data.responsibleName, data.decisionUser, ...REESTR_DZ_WRITE_OFF_DECISIONS]);
   }
 
+  function getReestrDzWriteOffLocalDocumentIndex(data, fallbackIndex) {
+    const matchesCurrentPage = (rawUrl) => {
+      try {
+        const target = new URL(String(rawUrl || ''), window.location.href);
+        const current = new URL(window.location.href);
+        if (target.origin !== current.origin || target.pathname.toLowerCase() !== current.pathname.toLowerCase()) return false;
+        const targetId = target.searchParams.get('ID');
+        const currentId = current.searchParams.get('ID');
+        return targetId || currentId ? targetId === currentId : target.search === current.search;
+      } catch (error) {
+        return false;
+      }
+    };
+    if (data && data.requestDocument && matchesCurrentPage(data.requestDocument.href)) return -1;
+    const documents = data && Array.isArray(data.documents) ? data.documents : [];
+    const localIndex = documents.findIndex((item) => item && matchesCurrentPage(item.href));
+    return localIndex >= 0 ? localIndex : fallbackIndex;
+  }
+
   function renderReestrDzWriteOffReviewOverlay(session) {
     ensureReestrDzPrincipalStyle();
     document.getElementById(REESTR_DZ_WRITE_OFF_OVERLAY_ID)?.remove();
@@ -6580,7 +6727,8 @@
       ? data.requestDocument
       : null;
     const storedDocumentIndex = Number.parseInt(String(session.currentDocumentIndex), 10);
-    const currentDocumentIndex = storedDocumentIndex === -1 ? -1 : Math.max(0, storedDocumentIndex || 0);
+    const fallbackDocumentIndex = storedDocumentIndex === -1 ? -1 : Math.max(0, storedDocumentIndex || 0);
+    const currentDocumentIndex = getReestrDzWriteOffLocalDocumentIndex(data, fallbackDocumentIndex);
     const currentDocument = currentDocumentIndex === -1 ? requestDocument : (documents[currentDocumentIndex] || null);
     const initialMode = session.mode === 'comment' ? 'comment' : 'order';
     const initialOrderDate = normalizeReestrDzText(session.fields && session.fields.orderDate) || normalizeReestrDzText(data.requestOrderDate);
@@ -6615,7 +6763,7 @@
           <dt data-order-info="date" hidden>Дата приказа в СДЗ</dt><dd class="dup-wo-accent-value" data-order-info="date" data-role="request-order-date" hidden></dd>
           <dt data-order-info="number" hidden>Номер приказа в СДЗ</dt><dd class="dup-wo-accent-value" data-order-info="number" data-role="request-order-number" hidden></dd>
           <dt>Решение</dt><dd class="dup-wo-decision">${data.decision || '—'}</dd>
-          <dt>Документ</dt><dd>${currentDocument ? `${currentDocument.label}: ${currentDocument.text}` : document.title}</dd>
+          <dt>Документ</dt><dd data-role="current-document">${currentDocument ? `${currentDocument.label}: ${currentDocument.text}` : document.title}</dd>
         </dl>
         <div class="dup-wo-reference" data-role="amount-reference" hidden>
           <div class="dup-wo-reference-title">Состав суммы списания</div>
@@ -6685,6 +6833,7 @@
     if (requestDocument && requestDocument.href) {
       const requestButton = document.createElement('button');
       requestButton.type = 'button';
+      requestButton.dataset.documentIndex = '-1';
       requestButton.textContent = requestDocument.label || 'Поручение';
       requestButton.setAttribute('aria-current', currentDocumentIndex === -1 ? 'page' : 'false');
       requestButton.addEventListener('click', () => void navigateReestrDzWriteOffReview(requestDocument.href, -1));
@@ -6693,6 +6842,7 @@
     documents.forEach((item, index) => {
       const button = document.createElement('button');
       button.type = 'button';
+      button.dataset.documentIndex = String(index);
       button.textContent = item.label || item.text || `Документ ${index + 1}`;
       button.setAttribute('aria-current', index === currentDocumentIndex ? 'page' : 'false');
       button.addEventListener('click', () => void navigateReestrDzWriteOffReview(item.href, index));
@@ -7022,6 +7172,99 @@
     highlightReestrDzWriteOffText(data.outgoingNumber, data.writeOffAmount);
   }
 
+  function syncVisibleReestrDzWriteOffOverlay(session) {
+    const overlay = document.getElementById(REESTR_DZ_WRITE_OFF_OVERLAY_ID);
+    const previous = reestrDzWriteOffReviewState;
+    const sameRow = overlay instanceof HTMLElement && previous &&
+      String(previous.data && previous.data.rowId || '') === String(session.data && session.data.rowId || '') &&
+      String(previous.data && previous.data.reviewType || '') === String(session.data && session.data.reviewType || '');
+    if (!sameRow) {
+      renderReestrDzWriteOffReviewOverlay(session);
+      return;
+    }
+    reestrDzWriteOffReviewState = session;
+    const reviewType = String(session.data && session.data.reviewType || '');
+    if (reviewType === 'decision_mismatch') {
+      const skipMode = session.mode === 'decision_skip';
+      const candidatePanel = overlay.querySelector('[data-panel="candidate"]');
+      const skipPanel = overlay.querySelector('[data-panel="skip"]');
+      if (candidatePanel instanceof HTMLElement) candidatePanel.hidden = skipMode;
+      if (skipPanel instanceof HTMLElement) skipPanel.hidden = !skipMode;
+      ['skip-decision', 'confirm-decision'].forEach((action) => {
+        const button = overlay.querySelector(`[data-action="${action}"]`);
+        if (button instanceof HTMLButtonElement) button.hidden = skipMode;
+      });
+      ['cancel-decision-skip', 'finish-decision-skip'].forEach((action) => {
+        const button = overlay.querySelector(`[data-action="${action}"]`);
+        if (button instanceof HTMLButtonElement) button.hidden = !skipMode;
+      });
+    } else if (reviewType !== 'outgoing_mismatch') {
+      const commentMode = session.mode === 'comment';
+      const orderPanel = overlay.querySelector('[data-panel="order"]');
+      const commentPanel = overlay.querySelector('[data-panel="comment"]');
+      if (orderPanel instanceof HTMLElement) orderPanel.hidden = commentMode;
+      if (commentPanel instanceof HTMLElement) commentPanel.hidden = !commentMode;
+      ['skip-order', 'done'].forEach((action) => {
+        const button = overlay.querySelector(`[data-action="${action}"]`);
+        if (button instanceof HTMLButtonElement) button.hidden = commentMode;
+      });
+      ['cancel-skip', 'save-comment'].forEach((action) => {
+        const button = overlay.querySelector(`[data-action="${action}"]`);
+        if (button instanceof HTMLButtonElement) button.hidden = !commentMode;
+      });
+      const stageElement = overlay.querySelector('[data-role="stage"]');
+      if (stageElement instanceof HTMLElement) {
+        stageElement.textContent = commentMode
+          ? 'Дополните решение комментарием. Дата и номер приказа заполняться не будут.'
+          : 'Проверьте документ и заполните реквизиты приказа.';
+      }
+    }
+    const setInputValue = (name, value) => {
+      const input = overlay.querySelector(`[name="${name}"]`);
+      if (input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement) {
+        input.value = String(value || '');
+      }
+    };
+    setInputValue('orderDate', session.fields && session.fields.orderDate);
+    setInputValue('orderNumber', session.fields && session.fields.orderNumber);
+    setInputValue('sendDate', session.fields && session.fields.sendDate);
+    setInputValue('principalNumber', session.fields && session.fields.principalNumber);
+    setInputValue('skipComment', session.fields && session.fields.comment);
+    const pauseButton = overlay.querySelector('[data-action="pause"]');
+    if (pauseButton instanceof HTMLButtonElement) pauseButton.textContent = session.paused ? 'Продолжить' : 'Пауза';
+    overlay.querySelectorAll('[data-action]').forEach((button) => {
+      if (!(button instanceof HTMLButtonElement) || ['pause', 'close'].includes(button.dataset.action || '')) return;
+      button.disabled = session.paused === true;
+    });
+    const currentIndex = getReestrDzWriteOffLocalDocumentIndex(
+      session.data,
+      Number.parseInt(String(session.currentDocumentIndex), 10)
+    );
+    overlay.querySelectorAll('[data-document-index]').forEach((button) => {
+      button.setAttribute('aria-current', Number.parseInt(button.dataset.documentIndex, 10) === currentIndex ? 'page' : 'false');
+    });
+    const currentDocument = currentIndex === -1
+      ? session.data && session.data.requestDocument
+      : (Array.isArray(session.data && session.data.documents) ? session.data.documents[currentIndex] : null);
+    const currentDocumentHost = overlay.querySelector('[data-role="current-document"]');
+    if (currentDocumentHost instanceof HTMLElement && currentDocument) {
+      currentDocumentHost.textContent = `${currentDocument.label}: ${currentDocument.text}`;
+    }
+    if (session.position && Number.isFinite(Number(session.position.left)) && Number.isFinite(Number(session.position.top))) {
+      overlay.style.left = `${Number(session.position.left)}px`;
+      overlay.style.top = `${Number(session.position.top)}px`;
+      overlay.style.right = 'auto';
+    }
+  }
+
+  chrome.runtime.onMessage.addListener((message) => {
+    if (!message || message.action !== 'REESTR_DZ_WRITE_OFF_SYNC_REVIEW') return false;
+    const session = message.session && typeof message.session === 'object' ? message.session : null;
+    if (!session || session.status !== 'reviewing') return false;
+    syncVisibleReestrDzWriteOffOverlay(session);
+    return false;
+  });
+
   async function initReestrDzWriteOffReviewOverlay() {
     if (!isExtensionUiSettingEnabled('reestrDzPrincipalAutofill')) return;
     const response = await sendRuntimeMessage({ action: 'REESTR_DZ_WRITE_OFF_GET_REVIEW_STATE' });
@@ -7031,7 +7274,10 @@
     if (draft && draft.dateKey === getReestrDzPrincipalLocalDateKey() &&
       String(draft.depid || '') === String(response.session.data && response.session.data.depid || '') &&
       String(draft.rowId || '') === String(response.session.data && response.session.data.rowId || '')) {
-      response.session.fields = cloneReestrDzPrincipalStorageValue(draft.fields, response.session.fields || {});
+      response.session.fields = {
+        ...(response.session.fields || {}),
+        ...cloneReestrDzPrincipalStorageValue(draft.fields, {})
+      };
       const reviewType = response.session.data && response.session.data.reviewType;
       response.session.mode = reviewType === 'decision_mismatch'
         ? (draft.mode === 'decision_skip' ? 'decision_skip' : 'decision_confirm')
@@ -7042,7 +7288,7 @@
         data: { mode: response.session.mode, fields: response.session.fields, position: response.session.position }
       });
     }
-    renderReestrDzWriteOffReviewOverlay(response.session);
+    syncVisibleReestrDzWriteOffOverlay(response.session);
   }
 
   async function openExecutionAnalysisTab(url, active) {

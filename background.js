@@ -1982,6 +1982,38 @@ const reestrDzWssSourceCleanupPromises = new Map();
 const reestrDzWriteOffReviewSessions = new Map();
 const reestrDzWriteOffReviewSources = new Map();
 
+function getReestrDzWriteOffReviewTabIds(session) {
+    if (!session || typeof session !== 'object') return [];
+    return Array.from(new Set([
+        ...(Array.isArray(session.reviewTabIds) ? session.reviewTabIds : []),
+        session.reviewTabId,
+        session.requestTabId,
+        session.documentTabId,
+        ...(Array.isArray(session.viewerTabIds) ? session.viewerTabIds : [])
+    ].filter(Number.isInteger)));
+}
+
+function registerReestrDzWriteOffReviewTab(session, sourceTabId, tabId) {
+    if (!session || !Number.isInteger(sourceTabId) || !Number.isInteger(tabId)) return;
+    session.reviewTabIds = Array.from(new Set([
+        ...(Array.isArray(session.reviewTabIds) ? session.reviewTabIds : []),
+        tabId
+    ]));
+    reestrDzWriteOffReviewSources.set(tabId, sourceTabId);
+}
+
+function syncReestrDzWriteOffReviewTabs(session, excludeTabId = null) {
+    if (!session || session.status !== 'reviewing') return;
+    const snapshot = JSON.parse(JSON.stringify(session));
+    getReestrDzWriteOffReviewTabIds(session).forEach((tabId) => {
+        if (tabId === excludeTabId) return;
+        void sendTabMessageAsync(tabId, {
+            action: 'REESTR_DZ_WRITE_OFF_SYNC_REVIEW',
+            session: snapshot
+        });
+    });
+}
+
 function isAllowedReestrDzUrl(rawUrl) {
     try {
         const url = new URL(String(rawUrl || ''));
@@ -2014,7 +2046,7 @@ async function closeReestrDzOrphanTabs(sourceTabId) {
     const pool = getReestrDzWssWorkerPool(sourceTabId, false);
     if (pool) for (const tabId of pool.values()) if (Number.isInteger(tabId)) tracked.add(tabId);
     const review = reestrDzWriteOffReviewSessions.get(sourceTabId);
-    if (review && Number.isInteger(review.reviewTabId)) tracked.add(review.reviewTabId);
+    if (review) getReestrDzWriteOffReviewTabIds(review).forEach((tabId) => tracked.add(tabId));
     const tabs = await queryTabsAsync({});
     const staleTabIds = tabs
         .filter((tab) => Number.isInteger(tab && tab.id) && tab.openerTabId === sourceTabId && tab.active !== true &&
@@ -2319,12 +2351,9 @@ async function closeReestrDzWriteOffReview(sourceTabId, activateSource = false) 
     const session = reestrDzWriteOffReviewSessions.get(sourceTabId);
     if (!session) return false;
     reestrDzWriteOffReviewSessions.delete(sourceTabId);
-    reestrDzWriteOffReviewSources.delete(session.reviewTabId);
-    try {
-        if (Number.isInteger(session.reviewTabId)) await removeTabAsync(session.reviewTabId);
-    } catch (error) {
-        // the review tab may already be closed by the user
-    }
+    const reviewTabIds = getReestrDzWriteOffReviewTabIds(session);
+    reviewTabIds.forEach((tabId) => reestrDzWriteOffReviewSources.delete(tabId));
+    await Promise.all(reviewTabIds.map((tabId) => removeTabAsync(tabId).catch(() => null)));
     if (activateSource) {
         try {
             await updateTabAsync(sourceTabId, { active: true });
@@ -2348,7 +2377,6 @@ async function openReestrDzWriteOffAttachmentViewer(sourceTabId, session, curren
     if (!isValidAttachment) {
         throw new Error(normalizedType === 'archive' ? 'WRITE_OFF_ATTACHMENT_IS_NOT_ARCHIVE' : 'WRITE_OFF_ATTACHMENT_IS_NOT_PDF');
     }
-    const oldReviewTabId = session.reviewTabId;
     const createProperties = {
         url: 'about:blank',
         active: true,
@@ -2367,9 +2395,11 @@ async function openReestrDzWriteOffAttachmentViewer(sourceTabId, session, curren
     const viewerTabId = viewerTab && Number.isInteger(viewerTab.id) ? viewerTab.id : null;
     if (!Number.isInteger(viewerTabId)) throw new Error('NO_WRITE_OFF_PDF_VIEWER_TAB');
 
-    const currentDocument = Array.isArray(session.data && session.data.documents)
-        ? session.data.documents[Math.max(0, Number(session.currentDocumentIndex) || 0)]
-        : null;
+    const currentDocument = Number(session.currentDocumentIndex) === -1
+        ? session.data && session.data.requestDocument
+        : (Array.isArray(session.data && session.data.documents)
+            ? session.data.documents[Math.max(0, Number(session.currentDocumentIndex) || 0)]
+            : null);
     const documentCacheKey = String(currentDocument && (currentDocument.text || currentDocument.label) || targetUrl).trim();
     const viewerUrl = chrome.runtime.getURL('reestr_dz_pdf_viewer.html') + '#' + new URLSearchParams({
         url: targetUrl,
@@ -2377,22 +2407,24 @@ async function openReestrDzWriteOffAttachmentViewer(sourceTabId, session, curren
         mode: normalizedType,
         cacheKey: `${String(session.data && session.data.depid || '')}:${documentCacheKey}`
     }).toString();
-    reestrDzWriteOffReviewSources.delete(oldReviewTabId);
-    reestrDzWriteOffReviewSources.set(viewerTabId, sourceTabId);
+    registerReestrDzWriteOffReviewTab(session, sourceTabId, viewerTabId);
+    session.viewerTabIds = Array.from(new Set([
+        ...(Array.isArray(session.viewerTabIds) ? session.viewerTabIds : []),
+        viewerTabId
+    ]));
     session.reviewTabId = viewerTabId;
     session.updatedAt = Date.now();
     try {
         await updateTabAsync(viewerTabId, { url: viewerUrl, active: true });
     } catch (error) {
         reestrDzWriteOffReviewSources.delete(viewerTabId);
-        session.reviewTabId = oldReviewTabId;
-        if (Number.isInteger(oldReviewTabId)) reestrDzWriteOffReviewSources.set(oldReviewTabId, sourceTabId);
+        session.reviewTabIds = getReestrDzWriteOffReviewTabIds(session).filter((tabId) => tabId !== viewerTabId);
+        session.viewerTabIds = (session.viewerTabIds || []).filter((tabId) => tabId !== viewerTabId);
+        session.reviewTabId = Number.isInteger(session.documentTabId) ? session.documentTabId : session.requestTabId;
         await removeTabAsync(viewerTabId).catch(() => null);
         throw error;
     }
-    if (Number.isInteger(oldReviewTabId) && oldReviewTabId !== viewerTabId) {
-        setTimeout(() => removeTabAsync(oldReviewTabId).catch(() => null), 180);
-    }
+    syncReestrDzWriteOffReviewTabs(session, viewerTabId);
     return { success: true, reviewTabId: viewerTabId };
 }
 
@@ -2456,46 +2488,74 @@ async function openReestrDzWriteOffReview(sourceTab, rawData) {
     const data = rawData && typeof rawData === 'object' ? JSON.parse(JSON.stringify(rawData)) : {};
     const documents = Array.isArray(data.documents) ? data.documents.filter((item) => item && isAllowedReestrDzUrl(item.href)) : [];
     if (!documents.length) throw new Error('WRITE_OFF_DOCUMENTS_NOT_FOUND');
-    const createProperties = {
-        url: documents[0].href,
-        active: true,
+    const requestDocument = data.requestDocument && isAllowedReestrDzUrl(data.requestDocument.href)
+        ? data.requestDocument
+        : null;
+    const baseCreateProperties = {
         openerTabId: sourceTabId
     };
-    if (Number.isInteger(sourceTab.windowId)) createProperties.windowId = sourceTab.windowId;
-    if (sourceTab.cookieStoreId) createProperties.cookieStoreId = sourceTab.cookieStoreId;
-    let reviewTab;
-    try {
-        reviewTab = await createTabAsync(createProperties);
-    } catch (error) {
-        delete createProperties.cookieStoreId;
-        reviewTab = await createTabAsync(createProperties);
+    if (Number.isInteger(sourceTab.windowId)) baseCreateProperties.windowId = sourceTab.windowId;
+    if (sourceTab.cookieStoreId) baseCreateProperties.cookieStoreId = sourceTab.cookieStoreId;
+    const createReviewTab = async (url, active) => {
+        const createProperties = {
+            ...baseCreateProperties,
+            url,
+            active
+        };
+        try {
+            return await createTabAsync(createProperties);
+        } catch (error) {
+            delete createProperties.cookieStoreId;
+            return createTabAsync(createProperties);
+        }
+    };
+    const documentTab = await createReviewTab(documents[0].href, !requestDocument);
+    const documentTabId = documentTab && Number.isInteger(documentTab.id) ? documentTab.id : null;
+    if (!Number.isInteger(documentTabId)) throw new Error('NO_WRITE_OFF_REVIEW_TAB');
+    let requestTab = null;
+    if (requestDocument) {
+        try {
+            requestTab = await createReviewTab(requestDocument.href, true);
+        } catch (error) {
+            await removeTabAsync(documentTabId).catch(() => null);
+            throw error;
+        }
     }
-    const reviewTabId = reviewTab && Number.isInteger(reviewTab.id) ? reviewTab.id : null;
-    if (!Number.isInteger(reviewTabId)) throw new Error('NO_WRITE_OFF_REVIEW_TAB');
+    const requestTabId = requestTab && Number.isInteger(requestTab.id) ? requestTab.id : null;
+    const reviewTabId = Number.isInteger(requestTabId) ? requestTabId : documentTabId;
     const session = {
         sourceTabId,
         reviewTabId,
+        reviewTabIds: [documentTabId, requestTabId].filter(Number.isInteger),
+        requestTabId,
+        documentTabId,
+        viewerTabIds: [],
         status: 'reviewing',
         paused: false,
         mode: data.reviewType === 'decision_mismatch'
             ? 'decision_confirm'
             : data.reviewType === 'outgoing_mismatch' ? 'comment' : 'order',
         completionMode: '',
-        currentDocumentIndex: 0,
+        currentDocumentIndex: Number.isInteger(requestTabId) ? -1 : 0,
+        documentTabIndex: 0,
         fields: {
             orderDate: '',
             orderNumber: '',
+            sendDate: String(data.currentSendDate || '').trim(),
+            principalNumber: String(data.currentPrincipalNumber || '').trim(),
             comment: String(data.suggestedComment || data.suggestedDecisionText || data.decision || '').trim()
         },
         position: null,
         attachmentsByUrl: {},
         processedArchiveUrls: [],
-        data: { ...data, documents },
+        data: { ...data, requestDocument, documents },
         updatedAt: Date.now()
     };
     reestrDzWriteOffReviewSessions.set(sourceTabId, session);
-    reestrDzWriteOffReviewSources.set(reviewTabId, sourceTabId);
-    return { success: true, reviewTabId };
+    registerReestrDzWriteOffReviewTab(session, sourceTabId, documentTabId);
+    if (Number.isInteger(requestTabId)) registerReestrDzWriteOffReviewTab(session, sourceTabId, requestTabId);
+    syncReestrDzWriteOffReviewTabs(session);
+    return { success: true, reviewTabId, requestTabId, documentTabId };
 }
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -2649,6 +2709,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 session.fields = {
                     orderDate: data.fields.orderDate === undefined ? String(session.fields.orderDate || '') : String(data.fields.orderDate || '').trim(),
                     orderNumber: data.fields.orderNumber === undefined ? String(session.fields.orderNumber || '') : String(data.fields.orderNumber || '').trim(),
+                    sendDate: data.fields.sendDate === undefined ? String(session.fields.sendDate || '') : String(data.fields.sendDate || '').trim(),
+                    principalNumber: data.fields.principalNumber === undefined ? String(session.fields.principalNumber || '') : String(data.fields.principalNumber || '').trim(),
                     comment: data.fields.comment === undefined ? String(session.fields.comment || '') : String(data.fields.comment || '').trim()
                 };
             }
@@ -2667,6 +2729,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 session.processedArchiveUrls = Array.from(processedArchiveUrls);
             }
             session.updatedAt = Date.now();
+            syncReestrDzWriteOffReviewTabs(session, reviewTabId);
             sendResponse({ success: true, session: JSON.parse(JSON.stringify(session)) });
             return false;
         }
@@ -2681,7 +2744,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 return false;
             }
             const documentIndex = Number.parseInt(String(request.data && request.data.documentIndex), 10);
-            if (Number.isInteger(documentIndex) && documentIndex >= -1) session.currentDocumentIndex = documentIndex;
+            const previousDocumentIndex = Math.max(0, Number.parseInt(String(session.documentTabIndex), 10) || 0);
+            if (Number.isInteger(documentIndex) && documentIndex >= -1) {
+                session.currentDocumentIndex = documentIndex;
+                if (documentIndex >= 0) session.documentTabIndex = documentIndex;
+            }
             session.updatedAt = Date.now();
             const attachmentType = request.data && String(request.data.attachmentType || '');
             if (attachmentType === 'pdf' || attachmentType === 'archive') {
@@ -2697,8 +2764,20 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     .catch((error) => sendResponse({ success: false, error: error && error.message ? error.message : String(error) }));
                 return true;
             }
-            updateTabAsync(reviewTabId, { url: targetUrl, active: true })
-                .then(() => sendResponse({ success: true }))
+            const targetTabId = documentIndex === -1 && Number.isInteger(session.requestTabId)
+                ? session.requestTabId
+                : (Number.isInteger(session.documentTabId) ? session.documentTabId : reviewTabId);
+            session.reviewTabId = targetTabId;
+            syncReestrDzWriteOffReviewTabs(session);
+            const canActivateLoadedRequest = documentIndex === -1 &&
+                targetTabId === session.requestTabId && Number.isInteger(session.documentTabId);
+            const canActivateLoadedDocument = documentIndex >= 0 &&
+                targetTabId === session.documentTabId && previousDocumentIndex === documentIndex;
+            const targetProperties = canActivateLoadedRequest || canActivateLoadedDocument
+                ? { active: true }
+                : { url: targetUrl, active: true };
+            updateTabAsync(targetTabId, targetProperties)
+                .then(() => sendResponse({ success: true, reviewTabId: targetTabId }))
                 .catch((error) => sendResponse({ success: false, error: error && error.message ? error.message : String(error) }));
             return true;
         }
@@ -2719,11 +2798,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             session.fields = {
                 orderDate: String(fields.orderDate || '').trim(),
                 orderNumber: String(fields.orderNumber || '').trim(),
+                sendDate: String(fields.sendDate || '').trim(),
+                principalNumber: String(fields.principalNumber || '').trim(),
                 comment: String(fields.comment || '').trim()
             };
             const allowsEmptyOutgoingComment = session.data &&
-                session.data.reviewType === 'outgoing_mismatch' &&
-                session.data.outgoingIssueType === 'missing';
+                session.data.reviewType === 'outgoing_mismatch';
             if (completionMode === 'comment' && !session.fields.comment && !allowsEmptyOutgoingComment) {
                 sendResponse({ success: false, error: 'WRITE_OFF_COMMENT_REQUIRED' });
                 return false;
@@ -2735,7 +2815,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             session.updatedAt = Date.now();
             updateTabAsync(sourceTabId, { active: true }).catch(() => null);
             sendResponse({ success: true });
-            setTimeout(() => removeTabAsync(reviewTabId).catch(() => null), 120);
+            const reviewTabIds = getReestrDzWriteOffReviewTabIds(session);
+            setTimeout(() => reviewTabIds.forEach((tabId) => removeTabAsync(tabId).catch(() => null)), 120);
             return false;
         }
 
@@ -2751,7 +2832,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             session.updatedAt = Date.now();
             updateTabAsync(sourceTabId, { active: true }).catch(() => null);
             sendResponse({ success: true });
-            setTimeout(() => removeTabAsync(reviewTabId).catch(() => null), 120);
+            const reviewTabIds = getReestrDzWriteOffReviewTabIds(session);
+            setTimeout(() => reviewTabIds.forEach((tabId) => removeTabAsync(tabId).catch(() => null)), 120);
             return false;
         }
 
@@ -2771,7 +2853,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             };
             if (session.status === 'done' || session.status === 'cancelled') {
                 reestrDzWriteOffReviewSessions.delete(sourceTabId);
-                reestrDzWriteOffReviewSources.delete(session.reviewTabId);
+                getReestrDzWriteOffReviewTabIds(session).forEach((tabId) => reestrDzWriteOffReviewSources.delete(tabId));
             }
             sendResponse(response);
             return false;
@@ -2794,7 +2876,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             const rowId = String(request.data && request.data.rowId || '').trim();
             const sendDate = String(request.data && request.data.sendDate || '').trim();
             const principalNumber = String(request.data && request.data.principalNumber || '').trim();
-            if (!Number.isInteger(sourceTabId) || !rowId || !sendDate || !principalNumber) {
+            const allowEmpty = request.data && request.data.allowEmpty === true;
+            if (!Number.isInteger(sourceTabId) || !rowId || (!allowEmpty && (!sendDate || !principalNumber))) {
                 sendResponse({ success: false, error: 'INVALID_NATIVE_FORM_DATA' });
                 return false;
             }
@@ -4033,16 +4116,27 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   if (Number.isInteger(reviewSourceTabId)) {
     reestrDzWriteOffReviewSources.delete(tabId);
     const reviewSession = reestrDzWriteOffReviewSessions.get(reviewSourceTabId);
-    if (reviewSession && reviewSession.status === 'reviewing') {
-      reviewSession.status = 'cancelled';
+    if (reviewSession) {
+      reviewSession.reviewTabIds = getReestrDzWriteOffReviewTabIds(reviewSession).filter((reviewTabId) => reviewTabId !== tabId);
+      reviewSession.viewerTabIds = (reviewSession.viewerTabIds || []).filter((reviewTabId) => reviewTabId !== tabId);
+      if (reviewSession.requestTabId === tabId) reviewSession.requestTabId = null;
+      if (reviewSession.documentTabId === tabId) reviewSession.documentTabId = null;
+      if (reviewSession.reviewTabId === tabId) {
+        reviewSession.reviewTabId = reviewSession.reviewTabIds.find(Number.isInteger) || null;
+      }
+      if (reviewSession.status === 'reviewing' && !reviewSession.reviewTabIds.length) {
+        reviewSession.status = 'cancelled';
+      }
       reviewSession.updatedAt = Date.now();
     }
   }
   const reviewSession = reestrDzWriteOffReviewSessions.get(tabId);
   if (reviewSession) {
     reestrDzWriteOffReviewSessions.delete(tabId);
-    reestrDzWriteOffReviewSources.delete(reviewSession.reviewTabId);
-    if (Number.isInteger(reviewSession.reviewTabId)) removeTabAsync(reviewSession.reviewTabId).catch(() => {});
+    getReestrDzWriteOffReviewTabIds(reviewSession).forEach((reviewTabId) => {
+      reestrDzWriteOffReviewSources.delete(reviewTabId);
+      removeTabAsync(reviewTabId).catch(() => {});
+    });
   }
   sendStageCancelForClosedTab(tabId);
   clearStageRequestsForTab(tabId);
@@ -4070,6 +4164,20 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     delete currentFailedReturns[tabId];
     chrome.storage.session.set({ [ID_CARD_CHECK_FAILED_RETURNS_SESSION_KEY]: currentFailedReturns });
   });
+});
+
+chrome.tabs.onActivated.addListener((activeInfo) => {
+  const tabId = activeInfo && Number.isInteger(activeInfo.tabId) ? activeInfo.tabId : null;
+  const sourceTabId = Number.isInteger(tabId) ? reestrDzWriteOffReviewSources.get(tabId) : null;
+  const session = Number.isInteger(sourceTabId) ? reestrDzWriteOffReviewSessions.get(sourceTabId) : null;
+  if (!session || session.status !== 'reviewing') return;
+  if (tabId === session.requestTabId) session.currentDocumentIndex = -1;
+  if (tabId === session.documentTabId) {
+    session.currentDocumentIndex = Math.max(0, Number.parseInt(String(session.documentTabIndex), 10) || 0);
+  }
+  session.reviewTabId = tabId;
+  session.updatedAt = Date.now();
+  syncReestrDzWriteOffReviewTabs(session);
 });
 
 // --- ЭТАП 1: Слушаем ОТКРЫТИЕ формы (событие onCompleted) ---
