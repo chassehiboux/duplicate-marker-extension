@@ -325,6 +325,9 @@
       totalExpected: 0,
       isProcessing: false,
       isAcknowledging: false,
+      pendingAcknowledgeCount: 0,
+      failedAcknowledgeCount: 0,
+      dismissedEventIds: {},
       statusText: 'Ожидание запуска.',
       errorText: '',
       sourceSheetName: ''
@@ -2642,13 +2645,17 @@
       };
 
       if (!summaryOnly) {
+        const dismissedEventIds = newResponseReviewState.dismissedEventIds || {};
         const queue = (bridgeResult && Array.isArray(bridgeResult.items) ? bridgeResult.items : [])
           .map(buildNewResponseReviewItemFromInbox)
-          .filter((item) => !!item.eventId);
+          .filter((item) => !!item.eventId && !dismissedEventIds[item.eventId]);
         newResponseReviewState = createNewResponseReviewState({
           queue,
           currentIndex: 0,
           totalExpected: queue.length,
+          pendingAcknowledgeCount: newResponseReviewState.pendingAcknowledgeCount,
+          failedAcknowledgeCount: newResponseReviewState.failedAcknowledgeCount,
+          dismissedEventIds,
           statusText: queue.length
             ? 'Показываю непрочитанные новые ответы.'
             : 'Непрочитанных новых ответов нет.',
@@ -6028,28 +6035,7 @@
     if (modal instanceof HTMLElement) modal.hidden = true;
   }
 
-  async function acknowledgeCurrentNewResponseReviewItem() {
-    const item = getNewResponseReviewCurrentItem();
-    if (!item || newResponseReviewState.isProcessing || newResponseReviewState.isAcknowledging) return;
-
-    const eventId = String(item.eventId || '').trim();
-    if (!eventId) {
-      newResponseReviewState = {
-        ...newResponseReviewState,
-        errorText: 'У карточки нет постоянного идентификатора. Обновите Apps Script bridge и повторите поиск.'
-      };
-      renderNewResponseReviewModal();
-      return;
-    }
-
-    newResponseReviewState = {
-      ...newResponseReviewState,
-      isAcknowledging: true,
-      errorText: '',
-      statusText: 'Удаляю прочитанную карточку...'
-    };
-    renderNewResponseReviewModal();
-
+  async function deleteNewResponseReviewItemInBackground(item, eventId) {
     try {
       await loadBridgeUrl();
       if (!state.bridgeUrl) throw new Error('URL bridge не задан.');
@@ -6068,35 +6054,85 @@
         throw new Error(getRuntimeResponseError(response, 'bridge не удалил прочитанную карточку'));
       }
 
-      const bridgeResult = getBridgeActionResult(response);
-      const queue = newResponseReviewState.queue.filter((entry) => String(entry && entry.eventId || '') !== eventId);
-      const currentIndex = queue.length
-        ? Math.min(newResponseReviewState.currentIndex, queue.length - 1)
-        : 0;
       newResponseInboxState = {
         ...newResponseInboxState,
-        unreadCount: Math.max(0, Number(bridgeResult && bridgeResult.remainingCount) || 0),
+        unreadCount: Math.max(newResponseReviewState.queue.length, newResponseInboxState.unreadCount),
         lastError: ''
       };
-      newResponseReviewState = createNewResponseReviewState({
-        queue,
-        currentIndex,
-        totalExpected: queue.length,
-        statusText: queue.length
-          ? 'Карточка удалена. Показываю следующий непрочитанный ответ.'
-          : 'Непрочитанных новых ответов нет.'
-      });
-      renderNewResponseReviewModal();
-      renderNewResponseStatus();
-      if (!queue.length) closeNewResponseReviewModal();
-    } catch (error) {
       newResponseReviewState = {
         ...newResponseReviewState,
-        isAcknowledging: false,
-        errorText: error && error.message ? error.message : 'Не удалось удалить прочитанную карточку.'
+        pendingAcknowledgeCount: Math.max(0, newResponseReviewState.pendingAcknowledgeCount - 1),
+        statusText: newResponseReviewState.queue.length
+          ? 'Прочитанная карточка удалена в фоне.'
+          : (newResponseReviewState.isProcessing ? 'Жду следующие новые ответы...' : 'Непрочитанных новых ответов нет.')
+      };
+    } catch (error) {
+      const dismissedEventIds = { ...(newResponseReviewState.dismissedEventIds || {}) };
+      delete dismissedEventIds[eventId];
+      const alreadyQueued = newResponseReviewState.queue.some((entry) => String(entry && entry.eventId || '') === eventId);
+      const queue = alreadyQueued ? newResponseReviewState.queue : [...newResponseReviewState.queue, item];
+      newResponseInboxState = {
+        ...newResponseInboxState,
+        unreadCount: Math.max(newResponseInboxState.unreadCount + 1, queue.length),
+        lastError: error && error.message ? error.message : 'Не удалось удалить прочитанную карточку.'
+      };
+      newResponseReviewState = {
+        ...newResponseReviewState,
+        queue,
+        currentIndex: queue.length ? Math.min(newResponseReviewState.currentIndex, queue.length - 1) : 0,
+        pendingAcknowledgeCount: Math.max(0, newResponseReviewState.pendingAcknowledgeCount - 1),
+        failedAcknowledgeCount: newResponseReviewState.failedAcknowledgeCount + 1,
+        dismissedEventIds,
+        errorText: `${error && error.message ? error.message : 'Не удалось удалить прочитанную карточку.'} Карточка возвращена в очередь.`
+      };
+    }
+
+    renderNewResponseReviewModal();
+    renderNewResponseStatus();
+    if (!newResponseReviewState.queue.length && !newResponseReviewState.isProcessing) {
+      closeNewResponseReviewModal();
+    }
+  }
+
+  function acknowledgeCurrentNewResponseReviewItem() {
+    const item = getNewResponseReviewCurrentItem();
+    if (!item) return;
+
+    const eventId = String(item.eventId || '').trim();
+    if (!eventId) {
+      newResponseReviewState = {
+        ...newResponseReviewState,
+        errorText: 'У карточки нет постоянного идентификатора. Обновите Apps Script bridge и повторите поиск.'
       };
       renderNewResponseReviewModal();
+      return;
     }
+
+    const queue = newResponseReviewState.queue.filter((entry) => String(entry && entry.eventId || '') !== eventId);
+    const dismissedEventIds = {
+      ...(newResponseReviewState.dismissedEventIds || {}),
+      [eventId]: true
+    };
+    newResponseInboxState = {
+      ...newResponseInboxState,
+      unreadCount: Math.max(0, newResponseInboxState.unreadCount - 1)
+    };
+    newResponseReviewState = {
+      ...newResponseReviewState,
+      queue,
+      currentIndex: queue.length ? Math.min(newResponseReviewState.currentIndex, queue.length - 1) : 0,
+      pendingAcknowledgeCount: newResponseReviewState.pendingAcknowledgeCount + 1,
+      dismissedEventIds,
+      errorText: '',
+      statusText: queue.length
+        ? 'Показываю следующий ответ. Прочитанная карточка удаляется в фоне.'
+        : (newResponseReviewState.isProcessing ? 'Прочитано. Жду следующие новые ответы...' : 'Прочитано. Карточка удаляется в фоне.')
+    };
+    renderNewResponseReviewModal();
+    renderNewResponseStatus();
+    if (!queue.length && !newResponseReviewState.isProcessing) closeNewResponseReviewModal();
+
+    void deleteNewResponseReviewItemInBackground(item, eventId);
   }
 
   function ensureNewResponseReviewModal() {
@@ -6181,16 +6217,19 @@
     }
 
     if (progress instanceof HTMLElement) {
+      const pendingAcknowledge = newResponseReviewState.pendingAcknowledgeCount
+        ? ` · удаляется в фоне: ${newResponseReviewState.pendingAcknowledgeCount}`
+        : '';
       if (newResponseReviewState.isProcessing) {
         const processed = Math.min(
           newResponseReviewState.totalExpected,
           newResponseState.successCount + newResponseState.skippedCount + newResponseState.failedCount
         );
-        progress.textContent = `Обработка: ${processed}/${newResponseReviewState.totalExpected}`;
+        progress.textContent = `Обработка: ${processed}/${newResponseReviewState.totalExpected} · готово к просмотру: ${newResponseReviewState.queue.length}${pendingAcknowledge}`;
       } else if (item) {
-        progress.textContent = `Очередь просмотра: ${newResponseReviewState.currentIndex + 1}/${newResponseReviewState.queue.length}`;
+        progress.textContent = `Очередь просмотра: ${newResponseReviewState.currentIndex + 1}/${newResponseReviewState.queue.length}${pendingAcknowledge}`;
       } else {
-        progress.textContent = 'Очередь просмотра: 0/0';
+        progress.textContent = `Очередь просмотра: 0/0${pendingAcknowledge}`;
       }
     }
 
@@ -6219,10 +6258,10 @@
     }
 
     if (nextButton instanceof HTMLButtonElement) {
-      nextButton.disabled = newResponseReviewState.isProcessing
-        || newResponseReviewState.isAcknowledging
-        || !item;
-      nextButton.textContent = item && newResponseReviewState.currentIndex >= newResponseReviewState.queue.length - 1
+      nextButton.disabled = !item;
+      nextButton.textContent = item
+        && !newResponseReviewState.isProcessing
+        && newResponseReviewState.currentIndex >= newResponseReviewState.queue.length - 1
         ? 'Прочитано и закрыть'
         : 'Прочитано и дальше';
     }
@@ -6448,18 +6487,39 @@
         const bridgeResult = saveResult && saveResult.bridgeResult && typeof saveResult.bridgeResult === 'object'
           ? saveResult.bridgeResult
           : {};
-        return {
+        const completedResult = {
           ...saveResult,
           reviewItem: {
             ...reviewItem,
             eventId: String(bridgeResult.reviewEventId || '').trim()
           }
         };
+        if (completedResult.success === true) publishNewResponseReviewItem(completedResult.reviewItem);
+        return completedResult;
       });
     newResponseState = {
       ...newResponseState,
       pendingBridgeSaves: [...(newResponseState.pendingBridgeSaves || []), tracked]
     };
+  }
+
+  function publishNewResponseReviewItem(item) {
+    const eventId = String(item && item.eventId || '').trim();
+    if (!eventId || (newResponseReviewState.dismissedEventIds || {})[eventId]) return;
+    if (newResponseReviewState.queue.some((entry) => String(entry && entry.eventId || '') === eventId)) return;
+
+    newResponseReviewState = {
+      ...newResponseReviewState,
+      queue: [...newResponseReviewState.queue, item],
+      statusText: 'Новый ответ готов к просмотру. Проверка остальных строк продолжается.'
+    };
+    newResponseInboxState = {
+      ...newResponseInboxState,
+      unreadCount: newResponseInboxState.unreadCount + 1,
+      lastError: ''
+    };
+    renderNewResponseReviewModal();
+    renderNewResponseStatus();
   }
 
   function queueCombinedBridgeSave(result, item) {
@@ -6503,9 +6563,11 @@
   }
 
   function buildNewResponseReviewQueue(results) {
+    const dismissedEventIds = newResponseReviewState.dismissedEventIds || {};
     return (results || [])
       .filter((item) => item && item.success === true && item.reviewItem)
-      .map((item) => item.reviewItem);
+      .map((item) => item.reviewItem)
+      .filter((item) => !dismissedEventIds[String(item && item.eventId || '').trim()]);
   }
 
   function finishNewResponseReview(results, totalExpected, statusText, errorText) {
@@ -6514,9 +6576,14 @@
       ...newResponseInboxState,
       unreadCount: Math.max(newResponseInboxState.unreadCount, queue.length)
     };
-    newResponseReviewState = createNewResponseReviewState({
+    const currentEventId = String(getNewResponseReviewCurrentItem() && getNewResponseReviewCurrentItem().eventId || '');
+    const currentIndex = currentEventId
+      ? Math.max(0, queue.findIndex((item) => String(item && item.eventId || '') === currentEventId))
+      : 0;
+    newResponseReviewState = {
+      ...newResponseReviewState,
       queue,
-      currentIndex: 0,
+      currentIndex,
       totalExpected: Number(totalExpected || 0),
       isProcessing: false,
       statusText: queue.length
@@ -6524,7 +6591,7 @@
         : 'Сохранённых новых ответов для просмотра нет.',
       errorText: String(errorText || ''),
       sourceSheetName: newResponseState.sheetName || ''
-    });
+    };
     renderNewResponseReviewModal();
     void loadNewResponseInbox({ summaryOnly: false });
   }
@@ -7346,6 +7413,9 @@
     };
     newResponseReviewState = createNewResponseReviewState({
       isProcessing: true,
+      pendingAcknowledgeCount: newResponseReviewState.pendingAcknowledgeCount,
+      failedAcknowledgeCount: newResponseReviewState.failedAcknowledgeCount,
+      dismissedEventIds: newResponseReviewState.dismissedEventIds,
       statusText: 'Собираю строки для проверки новых ответов...'
     });
     if (closeMenuOnStart) closeMenu();
