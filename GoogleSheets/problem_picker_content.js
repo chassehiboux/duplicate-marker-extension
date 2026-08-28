@@ -696,6 +696,16 @@
     return hashMatch ? decodeURIComponent(hashMatch[1]) : '';
   }
 
+  function focusSheetRow(row, gid) {
+    const targetRow = Number(row);
+    const targetGid = String(gid || getActiveGid()).trim();
+    if (!Number.isInteger(targetRow) || targetRow < 2 || !targetGid) return false;
+
+    const nextHash = `#gid=${encodeURIComponent(targetGid)}&range=A${targetRow}`;
+    if (location.hash !== nextHash) location.replace(nextHash);
+    return true;
+  }
+
   function getCsvUrl(gid) {
     return `https://docs.google.com/spreadsheets/d/${encodeURIComponent(CONFIG.spreadsheetId)}/export?format=csv&gid=${encodeURIComponent(gid)}`;
   }
@@ -6704,6 +6714,7 @@
           lastError: ''
         };
         renderCombinedFlowStatus();
+        focusSheetRow(item.row, combinedFlowState.gid);
 
         const response = await sendRuntimeMessage({
           action: item.mode === 'supp' ? SUPP_FILL_ACTION : ITIL_FILL_ACTION,
@@ -6979,6 +6990,7 @@
           lastError: ''
         };
         renderItilStatus();
+        focusSheetRow(item.row, itilState.gid);
 
         const response = await sendRuntimeMessage({
           action: ITIL_FILL_ACTION,
@@ -7198,6 +7210,7 @@
           lastError: ''
         };
         renderSuppStatus();
+        focusSheetRow(item.row, suppState.gid);
 
         const response = await sendRuntimeMessage({
           action: SUPP_FILL_ACTION,
@@ -7499,6 +7512,7 @@
         };
         renderNewResponseStatus();
         if (openReviewOnStart) renderNewResponseReviewModal();
+        focusSheetRow(item.row, newResponseState.gid);
 
         const response = await sendRuntimeMessage({
           action: item.mode === 'supp' ? SUPP_INFO_REFRESH_ACTION : ITIL_INFO_REFRESH_ACTION,
