@@ -790,19 +790,15 @@
     return !!rowMatch && Number(rowMatch[1]) === processingRowHighlightTarget.row;
   }
 
-  function findSheetScrollbar(axis, gridRect) {
-    const candidates = Array.from(document.querySelectorAll(`.native-scrollbar-${axis}`))
+  function findVerticalSheetScrollbar(gridRect) {
+    const candidates = Array.from(document.querySelectorAll('.native-scrollbar-y'))
       .map((element) => ({ element, rect: getVisibleElementRect(element) }))
       .filter((entry) => entry.rect);
     if (!candidates.length) return null;
 
     candidates.sort((first, second) => {
-      const firstDistance = axis === 'y'
-        ? Math.abs(first.rect.top - gridRect.top) + Math.abs(first.rect.right - gridRect.right)
-        : Math.abs(first.rect.left - gridRect.left) + Math.abs(first.rect.bottom - gridRect.bottom);
-      const secondDistance = axis === 'y'
-        ? Math.abs(second.rect.top - gridRect.top) + Math.abs(second.rect.right - gridRect.right)
-        : Math.abs(second.rect.left - gridRect.left) + Math.abs(second.rect.bottom - gridRect.bottom);
+      const firstDistance = Math.abs(first.rect.top - gridRect.top) + Math.abs(first.rect.right - gridRect.right);
+      const secondDistance = Math.abs(second.rect.top - gridRect.top) + Math.abs(second.rect.right - gridRect.right);
       return firstDistance - secondDistance;
     });
     return candidates[0].element;
@@ -822,15 +818,8 @@
       maximumTop,
       Math.max(minimumTop, menuRect ? menuRect.bottom + 4 : minimumTop)
     );
-    const horizontalScrollbar = findSheetScrollbar('x', gridRect);
-    const verticalScrollbar = findSheetScrollbar('y', gridRect);
+    const verticalScrollbar = findVerticalSheetScrollbar(gridRect);
     let viewportChanged = false;
-
-    if (horizontalScrollbar instanceof HTMLElement && horizontalScrollbar.scrollLeft > 1) {
-      horizontalScrollbar.scrollLeft = 0;
-      horizontalScrollbar.dispatchEvent(new Event('scroll', { bubbles: true }));
-      viewportChanged = true;
-    }
 
     if (verticalScrollbar instanceof HTMLElement) {
       const maximumScrollTop = Math.max(0, verticalScrollbar.scrollHeight - verticalScrollbar.clientHeight);
