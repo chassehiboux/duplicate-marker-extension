@@ -152,6 +152,7 @@
   const WSS_IMPORT_REVIEW_MODAL_ID = 'dup-google-sheets-wss-import-review-modal';
   const MENU_ID = 'dup-google-sheets-problem-picker-menu';
   const MENU_OVERLAY_ID = 'dup-google-sheets-problem-picker-menu-overlay';
+  const PROCESSING_ROW_HIGHLIGHT_ID = 'dup-google-sheets-processing-row-highlight';
   const MENU_LAYOUT_VERSION = '2026-08-21-wait-settings-1';
   const MENU_BOUND_FLAG = '__dupGoogleSheetsMenuBound';
   const MENU_OVERLAY_BOUND_FLAG = '__dupGoogleSheetsMenuOverlayBound';
@@ -208,6 +209,10 @@
   let suppRunId = 0;
   let newResponseRunId = 0;
   let combinedFlowRunId = 0;
+  let processingRowHighlightTarget = null;
+  let processingRowHighlightTimer = 0;
+  let processingRowHighlightFrame = 0;
+  let processingRowHighlightListenersBound = false;
 
   let chatGptSearchState = {
     isRunning: false,
@@ -703,7 +708,165 @@
 
     const nextHash = `#gid=${encodeURIComponent(targetGid)}&range=A${targetRow}`;
     if (location.hash !== nextHash) location.replace(nextHash);
+    showProcessingRowHighlight(targetRow, targetGid);
     return true;
+  }
+
+  function getVisibleElementRect(element) {
+    if (!(element instanceof HTMLElement)) return null;
+    const style = getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return null;
+    const rect = element.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0 || rect.bottom <= 0 || rect.top >= window.innerHeight) return null;
+    return rect;
+  }
+
+  function findActiveSheetSelection() {
+    const directSelectors = [
+      '.waffle-selection-frame',
+      '.waffle-active-cell',
+      '.waffle-row-header-active',
+      '[role="rowheader"][aria-selected="true"]'
+    ];
+
+    for (const selector of directSelectors) {
+      const candidates = Array.from(document.querySelectorAll(selector));
+      for (let index = candidates.length - 1; index >= 0; index--) {
+        const rect = getVisibleElementRect(candidates[index]);
+        if (rect && rect.height >= 8 && rect.height <= 120) {
+          return { element: candidates[index], rect };
+        }
+      }
+    }
+
+    const borderElements = Array.from(document.querySelectorAll(
+      '.active-cell-border,.waffle-border-active,[class*="waffle-border-"][class*="active"]'
+    ));
+    const visibleBorders = borderElements
+      .map((element) => ({ element, rect: getVisibleElementRect(element) }))
+      .filter((entry) => !!entry.rect);
+    if (visibleBorders.length < 2) return null;
+
+    const left = Math.min(...visibleBorders.map((entry) => entry.rect.left));
+    const right = Math.max(...visibleBorders.map((entry) => entry.rect.right));
+    const top = Math.min(...visibleBorders.map((entry) => entry.rect.top));
+    const bottom = Math.max(...visibleBorders.map((entry) => entry.rect.bottom));
+    if ((bottom - top) < 8 || (bottom - top) > 120 || right <= left) return null;
+
+    return {
+      element: visibleBorders[0].element,
+      rect: { left, right, top, bottom, width: right - left, height: bottom - top }
+    };
+  }
+
+  function findSheetGridRect(anchorElement, anchorRect) {
+    const gridSelector = '.waffle-grid-container,.grid-table-container,.docs-sheet-container,.docs-sheet-tab-view';
+    const closestGrid = anchorElement instanceof HTMLElement ? anchorElement.closest(gridSelector) : null;
+    const closestRect = getVisibleElementRect(closestGrid);
+    if (closestRect && closestRect.right > anchorRect.right) return closestRect;
+
+    const centerY = anchorRect.top + (anchorRect.height / 2);
+    const candidates = Array.from(document.querySelectorAll(gridSelector))
+      .map((element) => getVisibleElementRect(element))
+      .filter((rect) => rect
+        && rect.top <= centerY
+        && rect.bottom >= centerY
+        && rect.right > anchorRect.right
+        && rect.width > anchorRect.width);
+    candidates.sort((first, second) => (first.width * first.height) - (second.width * second.height));
+    return candidates[0] || null;
+  }
+
+  function positionProcessingRowHighlight() {
+    if (!processingRowHighlightTarget) return false;
+    const overlay = document.getElementById(PROCESSING_ROW_HIGHLIGHT_ID);
+    const selection = findActiveSheetSelection();
+    if (!(overlay instanceof HTMLElement) || !selection) return false;
+
+    const gridRect = findSheetGridRect(selection.element, selection.rect);
+    const left = Math.max(0, selection.rect.left);
+    const right = Math.min(window.innerWidth, gridRect ? gridRect.right : window.innerWidth - 8);
+    const top = Math.max(0, selection.rect.top);
+    const bottom = Math.min(window.innerHeight, selection.rect.bottom);
+    if (right <= left || bottom <= top) return false;
+
+    overlay.style.left = `${Math.round(left)}px`;
+    overlay.style.top = `${Math.round(top)}px`;
+    overlay.style.width = `${Math.round(right - left)}px`;
+    overlay.style.height = `${Math.max(2, Math.round(bottom - top))}px`;
+    overlay.dataset.row = String(processingRowHighlightTarget.row);
+    overlay.hidden = false;
+    return true;
+  }
+
+  function scheduleProcessingRowHighlightPosition(delay, remainingAttempts) {
+    if (!processingRowHighlightTarget) return;
+    if (processingRowHighlightTimer) window.clearTimeout(processingRowHighlightTimer);
+    processingRowHighlightTimer = window.setTimeout(() => {
+      processingRowHighlightTimer = 0;
+      positionProcessingRowHighlight();
+      if (processingRowHighlightTarget && remainingAttempts > 0) {
+        scheduleProcessingRowHighlightPosition(120, remainingAttempts - 1);
+      }
+    }, Math.max(0, Number(delay) || 0));
+  }
+
+  function queueProcessingRowHighlightPosition() {
+    if (!processingRowHighlightTarget || processingRowHighlightFrame) return;
+    processingRowHighlightFrame = window.requestAnimationFrame(() => {
+      processingRowHighlightFrame = 0;
+      positionProcessingRowHighlight();
+    });
+  }
+
+  function ensureProcessingRowHighlight() {
+    ensureStyle();
+    let overlay = document.getElementById(PROCESSING_ROW_HIGHLIGHT_ID);
+    if (!(overlay instanceof HTMLElement)) {
+      overlay = document.createElement('div');
+      overlay.id = PROCESSING_ROW_HIGHLIGHT_ID;
+      overlay.hidden = true;
+      overlay.setAttribute('aria-hidden', 'true');
+      (document.body || document.documentElement).appendChild(overlay);
+    }
+
+    if (!processingRowHighlightListenersBound) {
+      processingRowHighlightListenersBound = true;
+      window.addEventListener('resize', queueProcessingRowHighlightPosition, { passive: true });
+      document.addEventListener('scroll', queueProcessingRowHighlightPosition, { capture: true, passive: true });
+    }
+    return overlay;
+  }
+
+  function showProcessingRowHighlight(row, gid) {
+    const overlay = ensureProcessingRowHighlight();
+    processingRowHighlightTarget = { row: Number(row), gid: String(gid || '') };
+    overlay.hidden = true;
+    scheduleProcessingRowHighlightPosition(180, 12);
+  }
+
+  function hideProcessingRowHighlight() {
+    processingRowHighlightTarget = null;
+    if (processingRowHighlightTimer) {
+      window.clearTimeout(processingRowHighlightTimer);
+      processingRowHighlightTimer = 0;
+    }
+    if (processingRowHighlightFrame) {
+      window.cancelAnimationFrame(processingRowHighlightFrame);
+      processingRowHighlightFrame = 0;
+    }
+    const overlay = document.getElementById(PROCESSING_ROW_HIGHLIGHT_ID);
+    if (overlay instanceof HTMLElement) overlay.hidden = true;
+  }
+
+  function syncProcessingRowHighlightVisibility() {
+    const hasActiveItem = !!(
+      combinedFlowState.currentItem
+      || itilState.currentItem
+      || suppState.currentItem
+      || newResponseState.currentItem
+    );
+    if (!hasActiveItem) hideProcessingRowHighlight();
   }
 
   function getCsvUrl(gid) {
@@ -3529,6 +3692,10 @@
     style.id = STYLE_ID;
     style.textContent = `
       #${ROOT_ID}{position:fixed;right:18px;bottom:58px;z-index:2147483640;display:flex;flex-direction:column;align-items:flex-end;gap:6px;font-family:"Segoe UI",Tahoma,sans-serif}
+      #${PROCESSING_ROW_HIGHLIGHT_ID}{position:fixed;z-index:2147483639;box-sizing:border-box;border:1px solid rgba(52,168,83,.95);border-radius:3px;background:rgba(52,168,83,.035);box-shadow:0 0 0 1px rgba(52,168,83,.12),0 0 9px rgba(52,168,83,.34);pointer-events:none;animation:dup-gs-processing-row-pulse 1.35s ease-in-out infinite}
+      #${PROCESSING_ROW_HIGHLIGHT_ID}[hidden]{display:none!important}
+      @keyframes dup-gs-processing-row-pulse{0%,100%{border-color:rgba(52,168,83,.72);box-shadow:0 0 0 1px rgba(52,168,83,.08),0 0 5px rgba(52,168,83,.2)}50%{border-color:rgba(30,142,62,1);box-shadow:0 0 0 1px rgba(52,168,83,.2),0 0 12px rgba(52,168,83,.48)}}
+      @media (prefers-reduced-motion:reduce){#${PROCESSING_ROW_HIGHLIGHT_ID}{animation:none}}
       #${ROOT_ID} .gs-problem-picker-actions{display:flex;gap:6px}
       #${ROOT_ID} button,#${MODAL_ID} button,#${NEW_RESPONSE_REVIEW_MODAL_ID} button,#${CHATGPT_SEARCH_MODAL_ID} button,#${ITIL_IMPORT_MODAL_ID} button,#${WSS_IMPORT_MODAL_ID} button,#${WSS_IMPORT_REVIEW_MODAL_ID} button{border:1px solid #b7c2d3;border-radius:7px;background:#fff;color:#162033;cursor:pointer;font:600 13px/1.2 "Segoe UI",Tahoma,sans-serif;padding:8px 12px}
       #${ROOT_ID} .gs-problem-picker-open{border-color:#1155cc;background:#1155cc;color:#fff;box-shadow:0 8px 22px rgba(17,85,204,.24)}
@@ -3588,7 +3755,7 @@
       @media (max-width:680px){#${MENU_ID} .gs-wait-settings-grid{grid-template-columns:1fr}}
       #${MODAL_ID},#${NEW_RESPONSE_REVIEW_MODAL_ID},#${ITIL_IMPORT_MODAL_ID},#${WSS_IMPORT_MODAL_ID},#${WSS_IMPORT_REVIEW_MODAL_ID}{position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;box-sizing:border-box;padding:16px;overflow:hidden;background:rgba(17,24,39,.42);pointer-events:none;font-family:"Segoe UI",Tahoma,sans-serif}
       #${CHATGPT_SEARCH_MODAL_ID}{position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;background:rgba(15,23,42,.48);pointer-events:none;font-family:"Segoe UI",Tahoma,sans-serif}
-      #${MODAL_ID}[hidden],#${NEW_RESPONSE_REVIEW_MODAL_ID}[hidden],#${CHATGPT_SEARCH_MODAL_ID}[hidden],#${ITIL_IMPORT_MODAL_ID}[hidden],#${WSS_IMPORT_MODAL_ID}[hidden],#${WSS_IMPORT_REVIEW_MODAL_ID}[hidden],html.dup-ext-screenshot-mode #${ROOT_ID},html.dup-ext-screenshot-mode #${MODAL_ID},html.dup-ext-screenshot-mode #${NEW_RESPONSE_REVIEW_MODAL_ID},html.dup-ext-screenshot-mode #${CHATGPT_SEARCH_MODAL_ID},html.dup-ext-screenshot-mode #${ITIL_IMPORT_MODAL_ID},html.dup-ext-screenshot-mode #${WSS_IMPORT_MODAL_ID},html.dup-ext-screenshot-mode #${WSS_IMPORT_REVIEW_MODAL_ID},html.dup-ext-screenshot-mode #${MENU_ID},html.dup-ext-screenshot-mode #${MENU_OVERLAY_ID}{display:none!important}
+      #${MODAL_ID}[hidden],#${NEW_RESPONSE_REVIEW_MODAL_ID}[hidden],#${CHATGPT_SEARCH_MODAL_ID}[hidden],#${ITIL_IMPORT_MODAL_ID}[hidden],#${WSS_IMPORT_MODAL_ID}[hidden],#${WSS_IMPORT_REVIEW_MODAL_ID}[hidden],html.dup-ext-screenshot-mode #${ROOT_ID},html.dup-ext-screenshot-mode #${MODAL_ID},html.dup-ext-screenshot-mode #${NEW_RESPONSE_REVIEW_MODAL_ID},html.dup-ext-screenshot-mode #${CHATGPT_SEARCH_MODAL_ID},html.dup-ext-screenshot-mode #${ITIL_IMPORT_MODAL_ID},html.dup-ext-screenshot-mode #${WSS_IMPORT_MODAL_ID},html.dup-ext-screenshot-mode #${WSS_IMPORT_REVIEW_MODAL_ID},html.dup-ext-screenshot-mode #${MENU_ID},html.dup-ext-screenshot-mode #${MENU_OVERLAY_ID},html.dup-ext-screenshot-mode #${PROCESSING_ROW_HIGHLIGHT_ID}{display:none!important}
       #${MODAL_ID} .gs-problem-picker-layout{width:min(1840px,calc(100vw - 32px));height:min(880px,calc(100vh - 32px));max-height:100%;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 298px;gap:14px;align-items:stretch;overflow:hidden;pointer-events:auto}
       #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-layout{width:min(1540px,calc(100vw - 32px));height:min(880px,calc(100vh - 32px));max-height:100%;min-height:0;display:grid;grid-template-columns:1fr;align-items:stretch;overflow:hidden;pointer-events:auto}
       #${MODAL_ID} .gs-problem-picker-panel,#${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-panel{width:100%;height:100%;min-width:0;min-height:0;overflow:hidden;display:grid;grid-template-rows:auto auto auto minmax(0,1fr) auto;gap:14px;box-sizing:border-box;padding:22px;border:1px solid #d6dce8;border-radius:8px;background:#fbfcfe;color:#172033;box-shadow:0 24px 70px rgba(15,23,42,.26)}
@@ -3862,6 +4029,7 @@
   }
 
   function renderCombinedFlowStatus() {
+    syncProcessingRowHighlightVisibility();
     const menu = document.getElementById(MENU_ID);
     if (!(menu instanceof HTMLElement)) return;
 
@@ -3923,6 +4091,7 @@
   }
 
   function renderItilStatus() {
+    syncProcessingRowHighlightVisibility();
     const menu = document.getElementById(MENU_ID);
     if (!(menu instanceof HTMLElement)) return;
 
@@ -3950,6 +4119,7 @@
   }
 
   function renderSuppStatus() {
+    syncProcessingRowHighlightVisibility();
     const menu = document.getElementById(MENU_ID);
     if (!(menu instanceof HTMLElement)) return;
 
@@ -3979,6 +4149,7 @@
   }
 
   function renderNewResponseStatus() {
+    syncProcessingRowHighlightVisibility();
     const menu = document.getElementById(MENU_ID);
     if (!(menu instanceof HTMLElement)) return;
 
