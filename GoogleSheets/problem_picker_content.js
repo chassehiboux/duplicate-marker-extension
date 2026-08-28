@@ -712,17 +712,16 @@
     return true;
   }
 
-  function getVisibleElementRect(element, allowOutsideViewport = false) {
+  function getVisibleElementRect(element) {
     if (!(element instanceof HTMLElement)) return null;
     const style = getComputedStyle(element);
     if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return null;
     const rect = element.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return null;
-    if (!allowOutsideViewport && (rect.bottom <= 0 || rect.top >= window.innerHeight)) return null;
+    if (rect.width <= 0 || rect.height <= 0 || rect.bottom <= 0 || rect.top >= window.innerHeight) return null;
     return rect;
   }
 
-  function findActiveSheetSelection(allowOutsideViewport = false) {
+  function findActiveSheetSelection() {
     const directSelectors = [
       '.waffle-selection-frame',
       '.waffle-active-cell',
@@ -733,7 +732,7 @@
     for (const selector of directSelectors) {
       const candidates = Array.from(document.querySelectorAll(selector));
       for (let index = candidates.length - 1; index >= 0; index--) {
-        const rect = getVisibleElementRect(candidates[index], allowOutsideViewport);
+        const rect = getVisibleElementRect(candidates[index]);
         if (rect && rect.height >= 8 && rect.height <= 120) {
           return { element: candidates[index], rect };
         }
@@ -744,7 +743,7 @@
       '.active-cell-border,.waffle-border-active,[class*="waffle-border-"][class*="active"]'
     ));
     const visibleBorders = borderElements
-      .map((element) => ({ element, rect: getVisibleElementRect(element, allowOutsideViewport) }))
+      .map((element) => ({ element, rect: getVisibleElementRect(element) }))
       .filter((entry) => !!entry.rect);
     if (visibleBorders.length < 2) return null;
 
@@ -761,11 +760,7 @@
   }
 
   function findSheetGridRect(anchorElement, anchorRect) {
-    const activeScrollable = document.getElementById(`${processingRowHighlightTarget?.gid || ''}-scrollable`);
-    const activeScrollableRect = getVisibleElementRect(activeScrollable);
-    if (activeScrollableRect) return activeScrollableRect;
-
-    const gridSelector = '.grid-scrollable-wrapper,.waffle-grid-container,.grid-table-container,.docs-sheet-container,.docs-sheet-tab-view';
+    const gridSelector = '.waffle-grid-container,.grid-table-container,.docs-sheet-container,.docs-sheet-tab-view';
     const closestGrid = anchorElement instanceof HTMLElement ? anchorElement.closest(gridSelector) : null;
     const closestRect = getVisibleElementRect(closestGrid);
     if (closestRect && closestRect.right > anchorRect.right) return closestRect;
@@ -782,78 +777,17 @@
     return candidates[0] || null;
   }
 
-  function isProcessingSheetRowSelected() {
-    if (!processingRowHighlightTarget) return false;
-    const nameBox = document.querySelector('#t-name-box');
-    const selectedRange = String(nameBox?.value || nameBox?.textContent || '').trim();
-    const rowMatch = selectedRange.match(/[A-Z]+(\d+)/i);
-    return !!rowMatch && Number(rowMatch[1]) === processingRowHighlightTarget.row;
-  }
-
-  function findVerticalSheetScrollbar(gridRect) {
-    const candidates = Array.from(document.querySelectorAll('.native-scrollbar-y'))
-      .map((element) => ({ element, rect: getVisibleElementRect(element) }))
-      .filter((entry) => entry.rect);
-    if (!candidates.length) return null;
-
-    candidates.sort((first, second) => {
-      const firstDistance = Math.abs(first.rect.top - gridRect.top) + Math.abs(first.rect.right - gridRect.right);
-      const secondDistance = Math.abs(second.rect.top - gridRect.top) + Math.abs(second.rect.right - gridRect.right);
-      return firstDistance - secondDistance;
-    });
-    return candidates[0].element;
-  }
-
-  function alignProcessingSheetViewport(selectionRect, gridRect, overlay) {
-    if (!processingRowHighlightTarget) return false;
-    if (performance.now() < Number(processingRowHighlightTarget.settleUntil || 0)) {
-      overlay.hidden = true;
-      return true;
-    }
-
-    const menuRect = getVisibleElementRect(document.getElementById(MENU_ID));
-    const minimumTop = gridRect.top + 3;
-    const maximumTop = Math.max(minimumTop, gridRect.bottom - selectionRect.height - 3);
-    const desiredTop = Math.min(
-      maximumTop,
-      Math.max(minimumTop, menuRect ? menuRect.bottom + 4 : minimumTop)
-    );
-    const verticalScrollbar = findVerticalSheetScrollbar(gridRect);
-    let viewportChanged = false;
-
-    if (verticalScrollbar instanceof HTMLElement) {
-      const maximumScrollTop = Math.max(0, verticalScrollbar.scrollHeight - verticalScrollbar.clientHeight);
-      const nextScrollTop = Math.max(
-        0,
-        Math.min(maximumScrollTop, verticalScrollbar.scrollTop + selectionRect.top - desiredTop)
-      );
-      if (Math.abs(nextScrollTop - verticalScrollbar.scrollTop) > 2) {
-        verticalScrollbar.scrollTop = nextScrollTop;
-        verticalScrollbar.dispatchEvent(new Event('scroll', { bubbles: true }));
-        viewportChanged = true;
-      }
-    }
-
-    if (viewportChanged) {
-      processingRowHighlightTarget.settleUntil = performance.now() + 100;
-      overlay.hidden = true;
-    }
-    return viewportChanged;
-  }
-
   function positionProcessingRowHighlight() {
     if (!processingRowHighlightTarget) return false;
     const overlay = document.getElementById(PROCESSING_ROW_HIGHLIGHT_ID);
-    if (!(overlay instanceof HTMLElement) || !isProcessingSheetRowSelected()) return false;
-    const selection = findActiveSheetSelection(true);
+    const selection = findActiveSheetSelection();
     if (!(overlay instanceof HTMLElement) || !selection) return false;
 
     const gridRect = findSheetGridRect(selection.element, selection.rect);
-    if (!gridRect || alignProcessingSheetViewport(selection.rect, gridRect, overlay)) return false;
     const left = Math.max(0, selection.rect.left);
-    const right = Math.min(window.innerWidth, gridRect.right);
-    const top = Math.max(gridRect.top, selection.rect.top);
-    const bottom = Math.min(gridRect.bottom, selection.rect.bottom);
+    const right = Math.min(window.innerWidth, gridRect ? gridRect.right : window.innerWidth - 8);
+    const top = Math.max(0, selection.rect.top);
+    const bottom = Math.min(window.innerHeight, selection.rect.bottom);
     if (right <= left || bottom <= top) return false;
 
     overlay.style.left = `${Math.round(left)}px`;
@@ -906,11 +840,7 @@
 
   function showProcessingRowHighlight(row, gid) {
     const overlay = ensureProcessingRowHighlight();
-    processingRowHighlightTarget = {
-      row: Number(row),
-      gid: String(gid || ''),
-      settleUntil: 0
-    };
+    processingRowHighlightTarget = { row: Number(row), gid: String(gid || '') };
     overlay.hidden = true;
     scheduleProcessingRowHighlightPosition(180, 12);
   }
@@ -937,7 +867,6 @@
       || newResponseState.currentItem
     );
     if (!hasActiveItem) hideProcessingRowHighlight();
-    else queueProcessingRowHighlightPosition();
   }
 
   function getCsvUrl(gid) {
@@ -3763,9 +3692,9 @@
     style.id = STYLE_ID;
     style.textContent = `
       #${ROOT_ID}{position:fixed;right:18px;bottom:58px;z-index:2147483640;display:flex;flex-direction:column;align-items:flex-end;gap:6px;font-family:"Segoe UI",Tahoma,sans-serif}
-      #${PROCESSING_ROW_HIGHLIGHT_ID}{position:fixed;z-index:2147483645;box-sizing:border-box;border:3px solid rgba(40,196,86,.98);border-radius:4px;background:rgba(52,168,83,.08);box-shadow:0 0 0 1px rgba(255,255,255,.72),0 0 14px rgba(40,196,86,.7),inset 0 0 0 1px rgba(18,128,54,.24);pointer-events:none;animation:dup-gs-processing-row-pulse 1.2s ease-in-out infinite}
+      #${PROCESSING_ROW_HIGHLIGHT_ID}{position:fixed;z-index:2147483639;box-sizing:border-box;border:3px solid rgba(52,168,83,.95);border-radius:3px;background:rgba(52,168,83,.035);box-shadow:0 0 0 1px rgba(52,168,83,.12),0 0 9px rgba(52,168,83,.34);pointer-events:none;animation:dup-gs-processing-row-pulse 1.35s ease-in-out infinite}
       #${PROCESSING_ROW_HIGHLIGHT_ID}[hidden]{display:none!important}
-      @keyframes dup-gs-processing-row-pulse{0%,100%{border-color:rgba(40,196,86,.88);box-shadow:0 0 0 1px rgba(255,255,255,.58),0 0 10px rgba(40,196,86,.5),inset 0 0 0 1px rgba(18,128,54,.18)}50%{border-color:rgba(25,225,83,1);box-shadow:0 0 0 1px rgba(255,255,255,.88),0 0 20px rgba(25,225,83,.92),inset 0 0 0 1px rgba(18,128,54,.34)}}
+      @keyframes dup-gs-processing-row-pulse{0%,100%{border-color:rgba(52,168,83,.72);box-shadow:0 0 0 1px rgba(52,168,83,.08),0 0 5px rgba(52,168,83,.2)}50%{border-color:rgba(30,142,62,1);box-shadow:0 0 0 1px rgba(52,168,83,.2),0 0 12px rgba(52,168,83,.48)}}
       @media (prefers-reduced-motion:reduce){#${PROCESSING_ROW_HIGHLIGHT_ID}{animation:none}}
       #${ROOT_ID} .gs-problem-picker-actions{display:flex;gap:6px}
       #${ROOT_ID} button,#${MODAL_ID} button,#${NEW_RESPONSE_REVIEW_MODAL_ID} button,#${CHATGPT_SEARCH_MODAL_ID} button,#${ITIL_IMPORT_MODAL_ID} button,#${WSS_IMPORT_MODAL_ID} button,#${WSS_IMPORT_REVIEW_MODAL_ID} button{border:1px solid #b7c2d3;border-radius:7px;background:#fff;color:#162033;cursor:pointer;font:600 13px/1.2 "Segoe UI",Tahoma,sans-serif;padding:8px 12px}
