@@ -1308,6 +1308,116 @@
     });
   }
 
+  function downloadChatGptCsv(fileName, csvText) {
+    const safeName = String(fileName || 'zayavki-search.csv').replace(/[\\/:*?"<>|]+/g, '_');
+    const bytes = new TextEncoder().encode(String(csvText || ''));
+    let binary = '';
+    const chunkSize = 0x8000;
+    for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+      binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+    }
+    const url = `data:text/csv;charset=utf-8;base64,${btoa(binary)}`;
+
+    return new Promise((resolve, reject) => {
+      chrome.downloads.download({
+        url,
+        filename: `duplicate-marker-chatgpt/${Date.now()}-${safeName}`,
+        conflictAction: 'uniquify',
+        saveAs: false
+      }, (downloadId) => {
+        const runtimeError = chrome.runtime && chrome.runtime.lastError ? chrome.runtime.lastError.message : '';
+        if (runtimeError || !Number.isInteger(downloadId)) {
+          reject(new Error(runtimeError || 'Не удалось создать временный CSV-файл.'));
+          return;
+        }
+        resolve(downloadId);
+      });
+    });
+  }
+
+  async function waitForChatGptCsvDownload(downloadId) {
+    const startedAt = Date.now();
+    while ((Date.now() - startedAt) < 60000) {
+      const items = await new Promise((resolve) => chrome.downloads.search({ id: downloadId }, resolve));
+      const item = Array.isArray(items) ? items[0] : null;
+      if (item && item.state === 'complete' && item.filename) return item.filename;
+      if (item && item.state === 'interrupted') throw new Error('Загрузка временного CSV была прервана.');
+      await backgroundSleep(150);
+    }
+    throw new Error('Не дождался создания временного CSV-файла.');
+  }
+
+  async function removeChatGptCsvDownload(downloadId) {
+    if (!Number.isInteger(downloadId)) return;
+    await new Promise((resolve) => chrome.downloads.removeFile(downloadId, () => {
+      void (chrome.runtime && chrome.runtime.lastError);
+      resolve();
+    }));
+    await new Promise((resolve) => chrome.downloads.erase({ id: downloadId }, () => resolve()));
+  }
+
+  function debuggerAttach(debuggee) {
+    return new Promise((resolve, reject) => {
+      chrome.debugger.attach(debuggee, '1.3', () => {
+        const runtimeError = chrome.runtime && chrome.runtime.lastError ? chrome.runtime.lastError.message : '';
+        if (runtimeError) reject(new Error(runtimeError));
+        else resolve();
+      });
+    });
+  }
+
+  function debuggerDetach(debuggee) {
+    return new Promise((resolve) => {
+      chrome.debugger.detach(debuggee, () => {
+        void (chrome.runtime && chrome.runtime.lastError);
+        resolve();
+      });
+    });
+  }
+
+  function debuggerCommand(debuggee, method, params) {
+    return new Promise((resolve, reject) => {
+      chrome.debugger.sendCommand(debuggee, method, params || {}, (result) => {
+        const runtimeError = chrome.runtime && chrome.runtime.lastError ? chrome.runtime.lastError.message : '';
+        if (runtimeError) reject(new Error(runtimeError));
+        else resolve(result || {});
+      });
+    });
+  }
+
+  async function uploadChatGptCsvFile(tabId, filePath) {
+    const debuggee = { tabId };
+    let attached = false;
+    try {
+      await debuggerAttach(debuggee);
+      attached = true;
+      await debuggerCommand(debuggee, 'DOM.enable');
+
+      const startedAt = Date.now();
+      let nodeId = 0;
+      while (!nodeId && (Date.now() - startedAt) < 60000) {
+        const documentResult = await debuggerCommand(debuggee, 'DOM.getDocument', { depth: 0, pierce: true });
+        const rootNodeId = Number(documentResult && documentResult.root && documentResult.root.nodeId);
+        if (rootNodeId) {
+          const queryResult = await debuggerCommand(debuggee, 'DOM.querySelector', {
+            nodeId: rootNodeId,
+            selector: '#upload-files'
+          });
+          nodeId = Number(queryResult && queryResult.nodeId) || 0;
+        }
+        if (!nodeId) await backgroundSleep(200);
+      }
+
+      if (!nodeId) throw new Error('Не найдено актуальное поле загрузки файлов ChatGPT.');
+      await debuggerCommand(debuggee, 'DOM.setFileInputFiles', {
+        files: [filePath],
+        nodeId
+      });
+    } finally {
+      if (attached) await debuggerDetach(debuggee);
+    }
+  }
+
   async function getOrCreateItilTab(waitTimeouts) {
     const timeouts = normalizeWaitTimeouts(waitTimeouts);
     const tabs = await tabsQuery({});
@@ -1460,14 +1570,18 @@
     if (!promptText) throw new Error('Не передан текст запроса для ChatGPT.');
 
     let tab = null;
+    let downloadId = null;
 
     try {
       tab = await createChatGptTemporaryTab(sourceTabId, sourceWindowId);
       sendChatGptProgress(progressTabId, 'Вкладка ChatGPT открыта. Прикрепляю CSV и готовлю сообщение...');
 
+      downloadId = await downloadChatGptCsv(fileName, csvText);
+      const csvFilePath = await waitForChatGptCsvDownload(downloadId);
+      await uploadChatGptCsvFile(tab.id, csvFilePath);
+
       const sendResult = await executeInTab(tab.id, prepareAndSendChatGptPromptInPage, [{
         fileName,
-        csvText,
         promptText
       }]);
 
@@ -1500,6 +1614,8 @@
         await restoreSourceTabAfterChatGptSearch(sourceTabId, sourceWindowId).catch(() => null);
       }
       throw error;
+    } finally {
+      await removeChatGptCsvDownload(downloadId).catch(() => null);
     }
   }
 
@@ -1514,14 +1630,18 @@
     if (!promptText) throw new Error('Не передан текст запроса для ChatGPT.');
 
     let tab = null;
+    let downloadId = null;
 
     try {
       tab = await createChatGptTemporaryTab(sourceTabId, sourceWindowId);
       sendChatGptProgress(progressTabId, 'Вкладка ChatGPT открыта. Прикрепляю CSV и отправляю вопрос...');
 
+      downloadId = await downloadChatGptCsv(fileName, csvText);
+      const csvFilePath = await waitForChatGptCsvDownload(downloadId);
+      await uploadChatGptCsvFile(tab.id, csvFilePath);
+
       const sendResult = await executeInTab(tab.id, prepareAndSendChatGptPromptInPage, [{
         fileName,
-        csvText,
         promptText
       }]);
 
@@ -1545,6 +1665,8 @@
         await restoreSourceTabAfterChatGptSearch(sourceTabId, sourceWindowId).catch(() => null);
       }
       throw error;
+    } finally {
+      await removeChatGptCsvDownload(downloadId).catch(() => null);
     }
   }
 
@@ -3277,8 +3399,6 @@
 
     const getComposer = () => document.querySelector('#prompt-textarea[contenteditable="true"]')
       || document.querySelector('[contenteditable="true"][role="textbox"]');
-    const getUploadInput = () => document.querySelector('#upload-files')
-      || Array.from(document.querySelectorAll('input[type="file"]')).find((input) => !input.accept);
     const getSendButton = () => document.querySelector('[data-testid="send-button"]')
       || Array.from(document.querySelectorAll('button')).find((button) => /отправ/i.test(String(button.getAttribute('aria-label') || '')));
     const getReadySendButton = () => {
@@ -3293,22 +3413,19 @@
 
     try {
       const fileName = String(payload && payload.fileName || '').trim();
-      const csvText = String(payload && payload.csvText || '');
       const promptText = String(payload && payload.promptText || '').trim();
-      if (!fileName || !csvText || !promptText) {
+      if (!fileName || !promptText) {
         throw new Error('Для ChatGPT переданы неполные данные.');
       }
 
       const composer = await waitFor(getComposer, 90000, 'поле ввода ChatGPT');
-      const uploadInput = await waitFor(getUploadInput, 90000, 'поле загрузки файлов ChatGPT');
-
-      const file = new File([csvText], fileName, { type: 'text/csv' });
-      const dataTransfer = new DataTransfer();
-      dataTransfer.items.add(file);
-      uploadInput.files = dataTransfer.files;
-      uploadInput.dispatchEvent(new Event('change', { bubbles: true }));
-
-      await waitFor(() => String(document.body && document.body.innerText || '').includes(fileName), 90000, 'прикрепление CSV-файла');
+      await waitFor(() => {
+        const attachment = Array.from(document.querySelectorAll('[role="group"], button, [data-testid]')).find((element) => {
+          return String(element.getAttribute('aria-label') || '').includes(fileName)
+            || String(element.textContent || '').trim() === fileName;
+        });
+        return attachment || getReadySendButton();
+      }, 90000, 'прикрепление CSV-файла');
 
       composer.focus();
       const selection = window.getSelection();

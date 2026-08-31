@@ -4853,7 +4853,7 @@
     }
     const outgoingNumber = normalizeReestrDzText(outgoingLinks[0].text);
     if (gridOutgoing && outgoingNumber !== gridOutgoing) {
-      const outgoingMismatchMessage = `Исходящий в поручении (${outgoingNumber}) не совпадает со строкой грида (${gridOutgoing}).`;
+      const outgoingMismatchMessage = `Исходящий в поручении (${outgoingNumber}) не совпадает с занесенным в ПК Пирамида (${gridOutgoing}).`;
       return {
         outgoingNumber,
         gridOutgoingNumber: gridOutgoing,

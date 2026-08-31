@@ -1,7 +1,11 @@
 (() => {
   'use strict';
 
-  if (window.top !== window || !/^(?:chatgpt\.com|chat\.openai\.com)$/i.test(location.hostname)) return;
+  if (
+    window.top !== window
+    || !/^(?:chatgpt\.com|chat\.openai\.com)$/i.test(location.hostname)
+    || new URLSearchParams(location.search).get('temporary-chat') === 'true'
+  ) return;
 
   const UI_CLASS = 'dup-chatgpt-extension-ui';
   const ACTIONS_CLASS = 'dup-chatgpt-actions';
