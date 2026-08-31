@@ -148,6 +148,21 @@
         "*://pyramid.vostok-electra.ru/*",
         "*://*.pyramid.vostok-electra.ru/*",
         "*://pyramid.nesko-nv.ru/*",
+        "*://*.pyramid.nesko-nv.ru/*",
+        "*://pyramid-vostok.electra.ru/*",
+        "*://*.pyramid-vostok.electra.ru/*"
+      ],
+      "js": [
+        "StageTimer/incident_frame_content.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true
+    },
+    {
+      "matches": [
+        "*://pyramid.vostok-electra.ru/*",
+        "*://*.pyramid.vostok-electra.ru/*",
+        "*://pyramid.nesko-nv.ru/*",
         "*://*.pyramid.nesko-nv.ru/*"
       ],
       "css": [

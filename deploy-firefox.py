@@ -80,6 +80,7 @@ DIR_FILES = {
         'problem_picker_content.js',
     ],
     'StageTimer': [
+        'incident_frame_content.js',
         'screenshot_hotkeys_bridge.js',
         'timer_background.js',
         'timer_content.js',

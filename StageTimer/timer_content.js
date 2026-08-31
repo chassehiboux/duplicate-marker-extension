@@ -66,6 +66,7 @@
     let incidentScanTimeout = null;
     let lastGridAbortSignalAtMs = 0;
     let lastVisibleGridIncidentSignature = "";
+    const errorExceptionSignatureBySource = new Map();
     const epguIncidentSignatureBySource = new Map();
     const TIMER_BUTTON_SYNC_INTERVAL_MS = 1000;
     const LEGACY_TIMER_VISIBILITY_STORAGE_KEY = "pyramid_stage_timer_ui_visible";
@@ -86,7 +87,9 @@
     const GRID_ABORT_SUPPRESSION_WINDOW_MS = 6000;
     const INCIDENT_SUMMARY_TEXT_LIMIT = 160;
     const GRID_INCIDENT_TYPE = "GRID";
+    const ERROR_EXCEPTION_INCIDENT_TYPE = "ERROR_EXCEPTION";
     const EPGU_INCIDENT_TYPE = "EPGU";
+    const ERROR_EXCEPTION_FRAME_MESSAGE = "dup-stage-timer-error-exception-frame";
     const EPGU_PATH_REGEX = /\/ovzid\/fullcard\/(\d+)\/epgu(?:[/?#]|$)/i;
     const KEY_CODE_F1 = 112;
     const KEY_CODE_F2 = 113;
@@ -1933,6 +1936,184 @@
         });
     }
 
+    function getIncidentBaseNameFromUrl(rawUrl) {
+        try {
+            const hostname = new URL(String(rawUrl || ""), window.location.href).hostname.toLowerCase();
+            if (hostname === "kgn.pyramid.vostok-electra.ru") return "Курган";
+            if (hostname === "yuric.pyramid.vostok-electra.ru") return "ЮРИЦ";
+            if (hostname === "81.pyramid.vostok-electra.ru") {
+                return "ЧЭС";
+            }
+            if (hostname === "pyramid.vostok-electra.ru") return "Основная";
+        } catch (error) {
+            // Используем базу текущей страницы.
+        }
+        return baseName;
+    }
+
+    function isIncidentDocumentElementVisible(element, view) {
+        if (!element || !view || typeof view.getComputedStyle !== "function") return false;
+        const style = view.getComputedStyle(element);
+        if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
+        const rect = element.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+    }
+
+    function extractErrorExceptionField(doc, fieldName) {
+        if (!isDocumentLike(doc)) return "";
+        const expectedLabel = `${String(fieldName || "").trim()}:`.toLowerCase();
+        const candidates = Array.from(doc.querySelectorAll("p, dt, dd, th, td, li"));
+        for (const candidate of candidates) {
+            const text = normalizeIncidentText(candidate.textContent);
+            if (!text) continue;
+            if (text.toLowerCase() === expectedLabel) {
+                const siblingValue = normalizeIncidentText(candidate.nextElementSibling && candidate.nextElementSibling.textContent);
+                if (siblingValue) return siblingValue;
+                continue;
+            }
+            if (text.toLowerCase().startsWith(expectedLabel)) {
+                const inlineValue = normalizeIncidentText(text.slice(expectedLabel.length));
+                if (inlineValue) return inlineValue;
+            }
+        }
+        return "";
+    }
+
+    function getErrorExceptionDetails(source) {
+        if (!source || !isDocumentLike(source.doc)) return null;
+        const headings = Array.from(source.doc.querySelectorAll("h1, h2, h3"));
+        const heading = headings.find((element) => (
+            normalizeIncidentText(element.textContent).toUpperCase() === "ERROR EXCEPTION"
+            && isIncidentDocumentElementVisible(element, source.view)
+        ));
+        if (!heading) return null;
+
+        const fullText = normalizeIncidentText(
+            source.doc.body ? (source.doc.body.innerText || source.doc.body.textContent) : heading.textContent
+        );
+        const message = extractErrorExceptionField(source.doc, "Message");
+        const userName = extractErrorExceptionField(source.doc, "User");
+        return {
+            fullText: fullText || "ERROR EXCEPTION",
+            message,
+            userName
+        };
+    }
+
+    function getErrorExceptionDocumentSources() {
+        return [{
+            doc: document,
+            view: window,
+            href: window.location.href,
+            key: `top:${window.location.href}`,
+            kind: "top"
+        }];
+    }
+
+    function scanErrorExceptionIncidents() {
+        const common = buildStageIncidentCommonData();
+        const activeSourceKeys = new Set();
+
+        getErrorExceptionDocumentSources().forEach((source) => {
+            activeSourceKeys.add(source.key);
+            const details = getErrorExceptionDetails(source);
+            if (!details) {
+                errorExceptionSignatureBySource.delete(source.key);
+                return;
+            }
+
+            const isTopDocument = source.kind === "top";
+            const incidentBaseName = getIncidentBaseNameFromUrl(source.href);
+            const incidentUserName = isTopDocument
+                ? (details.userName || "Не определен")
+                : (common.userName !== "Не определен" ? common.userName : (details.userName || "Не определен"));
+            const incidentDepartmentName = isTopDocument
+                ? "Не определен"
+                : common.departmentName;
+            const signature = [
+                incidentBaseName,
+                incidentDepartmentName,
+                incidentUserName,
+                source.href,
+                details.fullText
+            ].map(normalizeIncidentText).join(" | ");
+
+            if (errorExceptionSignatureBySource.get(source.key) === signature) return;
+            errorExceptionSignatureBySource.set(source.key, signature);
+
+            const edocMatch = String(source.href || "").match(/\/ovzid\/fullcard\/(\d+)(?:[/?#]|$)/i);
+            reportStageIncident({
+                incidentType: ERROR_EXCEPTION_INCIDENT_TYPE,
+                baseName: incidentBaseName,
+                departmentName: incidentDepartmentName || "Не определен",
+                userName: incidentUserName,
+                stageName: isTopDocument ? "ERROR EXCEPTION" : common.stageName,
+                pageUrl: source.href,
+                context: isTopDocument ? "Вся страница" : "iframe",
+                summaryText: truncateIncidentText(details.message || details.fullText),
+                fullText: details.fullText,
+                signature,
+                edocId: edocMatch ? edocMatch[1] : "",
+                debtId: "",
+                epguSentAt: "",
+                epguRequestType: ""
+            });
+        });
+
+        Array.from(errorExceptionSignatureBySource.keys()).forEach((key) => {
+            if (!activeSourceKeys.has(key)) {
+                errorExceptionSignatureBySource.delete(key);
+            }
+        });
+    }
+
+    function handleErrorExceptionFrameMessage(event) {
+        const data = event && event.data && typeof event.data === "object" ? event.data : null;
+        if (!data || data.type !== ERROR_EXCEPTION_FRAME_MESSAGE) return;
+
+        const sourceUrl = String(data.pageUrl || "").trim();
+        if (!sourceUrl) return;
+        try {
+            if (new URL(sourceUrl).origin !== String(event.origin || "")) return;
+        } catch (error) {
+            return;
+        }
+
+        const fullText = normalizeIncidentText(data.fullText || "ERROR EXCEPTION");
+        if (!fullText) return;
+        const common = buildStageIncidentCommonData();
+        const incidentBaseName = getIncidentBaseNameFromUrl(sourceUrl);
+        const incidentUserName = common.userName !== "Не определен"
+            ? common.userName
+            : (normalizeIncidentText(data.userName) || "Не определен");
+        const incidentDepartmentName = common.departmentName || "Не определен";
+        const signature = [
+            incidentBaseName,
+            incidentDepartmentName,
+            incidentUserName,
+            sourceUrl,
+            fullText
+        ].map(normalizeIncidentText).join(" | ");
+        const edocMatch = sourceUrl.match(/\/ovzid\/fullcard\/(\d+)(?:[/?#]|$)/i);
+
+        reportStageIncident({
+            incidentType: ERROR_EXCEPTION_INCIDENT_TYPE,
+            baseName: incidentBaseName,
+            departmentName: incidentDepartmentName,
+            userName: incidentUserName,
+            stageName: common.stageName,
+            pageUrl: sourceUrl,
+            context: "iframe",
+            summaryText: truncateIncidentText(data.message || fullText),
+            fullText,
+            signature,
+            edocId: edocMatch ? edocMatch[1] : "",
+            debtId: "",
+            epguSentAt: "",
+            epguRequestType: ""
+        });
+    }
+
     function getEpguMatch(rawUrl) {
         if (!rawUrl) return null;
         try {
@@ -2090,6 +2271,7 @@
     function performIncidentScan() {
         incidentScanTimeout = null;
         scanVisibleGridIncident();
+        scanErrorExceptionIncidents();
         scanEpguIncidents();
     }
 
@@ -2132,6 +2314,8 @@
         scheduleGridAbortErrorMessageRewrite(message);
         scheduleIncidentScan(0);
     }, { capture: true });
+
+    window.addEventListener("message", handleErrorExceptionFrameMessage, { capture: true });
 
     if (document.documentElement) {
         const incidentObserver = new MutationObserver(() => {

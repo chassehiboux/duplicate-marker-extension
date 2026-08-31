@@ -102,6 +102,21 @@ def create_minimal_manifest(version, target_browser='chrome'):
                     "*://*.pyramid-vostok.electra.ru/*"
                 ],
                 "js": [
+                    "StageTimer/incident_frame_content.js"
+                ],
+                "run_at": "document_start",
+                "all_frames": True
+            },
+            {
+                "matches": [
+                    "*://pyramid.vostok-electra.ru/*",
+                    "*://*.pyramid.vostok-electra.ru/*",
+                    "*://pyramid.nesko-nv.ru/*",
+                    "*://*.pyramid.nesko-nv.ru/*",
+                    "*://pyramid-vostok.electra.ru/*",
+                    "*://*.pyramid-vostok.electra.ru/*"
+                ],
+                "js": [
                     "StageTimer/screenshot_hotkeys_bridge.js"
                 ],
                 "run_at": "document_start",
@@ -283,6 +298,7 @@ def main():
             
             # Копируем все необходимые файлы
             shutil.copy(os.path.join(SOURCE_DIR, 'StageTimer', 'timer_content.js'), os.path.join(build_dir, 'StageTimer'))
+            shutil.copy(os.path.join(SOURCE_DIR, 'StageTimer', 'incident_frame_content.js'), os.path.join(build_dir, 'StageTimer'))
             shutil.copy(os.path.join(SOURCE_DIR, 'StageTimer', 'timer_styles.css'), os.path.join(build_dir, 'StageTimer'))
             copy_timer_background(
                 os.path.join(SOURCE_DIR, 'StageTimer', 'timer_background.js'),

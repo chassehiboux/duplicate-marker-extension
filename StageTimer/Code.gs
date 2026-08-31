@@ -765,7 +765,7 @@ function getOrCreateIncidentEventLogSheet_(ss) {
 
 function normalizeIncidentType_(rawType) {
   var normalized = String(rawType || "").toUpperCase();
-  if (normalized === "GRID" || normalized === "EPGU") return normalized;
+  if (normalized === "GRID" || normalized === "ERROR_EXCEPTION" || normalized === "EPGU") return normalized;
   return "GRID";
 }
 
@@ -886,9 +886,30 @@ function buildEpguIncidentErrorInfo_(text) {
   };
 }
 
+function buildErrorExceptionIncidentErrorInfo_(text) {
+  var normalized = normalizeIncidentValue_(text);
+  if (!normalized) {
+    return { key: "error_exception|ошибка", title: "ERROR EXCEPTION" };
+  }
+
+  var messageMatch = normalized.match(/(?:^|\s)Message:\s*(.*?)(?=\s+(?:Request|URL|Method|Time|UserID|User):|$)/i);
+  var cleaned = messageMatch && messageMatch[1] ? messageMatch[1] : normalized;
+  cleaned = cleaned.replace(/^ERROR EXCEPTION\s*/i, "");
+  cleaned = replaceDynamicIncidentFragments_(cleaned);
+  cleaned = truncateIncidentText_(cleaned, 120) || "ERROR EXCEPTION";
+
+  return {
+    key: "error_exception|" + cleaned.toLowerCase(),
+    title: cleaned
+  };
+}
+
 function buildIncidentErrorInfo_(type, fullText, summaryText) {
   var incidentType = normalizeIncidentType_(type);
   var sourceText = normalizeIncidentValue_(fullText || summaryText);
+  if (incidentType === "ERROR_EXCEPTION") {
+    return buildErrorExceptionIncidentErrorInfo_(sourceText);
+  }
   if (incidentType === "EPGU") {
     return buildEpguIncidentErrorInfo_(sourceText);
   }
@@ -1385,6 +1406,7 @@ function getIncidentRowsForInterval_(ss, intervalKey) {
 function getIncidentEventStatsForInterval_(ss, intervalKey, now) {
   var stats = {
     GRID: { total: 0, recent: 0 },
+    ERROR_EXCEPTION: { total: 0, recent: 0 },
     EPGU: { total: 0, recent: 0 }
   };
   var sheet = ss.getSheetByName(INCIDENT_EVENT_LOG_SHEET);
@@ -1507,6 +1529,8 @@ function buildIncidentSummaryText_(rows, intervalInfo, statsByType) {
     "Интервал: " + tgEscape_(intervalInfo.label) + " YEKT",
     "",
     buildIncidentSummarySection_("Grid", "GRID", rows, statsByType),
+    "",
+    buildIncidentSummarySection_("ERROR EXCEPTION", "ERROR_EXCEPTION", rows, statsByType),
     "",
     buildIncidentSummarySection_("ЕПГУ", "EPGU", rows, statsByType)
   ];
