@@ -40,6 +40,7 @@
   const KV_SYNC_KEYS = new Set([
     'setting_copy_mode',
     'setting_highlight_mode',
+    'dup_custom_text_highlight_query_v1',
     'setting_notify_execution',
     'setting_notify_editing',
     'setting_department_containers',

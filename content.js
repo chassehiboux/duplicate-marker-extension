@@ -6,6 +6,11 @@
   window.hasDuplicateCheckerRun = true;
 
   const HIGHLIGHT_CLASS = 'dupe-highlight-active';
+  const CUSTOM_TEXT_HIGHLIGHT_STORAGE_KEY = 'dup_custom_text_highlight_query_v1';
+  const CUSTOM_TEXT_HIGHLIGHT_NAME = 'dup-custom-text-highlight';
+  const CUSTOM_TEXT_HIGHLIGHT_STYLE_ID = 'dup-custom-text-highlight-style';
+  const CUSTOM_TEXT_HIGHLIGHT_FALLBACK_CLASS = 'dup-custom-text-highlight-fallback';
+  const CUSTOM_TEXT_HIGHLIGHT_MAX_RANGES = 5000;
   const LS_SELECTOR = '[aria-describedby="list_AccAddress_AccountNumber"]';
   const SCREENSHOT_MODE_CLASS = 'dup-ext-screenshot-mode';
   const SCREENSHOT_HIDE_STYLE_ID = 'dup-ext-screenshot-style';
@@ -373,6 +378,14 @@
           outline: none !important;
         }
       `
+    },
+    {
+      key: 'customTextHighlights',
+      storageKey: 'dup_ui_show_custom_text_highlights',
+      label: 'Подсветка заданного текста',
+      description: 'Совпадения с текстом из боковой панели.',
+      hideClass: 'dup-ui-hide-custom-text-highlights',
+      hideCss: ''
     },
     {
       key: 'fsspDuplicateHighlights',
@@ -770,6 +783,9 @@
   
   let isCopyModeEnabled = false;
   let currentHighlightSettings = {};
+  let currentCustomTextHighlightQuery = '';
+  let dynamicContentObserver = null;
+  let customTextHighlightDomUpdateInProgress = false;
   let screenshotHideTimer = null;
   let screenshotAutoHideIsActive = false;
   let screenshotManualModeIsActive = false;
@@ -10219,6 +10235,8 @@
 
     syncDepartmentDropdownVisibility();
 
+    refreshCustomTextHighlights();
+
     syncExtensionUiSettingsPanelState();
   }
 
@@ -10776,6 +10794,8 @@
     collectAccessibleScreenshotDocuments().forEach((targetDocument) => {
       syncScreenshotModeForDocument(targetDocument, nextState, source);
     });
+
+    refreshCustomTextHighlights();
   }
 
   function setScreenshotAutoHideState(hidden, source) {
@@ -10979,6 +10999,172 @@
   }
 
   // --- Логика подсветки дублей ---
+
+  function getCustomHighlightRegistry() {
+    return typeof CSS !== 'undefined' && CSS.highlights && typeof Highlight === 'function'
+      ? CSS.highlights
+      : null;
+  }
+
+  function ensureCustomTextHighlightStyle() {
+    if (document.getElementById(CUSTOM_TEXT_HIGHLIGHT_STYLE_ID)) return;
+    const style = document.createElement('style');
+    style.id = CUSTOM_TEXT_HIGHLIGHT_STYLE_ID;
+    style.textContent = `
+      ::highlight(${CUSTOM_TEXT_HIGHLIGHT_NAME}) {
+        background-color: #ffd84d;
+        color: #201800;
+        text-decoration: underline;
+        text-decoration-color: #c78100;
+        text-decoration-thickness: 2px;
+      }
+      mark.${CUSTOM_TEXT_HIGHLIGHT_FALLBACK_CLASS} {
+        padding: 0 !important;
+        border: 0 !important;
+        border-radius: 2px !important;
+        background: #ffd84d !important;
+        color: #201800 !important;
+        box-shadow: inset 0 -2px 0 #c78100 !important;
+        font: inherit !important;
+      }
+    `;
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  function isCustomTextHighlightNodeAllowed(node) {
+    const parent = node && node.parentElement;
+    if (!(parent instanceof HTMLElement)) return false;
+    if (!node.nodeValue || !node.nodeValue.trim()) return false;
+    return !parent.closest(`script, style, noscript, template, textarea, select, option, mark.${CUSTOM_TEXT_HIGHLIGHT_FALLBACK_CLASS}`);
+  }
+
+  function clearCustomTextHighlights() {
+    const registry = getCustomHighlightRegistry();
+    if (registry) registry.delete(CUSTOM_TEXT_HIGHLIGHT_NAME);
+
+    const fallbackMarks = Array.from(document.querySelectorAll(`mark.${CUSTOM_TEXT_HIGHLIGHT_FALLBACK_CLASS}`));
+    if (!fallbackMarks.length) return;
+
+    customTextHighlightDomUpdateInProgress = true;
+    try {
+      fallbackMarks.forEach((mark) => {
+        const parent = mark.parentNode;
+        if (!parent) return;
+        parent.replaceChild(document.createTextNode(mark.textContent || ''), mark);
+      });
+    } finally {
+      if (dynamicContentObserver) dynamicContentObserver.takeRecords();
+      customTextHighlightDomUpdateInProgress = false;
+    }
+  }
+
+  function createCustomTextMatchPattern(query) {
+    const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(escapedQuery, 'giu');
+  }
+
+  function collectCustomTextMatches(text, queryPattern, remainingLimit) {
+    const matches = [];
+    queryPattern.lastIndex = 0;
+    let match = queryPattern.exec(text);
+    while (match && matches.length < remainingLimit) {
+      matches.push({ index: match.index, length: match[0].length });
+      match = queryPattern.exec(text);
+    }
+    return matches;
+  }
+
+  function applyCustomTextHighlightFallback(textNodes, queryPattern) {
+    let matchCount = 0;
+    customTextHighlightDomUpdateInProgress = true;
+    try {
+      textNodes.forEach((textNode) => {
+        if (matchCount >= CUSTOM_TEXT_HIGHLIGHT_MAX_RANGES || !textNode.parentNode) return;
+        const matches = collectCustomTextMatches(
+          String(textNode.nodeValue || ''),
+          queryPattern,
+          CUSTOM_TEXT_HIGHLIGHT_MAX_RANGES - matchCount
+        );
+        for (let index = matches.length - 1; index >= 0; index -= 1) {
+          const match = matches[index];
+          let matchingNode = textNode;
+          if (match.index > 0) matchingNode = textNode.splitText(match.index);
+          if (matchingNode.nodeValue.length > match.length) matchingNode.splitText(match.length);
+
+          const mark = document.createElement('mark');
+          mark.className = CUSTOM_TEXT_HIGHLIGHT_FALLBACK_CLASS;
+          mark.setAttribute('data-dup-custom-text-highlight', '1');
+          matchingNode.parentNode.replaceChild(mark, matchingNode);
+          mark.appendChild(matchingNode);
+          matchCount += 1;
+        }
+      });
+    } finally {
+      if (dynamicContentObserver) dynamicContentObserver.takeRecords();
+      customTextHighlightDomUpdateInProgress = false;
+    }
+  }
+
+  function refreshCustomTextHighlights() {
+    clearCustomTextHighlights();
+    const query = String(currentCustomTextHighlightQuery || '').trim();
+    if (!query || screenshotModeIsActive || !isExtensionUiSettingEnabled('customTextHighlights')) return;
+
+    const root = document.body || document.documentElement;
+    if (!root) return;
+
+    ensureCustomTextHighlightStyle();
+    const queryPattern = createCustomTextMatchPattern(query);
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        return isCustomTextHighlightNodeAllowed(node)
+          ? NodeFilter.FILTER_ACCEPT
+          : NodeFilter.FILTER_REJECT;
+      }
+    });
+
+    const textNodes = [];
+    let node = walker.nextNode();
+    while (node) {
+      textNodes.push(node);
+      node = walker.nextNode();
+    }
+
+    const registry = getCustomHighlightRegistry();
+    if (!registry) {
+      applyCustomTextHighlightFallback(textNodes, queryPattern);
+      return;
+    }
+
+    const highlight = new Highlight();
+    let rangeCount = 0;
+    for (const textNode of textNodes) {
+      if (rangeCount >= CUSTOM_TEXT_HIGHLIGHT_MAX_RANGES) break;
+      const matches = collectCustomTextMatches(
+        String(textNode.nodeValue || ''),
+        queryPattern,
+        CUSTOM_TEXT_HIGHLIGHT_MAX_RANGES - rangeCount
+      );
+      matches.forEach((match) => {
+        const range = new Range();
+        range.setStart(textNode, match.index);
+        range.setEnd(textNode, match.index + match.length);
+        highlight.add(range);
+        rangeCount += 1;
+      });
+    }
+
+    if (rangeCount) registry.set(CUSTOM_TEXT_HIGHLIGHT_NAME, highlight);
+  }
+
+  const debouncedRefreshCustomTextHighlights = debounce(refreshCustomTextHighlights, 250);
+
+  chrome.runtime.onMessage.addListener((message) => {
+    if (!message || message.action !== 'DUP_CUSTOM_TEXT_HIGHLIGHT_UPDATE') return false;
+    currentCustomTextHighlightQuery = String(message.query || '');
+    refreshCustomTextHighlights();
+    return false;
+  });
 
   const colorPalette = [
     '#A9D2FF', '#C6B6FF', '#9FDDE8', '#FFD6AE', '#E7B6D7',
@@ -14428,10 +14614,12 @@
   
   // Загружаем все настройки при старте
   function init() {
-    chrome.storage.local.get(['setting_copy_mode', ...allDuplicateSettingKeys], (settings) => {
+    chrome.storage.local.get(['setting_copy_mode', CUSTOM_TEXT_HIGHLIGHT_STORAGE_KEY, ...allDuplicateSettingKeys], (settings) => {
       isCopyModeEnabled = settings.setting_copy_mode !== false; // Включен по умолчанию
       currentHighlightSettings = settings;
+      currentCustomTextHighlightQuery = String(settings[CUSTOM_TEXT_HIGHLIGHT_STORAGE_KEY] || '');
       runCheck(); // Первый запуск при загрузке страницы
+      refreshCustomTextHighlights();
     });
   }
 
@@ -14447,6 +14635,10 @@
       if (allDuplicateSettingKeys.includes(key)) {
         currentHighlightSettings[key] = changes[key].newValue;
         highlightSettingsChanged = true;
+      }
+      if (key === CUSTOM_TEXT_HIGHLIGHT_STORAGE_KEY) {
+        currentCustomTextHighlightQuery = String(changes[key].newValue || '');
+        refreshCustomTextHighlights();
       }
 
       const extensionSetting = EXTENSION_UI_SETTING_DEF_BY_STORAGE_KEY[key];
@@ -14507,15 +14699,19 @@
   });
 
   // Запускаем проверку при изменениях на странице (динамический контент)
-  const observer = new MutationObserver(() => {
+  dynamicContentObserver = new MutationObserver(() => {
+    if (customTextHighlightDomUpdateInProgress) return;
     if (currentHighlightSettings.setting_highlight_mode || isFsspReestrPage() || isEpguRequestsPage()) {
       debouncedRunCheck();
     }
+    if (String(currentCustomTextHighlightQuery || '').trim()) {
+      debouncedRefreshCustomTextHighlights();
+    }
   });
   observeWithRetry(
-    observer,
+    dynamicContentObserver,
     () => document.body || document.documentElement,
-    { childList: true, subtree: true },
+    { childList: true, subtree: true, characterData: true },
     120,
     100
   );

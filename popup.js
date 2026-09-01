@@ -499,13 +499,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   // === БЛОК НАСТРОЕК И ПОИСКА ДУБЛИКАТОВ ===
-  // (Код этого блока оставлен без изменений)
   const notifyExecutionToggle = document.getElementById('setting_notify_execution');
   const notifyEditingToggle = document.getElementById('setting_notify_editing');
   const inputsSearch = ['list_DebtID', 'list_AccAddress_AccountNumber', 'list_Individual_FullName', 'list_CaseNumber', 'list_EDNumber'];
   const inputsStrict = ['strict_CaseNumber', 'strict_EDNumber'];
   const copyModeToggle = document.getElementById('setting_copy_mode');
   const highlightModeToggle = document.getElementById('setting_highlight_mode');
+  const textHighlightInput = document.getElementById('setting_text_highlight_query');
   const departmentContainersToggle = document.getElementById('setting_department_containers');
   
   const allSettings = [
@@ -513,6 +513,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     ...inputsStrict, 
     'setting_copy_mode', 
     'setting_highlight_mode', 
+    'dup_custom_text_highlight_query_v1',
     'setting_department_containers',
     'setting_notify_execution', 
     'setting_notify_editing'
@@ -546,6 +547,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Применение загруженных или установленных по умолчанию значений
     if (copyModeToggle) copyModeToggle.checked = items['setting_copy_mode'];
     if (highlightModeToggle) highlightModeToggle.checked = items['setting_highlight_mode'] || false;
+    if (textHighlightInput) textHighlightInput.value = String(items['dup_custom_text_highlight_query_v1'] || '');
     if (departmentContainersToggle) departmentContainersToggle.checked = items['setting_department_containers'] !== false;
     if (notifyExecutionToggle) notifyExecutionToggle.checked = items['setting_notify_execution'];
     if (notifyEditingToggle) notifyEditingToggle.checked = items['setting_notify_editing'];
@@ -577,6 +579,41 @@ document.addEventListener('DOMContentLoaded', async () => {
   createSettingChangeListener('setting_department_containers');
   createSettingChangeListener('setting_notify_execution');
   createSettingChangeListener('setting_notify_editing');
+
+  if (textHighlightInput) {
+    let textHighlightSaveTimer = null;
+    let lastSavedTextHighlightQuery = textHighlightInput.value;
+    const previewTextHighlightQuery = async (value) => {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab || !tab.id) return;
+      chrome.tabs.sendMessage(tab.id, {
+        action: 'DUP_CUSTOM_TEXT_HIGHLIGHT_UPDATE',
+        query: value
+      }).catch(() => {});
+    };
+    const persistTextHighlightQuery = () => {
+      const value = textHighlightInput.value;
+      if (value === lastSavedTextHighlightQuery) return;
+      lastSavedTextHighlightQuery = value;
+      void syncSetValues(
+        { dup_custom_text_highlight_query_v1: value },
+        { reason: 'popup-custom-text-highlight-change' }
+      );
+    };
+    textHighlightInput.addEventListener('input', () => {
+      void previewTextHighlightQuery(textHighlightInput.value);
+      if (textHighlightSaveTimer) clearTimeout(textHighlightSaveTimer);
+      textHighlightSaveTimer = setTimeout(() => {
+        textHighlightSaveTimer = null;
+        persistTextHighlightQuery();
+      }, 250);
+    });
+    textHighlightInput.addEventListener('change', () => {
+      if (textHighlightSaveTimer) clearTimeout(textHighlightSaveTimer);
+      textHighlightSaveTimer = null;
+      persistTextHighlightQuery();
+    });
+  }
 
   if (highlightModeToggle) {
     highlightModeToggle.addEventListener('change', (e) => {
@@ -763,6 +800,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         renderAllActions();
     }
     if (changes[LOG_KEY]) updateLogsUI(changes[LOG_KEY].newValue);
+    if (changes.dup_custom_text_highlight_query_v1 && textHighlightInput && document.activeElement !== textHighlightInput) {
+      textHighlightInput.value = String(changes.dup_custom_text_highlight_query_v1.newValue || '');
+    }
   });
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

@@ -124,6 +124,38 @@
       border: 1px solid #c8e6c9;
     }
     .settings-row .settings-label { font-size: 14px; }
+    .text-highlight-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 8px;
+      padding: 0 10px;
+    }
+    .text-highlight-row .settings-label {
+      flex: 0 0 auto;
+      font-size: 14px;
+    }
+    .text-highlight-input {
+      min-width: 0;
+      flex: 1 1 auto;
+      box-sizing: border-box;
+      padding: 7px 9px;
+      border: 1px solid #c7d1dc;
+      border-radius: 6px;
+      background: #fffdf5;
+      color: #24303c;
+      font: inherit;
+      font-size: 13px;
+      outline: none;
+      transition: border-color 0.16s ease, box-shadow 0.16s ease, background-color 0.16s ease;
+    }
+    .text-highlight-input::placeholder { color: #89939d; }
+    .text-highlight-input:hover { border-color: #e0ae26; }
+    .text-highlight-input:focus {
+      border-color: #d89a00;
+      background: #fff;
+      box-shadow: 0 0 0 3px rgba(216, 154, 0, 0.16);
+    }
     
     .row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
     .option { cursor: pointer; user-select: none; display: flex; align-items: center; }
@@ -469,6 +501,20 @@
       <span class="slider round"></span>
     </label>
   </div>
+
+  <label class="text-highlight-row" for="setting_text_highlight_query">
+    <span class="settings-label">Подсветить:</span>
+    <input
+      class="text-highlight-input"
+      id="setting_text_highlight_query"
+      type="text"
+      maxlength="200"
+      autocomplete="off"
+      spellcheck="false"
+      placeholder="Введите текст"
+      aria-label="Текст для подсветки на страницах"
+    >
+  </label>
 
   <div class="settings-row" style="padding-top: 0; padding-bottom: 0;">
     <span class="settings-label">🔍 Поиск дубликатов</span>
