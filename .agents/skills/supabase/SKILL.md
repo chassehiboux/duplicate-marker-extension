@@ -34,6 +34,8 @@ The browser extension syncs durable user data through `public.extension_user_sta
 
 When adding a new permanent extension storage key, update `supabase_sync.js` so the key is either synced or explicitly excluded. StageTimer data must stay outside Supabase sync and continue using Google Sheets.
 
+For every new key added to `KV_SYNC_KEYS`, also update the database allowlist in `public.extension_is_kv_sync_key(text)` during the same task. Create a new migration from the latest local definition of that function, preserve every previously allowed key, apply the migration through Supabase MCP, and verify with `select public.extension_is_kv_sync_key('<new_key>')`. When the extension can be exercised, also confirm that REST push no longer reports `invalid_kv_key:<new_key>`. A client-only allowlist change is incomplete.
+
 Password recovery in the sidepanel expects a recovery code from email. If the default Supabase recovery email sends only a link, update the Recovery email template in the Dashboard to include `{{ .Token }}`.
 
 ## Connection
