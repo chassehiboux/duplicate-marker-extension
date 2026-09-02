@@ -78,6 +78,7 @@
   ]);
 
   const LAST_WRITE_WINS_OUTBOX_KEYS = new Set([
+    'dup_custom_text_highlight_query_v1',
     'dup_execution_analysis_params_v1',
     'dup_execution_analysis_state_v1',
     'dup_id_card_check_state_v1',

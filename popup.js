@@ -506,6 +506,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   const copyModeToggle = document.getElementById('setting_copy_mode');
   const highlightModeToggle = document.getElementById('setting_highlight_mode');
   const textHighlightInput = document.getElementById('setting_text_highlight_query');
+  const textHighlightSaveButton = document.getElementById('setting_text_highlight_save');
+  let lastSavedTextHighlightQuery = null;
+  let textHighlightSaveFeedbackTimer = null;
   const departmentContainersToggle = document.getElementById('setting_department_containers');
   
   const allSettings = [
@@ -547,7 +550,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Применение загруженных или установленных по умолчанию значений
     if (copyModeToggle) copyModeToggle.checked = items['setting_copy_mode'];
     if (highlightModeToggle) highlightModeToggle.checked = items['setting_highlight_mode'] || false;
-    if (textHighlightInput) textHighlightInput.value = String(items['dup_custom_text_highlight_query_v1'] || '');
+    if (textHighlightInput) {
+      textHighlightInput.value = String(items['dup_custom_text_highlight_query_v1'] || '');
+      lastSavedTextHighlightQuery = textHighlightInput.value;
+      updateTextHighlightSaveButton();
+    }
     if (departmentContainersToggle) departmentContainersToggle.checked = items['setting_department_containers'] !== false;
     if (notifyExecutionToggle) notifyExecutionToggle.checked = items['setting_notify_execution'];
     if (notifyEditingToggle) notifyEditingToggle.checked = items['setting_notify_editing'];
@@ -580,39 +587,80 @@ document.addEventListener('DOMContentLoaded', async () => {
   createSettingChangeListener('setting_notify_execution');
   createSettingChangeListener('setting_notify_editing');
 
-  if (textHighlightInput) {
-    let textHighlightSaveTimer = null;
-    let lastSavedTextHighlightQuery = textHighlightInput.value;
+  function clearTextHighlightSaveFeedback() {
+    if (!textHighlightSaveButton) return;
+    if (textHighlightSaveFeedbackTimer) {
+      clearTimeout(textHighlightSaveFeedbackTimer);
+      textHighlightSaveFeedbackTimer = null;
+    }
+    textHighlightSaveButton.classList.remove('is-saved', 'is-error');
+  }
+
+  function updateTextHighlightSaveButton() {
+    if (!textHighlightInput || !textHighlightSaveButton) return;
+    const hasChanges = textHighlightInput.value !== lastSavedTextHighlightQuery;
+    textHighlightSaveButton.disabled = !hasChanges;
+    const label = hasChanges ? 'Сохранить текст для подсветки' : 'Текст для подсветки сохранён';
+    textHighlightSaveButton.title = label;
+    textHighlightSaveButton.setAttribute('aria-label', label);
+  }
+
+  if (textHighlightInput && textHighlightSaveButton) {
     const previewTextHighlightQuery = async (value) => {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!tab || !tab.id) return;
-      chrome.tabs.sendMessage(tab.id, {
-        action: 'DUP_CUSTOM_TEXT_HIGHLIGHT_UPDATE',
-        query: value
-      }).catch(() => {});
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tab || !tab.id) return;
+        await chrome.tabs.sendMessage(tab.id, {
+          action: 'DUP_CUSTOM_TEXT_HIGHLIGHT_UPDATE',
+          query: value
+        }).catch(() => {});
+      } catch (_) {
+        // Сохранение не должно зависеть от доступности активной вкладки.
+      }
     };
-    const persistTextHighlightQuery = () => {
+    const showTextHighlightSaveFeedback = (state, label) => {
+      clearTextHighlightSaveFeedback();
+      textHighlightSaveButton.classList.add(state);
+      textHighlightSaveButton.title = label;
+      textHighlightSaveButton.setAttribute('aria-label', label);
+      textHighlightSaveFeedbackTimer = setTimeout(() => {
+        textHighlightSaveFeedbackTimer = null;
+        textHighlightSaveButton.classList.remove(state);
+        updateTextHighlightSaveButton();
+      }, 1600);
+    };
+    const persistTextHighlightQuery = async () => {
       const value = textHighlightInput.value;
-      if (value === lastSavedTextHighlightQuery) return;
-      lastSavedTextHighlightQuery = value;
-      void syncSetValues(
+      if (value === lastSavedTextHighlightQuery) {
+        updateTextHighlightSaveButton();
+        return;
+      }
+      clearTextHighlightSaveFeedback();
+      textHighlightSaveButton.disabled = true;
+      const response = await syncSetValues(
         { dup_custom_text_highlight_query_v1: value },
-        { reason: 'popup-custom-text-highlight-change' }
+        { reason: 'popup-custom-text-highlight-save' }
       );
+      if (!response || response.success !== true || !response.result || response.result.success !== true) {
+        updateTextHighlightSaveButton();
+        showTextHighlightSaveFeedback('is-error', 'Не удалось сохранить текст для подсветки');
+        return;
+      }
+      lastSavedTextHighlightQuery = value;
+      await previewTextHighlightQuery(value);
+      updateTextHighlightSaveButton();
+      showTextHighlightSaveFeedback('is-saved', 'Текст для подсветки сохранён');
     };
     textHighlightInput.addEventListener('input', () => {
-      void previewTextHighlightQuery(textHighlightInput.value);
-      if (textHighlightSaveTimer) clearTimeout(textHighlightSaveTimer);
-      textHighlightSaveTimer = setTimeout(() => {
-        textHighlightSaveTimer = null;
-        persistTextHighlightQuery();
-      }, 250);
+      clearTextHighlightSaveFeedback();
+      updateTextHighlightSaveButton();
     });
-    textHighlightInput.addEventListener('change', () => {
-      if (textHighlightSaveTimer) clearTimeout(textHighlightSaveTimer);
-      textHighlightSaveTimer = null;
-      persistTextHighlightQuery();
+    textHighlightInput.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      void persistTextHighlightQuery();
     });
+    textHighlightSaveButton.addEventListener('click', () => void persistTextHighlightQuery());
   }
 
   if (highlightModeToggle) {
@@ -802,6 +850,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (changes[LOG_KEY]) updateLogsUI(changes[LOG_KEY].newValue);
     if (changes.dup_custom_text_highlight_query_v1 && textHighlightInput && document.activeElement !== textHighlightInput) {
       textHighlightInput.value = String(changes.dup_custom_text_highlight_query_v1.newValue || '');
+      lastSavedTextHighlightQuery = textHighlightInput.value;
+      clearTextHighlightSaveFeedback();
+      updateTextHighlightSaveButton();
     }
   });
 

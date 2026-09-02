@@ -135,6 +135,13 @@
       flex: 0 0 auto;
       font-size: 14px;
     }
+    .text-highlight-control {
+      display: flex;
+      align-items: center;
+      min-width: 0;
+      flex: 1 1 auto;
+      gap: 6px;
+    }
     .text-highlight-input {
       min-width: 0;
       flex: 1 1 auto;
@@ -155,6 +162,52 @@
       border-color: #d89a00;
       background: #fff;
       box-shadow: 0 0 0 3px rgba(216, 154, 0, 0.16);
+    }
+    .text-highlight-save {
+      width: 32px;
+      height: 32px;
+      flex: 0 0 32px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      box-sizing: border-box;
+      border: 1px solid #c98400;
+      border-radius: 6px;
+      background: #e59b0b;
+      color: #fff;
+      font-size: 17px;
+      font-weight: 700;
+      line-height: 1;
+      cursor: pointer;
+      transition: background-color 0.16s ease, border-color 0.16s ease, opacity 0.16s ease, transform 0.16s ease;
+    }
+    .text-highlight-save:hover:not(:disabled) {
+      background: #c98400;
+      border-color: #ad7100;
+    }
+    .text-highlight-save:active:not(:disabled) { transform: translateY(1px); }
+    .text-highlight-save:focus-visible {
+      outline: none;
+      box-shadow: 0 0 0 3px rgba(216, 154, 0, 0.2);
+    }
+    .text-highlight-save:disabled {
+      border-color: #cbd3db;
+      background: #e5e9ed;
+      color: #8c98a4;
+      cursor: default;
+      opacity: 0.8;
+    }
+    .text-highlight-save.is-saved {
+      border-color: #2f8a49;
+      background: #3ca45b;
+      color: #fff;
+      opacity: 1;
+    }
+    .text-highlight-save.is-error {
+      border-color: #b43a3a;
+      background: #d94a4a;
+      color: #fff;
+      opacity: 1;
     }
     
     .row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
@@ -502,19 +555,29 @@
     </label>
   </div>
 
-  <label class="text-highlight-row" for="setting_text_highlight_query">
-    <span class="settings-label">Подсветить:</span>
-    <input
-      class="text-highlight-input"
-      id="setting_text_highlight_query"
-      type="text"
-      maxlength="200"
-      autocomplete="off"
-      spellcheck="false"
-      placeholder="Введите текст"
-      aria-label="Текст для подсветки на страницах"
-    >
-  </label>
+  <div class="text-highlight-row">
+    <label class="settings-label" for="setting_text_highlight_query">Подсветить:</label>
+    <div class="text-highlight-control">
+      <input
+        class="text-highlight-input"
+        id="setting_text_highlight_query"
+        type="text"
+        maxlength="200"
+        autocomplete="off"
+        spellcheck="false"
+        placeholder="Введите текст"
+        aria-label="Текст для подсветки на страницах"
+      >
+      <button
+        class="text-highlight-save"
+        id="setting_text_highlight_save"
+        type="button"
+        disabled
+        title="Сохранить текст для подсветки"
+        aria-label="Сохранить текст для подсветки"
+      >&#10003;</button>
+    </div>
+  </div>
 
   <div class="settings-row" style="padding-top: 0; padding-bottom: 0;">
     <span class="settings-label">🔍 Поиск дубликатов</span>
