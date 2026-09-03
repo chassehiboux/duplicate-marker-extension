@@ -58,6 +58,7 @@
         "content.js",
         "ColumnManager/column_manager.js",
         "FsspRegistrySearch/fssp_registry_search.js",
+        "OvzidTransferRegistrySearch/ovzid_transfer_registry_search.js",
         "CallCenterRegistrySearch/call_center_registry_search.js"
       ],
       "run_at": "document_end",

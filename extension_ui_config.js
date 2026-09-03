@@ -51,7 +51,7 @@
             departmentDropdownFilter: null,
             // Кнопка группировки записей ФССП.
             fsspGroupingToggle: null,
-            // Кнопка и окно пакетного поиска должников в реестрах ФССП.
+            // Кнопки и окна пакетного поиска должников в реестрах ФССП и передачи в ОВЗИД.
             fsspRegistrySearch: null,
             // Кнопка и окно поиска абонентов в реестрах взыскания колл-центра.
             callCenterRegistrySearch: null,

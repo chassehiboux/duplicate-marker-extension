@@ -3594,7 +3594,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             return true;
         }
 
-        case 'FSSP_REGISTRY_SEARCH_GET_GRID_STATE': {
+        case 'FSSP_REGISTRY_SEARCH_GET_GRID_STATE':
+        case 'OVZID_TRANSFER_REGISTRY_SEARCH_GET_GRID_STATE': {
             const sourceTabId = sender && sender.tab ? sender.tab.id : null;
             if (!Number.isInteger(sourceTabId)) {
                 sendResponse({ success: false, error: 'Не удалось определить текущую вкладку.' });

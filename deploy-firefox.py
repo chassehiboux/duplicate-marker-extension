@@ -59,6 +59,9 @@ DIR_FILES = {
     'FsspRegistrySearch': [
         'fssp_registry_search.js',
     ],
+    'OvzidTransferRegistrySearch': [
+        'ovzid_transfer_registry_search.js',
+    ],
     'CallCenterRegistrySearch': [
         'call_center_registry_search.js',
     ],
