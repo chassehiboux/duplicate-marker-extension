@@ -257,7 +257,8 @@
       created: 0,
       updated: 0,
       skipped: 0,
-      failed: 0
+      failed: 0,
+      newResponses: 0
     },
     statusText: 'Выберите zip-архив выгрузки WSS.',
     lastError: ''
@@ -5198,7 +5199,8 @@
         created: 0,
         updated: 0,
         skipped: 0,
-        failed: 0
+        failed: 0,
+        newResponses: 0
       },
       statusText: 'Выберите zip-архив выгрузки WSS.',
       lastError: '',
@@ -5292,6 +5294,7 @@
       row: Number(changeInfo && changeInfo.row || 0),
       wssId: String(changeInfo && changeInfo.wssId || sourceRow && sourceRow.wssId || '').trim(),
       lastParsedAt: String(changeInfo && changeInfo.lastParsedAt || sourceRow && sourceRow.lastParsedAt || '').trim(),
+      newResponse: !!(changeInfo && changeInfo.newResponse),
       values,
       historyEntries: Array.isArray(sourceRow && sourceRow.historyEntries) ? sourceRow.historyEntries : [],
       attachmentEntries: Array.isArray(sourceRow && sourceRow.attachmentEntries) ? sourceRow.attachmentEntries : []
@@ -5367,6 +5370,36 @@
     return a > b ? 1 : (a < b ? -1 : 0);
   }
 
+  function getLatestWssHistoryAt(entries) {
+    return (Array.isArray(entries) ? entries : []).reduce((latest, entry) => {
+      const match = String(entry && entry.date || '').trim().match(
+        /^(\d{2})\.(\d{2})\.(\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?$/
+      );
+      if (!match) return latest;
+      const day = Number(match[1]);
+      const month = Number(match[2]);
+      const year = Number(match[3]);
+      const hour = Number(match[4]);
+      const minute = Number(match[5]);
+      const second = Number(match[6] || 0);
+      const date = new Date(year, month - 1, day, hour, minute, second);
+      if (
+        date.getFullYear() !== year ||
+        date.getMonth() !== month - 1 ||
+        date.getDate() !== day ||
+        date.getHours() !== hour ||
+        date.getMinutes() !== minute ||
+        date.getSeconds() !== second
+      ) {
+        return latest;
+      }
+      const key = [year, month, day, hour, minute, second]
+        .map((part, index) => String(part).padStart(index === 0 ? 4 : 2, '0'))
+        .join('');
+      return key > latest ? key : latest;
+    }, '');
+  }
+
   async function loadWssImportPreview(rows) {
     await loadBridgeUrl();
     if (!state.bridgeUrl) {
@@ -5402,7 +5435,8 @@
       if (!wssId) return;
       existingByWssId.set(wssId, {
         row: Number(item.row),
-        lastParsedAt: String(item.lastParsedAt || '').trim()
+        lastParsedAt: String(item.lastParsedAt || '').trim(),
+        latestHistoryAt: String(item.latestHistoryAt || '').trim()
       });
     });
 
@@ -5415,8 +5449,15 @@
         newCount += 1;
         return;
       }
-      if (compareWssParsedAt(row.lastParsedAt, existing.lastParsedAt) > 0) updateCount += 1;
-      else skipCount += 1;
+      const incomingLatestHistoryAt = getLatestWssHistoryAt(row && row.historyEntries);
+      if (
+        compareWssParsedAt(row.lastParsedAt, existing.lastParsedAt) > 0 ||
+        (incomingLatestHistoryAt && incomingLatestHistoryAt > existing.latestHistoryAt)
+      ) {
+        updateCount += 1;
+      } else {
+        skipCount += 1;
+      }
     });
 
     return {
@@ -5476,6 +5517,7 @@
         `Будет пропущено как не свежее: ${Number(preview.skipCount || 0)}`,
         `Создано: ${Number(imported.created || 0)}`,
         `Обновлено: ${Number(imported.updated || 0)}`,
+        `Новых ответов: ${Number(imported.newResponses || 0)}`,
         `Пропущено: ${Number(imported.skipped || 0)}`,
         `Ошибок записи: ${Number(imported.failed || 0)}`
       ].join('\n') + (preview.note ? '\n\n' + preview.note : '') + errorLines;
@@ -5726,6 +5768,7 @@
       summary.replaceChildren();
       if (item) {
         appendWssReviewPill(summary, item.type === 'created' ? 'Новая заявка' : 'Обновлена', item.type === 'created' ? 'is-created' : 'is-updated');
+        appendWssReviewPill(summary, item.newResponse ? 'Пришел новый ответ' : '', item.newResponse ? 'is-created' : '');
         appendWssReviewPill(summary, item.wssId ? 'WSS ID ' + item.wssId : '');
         appendWssReviewPill(summary, getWssReviewValue(item, 'Рег. номер'));
         appendWssReviewPill(summary, getWssReviewValue(item, 'Статус'));
@@ -5767,7 +5810,8 @@
       created: Number(imported.created || 0) + Number(result && result.created || 0),
       updated: Number(imported.updated || 0) + Number(result && result.updated || 0),
       skipped: Number(imported.skipped || 0) + Number(result && result.skipped || 0),
-      failed: Number(imported.failed || 0) + Number(result && result.failed || 0)
+      failed: Number(imported.failed || 0) + Number(result && result.failed || 0),
+      newResponses: Number(imported.newResponses || 0) + Number(result && result.newResponses || 0)
     };
     collectWssImportReviewRows(result, batch);
   }
@@ -5798,7 +5842,8 @@
         created: 0,
         updated: 0,
         skipped: 0,
-        failed: 0
+        failed: 0,
+        newResponses: 0
       },
       statusText: 'Отправляю заявки в bridge...',
       lastError: ''
@@ -5840,7 +5885,7 @@
       wssImportState = {
         ...wssImportState,
         isImporting: false,
-        statusText: `Импорт завершен. Создано: ${Number(imported.created || 0)}, обновлено: ${Number(imported.updated || 0)}, пропущено: ${Number(imported.skipped || 0)}.`,
+        statusText: `Импорт завершен. Создано: ${Number(imported.created || 0)}, обновлено: ${Number(imported.updated || 0)}, новых ответов: ${Number(imported.newResponses || 0)}, пропущено: ${Number(imported.skipped || 0)}.`,
         lastError: ''
       };
       activateSheetTabByName(WSS_SHEET_NAME);
