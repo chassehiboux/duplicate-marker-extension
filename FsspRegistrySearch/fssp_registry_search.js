@@ -17,7 +17,8 @@
         { key: 'regNumIp', field: 'RegNumIP', label: 'Номер ИП' },
         { key: 'fullName', field: 'FullName', label: 'ФИО' },
         { key: 'birthDay', field: 'BirthDay', label: 'Д.р. должника' },
-        { key: 'edNumber', field: 'EDNumber', label: 'Номер ИД' }
+        { key: 'edNumber', field: 'EDNumber', label: 'Номер ИД' },
+        { key: 'statusName', field: 'StatusName', label: 'Статус' }
     ]);
 
     let activeRun = null;
@@ -456,7 +457,7 @@
                 <div class="dup-fssp-registry-search-body">
                     <div class="dup-fssp-registry-search-table-wrap dup-fssp-registry-search-input-wrap">
                         <table class="dup-fssp-registry-search-input-table">
-                            <thead><tr><th>№</th><th>Номер ИП</th><th>ФИО</th><th>Д.р. должника</th><th>Номер ИД</th></tr></thead>
+                            <thead><tr><th>№</th>${FIELD_DEFINITIONS.map((field) => `<th>${field.label}</th>`).join('')}</tr></thead>
                             <tbody></tbody>
                         </table>
                     </div>
@@ -479,7 +480,7 @@
                         </div>
                         <div class="dup-fssp-registry-search-table-wrap dup-fssp-registry-search-results-wrap">
                             <table class="dup-fssp-registry-search-results-table">
-                                <thead><tr><th>№</th><th>Номер ИП</th><th>ФИО</th><th>Д.р. должника</th><th>Номер ИД</th><th>ID реестра</th></tr></thead>
+                                <thead><tr><th>№</th>${FIELD_DEFINITIONS.map((field) => `<th>${field.label}</th>`).join('')}<th>ID реестра</th></tr></thead>
                                 <tbody aria-live="polite" aria-relevant="additions text"></tbody>
                             </table>
                         </div>
@@ -606,7 +607,7 @@
             const emptyRow = document.createElement('tr');
             emptyRow.className = 'dup-fssp-registry-search-results-empty';
             const emptyCell = document.createElement('td');
-            emptyCell.colSpan = 6;
+            emptyCell.colSpan = FIELD_DEFINITIONS.length + 2;
             emptyCell.textContent = emptyMessage;
             emptyRow.appendChild(emptyCell);
             tbody.appendChild(emptyRow);
