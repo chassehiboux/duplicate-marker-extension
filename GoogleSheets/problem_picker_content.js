@@ -66,6 +66,8 @@
   const ITIL_IMPORT_SHEET_NAME = 'ITIL';
   const ITIL_IMPORT_START_ROW = 2003;
   const ITIL_IMPORT_COLUMN_COUNT = 22;
+  const ITIL_IMPORT_BATCH_ROWS = 300;
+  const ITIL_IMPORT_BATCH_BYTES = 512 * 1024;
   const WSS_SHEET_NAME = 'WSS';
   const WSS_IMPORT_BATCH_SIZE = 80;
   const WSS_IMPORT_TEXT_LIMIT = 45000;
@@ -238,6 +240,7 @@
     currentBatch: 0,
     totalBatches: 0,
     insertedRowsCount: 0,
+    nextRowOffset: 0,
     statusText: 'Вставьте таблицу из буфера обмена.',
     lastError: ''
   };
@@ -3852,7 +3855,8 @@
       #${ITIL_IMPORT_MODAL_ID} .gs-itil-import-details{min-height:0;margin:0;overflow:auto;white-space:pre-wrap;border:1px solid #d7dce6;border-left:6px solid #2d6cdf;border-radius:8px;background:#fff;padding:14px;color:#1f2937;font:13px/1.5 Consolas,"Courier New",monospace}
       #${ITIL_IMPORT_MODAL_ID} .gs-itil-import-status{min-height:18px;color:#566176;font-size:13px;line-height:1.45;overflow-wrap:anywhere}
       #${ITIL_IMPORT_MODAL_ID} .gs-itil-import-status.is-error{color:#b3261e}
-      #${ITIL_IMPORT_MODAL_ID} .gs-itil-import-buttons{display:flex;flex-shrink:0;gap:10px}
+      #${ITIL_IMPORT_MODAL_ID} .gs-itil-import-footer{flex-wrap:wrap}
+      #${ITIL_IMPORT_MODAL_ID} .gs-itil-import-buttons{display:flex;flex-wrap:wrap;gap:10px}
       #${ITIL_IMPORT_MODAL_ID} .gs-itil-import-start{border-color:#1155cc;background:#1155cc;color:#fff;box-shadow:0 8px 22px rgba(17,85,204,.2)}
       #${ITIL_IMPORT_MODAL_ID} button:disabled{opacity:.58;cursor:default;box-shadow:none}
       #${WSS_IMPORT_MODAL_ID} .gs-wss-import-card{width:min(760px,100%);max-height:min(760px,calc(100vh - 32px));display:grid;grid-template-rows:auto auto auto minmax(180px,1fr) auto;gap:14px;box-sizing:border-box;padding:22px;border:1px solid #d6dce8;border-radius:8px;background:#fbfcfe;color:#172033;box-shadow:0 24px 70px rgba(15,23,42,.26);pointer-events:auto}
@@ -4234,7 +4238,7 @@
       || (itilImportState.isParsing
         ? 'Разбираю вставленную таблицу...'
         : (itilImportState.isImporting
-          ? 'Загружаю таблицу в bridge...'
+          ? (itilImportState.statusText || 'Загружаю таблицу...')
           : (itilImportState.statusText || 'Вставьте таблицу из буфера обмена.')));
 
     if (status instanceof HTMLElement) {
@@ -4822,6 +4826,7 @@
       currentBatch: 0,
       totalBatches: 0,
       insertedRowsCount: 0,
+      nextRowOffset: 0,
       statusText: 'Вставьте таблицу из буфера обмена.',
       lastError: '',
       ...(overrides || {})
@@ -4847,32 +4852,30 @@
     return mismatches.join('\n');
   }
 
-  function parseItilImportTableText(text) {
+  async function parseItilImportTableText(text) {
     const normalized = normalizeItilImportTableText(text);
-    const lines = normalized.split('\n');
-
-    while (lines.length && !String(lines[0] || '').replace(/\t/g, '').trim()) lines.shift();
-    while (lines.length && !String(lines[lines.length - 1] || '').replace(/\t/g, '').trim()) lines.pop();
-
-    if (!lines.length) {
-      return {
-        headers: [],
-        tableRows: []
-      };
-    }
-
     const tableRows = [];
-
-    lines.forEach((line, index) => {
+    const encoder = new TextEncoder();
+    let offset = 0;
+    let index = 0;
+    while (offset < normalized.length) {
+      const end = normalized.indexOf('\n', offset);
+      const line = normalized.slice(offset, end < 0 ? normalized.length : end);
+      offset = end < 0 ? normalized.length : end + 1;
+      index += 1;
+      if (index % ITIL_IMPORT_BATCH_ROWS === 0) await new Promise((resolve) => setTimeout(resolve, 0));
       const cells = String(line || '').split('\t');
       const hasValues = cells.some((cell) => String(cell || '').trim() !== '');
-      if (!hasValues) return;
+      if (!hasValues) continue;
       if (cells.length > ITIL_IMPORT_COLUMN_COUNT) {
-        throw new Error(`Строка ${index + 1} содержит ${cells.length} столбцов вместо ${ITIL_IMPORT_COLUMN_COUNT}.`);
+        throw new Error(`Строка ${index} содержит ${cells.length} столбцов вместо ${ITIL_IMPORT_COLUMN_COUNT}.`);
       }
       while (cells.length < ITIL_IMPORT_COLUMN_COUNT) cells.push('');
+      if (encoder.encode(JSON.stringify(cells)).length > ITIL_IMPORT_BATCH_BYTES - 4096) {
+        throw new Error(`Строка ${index} слишком большая для отправки. Проверьте содержимое её ячеек.`);
+      }
       tableRows.push(cells.map((cell) => String(cell == null ? '' : cell).replace(/\r/g, '')));
-    });
+    }
 
     if (!tableRows.length) {
       return {
@@ -4937,6 +4940,10 @@
     const status = $('.gs-itil-import-status', modal);
     const clearButton = $('.gs-itil-import-clear', modal);
     const startButton = $('.gs-itil-import-start', modal);
+    const clipboardButton = $('.gs-itil-import-clipboard', modal);
+    if (clipboardButton instanceof HTMLButtonElement) {
+      clipboardButton.disabled = itilImportState.isParsing || itilImportState.isImporting;
+    }
 
     if (input instanceof HTMLTextAreaElement) {
       if (input.value !== itilImportState.rawText) input.value = itilImportState.rawText;
@@ -4947,10 +4954,10 @@
       progress.textContent = itilImportState.isParsing
         ? 'Разбираю таблицу...'
         : (itilImportState.isImporting
-          ? 'Отправляю таблицу...'
+          ? `Загружено ${itilImportState.insertedRowsCount} из ${getItilImportDataRowsCount()} строк`
         : (itilImportState.tableRows.length
           ? `Готово к вставке: ${getItilImportDataRowsCount()} строк данных`
-          : 'Ожидание вставки'));
+          : (itilImportState.insertedRowsCount > 0 ? `Загружено ${itilImportState.insertedRowsCount} строк` : 'Ожидание вставки')));
     }
 
     if (details instanceof HTMLElement) {
@@ -4969,6 +4976,7 @@
 
     if (startButton instanceof HTMLButtonElement) {
       startButton.disabled = itilImportState.isParsing || itilImportState.isImporting || itilImportState.tableRows.length < 2;
+      startButton.textContent = itilImportState.nextRowOffset > 0 ? 'Продолжить загрузку' : 'Загрузить';
     }
 
     renderItilImportStatus();
@@ -4988,16 +4996,17 @@
         <header class="gs-itil-import-header">
           <div>
             <div class="gs-itil-import-title">Заявки ITIL</div>
-            <div class="gs-itil-import-subtitle">Вставьте TSV-таблицу целиком. Расширение запишет значения на лист «${ITIL_IMPORT_SHEET_NAME}» начиная с ячейки A${ITIL_IMPORT_START_ROW}.</div>
+            <div class="gs-itil-import-subtitle">Скопируйте таблицу в 1С и нажмите «Загрузить из буфера». Запись на лист «${ITIL_IMPORT_SHEET_NAME}» с A${ITIL_IMPORT_START_ROW}. До завершения не запускайте поиск новых заявок.</div>
           </div>
           <button type="button" class="gs-itil-import-close-x" aria-label="Закрыть">×</button>
         </header>
         <div class="gs-itil-import-progress" aria-live="polite">Ожидание вставки</div>
-        <textarea class="gs-itil-import-input" spellcheck="false" placeholder="Нажмите сюда и вставьте таблицу через Ctrl+V"></textarea>
+        <textarea class="gs-itil-import-input" spellcheck="false" placeholder="Основной способ — кнопка «Загрузить из буфера» внизу. Запасной способ — вставить таблицу сюда через Ctrl+V."></textarea>
         <pre class="gs-itil-import-details"></pre>
         <footer class="gs-itil-import-footer">
           <div class="gs-itil-import-status" aria-live="polite"></div>
           <div class="gs-itil-import-buttons">
+            <button type="button" class="gs-itil-import-clipboard">Загрузить из буфера</button>
             <button type="button" class="gs-itil-import-close">Закрыть</button>
             <button type="button" class="gs-itil-import-clear">Очистить</button>
             <button type="button" class="gs-itil-import-start" disabled>Загрузить</button>
@@ -5036,6 +5045,9 @@
     }, { capture: true });
     $('.gs-itil-import-start', modal)?.addEventListener('click', () => {
       void startItilImport();
+    }, { capture: true });
+    $('.gs-itil-import-clipboard', modal)?.addEventListener('click', () => {
+      void loadItilImportFromClipboard();
     }, { capture: true });
 
     (document.body || document.documentElement).appendChild(modal);
@@ -5083,18 +5095,20 @@
     };
     renderItilImportModal();
 
-    itilImportParseTimer = setTimeout(() => {
+    itilImportParseTimer = setTimeout(async () => {
       itilImportParseTimer = 0;
       if (runId !== itilImportParseRunId) return;
 
       try {
-        const parsed = parseItilImportTableText(rawText);
+        const parsed = await parseItilImportTableText(rawText);
         if (runId !== itilImportParseRunId) return;
         itilImportState = {
           ...itilImportState,
           rawText,
           headers: parsed.headers,
           tableRows: parsed.tableRows,
+          nextRowOffset: 0,
+          insertedRowsCount: 0,
           isParsing: false,
           lastError: '',
           statusText: `Готово к вставке: ${Math.max(0, parsed.tableRows.length - 1)} строк данных.`
@@ -5116,49 +5130,186 @@
     }, 30);
   }
 
+  async function itilClipboardHtmlToText(html) {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const table = doc.querySelector('table');
+    if (!table) return '';
+    const lines = [];
+    let count = 0;
+    for (const row of table.rows) {
+      const cells = Array.from(row.cells);
+      if (cells.some((cell) => cell.colSpan > 1 || cell.rowSpan > 1)) {
+        throw new Error('В HTML-таблице из буфера есть объединённые ячейки. Нужна обычная таблица из 22 столбцов.');
+      }
+      lines.push(cells.map((cell) => String(cell.textContent || '').replace(/[\t\r\n]+/g, ' ').trim()).join('\t'));
+      count += 1;
+      if (count % ITIL_IMPORT_BATCH_ROWS === 0) await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    return lines.join('\n');
+  }
+
+  function readItilClipboardByPaste(diagnostics) {
+    const modal = document.getElementById(ITIL_IMPORT_MODAL_ID);
+    if (!modal) return '';
+    const previousFocus = document.activeElement;
+    const input = document.createElement('textarea');
+    input.setAttribute('aria-hidden', 'true');
+    input.style.cssText = 'position:fixed;left:-10000px;top:0;width:1px;height:1px;opacity:0;pointer-events:none';
+    let pastedText = '';
+    input.addEventListener('paste', (event) => {
+      const data = event.clipboardData;
+      if (data) {
+        diagnostics.push(`paste: ${Array.from(data.types || []).join(', ') || 'нет форматов'}`);
+        pastedText = data.getData('text/plain');
+      }
+      // Do not put the entire export into the DOM when the event exposes text.
+      if (pastedText) event.preventDefault();
+      event.stopPropagation();
+    });
+    modal.appendChild(input);
+    try {
+      input.focus({ preventScroll: true });
+      const accepted = document.execCommand('paste');
+      const text = pastedText || input.value;
+      diagnostics.push(`paste: ${accepted ? 'выполнено' : 'не поддержано'}, ${text.length} символов`);
+      return text;
+    } catch (error) {
+      diagnostics.push(`paste: ${error.name || 'ошибка'}`);
+      return '';
+    } finally {
+      input.value = '';
+      input.remove();
+      if (previousFocus && typeof previousFocus.focus === 'function') previousFocus.focus({ preventScroll: true });
+    }
+  }
+
+  async function readItilClipboardTable() {
+    const diagnostics = [];
+    const clipboard = navigator.clipboard;
+    if (clipboard && typeof clipboard.readText === 'function') {
+      try {
+        const text = await clipboard.readText();
+        diagnostics.push(`readText: ${text.length} символов`);
+        if (text.trim()) return text;
+      } catch (error) {
+        diagnostics.push(`readText: ${error.name || 'ошибка'}`);
+      }
+    }
+    if (clipboard && typeof clipboard.read === 'function') {
+      try {
+        const items = await clipboard.read();
+        diagnostics.push(`read: ${items.length} объектов`);
+        for (const item of items) {
+          diagnostics.push(`форматы: ${item.types.join(', ') || 'нет'}`);
+          for (const type of item.types.filter((type) => type === 'text/plain' || type === 'text/tab-separated-values')) {
+            const text = await (await item.getType(type)).text();
+            if (text.trim()) return text;
+          }
+          if (item.types.includes('text/html')) {
+            const html = await (await item.getType('text/html')).text();
+            const text = await itilClipboardHtmlToText(html);
+            if (text.trim()) return text;
+          }
+        }
+      } catch (error) {
+        diagnostics.push(`read: ${error.message || error.name || 'ошибка'}`);
+      }
+    }
+    const text = readItilClipboardByPaste(diagnostics);
+    if (text.trim()) return text;
+    throw new Error(`Браузер не смог прочитать таблицу из системного буфера. Это не означает, что буфер пуст. Диагностика: ${diagnostics.join('; ') || 'методы чтения недоступны'}.`);
+  }
+
+  async function loadItilImportFromClipboard() {
+    if (itilImportState.isParsing || itilImportState.isImporting) return;
+    resetItilImportState({ isParsing: true, statusText: 'Читаю буфер обмена...' });
+    renderItilImportModal();
+    try {
+      // Read inside the click gesture, before any other asynchronous operation.
+      const text = await readItilClipboardTable();
+      itilImportState.statusText = 'Проверяю таблицу из буфера...';
+      renderItilImportModal();
+      const parsed = await parseItilImportTableText(text);
+      if (parsed.tableRows.length < 2) throw new Error('В буфере нет строк таблицы для загрузки.');
+      itilImportState = { ...itilImportState, ...parsed, rawText: '', isParsing: false };
+      renderItilImportModal();
+      await startItilImport();
+    } catch (error) {
+      itilImportState.isParsing = false;
+      itilImportState.lastError = error && error.name === 'NotAllowedError'
+        ? 'Edge запретил чтение буфера. Оставьте вкладку активной и попробуйте ещё раз; разрешите чтение, если браузер запросит его.'
+        : (error && error.message ? error.message : 'Не удалось прочитать таблицу из буфера.');
+      renderItilImportModal();
+    }
+  }
+
+  function getItilImportBatch(tableRows, offset) {
+    const encoder = new TextEncoder();
+    const rows = [];
+    let bytes = 4096;
+    for (let i = offset; i < tableRows.length && rows.length < ITIL_IMPORT_BATCH_ROWS; i++) {
+      const rowBytes = encoder.encode(JSON.stringify(tableRows[i])).length + 1;
+      if (rowBytes + 4096 > ITIL_IMPORT_BATCH_BYTES) throw new Error(`Строка ${i + 1} слишком большая для отправки.`);
+      if (bytes + rowBytes > ITIL_IMPORT_BATCH_BYTES) break;
+      rows.push(tableRows[i]);
+      bytes += rowBytes;
+    }
+    return rows;
+  }
+
   async function startItilImport() {
     if (itilImportState.isParsing || itilImportState.isImporting || itilImportState.tableRows.length < 2) return;
 
-    await loadBridgeUrl();
-    if (!state.bridgeUrl) {
+    itilImportState.isImporting = true;
+    renderItilImportModal();
+    try {
+      await loadBridgeUrl();
+      if (!state.bridgeUrl) {
+        throw new Error('URL bridge не задан. Нажми F2, затем «URL bridge».');
+      }
+
+      const tableRows = itilImportState.tableRows;
+
       itilImportState = {
         ...itilImportState,
-        lastError: 'URL bridge не задан. Нажми F2, затем «URL bridge».'
+        isParsing: false,
+        isImporting: true,
+        currentBatch: 0,
+        totalBatches: Math.ceil(tableRows.length / ITIL_IMPORT_BATCH_ROWS),
+        statusText: 'Отправляю таблицу в bridge...',
+        lastError: ''
       };
       renderItilImportModal();
-      return;
-    }
 
-    const tableRows = clonePlainData(itilImportState.tableRows);
-
-    itilImportState = {
-      ...itilImportState,
-      isParsing: false,
-      isImporting: true,
-      currentBatch: 1,
-      totalBatches: 1,
-      statusText: 'Отправляю таблицу в bridge...',
-      lastError: ''
-    };
-    renderItilImportModal();
-
-    try {
-      const response = await sendRuntimeMessage({
-        action: SAVE_ACTION,
-        data: {
-          bridgeUrl: state.bridgeUrl,
-          payload: {
-            action: 'importItilTableRows',
-            spreadsheetId: CONFIG.spreadsheetId,
-            sheetName: ITIL_IMPORT_SHEET_NAME,
-            startRow: ITIL_IMPORT_START_ROW,
-            rows: tableRows
+      while (itilImportState.nextRowOffset < tableRows.length) {
+        const offset = itilImportState.nextRowOffset;
+        const batchRows = getItilImportBatch(tableRows, offset);
+        const response = await sendRuntimeMessage({
+          action: SAVE_ACTION,
+          data: {
+            bridgeUrl: state.bridgeUrl,
+            payload: {
+              action: 'importItilTableRows',
+              spreadsheetId: CONFIG.spreadsheetId,
+              sheetName: ITIL_IMPORT_SHEET_NAME,
+              startRow: ITIL_IMPORT_START_ROW + offset,
+              rows: batchRows
+            }
           }
-        }
-      });
+        });
 
-      if (!response || response.success !== true) {
-        throw new Error(getRuntimeResponseError(response, 'bridge не вставил таблицу ITIL'));
+        if (!response || response.success !== true) {
+          throw new Error(getRuntimeResponseError(response, 'bridge не вставил таблицу ITIL'));
+        }
+        const written = getBridgeActionResult(response);
+        if (!written || Number(written.writtenRows) !== batchRows.length || Number(written.startRow) !== ITIL_IMPORT_START_ROW + offset) {
+          throw new Error('Сервер не подтвердил запись всей порции ITIL.');
+        }
+        itilImportState.nextRowOffset = offset + batchRows.length;
+        itilImportState.insertedRowsCount = Math.max(0, itilImportState.nextRowOffset - 1);
+        itilImportState.currentBatch += 1;
+        itilImportState.statusText = `Загружено ${itilImportState.insertedRowsCount} из ${tableRows.length - 1} строк. До завершения не запускайте поиск новых заявок.`;
+        renderItilImportModal();
       }
 
       const insertedRowsCount = Math.max(0, tableRows.length - 1);
@@ -5167,14 +5318,13 @@
         statusText: `Таблица ITIL загружена: ${insertedRowsCount} строк данных.`
       });
       renderItilImportModal();
-      closeItilImportModal();
       activateSheetTabByName(ITIL_IMPORT_SHEET_NAME);
     } catch (error) {
       itilImportState = {
         ...itilImportState,
         isImporting: false,
         statusText: '',
-        lastError: error && error.message ? error.message : 'Не удалось загрузить таблицу ITIL.'
+        lastError: `${error && error.message ? error.message : 'Не удалось загрузить таблицу ITIL.'} Подтверждено ${itilImportState.insertedRowsCount} строк. Нажмите «${itilImportState.nextRowOffset > 0 ? 'Продолжить загрузку' : 'Загрузить'}», чтобы повторить неподтверждённую порцию. До завершения не запускайте поиск новых заявок.`
       };
       renderItilImportModal();
     }
