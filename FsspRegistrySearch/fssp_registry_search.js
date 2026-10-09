@@ -169,6 +169,36 @@
                 flex: 1 1 auto;
                 min-height: 0;
             }
+            #${MODAL_ID} .dup-fssp-registry-search-result-group + .dup-fssp-registry-search-result-group {
+                border-top: 1px solid var(--fssp-search-line);
+            }
+            #${MODAL_ID} .dup-fssp-registry-search-result-group > summary {
+                padding: 11px 12px;
+                background: #edf5f0;
+                color: #29453b;
+                font-size: 13px;
+                cursor: pointer;
+                overflow-wrap: anywhere;
+            }
+            #${MODAL_ID} .dup-fssp-registry-search-result-group > summary:hover { background: #e2efe7; }
+            #${MODAL_ID} .dup-fssp-registry-search-result-group > summary:focus-visible {
+                outline: 2px solid var(--fssp-search-accent);
+                outline-offset: -2px;
+            }
+            #${MODAL_ID} .dup-fssp-registry-search-group-count {
+                display: inline-block;
+                margin-left: 12px;
+                color: #176344;
+                font-weight: 700;
+                white-space: nowrap;
+            }
+            #${MODAL_ID} .dup-fssp-registry-search-group-table-wrap { overflow-x: auto; }
+            #${MODAL_ID} .dup-fssp-registry-search-results-placeholder {
+                padding: 24px 16px;
+                color: #75857f;
+                font-size: 12px;
+                text-align: center;
+            }
             #${MODAL_ID} table {
                 width: 100%;
                 min-width: 900px;
@@ -193,7 +223,7 @@
             #${MODAL_ID} th:first-child,
             #${MODAL_ID} td:first-child { width: 42px; text-align: center; }
             #${MODAL_ID} .dup-fssp-registry-search-results-table th:last-child,
-            #${MODAL_ID} .dup-fssp-registry-search-results-table td:last-child { width: 150px; }
+            #${MODAL_ID} .dup-fssp-registry-search-results-table td:last-child { width: 240px; }
             #${MODAL_ID} td {
                 padding: 7px 8px;
                 border-bottom: 1px solid #e2eae7;
@@ -241,6 +271,7 @@
                 font-size: 12px;
                 font-weight: 700;
                 text-decoration: none;
+                overflow-wrap: anywhere;
             }
             #${MODAL_ID} .dup-fssp-registry-search-link:hover,
             #${MODAL_ID} .dup-fssp-registry-search-link:focus-visible {
@@ -513,10 +544,6 @@
                             <div class="dup-fssp-registry-search-results-count">Совпадений: 0</div>
                         </div>
                         <div class="dup-fssp-registry-search-table-wrap dup-fssp-registry-search-results-wrap">
-                            <table class="dup-fssp-registry-search-results-table">
-                                <thead><tr><th>№</th>${FIELD_DEFINITIONS.map((field) => `<th>${field.label}</th>`).join('')}<th>ID реестра</th></tr></thead>
-                                <tbody aria-live="polite" aria-relevant="additions text"></tbody>
-                            </table>
                         </div>
                     </section>
                 </div>
@@ -628,48 +655,88 @@
     }
 
     function renderSearchResults(modal, debtors, emptyMessage = 'Найденные совпадения появятся здесь во время поиска.') {
-        const tbody = modal.querySelector('.dup-fssp-registry-search-results-table tbody');
+        const container = modal.querySelector('.dup-fssp-registry-search-results-wrap');
         const count = modal.querySelector('.dup-fssp-registry-search-results-count');
-        if (!(tbody instanceof HTMLElement)) return;
-        const rows = [];
-        (Array.isArray(debtors) ? debtors : []).forEach((debtor) => {
-            debtor.matches.forEach((match, registryId) => rows.push({ debtor, registryId, match }));
-        });
-        tbody.replaceChildren();
-        if (count instanceof HTMLElement) count.textContent = `Совпадений: ${rows.length}`;
-        if (!rows.length) {
-            const emptyRow = document.createElement('tr');
-            emptyRow.className = 'dup-fssp-registry-search-results-empty';
-            const emptyCell = document.createElement('td');
-            emptyCell.colSpan = FIELD_DEFINITIONS.length + 2;
-            emptyCell.textContent = emptyMessage;
-            emptyRow.appendChild(emptyCell);
-            tbody.appendChild(emptyRow);
+        if (!(container instanceof HTMLElement)) return;
+        const queries = Array.isArray(debtors) ? debtors : [];
+        if (count instanceof HTMLElement) count.textContent = `Совпадений: ${countMatches(queries)}`;
+        if (!queries.length) {
+            const placeholder = document.createElement('div');
+            placeholder.className = 'dup-fssp-registry-search-results-placeholder';
+            placeholder.textContent = emptyMessage;
+            container.replaceChildren(placeholder);
             return;
         }
-        rows.forEach(({ registryId, match }, index) => {
-            const row = document.createElement('tr');
-            const indexCell = document.createElement('td');
-            indexCell.className = 'dup-fssp-registry-search-index';
-            indexCell.textContent = String(index + 1);
-            row.appendChild(indexCell);
-            FIELD_DEFINITIONS.forEach((definition) => {
-                const cell = document.createElement('td');
-                cell.className = 'dup-fssp-registry-search-result-value';
-                cell.textContent = normalizeText(match.values && match.values[definition.key]) || '—';
-                row.appendChild(cell);
+        if (container.querySelector('.dup-fssp-registry-search-results-placeholder')) container.replaceChildren();
+        queries.forEach((debtor, queryIndex) => {
+            let group = container.children[queryIndex];
+            if (!group) {
+                group = document.createElement('details');
+                group.className = 'dup-fssp-registry-search-result-group';
+                const summary = document.createElement('summary');
+                const criteria = document.createElement('span');
+                const labels = FIELD_DEFINITIONS.filter((definition) => debtor.values[definition.key])
+                    .map((definition) => `${definition.label}: ${debtor.values[definition.key]}`);
+                criteria.textContent = `${queryIndex + 1}. ${labels.join(' · ')}`;
+                summary.appendChild(criteria);
+                const groupCount = document.createElement('span');
+                groupCount.className = 'dup-fssp-registry-search-group-count';
+                groupCount.setAttribute('aria-live', 'polite');
+                summary.appendChild(groupCount);
+                group.appendChild(summary);
+                const tableWrap = document.createElement('div');
+                tableWrap.className = 'dup-fssp-registry-search-group-table-wrap';
+                const table = document.createElement('table');
+                table.className = 'dup-fssp-registry-search-results-table';
+                table.innerHTML = `<thead><tr><th>№</th>${FIELD_DEFINITIONS.map((field) => `<th>${field.label}</th>`).join('')}<th>ID реестра</th></tr></thead><tbody></tbody>`;
+                tableWrap.appendChild(table);
+                group.appendChild(tableWrap);
+                container.appendChild(group);
+            }
+            group.querySelector('.dup-fssp-registry-search-group-count').textContent = `Найдено: ${debtor.matches.size}`;
+            const tbody = group.querySelector('tbody');
+            // Keep the disclosure and its focus intact as other registries finish.
+            if (group.dataset.matchCount === String(debtor.matches.size) && debtor.matches.size > 0) return;
+            group.dataset.matchCount = String(debtor.matches.size);
+            tbody.replaceChildren();
+            if (!debtor.matches.size) {
+                const emptyRow = document.createElement('tr');
+                emptyRow.className = 'dup-fssp-registry-search-results-empty';
+                const emptyCell = document.createElement('td');
+                emptyCell.colSpan = FIELD_DEFINITIONS.length + 2;
+                emptyCell.textContent = emptyMessage;
+                emptyRow.appendChild(emptyCell);
+                tbody.appendChild(emptyRow);
+                return;
+            }
+            Array.from(debtor.matches.entries()).sort(([leftId], [rightId]) => {
+                const left = BigInt(leftId);
+                const right = BigInt(rightId);
+                return left === right ? 0 : left > right ? -1 : 1;
+            }).forEach(([registryId, match], index) => {
+                const row = document.createElement('tr');
+                const indexCell = document.createElement('td');
+                indexCell.className = 'dup-fssp-registry-search-index';
+                indexCell.textContent = String(index + 1);
+                row.appendChild(indexCell);
+                FIELD_DEFINITIONS.forEach((definition) => {
+                    const cell = document.createElement('td');
+                    cell.className = 'dup-fssp-registry-search-result-value';
+                    cell.textContent = normalizeText(match.values && match.values[definition.key]) || '—';
+                    row.appendChild(cell);
+                });
+                const registryCell = document.createElement('td');
+                const link = document.createElement('a');
+                link.className = 'dup-fssp-registry-search-link';
+                link.href = buildMatchUrl(registryId, match);
+                link.target = '_blank';
+                link.rel = 'noopener noreferrer';
+                link.textContent = `${registryId} · ${match.registryTypeName || 'Тип не указан'}`;
+                link.title = `Тип реестра: ${match.registryTypeName || 'не указан'}\nОткрыть реестр ${registryId} и показать найденного должника`;
+                registryCell.appendChild(link);
+                row.appendChild(registryCell);
+                tbody.appendChild(row);
             });
-            const registryCell = document.createElement('td');
-            const link = document.createElement('a');
-            link.className = 'dup-fssp-registry-search-link';
-            link.href = buildMatchUrl(registryId, match);
-            link.target = '_blank';
-            link.rel = 'noopener noreferrer';
-            link.textContent = registryId;
-            link.title = `Тип реестра: ${match.registryTypeName || 'не указан'}\nОткрыть реестр ${registryId} и показать найденного должника`;
-            registryCell.appendChild(link);
-            row.appendChild(registryCell);
-            tbody.appendChild(row);
         });
     }
 
