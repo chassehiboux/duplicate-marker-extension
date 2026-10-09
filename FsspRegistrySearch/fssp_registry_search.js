@@ -764,11 +764,12 @@
                 tbody.appendChild(emptyRow);
                 return;
             }
-            Array.from(debtor.matches.entries()).sort(([leftId], [rightId]) => {
-                const left = BigInt(leftId);
-                const right = BigInt(rightId);
+            Array.from(debtor.matches.values()).sort((leftMatch, rightMatch) => {
+                const left = BigInt(leftMatch.registryId);
+                const right = BigInt(rightMatch.registryId);
                 return left === right ? 0 : left > right ? -1 : 1;
-            }).forEach(([registryId, match], index) => {
+            }).forEach((match, index) => {
+                const registryId = match.registryId;
                 const row = document.createElement('tr');
                 const indexCell = document.createElement('td');
                 indexCell.className = 'dup-fssp-registry-search-index';
@@ -949,20 +950,22 @@
         if (!registryData.rows.length) return;
         let resultsChanged = false;
         run.debtors.forEach((debtor) => {
-            const match = registryData.rows.find((row) => debtorMatchesCell(debtor, row.cell));
-            if (!match) return;
-            const values = {};
-            FIELD_DEFINITIONS.forEach((definition) => {
-                values[definition.key] = normalizeText(match.cell && match.cell[definition.field]);
+            registryData.rows.forEach((match) => {
+                if (!debtorMatchesCell(debtor, match.cell)) return;
+                const values = {};
+                FIELD_DEFINITIONS.forEach((definition) => {
+                    values[definition.key] = normalizeText(match.cell && match.cell[definition.field]);
+                });
+                debtor.matches.set(`${registry.registryId}:${match.position}`, {
+                    registryId: registry.registryId,
+                    registryTypeName: registry.typeName,
+                    rowId: match.rowId,
+                    position: match.position,
+                    totalRows: registryData.totalRows || registryData.rows.length,
+                    values
+                });
+                resultsChanged = true;
             });
-            debtor.matches.set(registry.registryId, {
-                registryTypeName: registry.typeName,
-                rowId: match.rowId,
-                position: match.position,
-                totalRows: registryData.totalRows || registryData.rows.length,
-                values
-            });
-            resultsChanged = true;
         });
         if (resultsChanged) renderSearchResults(modal, run.debtors);
     }
@@ -1020,7 +1023,7 @@
             renderSearchResults(modal, run.debtors, 'Совпадений не найдено.');
             const errorSuffix = run.errorCount ? ` Не удалось прочитать: ${run.errorCount}.` : '';
             setProgress(modal, result.totalPages, result.totalPages, 'Поиск завершён', `${result.registryCount} реестров`);
-            setNotice(modal, `Найдено совпадений по реестрам: ${found}.${errorSuffix}`, run.errorCount ? 'error' : 'success');
+            setNotice(modal, `Найдено записей: ${found}.${errorSuffix}`, run.errorCount ? 'error' : 'success');
         } catch (error) {
             if (isAbortError(error) || run.controller.signal.aborted) return;
             run.status = 'failed';
