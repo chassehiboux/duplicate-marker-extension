@@ -560,6 +560,13 @@
         const tbody = modal.querySelector('.dup-fssp-registry-search-input-table tbody');
         appendInputRow(tbody);
         renderSearchResults(modal, []);
+        modal.querySelector('.dup-fssp-registry-search-results-wrap').addEventListener('contextmenu', (event) => {
+            const cell = event.target.closest('.dup-fssp-registry-search-results-table tbody td');
+            if (!cell || cell.closest('.dup-fssp-registry-search-results-empty')) return;
+            event.preventDefault();
+            event.stopPropagation();
+            void copyResultCell(modal, normalizeText(cell.textContent));
+        });
         const close = () => closeModal();
         modal.querySelector('.dup-fssp-registry-search-close').addEventListener('click', close);
         modal.querySelector('.dup-fssp-registry-search-cancel').addEventListener('click', close);
@@ -569,6 +576,39 @@
             if (event.target === modal) closeModal();
         });
         return modal;
+    }
+
+    async function copyResultCell(modal, value) {
+        try {
+            let copied = false;
+            if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+                try {
+                    await navigator.clipboard.writeText(value);
+                    copied = true;
+                } catch (error) {
+                    // Use a synchronous copy fallback when clipboard access is denied.
+                }
+            }
+            if (!copied) {
+                const previousFocus = document.activeElement;
+                const textarea = document.createElement('textarea');
+                textarea.value = value;
+                textarea.setAttribute('aria-label', 'Копирование значения');
+                textarea.style.cssText = 'position:fixed;left:-10000px;top:0;opacity:0;';
+                modal.appendChild(textarea);
+                try {
+                    textarea.select();
+                    copied = document.execCommand('copy');
+                } finally {
+                    textarea.remove();
+                    if (previousFocus && previousFocus.isConnected) previousFocus.focus({ preventScroll: true });
+                }
+            }
+            if (!copied) throw new Error('COPY_FAILED');
+            setNotice(modal, 'Значение ячейки скопировано.', 'success');
+        } catch (error) {
+            setNotice(modal, 'Не удалось скопировать значение ячейки.', 'error');
+        }
     }
 
     function resetModal(modal) {
