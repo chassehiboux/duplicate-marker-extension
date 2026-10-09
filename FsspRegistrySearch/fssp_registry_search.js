@@ -402,8 +402,42 @@
         input.dataset.field = fieldDefinition.key;
         input.setAttribute('aria-label', fieldDefinition.label);
         input.placeholder = 'null для поиска пустых';
+        input.addEventListener('paste', pasteColumnValues);
         cell.appendChild(input);
         return cell;
+    }
+
+    function pasteColumnValues(event) {
+        const input = event.currentTarget;
+        if (input.readOnly || input.disabled || !event.clipboardData) return;
+        const text = event.clipboardData.getData('text/plain');
+        if (!/[\r\n\t]/.test(text)) return;
+        event.preventDefault();
+        const modal = input.closest(`#${MODAL_ID}`);
+        if (text.includes('\t')) {
+            setNotice(modal, 'Скопируйте значения только одного столбца Excel.', 'error');
+            return;
+        }
+        const values = text.split(/\r\n|[\r\n]/).map(normalizeText).filter(Boolean);
+        if (!values.length) return;
+        const row = input.closest(`tr.${ROW_CLASS}`);
+        const tbody = row.parentElement;
+        const rows = Array.from(tbody.querySelectorAll(`tr.${ROW_CLASS}`));
+        const startIndex = rows.indexOf(row);
+        let lastInput = input;
+        values.forEach((value, index) => {
+            const targetRow = rows[startIndex + index] || appendInputRow(tbody, false);
+            const targetInput = targetRow.querySelector(`input[data-field="${input.dataset.field}"]`);
+            targetInput.value = value;
+            lastInput = targetInput;
+        });
+        const lastRow = tbody.lastElementChild;
+        if (FIELD_DEFINITIONS.some((field) => normalizeText(lastRow.querySelector(`input[data-field="${field.key}"]`).value))) {
+            appendInputRow(tbody, false);
+        }
+        updateRowNumbers(tbody);
+        lastInput.focus();
+        setNotice(modal, `Вставлено значений в столбец «${input.getAttribute('aria-label')}»: ${values.length}.`);
     }
 
     function updateRowNumbers(tbody) {
@@ -413,7 +447,7 @@
         });
     }
 
-    function appendInputRow(tbody) {
+    function appendInputRow(tbody, updateNumbers = true) {
         const row = document.createElement('tr');
         row.className = ROW_CLASS;
         const indexCell = document.createElement('td');
@@ -433,7 +467,7 @@
             }
         });
         tbody.appendChild(row);
-        updateRowNumbers(tbody);
+        if (updateNumbers) updateRowNumbers(tbody);
         return row;
     }
 
@@ -450,7 +484,7 @@
                 <header class="dup-fssp-registry-search-header">
                     <div class="dup-fssp-registry-search-heading">
                         <h2 id="dup-fssp-registry-search-title">Найти ИД в реестрах</h2>
-                        <div class="dup-fssp-registry-search-subtitle">Поиск пройдёт по всем страницам текущего отфильтрованного списка. Поля одной строки проверяются вместе.</div>
+                        <div class="dup-fssp-registry-search-subtitle">Поиск пройдёт по всем страницам текущего отфильтрованного списка. Поля одной строки проверяются вместе. Список из одного столбца Excel можно вставить через Ctrl+V в нужное поле — каждое значение попадёт в отдельную строку.</div>
                     </div>
                     <button type="button" class="dup-fssp-registry-search-close" aria-label="Закрыть окно">×</button>
                 </header>
@@ -632,7 +666,7 @@
             link.target = '_blank';
             link.rel = 'noopener noreferrer';
             link.textContent = registryId;
-            link.title = `Открыть реестр ${registryId} и показать найденного должника`;
+            link.title = `Тип реестра: ${match.registryTypeName || 'не указан'}\nОткрыть реестр ${registryId} и показать найденного должника`;
             registryCell.appendChild(link);
             row.appendChild(registryCell);
             tbody.appendChild(row);
@@ -714,6 +748,7 @@
             seenRegistryIds.add(registryId);
             registries.push({
                 registryId,
+                typeName: normalizeText(cell.TypeName),
                 statusName: normalizeText(cell.StatusName)
             });
         });
@@ -799,6 +834,7 @@
                 values[definition.key] = normalizeText(match.cell && match.cell[definition.field]);
             });
             debtor.matches.set(registry.registryId, {
+                registryTypeName: registry.typeName,
                 rowId: match.rowId,
                 position: match.position,
                 totalRows: registryData.totalRows || registryData.rows.length,
