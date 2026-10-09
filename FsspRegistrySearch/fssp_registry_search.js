@@ -593,6 +593,13 @@
                 const previousFocus = document.activeElement;
                 const textarea = document.createElement('textarea');
                 textarea.value = value;
+                textarea.addEventListener('copy', (event) => {
+                    if (!event.clipboardData) return;
+                    event.preventDefault();
+                    event.stopImmediatePropagation();
+                    event.clipboardData.clearData();
+                    event.clipboardData.setData('text/plain', value);
+                });
                 textarea.setAttribute('aria-label', 'Копирование значения');
                 textarea.style.cssText = 'position:fixed;left:-10000px;top:0;opacity:0;';
                 modal.appendChild(textarea);
@@ -605,7 +612,7 @@
                 }
             }
             if (!copied) throw new Error('COPY_FAILED');
-            setNotice(modal, 'Значение ячейки скопировано.', 'success');
+            setNotice(modal, 'Значение ячейки скопировано без форматирования.', 'success');
         } catch (error) {
             setNotice(modal, 'Не удалось скопировать значение ячейки.', 'error');
         }
