@@ -174,13 +174,20 @@
             }
             #${MODAL_ID} .dup-fssp-registry-search-result-group > summary {
                 padding: 11px 12px;
-                background: #edf5f0;
-                color: #29453b;
+                background: #fff3c4;
+                color: #725300;
                 font-size: 13px;
                 cursor: pointer;
                 overflow-wrap: anywhere;
             }
-            #${MODAL_ID} .dup-fssp-registry-search-result-group > summary:hover { background: #e2efe7; }
+            #${MODAL_ID} .dup-fssp-registry-search-result-group > summary:hover { background: #ffe9a0; }
+            #${MODAL_ID} .dup-fssp-registry-search-result-group[data-has-matches="true"] > summary {
+                background: #dff2e5;
+                color: #176344;
+            }
+            #${MODAL_ID} .dup-fssp-registry-search-result-group[data-has-matches="true"] > summary:hover {
+                background: #cce9d6;
+            }
             #${MODAL_ID} .dup-fssp-registry-search-result-group > summary:focus-visible {
                 outline: 2px solid var(--fssp-search-accent);
                 outline-offset: -2px;
@@ -188,7 +195,7 @@
             #${MODAL_ID} .dup-fssp-registry-search-group-count {
                 display: inline-block;
                 margin-left: 12px;
-                color: #176344;
+                color: inherit;
                 font-weight: 700;
                 white-space: nowrap;
             }
@@ -694,6 +701,7 @@
                 container.appendChild(group);
             }
             group.querySelector('.dup-fssp-registry-search-group-count').textContent = `Найдено: ${debtor.matches.size}`;
+            group.dataset.hasMatches = String(debtor.matches.size > 0);
             const tbody = group.querySelector('tbody');
             // Keep the disclosure and its focus intact as other registries finish.
             if (group.dataset.matchCount === String(debtor.matches.size) && debtor.matches.size > 0) return;
