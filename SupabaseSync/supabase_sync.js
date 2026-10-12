@@ -32,9 +32,9 @@
   const REALTIME_JOIN_TIMEOUT_MS = 10000;
   const REALTIME_HEARTBEAT_MS = 25000;
   const REALTIME_PULL_DEBOUNCE_MS = 800;
-  const REALTIME_RECONNECT_DELAYS_MS = [1000, 2000, 5000, 10000, 30000];
+  const REALTIME_RECONNECT_DELAYS_MS = [5000, 15000, 60000, 300000, 900000];
   const FALLBACK_PULL_ALARM_NAME = 'dup_supabase_pull_fallback_v2';
-  const FALLBACK_PULL_MINUTES = 1;
+  const FALLBACK_PULL_MINUTES = 5;
   const SESSION_REAUTH_REQUIRED_MESSAGE = 'Сессия Supabase истекла или была отозвана. Войди снова, чтобы продолжить синхронизацию.';
 
   const KV_SYNC_KEYS = new Set([
@@ -134,6 +134,7 @@
   ];
 
   let currentSession = null;
+  let syncMetaLock = Promise.resolve();
   let currentUser = null;
   let bootStarted = false;
   let applyingCanonicalState = false;
@@ -193,15 +194,19 @@
   }
 
   function storageSet(values) {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       if (!hasChromeStorage()) {
         resolve(false);
         return;
       }
       try {
-        chrome.storage.local.set(values, () => resolve(true));
+        chrome.storage.local.set(values, () => {
+          const error = chrome.runtime && chrome.runtime.lastError;
+          if (error) reject(new Error(error.message || 'Не удалось сохранить очередь локально.'));
+          else resolve(true);
+        });
       } catch (error) {
-        resolve(false);
+        reject(error);
       }
     });
   }
@@ -742,6 +747,7 @@
   }
 
   async function fetchSupabaseWithTimeout(path, options = {}) {
+    await assertTransportAvailable();
     let lastError = null;
     const defaultOriginIndexes = SUPABASE_ORIGINS.map((_, index) => index);
     const originIndexes = Date.now() < supabaseFallbackUntil
@@ -753,6 +759,13 @@
       const origin = SUPABASE_ORIGINS[originIndex];
       try {
         const response = await fetchWithTimeout(`${origin}${path}`, options);
+        if (Number(response.status) === 402) {
+          await setSyncMeta({ transportPausedUntil: Date.now() + 6 * 60 * 60 * 1000 });
+          stopRealtimeSubscription({ keepWanted: true });
+          const error = new Error('Квота Supabase исчерпана. Отправка приостановлена на 6 часов; изменения сохранены локально.');
+          error.status = 402;
+          throw error;
+        }
         const isGatewayFailure = [502, 503, 504].includes(Number(response.status));
         if (isGatewayFailure && offset < originIndexes.length - 1) {
           if (originIndex === 0) {
@@ -761,13 +774,27 @@
           continue;
         }
         if (originIndex === 0) supabaseFallbackUntil = 0;
+        if ([408, 429, 500, 502, 503, 504].includes(Number(response.status))) {
+          const retrySeconds = Number(response.headers && response.headers.get('Retry-After')) || 60;
+          const meta = await getSyncMeta();
+          const failures = Math.min(5, Number(meta.transportFailures || 0) + 1);
+          await setSyncMeta({ transportFailures: failures,
+            transportRetryUntil: Date.now() + Math.max(retrySeconds * 1000, Math.min(900000, 60000 * (2 ** (failures - 1)))) });
+        }
         return response;
       } catch (error) {
+        if (error && error.status === 402) throw error;
         lastError = error;
         if (originIndex === 0) {
           supabaseFallbackUntil = Date.now() + SUPABASE_FALLBACK_COOLDOWN_MS;
         }
-        if (offset >= originIndexes.length - 1) throw error;
+        if (offset >= originIndexes.length - 1) {
+          const meta = await getSyncMeta();
+          const failures = Math.min(5, Number(meta.transportFailures || 0) + 1);
+          await setSyncMeta({ transportFailures: failures,
+            transportRetryUntil: Date.now() + Math.min(900000, 60000 * (2 ** (failures - 1))) });
+          throw error;
+        }
       }
     }
 
@@ -776,6 +803,21 @@
 
   function isRetryableStatus(status) {
     return [408, 429, 500, 502, 503, 504].includes(Number(status));
+  }
+
+  async function assertTransportAvailable() {
+    const meta = await getSyncMeta();
+    if (Number(meta.transportRetryUntil || 0) > Date.now()) {
+      const error = new Error('Supabase временно недоступен. Повтор отложен; изменения сохранены локально.');
+      error.status = 503;
+      error.isTransportPaused = true;
+      throw error;
+    }
+    if (Number(meta.transportPausedUntil || 0) > Date.now()) {
+      const error = new Error('Квота Supabase исчерпана. Синхронизация на паузе; изменения сохранены локально.');
+      error.status = 402;
+      throw error;
+    }
   }
 
   async function loadStoredSession() {
@@ -896,9 +938,10 @@
           throw error;
         }
 
+        await setSyncMeta({ transportFailures: 0, transportRetryUntil: 0 });
         return data;
       } catch (error) {
-        const retryable = error && (
+        const retryable = error && !error.isTransportPaused && (
           error.isTimeout ||
           error.status === undefined ||
           isRetryableStatus(error.status)
@@ -938,13 +981,12 @@
   }
 
   async function setSyncMeta(nextMeta) {
-    const previous = await getSyncMeta();
-    await storageSet({
-      [SYNC_META_KEY]: {
-        ...previous,
-        ...nextMeta
-      }
+    const run = syncMetaLock.catch(() => {}).then(async () => {
+      const previous = await getSyncMeta();
+      await storageSet({ [SYNC_META_KEY]: { ...previous, ...nextMeta } });
     });
+    syncMetaLock = run.catch(() => {});
+    return run;
   }
 
   async function getCacheRevision() {
@@ -1040,8 +1082,12 @@
   async function claimNextOutboxItemForAttempt() {
     return updateOutboxLocked(async (outbox) => {
       if (!outbox.length) return { item: null, outbox };
+      const meta = await getSyncMeta();
+      const sequence = Number(outbox[0].sequence || Math.max(Date.now(), Number(meta.lastSequence || 0) + 1));
+      await setSyncMeta({ lastSequence: Math.max(sequence, Number(meta.lastSequence || 0)) });
       const item = {
         ...outbox[0],
+        sequence,
         attempts: Number(outbox[0].attempts || 0) + 1,
         lastAttemptAt: new Date().toISOString()
       };
@@ -1289,7 +1335,7 @@
 
     source.forEach((item) => {
       const operations = toArray(item.operations).filter((operation) => operation && typeof operation === 'object');
-      if (operations.length && operations.every(isCompactableOutboxOperation)) {
+      if (!item.attempts && !item.sequence && operations.length && operations.every(isCompactableOutboxOperation)) {
         block.push(item);
         return;
       }
@@ -1493,7 +1539,7 @@
       action_rules: Array.isArray(rawState.action_rules) ? rawState.action_rules : [],
       server_time: rawState.server_time || ''
     };
-    ['status', 'applied_revision', 'current_revision', 'error'].forEach((key) => {
+    ['status', 'applied_revision', 'current_revision', 'error', 'unchanged'].forEach((key) => {
       if (Object.prototype.hasOwnProperty.call(rawState, key)) {
         normalized[key] = rawState[key];
       }
@@ -1575,6 +1621,7 @@
   }
 
   async function applyCanonicalState(rawState, options = {}) {
+    if (rawState && rawState.unchanged === true) return false;
     return withOutboxLock(async () => {
       const outbox = await getOutbox();
       if (outbox.length) {
@@ -1739,7 +1786,11 @@
 
   async function registerDevice() {
     const deviceId = await getDeviceId();
-    const data = await callRpc('extension_register_device', {
+    const meta = await getSyncMeta();
+    if (meta.deviceId === deviceId && Date.now() - Date.parse(meta.lastDeviceRegisterAt || '') < 60 * 60 * 1000) {
+      return { revision: Number(meta.serverRevision || 0) };
+    }
+    const data = await callRpc('extension_register_device_v3', {
       p_device_id: deviceId,
       p_device_name: getDeviceName(),
       p_browser: getBrowserName()
@@ -1747,15 +1798,16 @@
     const state = data && data.state ? data.state : data;
     await setSyncMeta({
       deviceId,
+      lastSequence: Math.max(Number(meta.lastSequence || 0), Number(data.last_sequence || 0)),
       lastDeviceRegisterAt: new Date().toISOString()
     });
     return normalizeCanonicalState(state);
   }
 
-  async function getRemoteCanonicalState(reason = 'pull') {
+  async function getRemoteCanonicalState(reason = 'pull', force = false) {
     const localRevision = await getCacheRevision();
-    const data = await callRpc('extension_get_state', {
-      p_since_revision: localRevision || null
+    const data = await callRpc('extension_get_state_v3', {
+      p_since_revision: force ? null : (localRevision || null)
     });
     const state = normalizeCanonicalState(data);
     await setSyncMeta({
@@ -1784,37 +1836,23 @@
   }
 
   async function applyMutationItem(item) {
-    const operations = expandSupportReminderOperations(item.operations);
-    const supportOperations = operations.filter((operation) => isSupportReminderOperation(operation));
-    const regularOperations = operations.filter((operation) => !isSupportReminderOperation(operation));
-    const hasBothKinds = supportOperations.length > 0 && regularOperations.length > 0;
-    let result = null;
-
-    if (regularOperations.length) {
-      result = await callRpc('extension_apply_mutation', {
-        p_device_id: item.deviceId,
-        p_mutation_id: hasBothKinds ? `${item.mutationId}:main` : item.mutationId,
-        p_base_revision: item.baseRevision,
-        p_operations: regularOperations
-      });
-      const regularState = normalizeCanonicalState(result);
-      if (regularState && regularState.status === 'conflict') return regularState;
+    const result = await callRpc('extension_apply_mutation_v3', {
+      p_device_id: item.deviceId,
+      p_sequence: item.sequence,
+      p_mutation_id: item.mutationId,
+      p_base_revision: item.baseRevision,
+      p_operations: expandSupportReminderOperations(item.operations)
+    });
+    if (result && result.status === 'rate_limited') {
+      await setSyncMeta({ transportRetryUntil: Date.now() + Number(result.retry_after_ms || 300000) });
+      const error = new Error('Слишком частая синхронизация. Отправка отложена на 5 минут; очередь сохранена.');
+      error.status = 429;
+      throw error;
     }
-
-    if (supportOperations.length) {
-      result = await callRpc('extension_apply_support_reminders_mutation', {
-        p_device_id: item.deviceId,
-        p_mutation_id: hasBothKinds ? `${item.mutationId}:support` : item.mutationId,
-        p_base_revision: item.baseRevision,
-        p_operations: supportOperations
-      });
+    if (!result || !['applied', 'conflict'].includes(result.status)) {
+      throw new Error('Supabase не подтвердил сохранение изменения.');
     }
-
-    if (!result) {
-      result = await getRemoteCanonicalState('empty-mutation');
-    }
-
-    return normalizeCanonicalState(result);
+    return result;
   }
 
   async function flushOutbox(reason = 'manual') {
@@ -1832,6 +1870,7 @@
       setSyncFlowStep('prepare', 'done');
 
       const compactResult = await compactOutboxLocked(reason);
+      let conflictRetries = 0;
       if (compactResult.changed) {
         setSyncFlowStep(
           'request',
@@ -1872,12 +1911,15 @@
               outboxSize: pendingBeforeAttempt
             });
           }, SYNC_STALL_THRESHOLD_MS);
+          await delay(1000);
           const state = await applyMutationItem(item);
           if (stallTimer) clearTimeout(stallTimer);
           setSyncFlowStep('request', 'done');
           setSyncFlowStep('write', state && state.status === 'conflict' ? 'error' : 'done');
           setSyncFlowStep('response', 'done', 'Сервер подтвердил запись');
           if (state && state.status === 'conflict') {
+            conflictRetries += 1;
+            if (conflictRetries >= 3) throw new Error(state.error || 'Повторный конфликт синхронизации.');
             const metaState = await getRemoteCanonicalState('conflict-rebase');
             const rebasedRevision = Number(metaState.revision || state.current_revision || 0);
             const rebaseResult = await rebaseOutboxItemByMutationId(
@@ -1885,7 +1927,6 @@
               rebasedRevision,
               String(state.error || 'revision_mismatch')
             );
-            await setCacheRevision(rebasedRevision);
             if (String(state.error || '').startsWith('unknown_operation')) {
               throw new Error(state.error);
             }
@@ -1904,7 +1945,8 @@
           let applied = false;
           if (pendingAfterRemove === 0) {
             setSyncFlowStep('cache', 'active', 'Применяю ответ локально');
-            applied = await applyCanonicalState(state, { force: true });
+            const canonical = await getRemoteCanonicalState('push-complete');
+            applied = await applyCanonicalState(canonical, { force: true });
             setSyncFlowStep('cache', 'done', applied ? 'Кэш обновлен' : 'Кэш уже актуален');
           } else {
             setSyncFlowStep('cache', 'done', 'Есть новые pending изменения, canonical state не применен');
@@ -1974,7 +2016,7 @@
         setSyncFlowStep('request', 'active', 'Сверяю локальный кэш с сервером');
         await broadcastStatus('Запрос состояния отправлен в Supabase...');
       }
-      const state = await getRemoteCanonicalState(reason);
+      const state = await getRemoteCanonicalState(reason, options.forceApply === true);
       if (traceFlow) {
         setSyncFlowStep('request', 'done');
         setSyncFlowStep('response', 'done', 'Состояние сервера получено');
@@ -2049,10 +2091,8 @@
         }
       });
 
-      const registeredState = await registerDevice();
-      const remoteState = registeredState.revision > 0
-        ? registeredState
-        : await getRemoteCanonicalState(reason || 'auth');
+      await registerDevice();
+      const remoteState = await getRemoteCanonicalState(reason || 'auth', reason !== 'startup');
       const pendingOutbox = await getOutbox();
 
       if (pendingOutbox.length) {
@@ -2107,6 +2147,8 @@
   }
 
   async function manualSync(reason = 'manual') {
+    // A deliberate user action can probe once after upgrading/restoring the quota.
+    await setSyncMeta({ transportPausedUntil: 0, transportRetryUntil: 0 });
     await ensureSession();
     await registerDevice();
     const flushResult = await flushOutbox(reason);
@@ -2151,12 +2193,12 @@
     const reason = options.reason || 'kv-set';
     const result = await withOutboxLock(async () => {
       const nextValues = values && typeof values === 'object' ? values : {};
-      const previousValues = Object.prototype.hasOwnProperty.call(nextValues, SUPPORT_REMINDERS_STORAGE_KEY)
-        ? await storageGet([SUPPORT_REMINDERS_STORAGE_KEY])
-        : {};
+      const previousValues = await storageGet(Object.keys(nextValues));
       await storageSet(nextValues);
 
-      const operations = makeOperationsFromValues(nextValues, previousValues);
+      const changedValues = Object.fromEntries(Object.entries(nextValues).filter(([key, value]) =>
+        !storageValueEquals(sanitizeValueForCloud(key, previousValues[key]), sanitizeValueForCloud(key, value))));
+      const operations = makeOperationsFromValues(changedValues, previousValues);
       const enqueueResult = options.queue !== false
         ? await appendOutboxOperationsUnlocked(operations, reason)
         : { queued: false };
@@ -2809,6 +2851,7 @@
 
     realtimeStarting = true;
     try {
+      await assertTransportAvailable();
       await ensureSession();
       if (!currentUser) currentUser = await fetchCurrentUser();
       const userId = currentUser && currentUser.id ? String(currentUser.id) : '';
@@ -3159,14 +3202,6 @@
 
     try {
       if (action === 'DUP_SUPABASE_GET_STATUS') {
-        void ensureBackgroundSyncActive('status');
-        void getOutbox().then((outbox) => {
-          if (outbox.length) {
-            void flushOutbox('panel-open');
-          } else {
-            void pullCanonicalState('panel-open');
-          }
-        });
         return { success: true, status: await getPublicStatus() };
       }
       if (action === 'DUP_SUPABASE_SIGN_IN') return { success: true, status: await signIn(data.email, data.password) };
