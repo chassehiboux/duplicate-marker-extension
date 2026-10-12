@@ -64,7 +64,6 @@
     SUPPORT_REMINDERS_STORAGE_KEY,
     'dup_execution_analysis_params_v1',
     'dup_execution_analysis_state_v1',
-    'dup_id_card_check_state_v1',
     'dup_epgu_retry_excluded_claimants_v1',
     'dup_reestr_dz_parallel_workers_v1',
     'dup_reestr_dz_write_off_comment_skip_rules_v1'
@@ -81,7 +80,6 @@
     'dup_custom_text_highlight_query_v1',
     'dup_execution_analysis_params_v1',
     'dup_execution_analysis_state_v1',
-    'dup_id_card_check_state_v1',
     'dup_reestr_dz_parallel_workers_v1',
     'dup_reestr_dz_write_off_comment_skip_rules_v1'
   ]);
@@ -104,6 +102,7 @@
   ]);
 
   const EXACT_EXCLUDED_KEYS = new Set([
+    'dup_id_card_check_state_v1', // Старый временный просмотр не переносится в облако.
     AUTH_SESSION_KEY,
     LEGACY_SYNC_META_KEY,
     LEGACY_PRE_LOGIN_BACKUP_KEY,
@@ -308,19 +307,9 @@
     return state;
   }
 
-  function sanitizeIdCardCheckState(value) {
-    if (!isPlainObject(value)) return value;
-    const state = cloneJson(value);
-    state.tabId = 0;
-    return state;
-  }
-
   function sanitizeValueForCloud(key, value) {
     if (key === 'dup_execution_analysis_state_v1') {
       return sanitizeExecutionAnalysisState(value);
-    }
-    if (key === 'dup_id_card_check_state_v1') {
-      return sanitizeIdCardCheckState(value);
     }
     return cloneJson(value);
   }
@@ -1326,7 +1315,12 @@
 
   async function compactOutboxLocked(reason = 'manual') {
     return updateOutboxLocked(async (outbox) => {
-      const result = compactOutboxItems(outbox);
+      const cleaned = removeIdCardCheckOutboxOperations(outbox);
+      const result = compactOutboxItems(cleaned);
+      if (cleaned !== outbox) {
+        result.changed = true;
+        result.beforeCount = outbox.length;
+      }
       if (!result.changed) return { ...result, outbox };
 
       await setSyncMeta({
@@ -1339,6 +1333,20 @@
 
       return result;
     });
+  }
+
+  function removeIdCardCheckOutboxOperations(outbox) {
+    let changed = false;
+    const cleaned = toArray(outbox).flatMap((item) => {
+      const operations = toArray(item && item.operations).filter((operation) => !(
+        operation && ['kv_set', 'kv_delete'].includes(operation.type) &&
+        operation.key === 'dup_id_card_check_state_v1'
+      ));
+      if (operations.length === toArray(item && item.operations).length) return [item];
+      changed = true;
+      return operations.length ? [{ ...item, operations }] : [];
+    });
+    return changed ? cleaned : outbox;
   }
 
   function createRandomId() {
@@ -3257,6 +3265,8 @@
   async function boot() {
     if (bootStarted) return;
     bootStarted = true;
+    await storageRemove('dup_id_card_check_state_v1');
+    await compactOutboxLocked('remove-tab-only-id-card-state');
     await loadStoredSession();
     if (currentSession) {
       await initializeAuthenticatedSession('startup');

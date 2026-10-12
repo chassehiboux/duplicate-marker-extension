@@ -40,6 +40,34 @@ const LOG_KEY = 'extension_logs'; // Ключ для хранения логов
 const MAX_LOG_ENTRIES = 100; // Максимальное количество записей в логе
 const DEPARTMENT_CONTAINER_STORAGE_KEY = 'dup_department_container_cookie_stores_v1';
 const ID_CARD_CHECK_FAILED_RETURNS_SESSION_KEY = 'idCardCheckFailedReturnsByTab';
+const ID_CARD_CHECK_TAB_SESSION_PREFIX = 'idCardCheckTabSession:';
+
+// Не используем общий session-helper: Firefox-сборка переводит его в storage.local.
+function idCardCheckTabSessionStorage(method, argument) {
+    return new Promise((resolve, reject) => {
+        const storage = chrome.storage && chrome.storage['session'];
+        if (!storage) {
+            reject(new Error('TAB_SESSION_STORAGE_UNAVAILABLE'));
+            return;
+        }
+        storage[method](argument, (result) => {
+            if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+            else resolve(result);
+        });
+    });
+}
+
+function normalizeIdCardCheckTabSession(raw, tabId) {
+    const edocIds = [...new Set((Array.isArray(raw && raw.edocIds) ? raw.edocIds : [])
+        .map((id) => String(id || '').trim()).filter(Boolean))];
+    return {
+        version: 1,
+        tabId,
+        edocIds,
+        currentIndex: Math.min(Math.max(Math.trunc(Number(raw && raw.currentIndex) || 0), 0), Math.max(edocIds.length - 1, 0)),
+        updatedAt: Number(raw && raw.updatedAt) || Date.now()
+    };
+}
 const DEPARTMENT_CONTAINER_ICON = 'briefcase';
 
 const addLog = (message) => {
@@ -3223,6 +3251,34 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             return true;
         }
 
+        case 'ID_CARD_CHECK_GET_TAB_STATE':
+        case 'ID_CARD_CHECK_SAVE_TAB_STATE': {
+            const tabId = sender && sender.tab ? sender.tab.id : null;
+            if (!Number.isInteger(tabId) || sender.frameId > 0) {
+                sendResponse({ success: true, state: null });
+                return false;
+            }
+            const key = `${ID_CARD_CHECK_TAB_SESSION_PREFIX}${tabId}`;
+            (async () => {
+                try {
+                    const stored = await idCardCheckTabSessionStorage('get', key);
+                    if (!stored[key]) {
+                        sendResponse({ success: true, state: null });
+                        return;
+                    }
+                    const state = normalizeIdCardCheckTabSession(
+                        request.action === 'ID_CARD_CHECK_SAVE_TAB_STATE' ? request.data && request.data.state : stored[key], tabId);
+                    if (request.action === 'ID_CARD_CHECK_SAVE_TAB_STATE') {
+                        await idCardCheckTabSessionStorage('set', { [key]: state });
+                    }
+                    sendResponse({ success: true, state });
+                } catch (error) {
+                    sendResponse({ success: false, error: error.message });
+                }
+            })();
+            return true;
+        }
+
         case 'EXECUTION_ANALYSIS_OPEN_TAB':
         case 'ID_CARD_CHECK_OPEN_TAB': {
             const sourceTabId = sender && sender.tab ? sender.tab.id : null;
@@ -3233,6 +3289,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             const data = request && request.data ? request.data : {};
             const targetUrl = String(data.url || '').trim();
             const active = data.active === true;
+            const cardSession = request.action === 'ID_CARD_CHECK_OPEN_TAB' && data.state
+                ? data.state : null;
 
             if (!Number.isInteger(sourceTabId)) {
                 sendResponse({ success: false, error: 'NO_SOURCE_TAB' });
@@ -3245,7 +3303,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             }
 
             const createProperties = {
-                url: targetUrl,
+                url: cardSession ? 'about:blank' : targetUrl,
                 active
             };
             if (Number.isInteger(sourceWindowId)) {
@@ -3281,7 +3339,27 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                         return;
                     }
 
-                    sendResponse({ success: true, tabId: targetTabId });
+                    if (!cardSession) {
+                        sendResponse({ success: true, tabId: targetTabId });
+                        return;
+                    }
+                    const key = `${ID_CARD_CHECK_TAB_SESSION_PREFIX}${targetTabId}`;
+                    const state = normalizeIdCardCheckTabSession(cardSession, targetTabId);
+                    idCardCheckTabSessionStorage('set', { [key]: state }).then(() => {
+                        chrome.tabs.update(targetTabId, { url: targetUrl }, () => {
+                            if (chrome.runtime.lastError) {
+                                const error = chrome.runtime.lastError.message;
+                                idCardCheckTabSessionStorage('remove', key).catch(() => {});
+                                removeTabAsync(targetTabId).catch(() => {});
+                                sendResponse({ success: false, error });
+                                return;
+                            }
+                            sendResponse({ success: true, tabId: targetTabId });
+                        });
+                    }).catch((error) => {
+                        removeTabAsync(targetTabId).catch(() => {});
+                        sendResponse({ success: false, error: error.message });
+                    });
                 });
             };
 
@@ -4099,6 +4177,7 @@ let pendingEdocids = {};
 
 // Очищаем временное хранилище при закрытии вкладки.
 chrome.tabs.onRemoved.addListener((tabId) => {
+  idCardCheckTabSessionStorage('remove', `${ID_CARD_CHECK_TAB_SESSION_PREFIX}${tabId}`).catch(() => {});
   const sourceWorkerPool = getReestrDzWssWorkerPool(tabId, false);
   reestrDzWssWorkerTabs.delete(tabId);
   reestrDzWssSourceCleanupPromises.delete(tabId);

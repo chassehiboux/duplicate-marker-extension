@@ -64,7 +64,6 @@
   const EXECUTION_ANALYSIS_PROCESSED_TEXT = 'Да';
   const EXECUTION_ANALYSIS_MANUAL_DIALOG_ID = 'dup-execution-analysis-manual-dialog';
   const EXECUTION_ANALYSIS_FILE_INPUT_ID = 'dup-execution-analysis-file-input';
-  const ID_CARD_CHECK_STORAGE_KEY = 'dup_id_card_check_state_v1';
   const ID_CARD_CHECK_INPUT_DIALOG_ID = 'dup-id-card-check-input-dialog';
   const ID_CARD_CHECK_CHOICE_DIALOG_ID = 'dup-id-card-check-choice-dialog';
   const ID_CARD_CHECK_ACTION_DIALOG_ID = 'dup-id-card-check-action-dialog';
@@ -78,7 +77,6 @@
   const ID_CARD_CHECK_HELPER_TIMEOUT_MS = 15000;
   const ID_CARD_CHECK_NAV_TOAST_DURATION_MS = 8000;
   const ID_CARD_CHECK_TAB_MESSAGE_TIMEOUT_MS = 20000;
-  const ID_CARD_CHECK_TAB_REBIND_TTL_MS = 10 * 60 * 1000;
   const GRID_CARD_CHECK_NAV_ID = 'dup-grid-card-check-nav';
   const GRID_CARD_CHECK_CHOICE_DIALOG_ID = 'dup-grid-card-check-choice-dialog';
   const EXECUTION_ANALYSIS_STATUS_IDLE = 'idle';
@@ -7699,21 +7697,6 @@
     });
   }
 
-  function loadIdCardCheckSessionCache() {
-    try {
-      const raw = window.sessionStorage.getItem(ID_CARD_CHECK_SESSION_CACHE_KEY);
-      if (!raw) return createEmptyIdCardCheckState();
-      return normalizeIdCardCheckState(JSON.parse(raw));
-    } catch (error) {
-      try {
-        window.sessionStorage.removeItem(ID_CARD_CHECK_SESSION_CACHE_KEY);
-      } catch (removeError) {
-        // ignore session storage cleanup failures
-      }
-      return createEmptyIdCardCheckState();
-    }
-  }
-
   function persistIdCardCheckSessionCache(nextState) {
     const normalized = normalizeIdCardCheckState(nextState);
     try {
@@ -7728,22 +7711,6 @@
     return normalized;
   }
 
-  function hydrateIdCardCheckStateFromSessionCache() {
-    const cached = loadIdCardCheckSessionCache();
-    if (!cached.edocIds.length) return false;
-    if (!isIdCardCheckFullcardPath()) return false;
-
-    const currentEdocId = getIdCardCheckEdocIdFromPath();
-    if (!currentEdocId) return false;
-    const currentIndex = cached.edocIds.indexOf(currentEdocId);
-
-    idCardCheckState = {
-      ...cached,
-      currentIndex: currentIndex >= 0 ? currentIndex : cached.currentIndex
-    };
-    return true;
-  }
-
   async function persistIdCardCheckState(nextState) {
     const normalized = normalizeIdCardCheckState({
       ...nextState,
@@ -7751,14 +7718,20 @@
     });
     idCardCheckState = normalized;
     persistIdCardCheckSessionCache(normalized);
-    await chromeStorageSet({ [ID_CARD_CHECK_STORAGE_KEY]: normalized });
+    const response = await sendRuntimeMessage({
+      action: 'ID_CARD_CHECK_SAVE_TAB_STATE',
+      data: { state: normalized }
+    });
+    if (!response || response.success !== true || !response.state) {
+      throw new Error('Не удалось сохранить сессию просмотра карточек ИД.');
+    }
     syncIdCardCheckNavigation();
     return normalized;
   }
 
   async function loadIdCardCheckState() {
-    const stored = await chromeStorageGet(ID_CARD_CHECK_STORAGE_KEY);
-    idCardCheckState = normalizeIdCardCheckState(stored[ID_CARD_CHECK_STORAGE_KEY]);
+    const response = await sendRuntimeMessage({ action: 'ID_CARD_CHECK_GET_TAB_STATE' });
+    idCardCheckState = normalizeIdCardCheckState(response && response.success === true ? response.state : null);
     await syncIdCardCheckStateWithCurrentUrl();
     persistIdCardCheckSessionCache(idCardCheckState);
     syncIdCardCheckNavigation();
@@ -9041,13 +9014,6 @@
     return tabId > 0 && idCardCheckState.tabId > 0 && tabId === idCardCheckState.tabId;
   }
 
-  function canKeepIdCardCheckUnboundNavigation(state) {
-    const normalized = normalizeIdCardCheckState(state);
-    if (normalized.tabId > 0) return false;
-    const currentEdocId = getIdCardCheckEdocIdFromPath();
-    return !!currentEdocId && normalized.edocIds.includes(currentEdocId);
-  }
-
   async function syncIdCardCheckStateWithCurrentUrl() {
     const state = normalizeIdCardCheckState(idCardCheckState);
     if (!state.edocIds.length || !isIdCardCheckFullcardPath()) return state;
@@ -9056,41 +9022,9 @@
     const currentIndex = state.edocIds.indexOf(currentEdocId);
     if (currentIndex < 0) return state;
 
-    const tabId = await getCurrentTabIdForExecutionAnalysis();
-    if (tabId <= 0) {
-      if (currentIndex === state.currentIndex) return state;
-      const nextState = normalizeIdCardCheckState({
-        ...state,
-        currentIndex
-      });
-      idCardCheckState = nextState;
-      persistIdCardCheckSessionCache(nextState);
-      return nextState;
-    }
-
-    if (state.tabId <= 0) {
-      return persistIdCardCheckState({
-        ...state,
-        tabId,
-        currentIndex
-      });
-    }
-
-    const isManagedTab = state.tabId > 0 && tabId === state.tabId;
-    if (!isManagedTab) {
-      const expectedEdocId = state.edocIds[state.currentIndex] || '';
-      const ageMs = Date.now() - (Number(state.updatedAt || 0) || 0);
-      const canRebindTab = currentEdocId === expectedEdocId &&
-        ageMs >= 0 &&
-        ageMs <= ID_CARD_CHECK_TAB_REBIND_TTL_MS;
-
-      if (!canRebindTab) return state;
-    }
-
-    if (isManagedTab && currentIndex === state.currentIndex) return state;
+    if (currentIndex === state.currentIndex) return state;
     return persistIdCardCheckState({
       ...state,
-      tabId,
       currentIndex
     });
   }
@@ -9272,29 +9206,18 @@
 
       if (textarea instanceof HTMLTextAreaElement) textarea.value = '';
       close();
-      const pendingState = await persistIdCardCheckState({
-        version: 1,
-        tabId: 0,
-        edocIds: ids,
-        currentIndex: 0
-      });
       const response = await sendRuntimeMessage({
         action: 'ID_CARD_CHECK_OPEN_TAB',
         data: {
           url: buildIdCardCheckFullcardUrl(ids[0]),
-          active: true
+          active: true,
+          state: { version: 1, edocIds: ids, currentIndex: 0 }
         }
       });
       if (!response || response.success !== true || !Number.isInteger(response.tabId)) {
         window.alert('Не удалось открыть вкладку карточки ИД.');
         return;
       }
-
-      await persistIdCardCheckState({
-        ...pendingState,
-        tabId: response.tabId,
-        currentIndex: 0
-      });
     }, { capture: true });
 
     (document.body || document.documentElement).appendChild(modal);
@@ -9443,8 +9366,7 @@
 
     if (
       verifyManagedTab &&
-      !(await isCurrentIdCardCheckManagedTab()) &&
-      !canKeepIdCardCheckUnboundNavigation(state)
+      !(await isCurrentIdCardCheckManagedTab())
     ) {
       removeIdCardCheckNavigation();
       return;
@@ -9493,9 +9415,6 @@
 
   function initIdCardCheckNavigation() {
     if (!isPyramidExtensionPage()) return;
-    if (hydrateIdCardCheckStateFromSessionCache()) {
-      void syncIdCardCheckNavigation({ verifyManagedTab: false });
-    }
     void loadIdCardCheckState();
 
     if (!idCardCheckNavObserver) {
@@ -14677,14 +14596,6 @@
         maybeScheduleExecutionAnalysisNextBatch('storage-change');
       }
 
-      if (key === ID_CARD_CHECK_STORAGE_KEY) {
-        idCardCheckState = normalizeIdCardCheckState(changes[key].newValue);
-        persistIdCardCheckSessionCache(idCardCheckState);
-        void syncIdCardCheckStateWithCurrentUrl().then(() => {
-          persistIdCardCheckSessionCache(idCardCheckState);
-          return syncIdCardCheckNavigation();
-        });
-      }
     }
     if (highlightSettingsChanged) {
       // Немедленно запускаем проверку, если изменились настройки

@@ -326,12 +326,14 @@ dup_google_sheets_problem_picker_bridge_url
 support_reminders_state_v1
 dup_execution_analysis_params_v1
 dup_execution_analysis_state_v1
-dup_id_card_check_state_v1
 jqgrid_settings_*
 dup_ui_show_*
 ```
 
 ### 7.4. Таблица дневных счетчиков
+
+Состояние просмотра карточек ИД исключено из Supabase: список и позиция живут
+только в сессии открытой вкладки, см. [требования](ID_CARD_CHECK_TAB_SESSION.md).
 
 ```sql
 public.extension_counter_days

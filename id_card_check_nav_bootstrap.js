@@ -122,12 +122,15 @@
     const nextIndex = Math.min(Math.max(state.currentIndex + delta, 0), state.edocIds.length - 1);
     const targetEdocId = state.edocIds[nextIndex];
     if (!targetEdocId || nextIndex === state.currentIndex) return;
-    writeSessionState({
+    const nextState = writeSessionState({
       ...state,
       currentIndex: nextIndex,
       updatedAt: Date.now()
     });
-    window.location.assign(buildNavigationUrl(targetEdocId));
+    chrome.runtime.sendMessage({ action: 'ID_CARD_CHECK_SAVE_TAB_STATE', data: { state: nextState } }, (response) => {
+      if (chrome.runtime.lastError || !response || response.success !== true || !response.state) return;
+      window.location.assign(buildNavigationUrl(targetEdocId));
+    });
   }
 
   function createNav() {
@@ -231,15 +234,20 @@
     return true;
   }
 
-  if (sync()) return;
-
-  const observer = new MutationObserver(() => {
-    if (!sync()) return;
-    observer.disconnect();
+  if (!isFullcardPage()) return;
+  // Копия sessionStorage в новой вкладке не даёт права подхватить чужой просмотр.
+  chrome.runtime.sendMessage({ action: 'ID_CARD_CHECK_GET_TAB_STATE' }, (response) => {
+    if (chrome.runtime.lastError || !response || response.success !== true) return;
+    writeSessionState(response.state);
+    if (!response.state || sync()) return;
+    const observer = new MutationObserver(() => {
+      if (!sync()) return;
+      observer.disconnect();
+    });
+    const observeTarget = document.documentElement || document;
+    observer.observe(observeTarget, { childList: true, subtree: true });
+    window.addEventListener('DOMContentLoaded', () => {
+      if (sync()) observer.disconnect();
+    }, { once: true });
   });
-  const observeTarget = document.documentElement || document;
-  observer.observe(observeTarget, { childList: true, subtree: true });
-  window.addEventListener('DOMContentLoaded', () => {
-    if (sync()) observer.disconnect();
-  }, { once: true });
 })();
