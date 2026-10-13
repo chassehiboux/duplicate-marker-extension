@@ -534,6 +534,7 @@
                         </table>
                     </div>
                     <div class="dup-fssp-registry-search-footer">
+                        <button type="button" class="dup-fssp-registry-search-action dup-fssp-registry-search-export" disabled>Выгрузить в Excel</button>
                         <button type="button" class="dup-fssp-registry-search-action dup-fssp-registry-search-cancel">Закрыть</button>
                         <button type="button" class="dup-fssp-registry-search-action dup-fssp-registry-search-stop" aria-pressed="false" hidden>Стоп</button>
                         <button type="button" class="dup-fssp-registry-search-action dup-fssp-registry-search-action-primary dup-fssp-registry-search-submit">Поиск</button>
@@ -572,6 +573,7 @@
         modal.querySelector('.dup-fssp-registry-search-cancel').addEventListener('click', close);
         modal.querySelector('.dup-fssp-registry-search-stop').addEventListener('click', () => toggleSearchPause(modal));
         modal.querySelector('.dup-fssp-registry-search-submit').addEventListener('click', () => startSearch(modal));
+        modal.querySelector('.dup-fssp-registry-search-export').addEventListener('click', () => exportSearchResults(modal));
         modal.addEventListener('mousedown', (event) => {
             if (event.target === modal) closeModal();
         });
@@ -713,6 +715,7 @@
         const count = modal.querySelector('.dup-fssp-registry-search-results-count');
         if (!(container instanceof HTMLElement)) return;
         const queries = Array.isArray(debtors) ? debtors : [];
+        modal.querySelector('.dup-fssp-registry-search-export').disabled = queries.length === 0;
         if (count instanceof HTMLElement) count.textContent = `Совпадений: ${countMatches(queries)}`;
         if (!queries.length) {
             const placeholder = document.createElement('div');
@@ -764,11 +767,7 @@
                 tbody.appendChild(emptyRow);
                 return;
             }
-            Array.from(debtor.matches.values()).sort((leftMatch, rightMatch) => {
-                const left = BigInt(leftMatch.registryId);
-                const right = BigInt(rightMatch.registryId);
-                return left === right ? 0 : left > right ? -1 : 1;
-            }).forEach((match, index) => {
+            sortedMatches(debtor).forEach((match, index) => {
                 const registryId = match.registryId;
                 const row = document.createElement('tr');
                 const indexCell = document.createElement('td');
@@ -794,6 +793,126 @@
                 tbody.appendChild(row);
             });
         });
+    }
+
+    function sortedMatches(debtor) {
+        return Array.from(debtor.matches.values()).sort((leftMatch, rightMatch) => {
+            const left = BigInt(leftMatch.registryId);
+            const right = BigInt(rightMatch.registryId);
+            return left === right ? 0 : left > right ? -1 : 1;
+        });
+    }
+
+    function escapeExcelXml(value) {
+        return String(value == null ? '' : value)
+            .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]/g, '')
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+    }
+
+    // Local, uncompressed ZIP, following the existing INN/death-date XLSX exporter.
+    function excelZip(files) {
+        const encoder = new TextEncoder();
+        const chunks = [];
+        const central = [];
+        let offset = 0;
+        const push16 = (target, value) => target.push(value & 255, (value >>> 8) & 255);
+        const push32 = (target, value) => target.push(value & 255, (value >>> 8) & 255, (value >>> 16) & 255, (value >>> 24) & 255);
+        files.forEach(([path, content]) => {
+            const name = encoder.encode(path);
+            const data = encoder.encode(content);
+            let crc = 0xFFFFFFFF;
+            for (const byte of data) {
+                crc ^= byte;
+                for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ ((crc & 1) ? 0xEDB88320 : 0);
+            }
+            crc = (crc ^ 0xFFFFFFFF) >>> 0;
+            const local = [];
+            push32(local, 0x04034B50); push16(local, 20); push16(local, 0x0800); push16(local, 0); push16(local, 0); push16(local, 33);
+            push32(local, crc); push32(local, data.length); push32(local, data.length); push16(local, name.length); push16(local, 0);
+            chunks.push(new Uint8Array(local), name, data);
+            const header = [];
+            push32(header, 0x02014B50); push16(header, 20); push16(header, 20); push16(header, 0x0800); push16(header, 0); push16(header, 0); push16(header, 33);
+            push32(header, crc); push32(header, data.length); push32(header, data.length); push16(header, name.length);
+            push16(header, 0); push16(header, 0); push16(header, 0); push16(header, 0); push32(header, 0); push32(header, offset);
+            central.push(new Uint8Array(header), name);
+            offset += local.length + name.length + data.length;
+        });
+        const centralSize = central.reduce((sum, chunk) => sum + chunk.length, 0);
+        const end = [];
+        push32(end, 0x06054B50); push16(end, 0); push16(end, 0); push16(end, files.length); push16(end, files.length);
+        push32(end, centralSize); push32(end, offset); push16(end, 0);
+        return new Blob([...chunks, ...central, new Uint8Array(end)], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    }
+
+    function buildSearchWorkbook(debtors) {
+        const rows = [];
+        const merges = [];
+        const links = [];
+        const linkRelations = [];
+        const appendRow = (values, attributes = '', style = 0) => {
+            const number = rows.length + 1;
+            if (number > 1048576) throw new Error('Результаты превышают допустимое число строк листа Excel.');
+            const cells = values.map((value, index) => `<c r="${String.fromCharCode(65 + index)}${number}" t="inlineStr" s="${style}"><is><t xml:space="preserve">${escapeExcelXml(value)}</t></is></c>`).join('');
+            rows.push(`<row r="${number}" ${attributes}>${cells}</row>`);
+            return number;
+        };
+        appendRow(['№', ...FIELD_DEFINITIONS.map((field) => field.label), 'ID реестра'], 'ht="30" customHeight="1"', 1);
+        debtors.forEach((debtor, queryIndex) => {
+            const matches = sortedMatches(debtor);
+            const criteria = FIELD_DEFINITIONS.filter((field) => debtor.values[field.key])
+                .map((field) => `${field.label}: ${debtor.values[field.key]}`).join(' · ');
+            const summaryRow = appendRow([`${queryIndex + 1}. ${criteria} · Найдено: ${matches.length}`], 'collapsed="1" ht="36" customHeight="1"', matches.length ? 2 : 3);
+            merges.push(`<mergeCell ref="A${summaryRow}:G${summaryRow}"/>`);
+            const detailAttributes = 'outlineLevel="1" hidden="1"';
+            appendRow(['№', ...FIELD_DEFINITIONS.map((field) => field.label), 'ID реестра'], detailAttributes, 1);
+            if (!matches.length) {
+                const emptyRow = appendRow(['Совпадений пока нет.'], detailAttributes);
+                merges.push(`<mergeCell ref="A${emptyRow}:G${emptyRow}"/>`);
+            }
+            matches.forEach((match, index) => {
+                const number = appendRow([String(index + 1), ...FIELD_DEFINITIONS.map((field) => normalizeText(match.values && match.values[field.key]) || '—'), `${match.registryId} · ${match.registryTypeName || 'Тип не указан'}`], detailAttributes);
+                const relationId = `rId${links.length + 1}`;
+                links.push(`<hyperlink ref="G${number}" r:id="${relationId}"/>`);
+                linkRelations.push(`<Relationship Id="${relationId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="${escapeExcelXml(buildMatchUrl(match.registryId, match))}" TargetMode="External"/>`);
+            });
+        });
+        const xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+        const main = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+        const relationships = 'http://schemas.openxmlformats.org/package/2006/relationships';
+        const documentRelationships = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+        const styles = `<styleSheet xmlns="${main}"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="5"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>${['FFE8F1ED', 'FFDFF2E5', 'FFFFF3C4'].map((color) => `<fill><patternFill patternType="solid"><fgColor rgb="${color}"/><bgColor indexed="64"/></patternFill></fill>`).join('')}</fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="4">${[0, 2, 3, 4].map((fill, index) => `<xf numFmtId="49" fontId="${index ? 1 : 0}" fillId="${fill}" borderId="0" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>`).join('')}</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
+        const worksheet = `<worksheet xmlns="${main}" xmlns:r="${documentRelationships}"><sheetPr><outlinePr summaryBelow="0"/></sheetPr><dimension ref="A1:G${rows.length}"/><sheetViews><sheetView workbookViewId="0" showOutlineSymbols="1"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="30" outlineLevelRow="1"/><cols><col min="1" max="1" width="6" customWidth="1"/><col min="2" max="2" width="27" customWidth="1"/><col min="3" max="3" width="38" customWidth="1"/><col min="4" max="4" width="18" customWidth="1"/><col min="5" max="6" width="30" customWidth="1"/><col min="7" max="7" width="48" customWidth="1"/></cols><sheetData>${rows.join('')}</sheetData><mergeCells count="${merges.length}">${merges.join('')}</mergeCells>${links.length ? `<hyperlinks>${links.join('')}</hyperlinks>` : ''}</worksheet>`;
+        return excelZip([
+            ['[Content_Types].xml', `${xml}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>`],
+            ['_rels/.rels', `${xml}<Relationships xmlns="${relationships}"><Relationship Id="rId1" Type="${documentRelationships}/officeDocument" Target="xl/workbook.xml"/></Relationships>`],
+            ['xl/workbook.xml', `${xml}<workbook xmlns="${main}" xmlns:r="${documentRelationships}"><sheets><sheet name="Результаты поиска" sheetId="1" r:id="rId1"/></sheets></workbook>`],
+            ['xl/_rels/workbook.xml.rels', `${xml}<Relationships xmlns="${relationships}"><Relationship Id="rId1" Type="${documentRelationships}/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="${documentRelationships}/styles" Target="styles.xml"/></Relationships>`],
+            ['xl/styles.xml', xml + styles],
+            ['xl/worksheets/sheet1.xml', xml + worksheet],
+            ['xl/worksheets/_rels/sheet1.xml.rels', `${xml}<Relationships xmlns="${relationships}">${linkRelations.join('')}</Relationships>`]
+        ]);
+    }
+
+    function exportSearchResults(modal) {
+        if (!activeRun || !activeRun.debtors.length) return;
+        try {
+            const blob = buildSearchWorkbook(activeRun.debtors);
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `Поиск_ИД_в_реестрах_${new Date().toISOString().replace(/[:.]/g, '-')}.xlsx`;
+            modal.appendChild(link);
+            try {
+                link.click();
+            } finally {
+                link.remove();
+                window.setTimeout(() => URL.revokeObjectURL(url), 60000);
+            }
+            setNotice(modal, `Выгружено совпадений: ${countMatches(activeRun.debtors)}. Файл содержит результаты на момент нажатия.`, 'success');
+        } catch (error) {
+            setNotice(modal, error && error.message ? error.message : 'Не удалось выгрузить результаты в Excel.', 'error');
+        }
     }
 
     function sendRuntimeMessage(message) {
