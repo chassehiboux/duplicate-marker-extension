@@ -845,7 +845,30 @@
         return new Blob([...chunks, ...central, new Uint8Array(end)], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     }
 
+    function excelColumnName(index) {
+        let result = '';
+        for (let value = index + 1; value > 0; value = Math.floor((value - 1) / 26)) {
+            result = String.fromCharCode(65 + ((value - 1) % 26)) + result;
+        }
+        return result;
+    }
+
+    function excelSourceValue(value) {
+        if (value == null) return '';
+        return typeof value === 'object' ? JSON.stringify(value) : String(value);
+    }
+
     function buildSearchWorkbook(debtors) {
+        const fields = new Set(FIELD_DEFINITIONS.map((definition) => definition.field));
+        debtors.forEach((debtor) => debtor.matches.forEach((match) => {
+            Object.keys(match.sourceValues || {}).forEach((field) => fields.add(field));
+        }));
+        const sourceFields = Array.from(fields);
+        const columnCount = sourceFields.length + 2;
+        if (columnCount > 16384) throw new Error('Результаты превышают допустимое число столбцов листа Excel.');
+        const lastColumn = excelColumnName(columnCount - 1);
+        const labels = new Map(FIELD_DEFINITIONS.map((definition) => [definition.field, definition.label]));
+        const headers = ['№', ...sourceFields.map((field) => labels.get(field) || field), 'ID реестра'];
         const rows = [];
         const merges = [];
         const links = [];
@@ -853,27 +876,27 @@
         const appendRow = (values, attributes = '', style = 0) => {
             const number = rows.length + 1;
             if (number > 1048576) throw new Error('Результаты превышают допустимое число строк листа Excel.');
-            const cells = values.map((value, index) => `<c r="${String.fromCharCode(65 + index)}${number}" t="inlineStr" s="${style}"><is><t xml:space="preserve">${escapeExcelXml(value)}</t></is></c>`).join('');
+            const cells = values.map((value, index) => `<c r="${excelColumnName(index)}${number}" t="inlineStr" s="${style}"><is><t xml:space="preserve">${escapeExcelXml(value)}</t></is></c>`).join('');
             rows.push(`<row r="${number}" ${attributes}>${cells}</row>`);
             return number;
         };
-        appendRow(['№', ...FIELD_DEFINITIONS.map((field) => field.label), 'ID реестра'], 'ht="30" customHeight="1"', 1);
+        appendRow(headers, 'ht="30" customHeight="1"', 1);
         debtors.forEach((debtor, queryIndex) => {
             const matches = sortedMatches(debtor);
             const criteria = FIELD_DEFINITIONS.filter((field) => debtor.values[field.key])
                 .map((field) => `${field.label}: ${debtor.values[field.key]}`).join(' · ');
             const summaryRow = appendRow([`${queryIndex + 1}. ${criteria} · Найдено: ${matches.length}`], 'collapsed="1" ht="36" customHeight="1"', matches.length ? 2 : 3);
-            merges.push(`<mergeCell ref="A${summaryRow}:G${summaryRow}"/>`);
+            merges.push(`<mergeCell ref="A${summaryRow}:${lastColumn}${summaryRow}"/>`);
             const detailAttributes = 'outlineLevel="1" hidden="1"';
-            appendRow(['№', ...FIELD_DEFINITIONS.map((field) => field.label), 'ID реестра'], detailAttributes, 1);
+            appendRow(headers, detailAttributes, 1);
             if (!matches.length) {
                 const emptyRow = appendRow(['Совпадений пока нет.'], detailAttributes);
-                merges.push(`<mergeCell ref="A${emptyRow}:G${emptyRow}"/>`);
+                merges.push(`<mergeCell ref="A${emptyRow}:${lastColumn}${emptyRow}"/>`);
             }
             matches.forEach((match, index) => {
-                const number = appendRow([String(index + 1), ...FIELD_DEFINITIONS.map((field) => normalizeText(match.values && match.values[field.key]) || '—'), `${match.registryId} · ${match.registryTypeName || 'Тип не указан'}`], detailAttributes);
+                const number = appendRow([String(index + 1), ...sourceFields.map((field) => excelSourceValue(match.sourceValues && match.sourceValues[field])), `${match.registryId} · ${match.registryTypeName || 'Тип не указан'}`], detailAttributes);
                 const relationId = `rId${links.length + 1}`;
-                links.push(`<hyperlink ref="G${number}" r:id="${relationId}"/>`);
+                links.push(`<hyperlink ref="${lastColumn}${number}" r:id="${relationId}"/>`);
                 linkRelations.push(`<Relationship Id="${relationId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="${escapeExcelXml(buildMatchUrl(match.registryId, match))}" TargetMode="External"/>`);
             });
         });
@@ -882,7 +905,8 @@
         const relationships = 'http://schemas.openxmlformats.org/package/2006/relationships';
         const documentRelationships = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
         const styles = `<styleSheet xmlns="${main}"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="5"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>${['FFE8F1ED', 'FFDFF2E5', 'FFFFF3C4'].map((color) => `<fill><patternFill patternType="solid"><fgColor rgb="${color}"/><bgColor indexed="64"/></patternFill></fill>`).join('')}</fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="4">${[0, 2, 3, 4].map((fill, index) => `<xf numFmtId="49" fontId="${index ? 1 : 0}" fillId="${fill}" borderId="0" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>`).join('')}</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
-        const worksheet = `<worksheet xmlns="${main}" xmlns:r="${documentRelationships}"><sheetPr><outlinePr summaryBelow="0"/></sheetPr><dimension ref="A1:G${rows.length}"/><sheetViews><sheetView workbookViewId="0" showOutlineSymbols="1"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="30" outlineLevelRow="1"/><cols><col min="1" max="1" width="6" customWidth="1"/><col min="2" max="2" width="27" customWidth="1"/><col min="3" max="3" width="38" customWidth="1"/><col min="4" max="4" width="18" customWidth="1"/><col min="5" max="6" width="30" customWidth="1"/><col min="7" max="7" width="48" customWidth="1"/></cols><sheetData>${rows.join('')}</sheetData><mergeCells count="${merges.length}">${merges.join('')}</mergeCells>${links.length ? `<hyperlinks>${links.join('')}</hyperlinks>` : ''}</worksheet>`;
+        const columns = headers.map((header, index) => `<col min="${index + 1}" max="${index + 1}" width="${index === 0 ? 6 : index === columnCount - 1 ? 48 : header === 'ФИО' ? 38 : 30}" customWidth="1"/>`).join('');
+        const worksheet = `<worksheet xmlns="${main}" xmlns:r="${documentRelationships}"><sheetPr><outlinePr summaryBelow="0"/></sheetPr><dimension ref="A1:${lastColumn}${rows.length}"/><sheetViews><sheetView workbookViewId="0" showOutlineSymbols="1"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="30" outlineLevelRow="1"/><cols>${columns}</cols><sheetData>${rows.join('')}</sheetData><mergeCells count="${merges.length}">${merges.join('')}</mergeCells>${links.length ? `<hyperlinks>${links.join('')}</hyperlinks>` : ''}</worksheet>`;
         return excelZip([
             ['[Content_Types].xml', `${xml}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>`],
             ['_rels/.rels', `${xml}<Relationships xmlns="${relationships}"><Relationship Id="rId1" Type="${documentRelationships}/officeDocument" Target="xl/workbook.xml"/></Relationships>`],
@@ -1081,7 +1105,8 @@
                     rowId: match.rowId,
                     position: match.position,
                     totalRows: registryData.totalRows || registryData.rows.length,
-                    values
+                    values,
+                    sourceValues: match.cell
                 });
                 resultsChanged = true;
             });
