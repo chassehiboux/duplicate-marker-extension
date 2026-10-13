@@ -864,13 +864,12 @@
             Object.keys(match.sourceValues || {}).forEach((field) => fields.add(field));
         }));
         const sourceFields = Array.from(fields);
-        const columnCount = sourceFields.length + 2;
+        const columnCount = sourceFields.length + 3;
         if (columnCount > 16384) throw new Error('Результаты превышают допустимое число столбцов листа Excel.');
         const lastColumn = excelColumnName(columnCount - 1);
         const labels = new Map(FIELD_DEFINITIONS.map((definition) => [definition.field, definition.label]));
-        const headers = ['№', ...sourceFields.map((field) => labels.get(field) || field), 'ID реестра'];
+        const headers = ['Параметры поиска', '№', ...sourceFields.map((field) => labels.get(field) || field), 'ID реестра'];
         const rows = [];
-        const merges = [];
         const links = [];
         const linkRelations = [];
         const appendRow = (values, attributes = '', style = 0) => {
@@ -881,20 +880,15 @@
             return number;
         };
         appendRow(headers, 'ht="30" customHeight="1"', 1);
-        debtors.forEach((debtor, queryIndex) => {
+        debtors.forEach((debtor) => {
             const matches = sortedMatches(debtor);
             const criteria = FIELD_DEFINITIONS.filter((field) => debtor.values[field.key])
                 .map((field) => `${field.label}: ${debtor.values[field.key]}`).join(' · ');
-            const summaryRow = appendRow([`${queryIndex + 1}. ${criteria} · Найдено: ${matches.length}`], 'collapsed="1" ht="36" customHeight="1"', matches.length ? 2 : 3);
-            merges.push(`<mergeCell ref="A${summaryRow}:${lastColumn}${summaryRow}"/>`);
-            const detailAttributes = 'outlineLevel="1" hidden="1"';
-            appendRow(headers, detailAttributes, 1);
             if (!matches.length) {
-                const emptyRow = appendRow(['Совпадений пока нет.'], detailAttributes);
-                merges.push(`<mergeCell ref="A${emptyRow}:${lastColumn}${emptyRow}"/>`);
+                appendRow([criteria, ...Array(columnCount - 1).fill('')]);
             }
             matches.forEach((match, index) => {
-                const number = appendRow([String(index + 1), ...sourceFields.map((field) => excelSourceValue(match.sourceValues && match.sourceValues[field])), `${match.registryId} · ${match.registryTypeName || 'Тип не указан'}`], detailAttributes);
+                const number = appendRow([criteria, String(index + 1), ...sourceFields.map((field) => excelSourceValue(match.sourceValues && match.sourceValues[field])), `${match.registryId} · ${match.registryTypeName || 'Тип не указан'}`]);
                 const relationId = `rId${links.length + 1}`;
                 links.push(`<hyperlink ref="${lastColumn}${number}" r:id="${relationId}"/>`);
                 linkRelations.push(`<Relationship Id="${relationId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="${escapeExcelXml(buildMatchUrl(match.registryId, match))}" TargetMode="External"/>`);
@@ -905,8 +899,8 @@
         const relationships = 'http://schemas.openxmlformats.org/package/2006/relationships';
         const documentRelationships = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
         const styles = `<styleSheet xmlns="${main}"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="5"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>${['FFE8F1ED', 'FFDFF2E5', 'FFFFF3C4'].map((color) => `<fill><patternFill patternType="solid"><fgColor rgb="${color}"/><bgColor indexed="64"/></patternFill></fill>`).join('')}</fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="4">${[0, 2, 3, 4].map((fill, index) => `<xf numFmtId="49" fontId="${index ? 1 : 0}" fillId="${fill}" borderId="0" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>`).join('')}</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
-        const columns = headers.map((header, index) => `<col min="${index + 1}" max="${index + 1}" width="${index === 0 ? 6 : index === columnCount - 1 ? 48 : header === 'ФИО' ? 38 : 30}" customWidth="1"/>`).join('');
-        const worksheet = `<worksheet xmlns="${main}" xmlns:r="${documentRelationships}"><sheetPr><outlinePr summaryBelow="0"/></sheetPr><dimension ref="A1:${lastColumn}${rows.length}"/><sheetViews><sheetView workbookViewId="0" showOutlineSymbols="1"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="30" outlineLevelRow="1"/><cols>${columns}</cols><sheetData>${rows.join('')}</sheetData><mergeCells count="${merges.length}">${merges.join('')}</mergeCells>${links.length ? `<hyperlinks>${links.join('')}</hyperlinks>` : ''}</worksheet>`;
+        const columns = headers.map((header, index) => `<col min="${index + 1}" max="${index + 1}" width="${index === 0 ? 60 : index === 1 ? 6 : index === columnCount - 1 ? 48 : header === 'ФИО' ? 38 : 30}" customWidth="1"/>`).join('');
+        const worksheet = `<worksheet xmlns="${main}" xmlns:r="${documentRelationships}"><dimension ref="A1:${lastColumn}${rows.length}"/><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="30"/><cols>${columns}</cols><sheetData>${rows.join('')}</sheetData><autoFilter ref="A1:${lastColumn}${rows.length}"/>${links.length ? `<hyperlinks>${links.join('')}</hyperlinks>` : ''}</worksheet>`;
         return excelZip([
             ['[Content_Types].xml', `${xml}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>`],
             ['_rels/.rels', `${xml}<Relationships xmlns="${relationships}"><Relationship Id="rId1" Type="${documentRelationships}/officeDocument" Target="xl/workbook.xml"/></Relationships>`],
