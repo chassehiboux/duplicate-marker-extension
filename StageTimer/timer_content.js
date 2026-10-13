@@ -133,6 +133,12 @@
     })();
     const TIMER_UI_SETTING_DEFS = Object.freeze([
         {
+            key: "idCardCheckTools",
+            storageKey: "dup_ui_show_id_card_check_tools",
+            label: "ТМ в карточке ИД",
+            description: "Название StatusID в служебной информации карточки."
+        },
+        {
             key: "stageTimer",
             storageKey: TIMER_VISIBILITY_STORAGE_KEY,
             label: "Таймер загрузки/фильтрации",

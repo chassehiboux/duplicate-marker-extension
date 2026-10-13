@@ -53,7 +53,11 @@ def create_minimal_manifest(version, target_browser='chrome'):
             "128": "icons/icon-128.png"
         }
         background = {
-            "scripts": ["StageTimer/timer_background.js"]
+            "scripts": [
+                "SupabaseSync/supabase_sync.js",
+                "IdCardServiceInfo/status_lookup_background.js",
+                "StageTimer/timer_background.js"
+            ]
         }
 
     manifest = {
@@ -64,6 +68,7 @@ def create_minimal_manifest(version, target_browser='chrome'):
         "icons": icon_paths,
         "background": background,
         "permissions": [
+            "scripting",
             "webRequest",
             "alarms",
             "storage",
@@ -73,6 +78,23 @@ def create_minimal_manifest(version, target_browser='chrome'):
             "<all_urls>"
         ],
         "content_scripts": [
+            {
+                "matches": [
+                    "*://pyramid.vostok-electra.ru/*",
+                    "*://*.pyramid.vostok-electra.ru/*",
+                    "*://pyramid.nesko-nv.ru/*",
+                    "*://*.pyramid.nesko-nv.ru/*",
+                    "*://pyramid-vostok.electra.ru/*",
+                    "*://*.pyramid-vostok.electra.ru/*"
+                ],
+                "js": [
+                    "extension_ui_config.js",
+                    "IdCardServiceInfo/status_names.js",
+                    "IdCardServiceInfo/service_info.js"
+                ],
+                "run_at": "document_end",
+                "all_frames": True
+            },
             {
                 "matches": [
                     "*://pyramid.vostok-electra.ru/*",
@@ -126,6 +148,8 @@ def create_minimal_manifest(version, target_browser='chrome'):
     }
 
     if target_browser == 'firefox':
+        # cookieStoreId для фонового поиска сохраняет контейнер исходной карточки.
+        manifest["permissions"].append("cookies")
         manifest["browser_specific_settings"] = {
             "gecko": {
                 "id": FIREFOX_GECKO_ID,
@@ -307,6 +331,11 @@ def main():
             )
             shutil.copy(os.path.join(SOURCE_DIR, 'StageTimer', 'screenshot_hotkeys_bridge.js'), os.path.join(build_dir, 'StageTimer'))
             shutil.copy(os.path.join(SOURCE_DIR, 'extension_ui_config.js'), build_dir)
+            os.makedirs(os.path.join(build_dir, 'IdCardServiceInfo'))
+            for filename in ('status_names.js', 'service_info.js', 'status_lookup_background.js'):
+                shutil.copy(os.path.join(SOURCE_DIR, 'IdCardServiceInfo', filename), os.path.join(build_dir, 'IdCardServiceInfo'))
+            os.makedirs(os.path.join(build_dir, 'SupabaseSync'))
+            shutil.copy(os.path.join(SOURCE_DIR, 'SupabaseSync', 'supabase_sync.js'), os.path.join(build_dir, 'SupabaseSync'))
             if target_browser == 'firefox':
                 create_firefox_icons(build_dir)
             else:

@@ -3,6 +3,11 @@
 // НЕОБХОДИМО ОБЯЗАТЕЛЬНО ОБНОВЛЯТЬ ОБЫЧНЫЙ ФАЙЛ background.js в корне проекта
 // НЕОБХОДИМО ОБЯЗАТЕЛЬНО ОБНОВЛЯТЬ deploy_VZID.js
 // === КОНФИГУРАЦИЯ GOOGLE ТАБЛИЦЫ ===
+// Общие модули: названия ТМ сохраняются отдельно от статистики таймера.
+if (typeof importScripts === 'function') {
+    importScripts('../SupabaseSync/supabase_sync.js', '../IdCardServiceInfo/status_lookup_background.js');
+}
+
 const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzkP1L4n2Qc_GR1RigdEnX1kiG4Hw4eE5V3cDNrm3VV4ZYT8db8yTUUKLng1Pvj4Cp7/exec';
 const TELEMETRY_RETRIES = 3;
 const telemetryQueue = [];

@@ -64,6 +64,7 @@
     SUPPORT_REMINDERS_STORAGE_KEY,
     'dup_execution_analysis_params_v1',
     'dup_execution_analysis_state_v1',
+    'dup_status_names_cache_v1',
     'dup_epgu_retry_excluded_claimants_v1',
     'dup_reestr_dz_parallel_workers_v1',
     'dup_reestr_dz_write_off_comment_skip_rules_v1'

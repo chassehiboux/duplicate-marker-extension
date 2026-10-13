@@ -536,12 +536,13 @@
       key: 'idCardCheckTools',
       storageKey: 'dup_ui_show_id_card_check_tools',
       label: 'Проверка карточек ИД',
-      description: 'Загрузка списка EdocID и навигация по карточкам ИД.',
+      description: 'Загрузка списка EdocID, навигация, действия и название ТМ в служебной информации карточки.',
       hideClass: 'dup-ui-hide-id-card-check-tools',
       hideCss: `
         html.dup-ui-hide-id-card-check-tools .dup-id-card-check-block,
         html.dup-ui-hide-id-card-check-tools .dup-id-card-check-modal,
         html.dup-ui-hide-id-card-check-tools .dup-grid-card-check-modal,
+        html.dup-ui-hide-id-card-check-tools .dup-id-card-tm,
         html.dup-ui-hide-id-card-check-tools #${ID_CARD_CHECK_NAV_ID},
         html.dup-ui-hide-id-card-check-tools #${GRID_CARD_CHECK_NAV_ID} {
           display: none !important;
@@ -7980,6 +7981,7 @@
         </div>
         <div class="dup-id-card-check-action-current"></div>
         <div class="dup-id-card-check-action-list">
+          <button type="button" class="dup-id-card-check-action-item" data-action="global-search">Переход в глобальный поиск</button>
           <button type="button" class="dup-id-card-check-action-item" data-action="edit-info">Редактирование информации</button>
           <button type="button" class="dup-id-card-check-action-item" data-action="execution-analysis">Анализ исполнения</button>
           <button type="button" class="dup-id-card-check-action-item" data-action="solidarity-type">Установить вид солидарности</button>
@@ -8005,6 +8007,17 @@
       const edocId = normalizeExecutionAnalysisText(modal.dataset.edocId);
       if (!actionKey || !edocId) return;
       close();
+      if (actionKey === 'global-search') {
+        const cardDoc = getIdCardCheckActionNavKind(modal) === 'grid'
+          ? getGridCardCheckIframe()?.contentDocument : document;
+        const info = globalThis.__dupIdCardServiceInfo?.getInfo(cardDoc, edocId);
+        if (!info) {
+          window.alert('Служебная информация текущего EdocID ещё недоступна. Дождитесь загрузки карточки.');
+          return;
+        }
+        openStageJumpTarget(STAGE_JUMP_SLOWSEARCH_PATH, info.debtId);
+        return;
+      }
       if (actionKey === ID_CARD_CHECK_RETURN_PREVIOUS_TM_ACTION) {
         void returnIdCardCheckToPreviousTm(edocId, {
           toastNav: resolveIdCardCheckActionToastNav(modal)
@@ -10532,6 +10545,7 @@
       html.${SCREENSHOT_MODE_CLASS} .seasonal-theme-settings-element,
       html.${SCREENSHOT_MODE_CLASS} .dup-id-card-check-modal,
       html.${SCREENSHOT_MODE_CLASS} .dup-grid-card-check-modal,
+      html.${SCREENSHOT_MODE_CLASS} .dup-id-card-tm,
       html.${SCREENSHOT_MODE_CLASS} #${ID_CARD_CHECK_NAV_ID},
       html.${SCREENSHOT_MODE_CLASS} #${GRID_CARD_CHECK_NAV_ID},
       html.${SCREENSHOT_MODE_CLASS} .dup-identity-verification-ui,
@@ -17534,6 +17548,8 @@
 
   function initSlowsearchDebtIdFilterFromHash() {
     if (!isSlowsearchSourcePage()) return;
+    // Служебный поиск названия ТМ управляет своим фильтром и не читает pending StageJump.
+    if (new URLSearchParams(window.location.search).get('dup_status_lookup') === '1') return;
 
     const debtId = getStageJumpDebtIdFromHash();
     if (!debtId) return;

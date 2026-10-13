@@ -45,6 +45,11 @@ ROOT_FILES = [
 ]
 
 DIR_FILES = {
+    'IdCardServiceInfo': [
+        'status_names.js',
+        'service_info.js',
+        'status_lookup_background.js',
+    ],
     'ChatGPT': [
         'chat_manager.css',
         'chat_manager.js',
@@ -116,6 +121,7 @@ FIREFOX_BACKGROUND_IMPORTS = [
     'Check_INN_DeathDate/inn_death_background.js',
     'support/support_background.js',
     'GoogleSheets/problem_picker_background.js',
+    'IdCardServiceInfo/status_lookup_background.js',
 ]
 
 

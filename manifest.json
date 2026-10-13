@@ -51,6 +51,23 @@
   "content_scripts": [
     {
       "matches": [
+        "*://pyramid.vostok-electra.ru/*",
+        "*://*.pyramid.vostok-electra.ru/*",
+        "*://pyramid.nesko-nv.ru/*",
+        "*://*.pyramid.nesko-nv.ru/*",
+        "*://pyramid-vostok.electra.ru/*",
+        "*://*.pyramid-vostok.electra.ru/*"
+      ],
+      "js": [
+        "extension_ui_config.js",
+        "IdCardServiceInfo/status_names.js",
+        "IdCardServiceInfo/service_info.js"
+      ],
+      "run_at": "document_end",
+      "all_frames": true
+    },
+    {
+      "matches": [
         "<all_urls>"
       ],
       "js": [
