@@ -23,8 +23,24 @@
         FSSPReestrTypeId: 'Идентификатор типа реестра', TypeName: 'Тип реестра',
         EmployeeId: 'Идентификатор пользователя', FileName: 'Имя файла', CreateDate: 'Дата создания',
         EmployeeFullName: 'Пользователь', LastProcessing: 'Дата проведения', ClaimantInn: 'ИНН взыскателя',
-        ClaimantName: 'Имя взыскателя', AddDate: 'Дата добавления', EDocId: 'Идентификатор электронного документа'
+        ClaimantName: 'Имя взыскателя', AddDate: 'Дата добавления', EDocId: 'EdocID', EdocID: 'EdocID'
     });
+    const BASE_LABELS = Object.freeze({
+        'kgn.pyramid.vostok-electra.ru': 'Курган', 'pyramid.vostok-electra.ru': 'Основная',
+        'yuric.pyramid.vostok-electra.ru': 'ЮРИЦ', '81.pyramid.vostok-electra.ru': 'ЧЭС',
+        'pyramid.nesko-nv.ru': 'НЭСКО'
+    });
+
+    function baseLabel(origin) {
+        if (!origin) return '';
+        try { const host = new URL(origin).hostname; return BASE_LABELS[host] || host; }
+        catch (_) { return origin; }
+    }
+
+    function matchDepartments(match) {
+        const departments = match.departments?.length ? match.departments : match.department ? [match.department] : [];
+        return departments.map((department) => `${department.label} (depid ${department.depid})`).join('; ');
+    }
     const END_FIELDS = 'Id StatusName RegNumIP FullName SummDebt Claimant BirthDay EDNumber DNumber DepartmentOSP EffectiveDate IssueDate StartDate EndDate Article Paragraph SubParagraph SpiShortName FSSPReestrId EDocId AddDate';
     const REGISTRY_TYPES = Object.freeze([
         { id: '2', name: 'Сведения об окончании факт и прекращение', fields: END_FIELDS },
@@ -48,7 +64,7 @@
             try {
                 const url = new URL(link.href, location.origin);
                 const depid = url.pathname.match(/\/login\/department\/(\d+)(?:\/|$)/)?.[1];
-                if (!depid || !/^https?:$/.test(url.protocol) || !/(^|\.)(pyramid\.vostok-electra\.ru|pyramid-vostok\.electra\.ru)$/i.test(url.hostname)) return [];
+                if (!depid || !/^https?:$/.test(url.protocol) || !/(^|\.)(pyramid\.vostok-electra\.ru|pyramid-vostok\.electra\.ru|pyramid\.nesko-nv\.ru)$/i.test(url.hostname)) return [];
                 const key = `${url.origin}|${depid}`;
                 if (seen.has(key)) return [];
                 seen.add(key);
@@ -65,10 +81,38 @@
         return JSON.stringify([origin, registry.registryId, registry.fileName, registry.lastProcessing]);
     }
 
+    function observeRegistryDepartment(registry, run) {
+        const fingerprint = registryFingerprint(registry);
+        if (!run.registryDepartments) run.registryDepartments = new Map();
+        const matchesRegistry = (match) => match.registryFingerprint === fingerprint || (!match.registryFingerprint && match.baseOrigin === window.location.origin && match.registryId === registry.registryId);
+        const firstMatch = run.debtors.flatMap((debtor) => [...debtor.matches.values()]).find(matchesRegistry);
+        // Only matches need department attribution; keep the session compact for
+        // large scans with thousands of registries that do not match any query.
+        if (!firstMatch) return false;
+        const departments = run.registryDepartments.get(fingerprint) || firstMatch.departments || (firstMatch.department ? [firstMatch.department] : []);
+        const department = run.departments[run.departmentIndex];
+        if (!department?.depid || departments.some((item) => item.origin === department.origin && item.depid === department.depid)) return false;
+        departments.push({ key: department.key, origin: department.origin, depid: department.depid, label: department.label });
+        run.registryDepartments.set(fingerprint, departments);
+        let changed = false;
+        run.debtors.forEach((debtor) => {
+            let updated = false;
+            debtor.matches.forEach((match) => {
+                if (matchesRegistry(match)) {
+                    match.departments = departments;
+                    updated = true;
+                }
+            });
+            if (updated) { debtor.metadataRevision = (debtor.metadataRevision || 0) + 1; changed = true; }
+        });
+        return changed;
+    }
+
     function serializeRun(run, status = run.status) {
         return {
             version: 1, status, departments: run.departments.map(({ active, ...department }) => department),
             departmentIndex: run.departmentIndex, checkedRegistries: [...run.checkedRegistries],
+            registryDepartments: [...(run.registryDepartments || new Map())],
             filters: run.filters, completed: run.completed, skipped: run.skipped, errorCount: run.errorCount,
             debtors: run.debtors.map((debtor) => ({ typeId: debtor.typeId, values: debtor.values, matches: [...debtor.matches] }))
         };
@@ -162,7 +206,7 @@
                 if (end) end.value = '';
             });
             const departmentControl = modal.querySelector('[data-departments]');
-            const replacement = createMultiChoice(state.departments.map((d) => ({ value: d.key, label: `${d.label} — ${d.host} (depid ${d.depid})` })), state.departments.map((d) => d.key));
+            const replacement = createMultiChoice(state.departments.map((d) => ({ value: d.key, label: `${d.label} — ${baseLabel(d.origin)} (depid ${d.depid})` })), state.departments.map((d) => d.key));
             replacement.dataset.departments = 'true';
             departmentControl.replaceWith(replacement);
             modal.querySelectorAll('.dup-fssp-registry-search-input-table tbody').forEach((tbody) => tbody.replaceChildren());
@@ -175,7 +219,7 @@
             lockDebtorRows(modal, debtors);
             modal.querySelectorAll('.dup-fssp-registry-search-settings').forEach((block) => { block.open = false; });
             modal.querySelectorAll('.dup-fssp-registry-search-settings input, .dup-fssp-registry-search-settings button').forEach((input) => { input.disabled = true; });
-            activeRun = { ...state, debtors, status: 'running', paused: false, pauseWaiters: [], controller: new AbortController(), checkedRegistries: new Set(state.checkedRegistries), discovered: 0, totalPages: 1 };
+            activeRun = { ...state, debtors, status: 'running', paused: false, pauseWaiters: [], controller: new AbortController(), checkedRegistries: new Set(state.checkedRegistries), registryDepartments: new Map(state.registryDepartments || []), discovered: 0, totalPages: 1 };
             const expected = state.departments[state.departmentIndex];
             if (currentDepartment()?.key !== expected?.key) throw new Error(`Переключение не подтверждено. Ожидается ${expected?.label || 'выбранный департамент'} (depid ${expected?.depid || '—'}). Результаты сохранены.`);
             if (state.status === 'failed' || state.status === 'paused') {
@@ -799,7 +843,7 @@
         const departmentLabel = document.createElement('div');
         departmentLabel.textContent = 'Департаменты (можно выбрать несколько баз)';
         const departments = collectDepartments();
-        const control = createMultiChoice(departments.map((d) => ({ value: d.key, label: `${d.label} — ${d.host} (depid ${d.depid})` })), departments.filter((d) => d.active).map((d) => d.key), 'Выберите департаменты');
+        const control = createMultiChoice(departments.map((d) => ({ value: d.key, label: `${d.label} — ${baseLabel(d.origin)} (depid ${d.depid})` })), departments.filter((d) => d.active).map((d) => d.key), 'Выберите департаменты');
         control.dataset.departments = 'true';
         control.setAttribute('aria-label', 'Департаменты для поиска');
         departmentLabel.appendChild(control);
@@ -890,7 +934,7 @@
                     const group = document.createElement('section');
                     const heading = document.createElement('div');
                     heading.className = 'dup-fssp-registry-search-choice-group';
-                    heading.textContent = ({ 'kgn.pyramid.vostok-electra.ru': 'Курганская база', 'pyramid.vostok-electra.ru': 'Основная база', 'yuric.pyramid.vostok-electra.ru': 'ЮРИЦ' })[host] || host;
+                    heading.textContent = baseLabel(origin);
                     group.appendChild(heading);
                     list.appendChild(group);
                     groups.set(host, group);
@@ -898,7 +942,7 @@
                 container = groups.get(host);
                 const meta = document.createElement('span');
                 meta.className = 'dup-fssp-registry-search-choice-meta';
-                meta.textContent = `depid ${depid} · ${host}`;
+                meta.textContent = `depid ${depid} · ${baseLabel(origin)}`;
                 caption.appendChild(meta);
             }
             label.append(input, caption);
@@ -1301,7 +1345,9 @@
             group.dataset.hasMatches = String(debtor.matches.size > 0);
             const tbody = group.querySelector('tbody');
             // Keep the disclosure and its focus intact as other registries finish.
-            if (group.dataset.matchCount === String(debtor.matches.size) && debtor.matches.size > 0) return;
+            const metadataRevision = String(debtor.metadataRevision || 0);
+            if (group.dataset.matchCount === String(debtor.matches.size) && group.dataset.metadataRevision === metadataRevision && debtor.matches.size > 0) return;
+            group.dataset.metadataRevision = metadataRevision;
             group.dataset.matchCount = String(debtor.matches.size);
             tbody.replaceChildren();
             if (!debtor.matches.size) {
@@ -1333,7 +1379,7 @@
                 link.href = buildMatchUrl(registryId, match);
                 link.target = '_blank';
                 link.rel = 'noopener noreferrer';
-                link.textContent = `${registryId} · ${match.registryTypeName || 'Тип не указан'}${match.department ? ` · ${match.department.label} (${match.department.depid}) · ${new URL(match.baseOrigin).hostname}` : ''}`;
+                link.textContent = `${registryId} · ${match.registryTypeName || 'Тип не указан'}${match.department ? ` · ${baseLabel(match.baseOrigin)} · ${matchDepartments(match)}` : ''}`;
                 link.title = `Тип реестра: ${match.registryTypeName || 'не указан'}\nОткрыть реестр ${registryId} и показать найденного должника`;
                 registryCell.appendChild(link);
                 row.appendChild(registryCell);
@@ -1414,7 +1460,7 @@
         const columnCount = sourceFields.length + 5;
         if (columnCount > 16384) throw new Error('Результаты превышают допустимое число столбцов листа Excel.');
         const lastColumn = excelColumnName(columnCount - 1);
-        const headers = ['Параметры поиска', '№', ...sourceFields.map((field) => field === 'EDNumber' ? 'Номер ИД / номер дела (возбуждение ИП)' : FIELD_LABELS[field] || field), 'База', 'Департамент', 'Идентификатор реестра'];
+        const headers = ['Параметры поиска', '№', ...sourceFields.map((field) => field === 'EDNumber' ? 'Номер ИД / номер дела (возбуждение ИП)' : FIELD_LABELS[field] || field), 'База', 'Департаменты', 'Идентификатор реестра'];
         const rows = [];
         const links = [];
         const linkRelations = [];
@@ -1434,7 +1480,7 @@
                 appendRow([criteria, ...Array(columnCount - 1).fill('')]);
             }
             matches.forEach((match, index) => {
-                const number = appendRow([criteria, String(index + 1), ...sourceFields.map((field) => excelSourceValue(match.sourceValues && match.sourceValues[field])), match.baseOrigin || '', match.department ? `${match.department.label} (depid ${match.department.depid})` : '', `${match.registryId} · ${match.registryTypeName || 'Тип не указан'}`]);
+                const number = appendRow([criteria, String(index + 1), ...sourceFields.map((field) => excelSourceValue(match.sourceValues && match.sourceValues[field])), baseLabel(match.baseOrigin), matchDepartments(match), `${match.registryId} · ${match.registryTypeName || 'Тип не указан'}`]);
                 const relationId = `rId${links.length + 1}`;
                 links.push(`<hyperlink ref="${lastColumn}${number}" r:id="${relationId}"/>`);
                 linkRelations.push(`<Relationship Id="${relationId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="${escapeExcelXml(buildMatchUrl(match.registryId, match))}" TargetMode="External"/>`);
@@ -1640,11 +1686,17 @@
         const debtors = run.debtors.filter((debtor) => registryMatchesType(registry, debtor.typeId));
         if (!debtors.length) return;
         const fingerprint = registryFingerprint(registry);
-        if (run.checkedRegistries.has(fingerprint)) { run.skipped += 1; return; }
+        const departmentsChanged = observeRegistryDepartment(registry, run);
+        if (run.checkedRegistries.has(fingerprint)) {
+            run.skipped += 1;
+            if (departmentsChanged) renderSearchResults(modal, run.debtors);
+            return;
+        }
         if (isNoDataRegistry(registry)) { run.checkedRegistries.add(fingerprint); return; }
         const registryData = await collectRegistryRows(registry.registryId, run);
         if (!registryData.rows.length) { run.checkedRegistries.add(fingerprint); return; }
         let resultsChanged = false;
+        const departments = run.registryDepartments.get(fingerprint) || [run.departments[run.departmentIndex]];
         debtors.forEach((debtor) => {
             registryData.rows.forEach((match) => {
                 if (!debtorMatchesCell(debtor, match.cell)) return;
@@ -1661,12 +1713,15 @@
                     values,
                     sourceValues: match.cell,
                     baseOrigin: window.location.origin,
-                    department: run.departments[run.departmentIndex]
+                    department: run.departments[run.departmentIndex],
+                    registryFingerprint: fingerprint,
+                    departments
                 });
                 resultsChanged = true;
             });
         });
         run.checkedRegistries.add(fingerprint);
+        if (resultsChanged) run.registryDepartments.set(fingerprint, departments);
         if (resultsChanged) renderSearchResults(modal, run.debtors);
     }
 
@@ -1803,7 +1858,7 @@
             discovered: 0,
             totalPages: 1
         };
-        Object.assign(activeRun, { departments, departmentIndex: 0, checkedRegistries: new Set(), skipped: 0 });
+        Object.assign(activeRun, { departments, departmentIndex: 0, checkedRegistries: new Set(), registryDepartments: new Map(), skipped: 0 });
         void continueDepartmentSearch(activeRun, modal);
     }
 

@@ -40,6 +40,14 @@ test('expired sessions and closed tabs are cleaned up', async () => {
     assert.equal(b.stored['fsspRegistrySearchTab:2'], undefined);
 });
 
+test('NESKO uses the same temporary search session', async () => {
+    const b = broker();
+    await b.send('FSSP_SEARCH_SESSION_SET', 1, state());
+    const restored = await b.send('FSSP_SEARCH_SESSION_GET', 1, null, 'https://pyramid.nesko-nv.ru/ovzid/fsspreestr');
+    assert.equal(restored.success, true);
+    assert.equal(restored.state.status, 'navigating');
+});
+
 test('untrusted sites, malformed snapshots and unavailable session storage fail explicitly', async () => {
     const b = broker();
     assert.equal((await b.send('FSSP_SEARCH_SESSION_SET', 1, state(), 'https://evil.test')).success, false);

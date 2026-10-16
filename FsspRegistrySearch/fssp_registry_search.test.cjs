@@ -5,12 +5,12 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(`${__dirname}/fssp_registry_search.js`, 'utf8');
 const context = vm.createContext({
-    URL, Blob, TextEncoder, setTimeout,
+    URL, Blob, TextEncoder, setTimeout, HTMLElement: class {},
     window: { location: { origin: 'https://example.test', pathname: '/ovzid/fsspreestr' } },
     document: { readyState: 'loading', addEventListener() {} }
 });
 vm.runInContext(source.replace('    function initialize() {', `
-    globalThis.api = { REGISTRY_TYPES, FIELD_LABELS, debtorMatchesCell, registryMatchesType, searchGridState, readRegistryFilters, buildSearchWorkbook, registryFingerprint, serializeRun, inspectRegistry, buildMatchUrl };
+    globalThis.api = { REGISTRY_TYPES, FIELD_LABELS, debtorMatchesCell, registryMatchesType, searchGridState, readRegistryFilters, buildSearchWorkbook, registryFingerprint, serializeRun, inspectRegistry, buildMatchUrl, baseLabel, matchDepartments };
     function initialize() {`), context);
 const api = context.api;
 const query = (typeId, values) => ({ typeId, values, fields: api.REGISTRY_TYPES.find(t => t.id === typeId).fields, matches: new Map() });
@@ -26,7 +26,7 @@ test('all observed payload fields are searchable, with registry column order pre
     assert.equal(start[3].field, 'StartDate');
     assert.equal(start.find(f => f.field === 'EDNumber').label, 'Номер дела');
     assert.ok(start.some(f => f.field === 'DNumber'));
-    assert.ok(start.every(f => /[А-Яа-яЁё]/.test(f.label)));
+    assert.ok(start.every(f => f.field === 'EDocId' ? f.label === 'EdocID' : /[А-Яа-яЁё]/.test(f.label)));
 });
 
 test('criteria combine all columns, including amounts, hidden values and null', () => {
@@ -73,7 +73,7 @@ test('Excel retains hidden and unknown data, Russian headers, text values and hy
     const blob = api.buildSearchWorkbook([debtor, query('2', { FullName: 'Нет результата' })]);
     const bytes = Buffer.from(await blob.arrayBuffer());
     const xml = bytes.toString('utf8');
-    for (const value of ['Идентификатор электронного документа', 'Дата добавления', 'Сумма долга', '00123', 'false', 'Нет результата', 'autoFilter', 'dup_fssp_match=7', 'Extra']) assert.ok(xml.includes(value), value);
+    for (const value of ['EdocID', 'Дата добавления', 'Сумма долга', '00123', 'false', 'Нет результата', 'autoFilter', 'dup_fssp_match=7', 'Extra']) assert.ok(xml.includes(value), value);
     assert.ok(!xml.includes('>EDocId<'));
     assert.ok(!xml.includes('>AddDate<'));
     assert.ok(xml.includes('Идентификатор записи'));
@@ -138,4 +138,37 @@ test('cross-base result links enter the list and preserve target department and 
     assert.equal(link.searchParams.get('dup_fssp_dep'), '39');
     assert.equal(link.searchParams.get('dup_fssp_match'), '7');
     assert.equal(link.searchParams.get('token'), null);
+});
+
+test('registry 22165 accumulates all departments across checkpoints without reading contents again', async () => {
+    let requests = 0;
+    context.fetch = async () => { requests++; return { ok: true, text: async () => JSON.stringify({ total: 1, records: 1, rows: [{ id: 5, cell: { FullName: 'Искомый' } }] }) }; };
+    const departments = ['Курган', 'Курган-Восточный', 'Шадринск'].map((label, index) => ({ label, depid: ['39', '43', '40'][index], origin: 'https://example.test', key: 'https://example.test|' + ['39', '43', '40'][index] }));
+    const registry = { registryId: '22165', typeId: '1', fileName: 'file.xml', lastProcessing: '16.10.2026' };
+    const modal = { querySelector: () => null };
+    let run = { status: 'running', debtors: [query('1', { FullName: 'Искомый' })], filters: [], checkedRegistries: new Set(), skipped: 0, controller: new AbortController(), departments, departmentIndex: 0 };
+    await api.inspectRegistry(registry, run, modal);
+    const saved = JSON.parse(JSON.stringify(api.serializeRun(run)));
+    run = { ...saved, checkedRegistries: new Set(saved.checkedRegistries), registryDepartments: new Map(saved.registryDepartments), controller: new AbortController(), debtors: saved.debtors.map(d => ({ ...query(d.typeId, d.values), matches: new Map(d.matches) })) };
+    for (const index of [1, 2, 2]) { run.departmentIndex = index; await api.inspectRegistry(registry, run, modal); }
+    assert.equal(requests, 1);
+    assert.equal(run.debtors[0].matches.size, 1);
+    const match = [...run.debtors[0].matches.values()][0];
+    assert.deepEqual(Array.from(match.departments, d => d.label), ['Курган', 'Курган-Восточный', 'Шадринск']);
+    assert.equal(run.debtors[0].metadataRevision, 2);
+    const xml = Buffer.from(await api.buildSearchWorkbook(run.debtors).arrayBuffer()).toString('utf8');
+    assert.ok(xml.includes('Курган (depid 39); Курган-Восточный (depid 43); Шадринск (depid 40)'));
+    assert.ok(xml.includes('Департаменты'));
+});
+
+test('database display labels and EdocID spelling match the requested names', async () => {
+    const labels = { 'kgn.pyramid.vostok-electra.ru': 'Курган', 'pyramid.vostok-electra.ru': 'Основная', 'yuric.pyramid.vostok-electra.ru': 'ЮРИЦ', '81.pyramid.vostok-electra.ru': 'ЧЭС', 'pyramid.nesko-nv.ru': 'НЭСКО' };
+    for (const [host, label] of Object.entries(labels)) assert.equal(api.baseLabel('https://' + host), label);
+    assert.equal(api.baseLabel('https://other.test'), 'other.test');
+    const debtor = query('1', { EDocId: '123' });
+    debtor.matches.set('1', { registryId: '22165', baseOrigin: 'https://pyramid.nesko-nv.ru', rowId: '5', sourceValues: { EDocId: '123' } });
+    const xml = Buffer.from(await api.buildSearchWorkbook([debtor]).arrayBuffer()).toString('utf8');
+    assert.ok(xml.includes('>НЭСКО<'));
+    assert.ok(xml.includes('>EdocID<'));
+    assert.ok(!xml.includes('Идентификатор электронного документа'));
 });

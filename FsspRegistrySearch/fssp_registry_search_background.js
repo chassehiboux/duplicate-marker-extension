@@ -18,7 +18,7 @@
         let allowed = false;
         try {
             const url = new URL(sender.url || sender.tab?.url);
-            allowed = /^https?:$/.test(url.protocol) && /(^|\.)(pyramid\.vostok-electra\.ru|pyramid-vostok\.electra\.ru)$/i.test(url.hostname);
+            allowed = /^https?:$/.test(url.protocol) && /(^|\.)(pyramid\.vostok-electra\.ru|pyramid-vostok\.electra\.ru|pyramid\.nesko-nv\.ru)$/i.test(url.hostname);
         } catch (_) { /* Reject messages outside the extension's site scope. */ }
         if (!Number.isInteger(tabId) || !allowed) {
             respond({ success: false, error: 'Не удалось определить вкладку поиска.' });
