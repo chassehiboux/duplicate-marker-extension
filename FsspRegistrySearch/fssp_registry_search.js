@@ -156,7 +156,7 @@
             modal.querySelectorAll('[data-registry-filter]').forEach((control) => {
                 if (state.filters.some((rule) => rule.field === control.dataset.registryFilter)) return;
                 if (control.dataset.multiple === 'true') {
-                    control.querySelector('button').click();
+                    control.querySelector('[data-choice-reset]').click();
                 } else control.value = '';
                 const end = modal.querySelector(`[data-registry-filter-end="${control.dataset.registryFilter}"]`);
                 if (end) end.value = '';
@@ -209,6 +209,7 @@
     let activeRun = null;
     let toolbarObserver = null;
     let restoringSession = true;
+    let closeChoicePicker = null;
 
     function normalizeText(value) {
         return String(value == null ? '' : value)
@@ -343,8 +344,48 @@
             #${MODAL_ID} .dup-fssp-registry-search-filters label { min-width: 0; font-size: 12px; }
             #${MODAL_ID} .dup-fssp-registry-search-date-range { display: flex; gap: 4px; }
             #${MODAL_ID} .dup-fssp-registry-search-date-range input { min-width: 0; padding: 3px; }
-            #${MODAL_ID} .dup-fssp-registry-search-multi { margin-top: 4px; border: 1px solid #bdcbc6; background: #fff; }
-            #${MODAL_ID} .dup-fssp-registry-search-multi > summary { padding: 7px; cursor: pointer; }
+            #${MODAL_ID} .dup-fssp-registry-search-multi { margin-top: 4px; min-width: 0; }
+            #${MODAL_ID} .dup-fssp-registry-search-multi-trigger {
+                width: 100%; min-height: 35px; padding: 7px 10px; border: 1px solid #bdcbc6; border-radius: 4px;
+                background: #fff; text-align: left; color: #29453b; cursor: pointer;
+                overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+            }
+            #${MODAL_ID} .dup-fssp-registry-search-multi-trigger::after { content: ' ▾'; }
+            #${MODAL_ID} .dup-fssp-registry-search-filters > div { min-width: 0; }
+            #${MODAL_ID} .dup-fssp-registry-search-choice-overlay {
+                position: absolute; inset: 0; z-index: 3; background: rgba(17,31,27,.65);
+                display: grid; place-items: center; padding: 20px;
+            }
+            #${MODAL_ID} .dup-fssp-registry-search-choice-dialog {
+                width: min(760px, 100%); max-height: calc(100vh - 40px); display: flex; flex-direction: column;
+                min-height: 0; border: 1px solid #9fb4ac; border-radius: 10px; overflow: hidden;
+                background: #f8fbf9; box-shadow: 0 22px 70px rgba(8,24,19,.4);
+            }
+            #${MODAL_ID} .dup-fssp-registry-search-choice-heading {
+                display: flex; justify-content: space-between; align-items: center; gap: 16px;
+                padding: 18px 22px; border-bottom: 1px solid #ccd8d3; background: #e8f1ed;
+            }
+            #${MODAL_ID} .dup-fssp-registry-search-choice-heading h3 { margin: 0; font: 700 21px Georgia, serif; color: #183d30; }
+            #${MODAL_ID} .dup-fssp-registry-search-choice-tools { padding: 16px 22px 12px; }
+            #${MODAL_ID} .dup-fssp-registry-search-choice-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+            #${MODAL_ID} .dup-fssp-registry-search-choice-list {
+                overflow: auto; overscroll-behavior: contain; min-height: 0; max-height: 52vh;
+                margin: 0 22px; border: 1px solid #d8e3de; border-radius: 6px; background: #fff;
+            }
+            #${MODAL_ID} .dup-fssp-registry-search-choice-list label {
+                display: flex; align-items: center; gap: 12px; padding: 11px 14px; margin: 0;
+                border-bottom: 1px solid #edf2ef; cursor: pointer; font-weight: normal;
+            }
+            #${MODAL_ID} .dup-fssp-registry-search-choice-list label:hover { background: #f0f7f3; }
+            #${MODAL_ID} .dup-fssp-registry-search-choice-list label:has(input:checked) { background: #e8f5ee; }
+            #${MODAL_ID} .dup-fssp-registry-search-choice-list label[hidden],
+            #${MODAL_ID} .dup-fssp-registry-search-choice-list section[hidden] { display: none; }
+            #${MODAL_ID} .dup-fssp-registry-search-choice-list input[type="checkbox"] { width: 18px; height: 18px; flex: 0 0 18px; margin: 0; accent-color: #237a58; }
+            #${MODAL_ID} .dup-fssp-registry-search-choice-meta { display: block; margin-top: 3px; color: #6f7e79; font-size: 11px; }
+            #${MODAL_ID} .dup-fssp-registry-search-choice-group { position: sticky; top: 0; padding: 9px 14px; background: #edf3f0; color: #426354; font-size: 12px; font-weight: 700; }
+            #${MODAL_ID} .dup-fssp-registry-search-choice-empty { padding: 18px; color: #6f7e79; text-align: center; }
+            #${MODAL_ID} .dup-fssp-registry-search-choice-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 16px 22px; }
+            #${MODAL_ID} .dup-fssp-registry-search-choice-count { flex: 1; color: #5d6e68; font-size: 12px; }
             #${MODAL_ID} .dup-fssp-registry-search-choices { max-height: 150px; overflow: auto; padding: 6px; }
             #${MODAL_ID} .dup-fssp-registry-search-choices label { display: flex; align-items: center; gap: 7px; padding: 3px; font-weight: normal; }
             #${MODAL_ID} .dup-fssp-registry-search-choices input[type="checkbox"] { width: 16px; height: 16px; flex: 0 0 16px; margin: 0; }
@@ -708,7 +749,7 @@
 
     function scrollLocalBlock(event) {
         if (event.ctrlKey) return;
-        const block = event.target.closest('.dup-fssp-registry-search-table-wrap, .dup-fssp-registry-search-group-table-wrap, .dup-fssp-registry-search-choices, .dup-fssp-registry-search-filters');
+        const block = event.target.closest('.dup-fssp-registry-search-table-wrap, .dup-fssp-registry-search-group-table-wrap, .dup-fssp-registry-search-choice-list, .dup-fssp-registry-search-choices, .dup-fssp-registry-search-filters');
         if (!block) return;
         const horizontal = event.shiftKey || Math.abs(event.deltaX) > Math.abs(event.deltaY) || block.scrollHeight <= block.clientHeight;
         const scale = event.deltaMode === 1 ? 20 : event.deltaMode === 2 ? block.clientWidth : 1;
@@ -766,14 +807,19 @@
     }
 
     function createMultiChoice(options, selected, emptyLabel = 'Все') {
-        const details = document.createElement('details');
+        const details = document.createElement('div');
         details.className = 'dup-fssp-registry-search-multi';
         details.dataset.multiple = 'true';
-        const summary = document.createElement('summary');
+        const summary = document.createElement('button');
+        summary.type = 'button';
+        summary.className = 'dup-fssp-registry-search-multi-trigger';
+        summary.setAttribute('aria-haspopup', 'dialog');
         const choices = document.createElement('div');
         choices.className = 'dup-fssp-registry-search-choices';
+        choices.hidden = true;
         const reset = document.createElement('button');
         reset.type = 'button';
+        reset.dataset.choiceReset = 'true';
         reset.textContent = 'Снять выбор';
         choices.appendChild(reset);
         const update = () => {
@@ -791,12 +837,118 @@
         });
         details.append(summary, choices);
         choices.addEventListener('change', update);
+        summary.addEventListener('click', () => openChoicePicker(details, summary));
         reset.addEventListener('click', () => {
             choices.querySelectorAll('input').forEach((input) => { input.checked = false; });
             update();
         });
         update();
         return details;
+    }
+
+    function openChoicePicker(control, trigger) {
+        if (trigger.disabled || closeChoicePicker) return;
+        const modal = control.closest(`#${MODAL_ID}`);
+        const mainDialog = modal.querySelector('.dup-fssp-registry-search-dialog');
+        const overlay = document.createElement('div');
+        overlay.className = 'dup-fssp-registry-search-choice-overlay';
+        overlay.innerHTML = `
+            <section class="dup-fssp-registry-search-choice-dialog" role="dialog" aria-modal="true" aria-labelledby="dup-fssp-choice-title">
+                <div class="dup-fssp-registry-search-choice-heading"><h3 id="dup-fssp-choice-title"></h3><button type="button" class="dup-fssp-registry-search-close" aria-label="Закрыть выбор">×</button></div>
+                <div class="dup-fssp-registry-search-choice-tools">
+                    <input type="search" placeholder="Поиск по списку…" aria-label="Поиск по списку">
+                    <div class="dup-fssp-registry-search-choice-actions">
+                        <button type="button" class="dup-fssp-registry-search-action" data-select-visible>Выбрать все</button>
+                        <button type="button" class="dup-fssp-registry-search-action" data-clear-selection>Снять выбор</button>
+                    </div>
+                </div>
+                <div class="dup-fssp-registry-search-choice-list" tabindex="0" aria-label="Варианты выбора"></div>
+                <div class="dup-fssp-registry-search-choice-footer">
+                    <span class="dup-fssp-registry-search-choice-count" role="status" aria-live="polite"></span>
+                    <button type="button" class="dup-fssp-registry-search-action" data-cancel-choice>Отмена</button>
+                    <button type="button" class="dup-fssp-registry-search-action dup-fssp-registry-search-action-primary" data-apply-choice>Применить</button>
+                </div>
+            </section>`;
+        overlay.querySelector('h3').textContent = control.dataset.departments ? 'Выбор департаментов' : FIELD_LABELS[control.dataset.registryFilter] || 'Выбор значений';
+        const list = overlay.querySelector('.dup-fssp-registry-search-choice-list');
+        const search = overlay.querySelector('input[type="search"]');
+        const groups = new Map();
+        const rows = Array.from(control.querySelectorAll('input[type="checkbox"]')).map((source) => {
+            const label = document.createElement('label');
+            const input = document.createElement('input');
+            input.type = 'checkbox';
+            input.value = source.value;
+            input.checked = source.checked;
+            const text = normalizeText(source.parentElement.textContent);
+            const caption = document.createElement('span');
+            caption.textContent = control.dataset.departments ? text.split(' — ')[0] : text;
+            let container = list;
+            if (control.dataset.departments) {
+                const [origin, depid] = source.value.split('|');
+                const host = new URL(origin).hostname;
+                if (!groups.has(host)) {
+                    const group = document.createElement('section');
+                    const heading = document.createElement('div');
+                    heading.className = 'dup-fssp-registry-search-choice-group';
+                    heading.textContent = ({ 'kgn.pyramid.vostok-electra.ru': 'Курганская база', 'pyramid.vostok-electra.ru': 'Основная база', 'yuric.pyramid.vostok-electra.ru': 'ЮРИЦ' })[host] || host;
+                    group.appendChild(heading);
+                    list.appendChild(group);
+                    groups.set(host, group);
+                }
+                container = groups.get(host);
+                const meta = document.createElement('span');
+                meta.className = 'dup-fssp-registry-search-choice-meta';
+                meta.textContent = `depid ${depid} · ${host}`;
+                caption.appendChild(meta);
+            }
+            label.append(input, caption);
+            container.appendChild(label);
+            return { label, input, source, searchText: normalizeMatchValue(text + ' ' + source.value + ' ' + (control.dataset.departments ? container.firstElementChild.textContent : '')) };
+        });
+        const empty = document.createElement('div');
+        empty.className = 'dup-fssp-registry-search-choice-empty';
+        empty.textContent = 'Ничего не найдено. Попробуйте другое название.';
+        list.appendChild(empty);
+        const update = () => {
+            const query = normalizeMatchValue(search.value);
+            rows.forEach((row) => { row.label.hidden = !row.searchText.includes(query); });
+            groups.forEach((group) => { group.hidden = !rows.some((row) => row.label.parentElement === group && !row.label.hidden); });
+            const visible = rows.filter((row) => !row.label.hidden).length;
+            empty.hidden = visible > 0;
+            overlay.querySelector('.dup-fssp-registry-search-choice-count').textContent = `Выбрано ${rows.filter((row) => row.input.checked).length} из ${rows.length} · показано ${visible}`;
+            overlay.querySelector('[data-select-visible]').textContent = query ? 'Выбрать найденные' : 'Выбрать все';
+        };
+        const wasInert = mainDialog.inert;
+        const close = () => {
+            overlay.remove();
+            mainDialog.inert = wasInert;
+            closeChoicePicker = null;
+            if (trigger.isConnected && !modal.hidden) trigger.focus({ preventScroll: true });
+        };
+        closeChoicePicker = close;
+        overlay.querySelector('[data-apply-choice]').addEventListener('click', () => {
+            rows.forEach((row) => { row.source.checked = row.input.checked; });
+            control.querySelector('.dup-fssp-registry-search-choices').dispatchEvent(new Event('change', { bubbles: true }));
+            close();
+        });
+        overlay.querySelector('[data-cancel-choice]').addEventListener('click', close);
+        overlay.querySelector('.dup-fssp-registry-search-close').addEventListener('click', close);
+        overlay.addEventListener('mousedown', (event) => { if (event.target === overlay) close(); });
+        overlay.querySelector('[data-select-visible]').addEventListener('click', () => { rows.forEach((row) => { if (!row.label.hidden) row.input.checked = true; }); update(); });
+        overlay.querySelector('[data-clear-selection]').addEventListener('click', () => { rows.forEach((row) => { row.input.checked = false; }); update(); });
+        search.addEventListener('input', update);
+        list.addEventListener('change', update);
+        overlay.addEventListener('keydown', (event) => {
+            if (event.key !== 'Tab') return;
+            const focusable = Array.from(overlay.querySelectorAll('button, input, [tabindex="0"]')).filter((element) => element.getClientRects().length);
+            const first = focusable[0], last = focusable[focusable.length - 1];
+            if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+            else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+        });
+        modal.appendChild(overlay);
+        mainDialog.inert = true;
+        update();
+        search.focus();
     }
 
     function selectedChoices(control) {
@@ -1014,6 +1166,7 @@
     }
 
     function closeModal() {
+        if (closeChoicePicker) closeChoicePicker();
         const modal = document.getElementById(MODAL_ID);
         if (activeRun && (activeRun.status === 'running' || activeRun.status === 'paused')) {
             activeRun.status = 'cancelled';
@@ -1763,6 +1916,12 @@
         void revealLinkedRow();
         document.addEventListener('keydown', (event) => {
             if (event.key !== 'Escape') return;
+            if (closeChoicePicker) {
+                event.preventDefault();
+                event.stopImmediatePropagation();
+                closeChoicePicker();
+                return;
+            }
             const modal = document.getElementById(MODAL_ID);
             if (modal && !modal.hidden) closeModal();
         }, true);
