@@ -10,7 +10,7 @@ const context = vm.createContext({
     document: { readyState: 'loading', addEventListener() {} }
 });
 vm.runInContext(source.replace('    function initialize() {', `
-    globalThis.api = { REGISTRY_TYPES, FIELD_LABELS, debtorMatchesCell, registryMatchesType, searchGridState, readRegistryFilters, buildSearchWorkbook };
+    globalThis.api = { REGISTRY_TYPES, FIELD_LABELS, debtorMatchesCell, registryMatchesType, searchGridState, readRegistryFilters, buildSearchWorkbook, registryFingerprint, serializeRun, inspectRegistry, buildMatchUrl };
     function initialize() {`), context);
 const api = context.api;
 const query = (typeId, values) => ({ typeId, values, fields: api.REGISTRY_TYPES.find(t => t.id === typeId).fields, matches: new Map() });
@@ -77,4 +77,65 @@ test('Excel retains hidden and unknown data, Russian headers, text values and hy
     assert.ok(!xml.includes('>EDocId<'));
     assert.ok(!xml.includes('>AddDate<'));
     assert.ok(xml.includes('Идентификатор записи'));
+});
+
+test('multiple filter values use OR within each AND group', () => {
+    const result = api.searchGridState({ postData: {} }, {
+        debtors: [query('1', {})], filters: [
+            { field: 'StatusName', op: 'eq', data: ['Проведен', 'Не проведен'] },
+            { field: 'ClaimantInn', op: 'eq', data: ['111', '222'] },
+            { field: 'Id', op: 'cn', data: '123' }
+        ]
+    });
+    const filters = JSON.parse(result.postData.filters);
+    assert.equal(filters.rules.length, 1);
+    assert.equal(filters.groups.length, 3);
+    assert.deepEqual(filters.groups[0].rules.map(r => r.data), ['Проведен', 'Не проведен']);
+    assert.equal(filters.groups[1].groupOp, 'OR');
+});
+
+test('fingerprints distinguish changed metadata and independent databases', () => {
+    const registry = { registryId: '42', fileName: 'a.xml', lastProcessing: '16.10.2026' };
+    const key = api.registryFingerprint(registry, 'https://kgn.pyramid.vostok-electra.ru');
+    assert.notEqual(key, api.registryFingerprint(registry, 'https://pyramid.vostok-electra.ru'));
+    assert.notEqual(key, api.registryFingerprint({ ...registry, fileName: 'b.xml' }, 'https://kgn.pyramid.vostok-electra.ru'));
+    assert.notEqual(key, api.registryFingerprint({ ...registry, lastProcessing: '' }, 'https://kgn.pyramid.vostok-electra.ru'));
+});
+
+test('only successfully read registries are remembered and skipped on the next department', async () => {
+    let calls = 0;
+    context.fetch = async () => { calls++; return { ok: true, text: async () => JSON.stringify({ total: 1, records: 1, rows: [{ id: 1, cell: { FullName: 'Другой должник' } }] }) }; };
+    const registry = { registryId: '42', typeId: '1', fileName: 'file.xml', lastProcessing: 'today' };
+    const run = { debtors: [query('1', { FullName: 'Искомый' })], checkedRegistries: new Set(), skipped: 0, controller: new AbortController(), departments: [{}], departmentIndex: 0 };
+    await api.inspectRegistry(registry, run, null);
+    await api.inspectRegistry(registry, run, null);
+    assert.equal(calls, 1);
+    assert.equal(run.skipped, 1);
+    context.fetch = async () => { throw new Error('network failure'); };
+    const changed = { ...registry, lastProcessing: 'tomorrow' };
+    await assert.rejects(api.inspectRegistry(changed, run, null), /network failure/);
+    assert.equal(run.checkedRegistries.has(api.registryFingerprint(changed)), false);
+});
+
+test('checkpoint converts result Maps and registry Sets to portable JSON', () => {
+    const debtor = query('1', { EDNumber: '123' });
+    debtor.matches.set('base:42:0', { registryId: '42', baseOrigin: 'https://kgn.pyramid.vostok-electra.ru' });
+    const result = JSON.parse(JSON.stringify(api.serializeRun({ status: 'running', departments: [{ active: true, key: 'base|39', depid: '39' }], departmentIndex: 0,
+        debtors: [debtor], filters: [], checkedRegistries: new Set(['seen']), completed: 1, skipped: 0, errorCount: 0 }, 'navigating')));
+    assert.equal(result.status, 'navigating');
+    assert.deepEqual(result.checkedRegistries, ['seen']);
+    assert.equal(result.debtors[0].matches[0][1].registryId, '42');
+    assert.equal(result.departments[0].active, undefined);
+    assert.equal(result.debtors[0].row, undefined);
+});
+
+test('cross-base result links enter the list and preserve target department and row', () => {
+    const link = new URL(api.buildMatchUrl('42', { baseOrigin: 'https://kgn.pyramid.vostok-electra.ru', department: { depid: '39' }, rowId: '7', position: 2, totalRows: 100 }));
+    assert.equal(link.origin, 'https://example.test');
+    assert.equal(link.searchParams.get('dup_fssp_base'), 'https://kgn.pyramid.vostok-electra.ru');
+    assert.equal(link.pathname, '/ovzid/fsspreestr');
+    assert.equal(link.searchParams.get('dup_fssp_open'), '42');
+    assert.equal(link.searchParams.get('dup_fssp_dep'), '39');
+    assert.equal(link.searchParams.get('dup_fssp_match'), '7');
+    assert.equal(link.searchParams.get('token'), null);
 });

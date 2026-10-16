@@ -7,6 +7,7 @@ try {
     importScripts('support/support_background.js');
     importScripts('GoogleSheets/problem_picker_background.js');
     importScripts('IdCardServiceInfo/status_lookup_background.js');
+    importScripts('FsspRegistrySearch/fssp_registry_search_background.js');
     // importScripts('StageTimer/telemetry_background.js'); // Логика интегрирована внутрь
 } catch (e) {
     console.error("Ошибка импорта скриптов в background.js:", e);

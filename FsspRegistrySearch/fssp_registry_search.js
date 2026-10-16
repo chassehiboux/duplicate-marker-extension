@@ -42,8 +42,173 @@
         return REGISTRY_TYPES.find((type) => type.id === typeId).fields;
     }
 
+    function collectDepartments() {
+        const seen = new Set();
+        return Array.from(document.querySelectorAll('a.department-switch')).flatMap((link) => {
+            try {
+                const url = new URL(link.href, location.origin);
+                const depid = url.pathname.match(/\/login\/department\/(\d+)(?:\/|$)/)?.[1];
+                if (!depid || !/^https?:$/.test(url.protocol) || !/(^|\.)(pyramid\.vostok-electra\.ru|pyramid-vostok\.electra\.ru)$/i.test(url.hostname)) return [];
+                const key = `${url.origin}|${depid}`;
+                if (seen.has(key)) return [];
+                seen.add(key);
+                return [{ key, depid, host: url.hostname, origin: url.origin, label: normalizeText(link.textContent), active: link.classList.contains('active') && url.origin === location.origin }];
+            } catch (_) { return []; }
+        });
+    }
+
+    function currentDepartment() {
+        return collectDepartments().find((department) => department.active);
+    }
+
+    function registryFingerprint(registry, origin = window.location.origin) {
+        return JSON.stringify([origin, registry.registryId, registry.fileName, registry.lastProcessing]);
+    }
+
+    function serializeRun(run, status = run.status) {
+        return {
+            version: 1, status, departments: run.departments.map(({ active, ...department }) => department),
+            departmentIndex: run.departmentIndex, checkedRegistries: [...run.checkedRegistries],
+            filters: run.filters, completed: run.completed, skipped: run.skipped, errorCount: run.errorCount,
+            debtors: run.debtors.map((debtor) => ({ typeId: debtor.typeId, values: debtor.values, matches: [...debtor.matches] }))
+        };
+    }
+
+    async function saveRun(run, status) {
+        const response = await sendRuntimeMessage({ action: 'FSSP_SEARCH_SESSION_SET', state: serializeRun(run, status) });
+        if (!response?.success) throw new Error(response?.error || 'Не удалось сохранить поиск перед переходом.');
+    }
+
+    async function clearSavedRun() {
+        const response = await sendRuntimeMessage({ action: 'FSSP_SEARCH_SESSION_CLEAR' });
+        if (!response?.success) throw new Error(response?.error || 'Не удалось завершить временную сессию поиска.');
+    }
+
+    function departmentSwitchUrl(department, destination = LIST_PATH, params = '') {
+        const link = Array.from(document.querySelectorAll('a.department-switch')).find((link) => {
+            try {
+                const url = new URL(link.href, location.origin);
+                return url.origin === department.origin && url.pathname.match(/\/login\/department\/(\d+)(?:\/|$)/)?.[1] === department.depid;
+            } catch (_) { return false; }
+        });
+        if (!link) throw new Error(`Нет доступной ссылки переключения: ${department.label} (depid ${department.depid}).`);
+        const url = new URL(link.href, location.origin);
+        url.pathname = `/login/department/${department.depid}${destination}`;
+        Array.from(url.searchParams.keys()).filter((key) => key.startsWith('dup_fssp_')).forEach((key) => url.searchParams.delete(key));
+        new URLSearchParams(params).forEach((value, key) => url.searchParams.set(key, value));
+        return url.toString();
+    }
+
+    async function navigateDepartment(run, modal) {
+        const department = run.departments[run.departmentIndex];
+        const url = departmentSwitchUrl(department);
+        modal.querySelector('.dup-fssp-registry-search-stop').disabled = true;
+        setNotice(modal, `Сохраняю результаты. Перехожу: ${department.label} (${run.departmentIndex + 1}/${run.departments.length})…`);
+        await saveRun(run, 'navigating');
+        if (activeRun !== run || run.controller.signal.aborted) return;
+        window.location.assign(url);
+    }
+
+    async function continueDepartmentSearch(run, modal) {
+        try {
+            const expected = run.departments[run.departmentIndex];
+            if (currentDepartment()?.key !== expected.key) {
+                await navigateDepartment(run, modal);
+                return;
+            }
+            await saveRun(run, 'running');
+            if (activeRun === run && !run.controller.signal.aborted) await performSearch(run, modal);
+        } catch (error) {
+            if (activeRun !== run) return;
+            run.status = 'failed';
+            setNotice(modal, error.message, 'error');
+            modal.querySelector('.dup-fssp-registry-search-submit').disabled = false;
+            modal.querySelector('.dup-fssp-registry-search-stop').hidden = true;
+        }
+    }
+
+    async function restoreSearchSession() {
+        try {
+            const response = await sendRuntimeMessage({ action: 'FSSP_SEARCH_SESSION_GET' });
+            if (!response?.success) throw new Error(response?.error || 'Не удалось прочитать состояние поиска.');
+            const state = response.state;
+            if (!state || !['running', 'navigating', 'paused', 'failed'].includes(state.status)) return;
+            await waitFor(() => document.querySelector('#gs_list_TypeName') && currentDepartment(), 30000);
+            const modal = ensureModal();
+            resetModal(modal);
+            modal.hidden = false;
+            state.filters.forEach((rule) => {
+                const control = modal.querySelector(`[data-registry-filter="${rule.field}"]`);
+                if (!control) return;
+                if (Array.isArray(rule.data)) {
+                    const options = Array.from(control.querySelectorAll('input')).map((input) => ({ value: input.value, label: input.parentElement.textContent }));
+                    rule.data.forEach((value) => { if (!options.some((option) => option.value === value)) options.push({ value, label: value }); });
+                    const replacement = createMultiChoice(options, rule.data);
+                    Object.assign(replacement.dataset, control.dataset);
+                    control.replaceWith(replacement);
+                } else if (control.type === 'date') {
+                    const dates = rule.data.match(/\d{2}\.\d{2}\.\d{4}/g) || [];
+                    control.value = dates[0]?.split('.').reverse().join('-') || '';
+                    modal.querySelector(`[data-registry-filter-end="${rule.field}"]`).value = dates[1]?.split('.').reverse().join('-') || '';
+                } else control.value = rule.data;
+            });
+            // Empty filters must stay empty even if this department has its own page filters.
+            modal.querySelectorAll('[data-registry-filter]').forEach((control) => {
+                if (state.filters.some((rule) => rule.field === control.dataset.registryFilter)) return;
+                if (control.dataset.multiple === 'true') {
+                    control.querySelector('button').click();
+                } else control.value = '';
+                const end = modal.querySelector(`[data-registry-filter-end="${control.dataset.registryFilter}"]`);
+                if (end) end.value = '';
+            });
+            const departmentControl = modal.querySelector('[data-departments]');
+            const replacement = createMultiChoice(state.departments.map((d) => ({ value: d.key, label: `${d.label} — ${d.host} (depid ${d.depid})` })), state.departments.map((d) => d.key));
+            replacement.dataset.departments = 'true';
+            departmentControl.replaceWith(replacement);
+            modal.querySelectorAll('.dup-fssp-registry-search-input-table tbody').forEach((tbody) => tbody.replaceChildren());
+            const debtors = state.debtors.map((debtor, index) => {
+                const tbody = modal.querySelector(`[data-registry-type="${debtor.typeId}"] tbody`);
+                const row = appendInputRow(tbody);
+                row.querySelectorAll('input').forEach((input) => { input.value = debtor.values[input.dataset.field] || ''; });
+                return { ...debtor, index, row, fields: fieldsFor(row), matches: new Map(debtor.matches) };
+            });
+            lockDebtorRows(modal, debtors);
+            modal.querySelectorAll('.dup-fssp-registry-search-settings').forEach((block) => { block.open = false; });
+            modal.querySelectorAll('.dup-fssp-registry-search-settings input, .dup-fssp-registry-search-settings button').forEach((input) => { input.disabled = true; });
+            activeRun = { ...state, debtors, status: 'running', paused: false, pauseWaiters: [], controller: new AbortController(), checkedRegistries: new Set(state.checkedRegistries), discovered: 0, totalPages: 1 };
+            const expected = state.departments[state.departmentIndex];
+            if (currentDepartment()?.key !== expected?.key) throw new Error(`Переключение не подтверждено. Ожидается ${expected?.label || 'выбранный департамент'} (depid ${expected?.depid || '—'}). Результаты сохранены.`);
+            if (state.status === 'failed' || state.status === 'paused') {
+                activeRun.status = 'paused';
+                activeRun.paused = true;
+                showRunningControls(modal);
+                setNotice(modal, 'Поиск восстановлен и приостановлен. Нажмите «Продолжить».');
+                void performSearch(activeRun, modal);
+            } else {
+                showRunningControls(modal);
+                void continueDepartmentSearch(activeRun, modal);
+            }
+        } catch (error) {
+            const modal = ensureModal();
+            modal.hidden = false;
+            if (activeRun) activeRun.status = 'failed';
+            setNotice(modal, error.message, 'error');
+        } finally { restoringSession = false; }
+    }
+
+    function showRunningControls(modal) {
+        modal.querySelector('.dup-fssp-registry-search-submit').disabled = true;
+        const stop = modal.querySelector('.dup-fssp-registry-search-stop');
+        stop.disabled = false;
+        stop.hidden = false;
+        stop.textContent = activeRun?.paused ? 'Продолжить' : 'Стоп';
+        stop.classList.toggle('is-paused', !!activeRun?.paused);
+        stop.setAttribute('aria-pressed', String(!!activeRun?.paused));
+    }
+
     let activeRun = null;
     let toolbarObserver = null;
+    let restoringSession = true;
 
     function normalizeText(value) {
         return String(value == null ? '' : value)
@@ -178,6 +343,12 @@
             #${MODAL_ID} .dup-fssp-registry-search-filters label { min-width: 0; font-size: 12px; }
             #${MODAL_ID} .dup-fssp-registry-search-date-range { display: flex; gap: 4px; }
             #${MODAL_ID} .dup-fssp-registry-search-date-range input { min-width: 0; padding: 3px; }
+            #${MODAL_ID} .dup-fssp-registry-search-multi { margin-top: 4px; border: 1px solid #bdcbc6; background: #fff; }
+            #${MODAL_ID} .dup-fssp-registry-search-multi > summary { padding: 7px; cursor: pointer; }
+            #${MODAL_ID} .dup-fssp-registry-search-choices { max-height: 150px; overflow: auto; padding: 6px; }
+            #${MODAL_ID} .dup-fssp-registry-search-choices label { display: flex; align-items: center; gap: 7px; padding: 3px; font-weight: normal; }
+            #${MODAL_ID} .dup-fssp-registry-search-choices input[type="checkbox"] { width: 16px; height: 16px; flex: 0 0 16px; margin: 0; }
+            #${MODAL_ID} .dup-fssp-registry-search-choices button { margin-bottom: 5px; }
             #${MODAL_ID} .dup-fssp-registry-search-filters select {
                 width: 100%; height: 31px; margin-top: 4px; border: 1px solid #bdcbc6; background: #fff;
             }
@@ -537,7 +708,7 @@
 
     function scrollLocalBlock(event) {
         if (event.ctrlKey) return;
-        const block = event.target.closest('.dup-fssp-registry-search-table-wrap, .dup-fssp-registry-search-group-table-wrap, .dup-fssp-registry-search-filters');
+        const block = event.target.closest('.dup-fssp-registry-search-table-wrap, .dup-fssp-registry-search-group-table-wrap, .dup-fssp-registry-search-choices, .dup-fssp-registry-search-filters');
         if (!block) return;
         const horizontal = event.shiftKey || Math.abs(event.deltaX) > Math.abs(event.deltaY) || block.scrollHeight <= block.clientHeight;
         const scale = event.deltaMode === 1 ? 20 : event.deltaMode === 2 ? block.clientWidth : 1;
@@ -555,17 +726,15 @@
         container.replaceChildren();
         FILTER_FIELDS.forEach((field) => {
             const source = document.getElementById(`gs_list_${field}`);
-            const label = document.createElement('label');
+            const label = document.createElement('div');
             label.textContent = field === 'Id' ? 'Идентификатор реестра' : FIELD_LABELS[field];
-            const control = document.createElement(source?.tagName === 'SELECT' ? 'select' : 'input');
+            const control = source?.tagName === 'SELECT'
+                ? createMultiChoice(Array.from(source.options).filter((o) => o.value).map((o) => ({ value: o.value, label: o.text })), source.value ? [source.value] : [])
+                : document.createElement('input');
             control.dataset.registryFilter = field;
             control.dataset.operator = source?.tagName === 'SELECT' ? 'eq' : 'cn';
-            if (control.tagName === 'SELECT') {
-                control.add(new Option('Все', ''));
-                Array.from(source.options).forEach((option) => {
-                    if (option.value) control.add(new Option(option.text, option.value));
-                });
-            } else {
+            control.setAttribute('aria-label', label.textContent);
+            if (source?.tagName !== 'SELECT') {
                 control.type = 'text';
             }
             control.value = source?.value || '';
@@ -586,10 +755,60 @@
             } else label.appendChild(control);
             container.appendChild(label);
         });
+        const departmentLabel = document.createElement('div');
+        departmentLabel.textContent = 'Департаменты (можно выбрать несколько баз)';
+        const departments = collectDepartments();
+        const control = createMultiChoice(departments.map((d) => ({ value: d.key, label: `${d.label} — ${d.host} (depid ${d.depid})` })), departments.filter((d) => d.active).map((d) => d.key), 'Выберите департаменты');
+        control.dataset.departments = 'true';
+        control.setAttribute('aria-label', 'Департаменты для поиска');
+        departmentLabel.appendChild(control);
+        container.prepend(departmentLabel);
+    }
+
+    function createMultiChoice(options, selected, emptyLabel = 'Все') {
+        const details = document.createElement('details');
+        details.className = 'dup-fssp-registry-search-multi';
+        details.dataset.multiple = 'true';
+        const summary = document.createElement('summary');
+        const choices = document.createElement('div');
+        choices.className = 'dup-fssp-registry-search-choices';
+        const reset = document.createElement('button');
+        reset.type = 'button';
+        reset.textContent = 'Снять выбор';
+        choices.appendChild(reset);
+        const update = () => {
+            const labels = Array.from(choices.querySelectorAll('input:checked')).map((input) => input.parentElement.textContent);
+            summary.textContent = labels.length ? `Выбрано: ${labels.length} · ${labels.slice(0, 2).join(', ')}${labels.length > 2 ? '…' : ''}` : emptyLabel;
+        };
+        options.forEach((option) => {
+            const label = document.createElement('label');
+            const input = document.createElement('input');
+            input.type = 'checkbox';
+            input.value = option.value;
+            input.checked = selected.includes(option.value);
+            label.append(input, document.createTextNode(option.label));
+            choices.appendChild(label);
+        });
+        details.append(summary, choices);
+        choices.addEventListener('change', update);
+        reset.addEventListener('click', () => {
+            choices.querySelectorAll('input').forEach((input) => { input.checked = false; });
+            update();
+        });
+        update();
+        return details;
+    }
+
+    function selectedChoices(control) {
+        return Array.from(control.querySelectorAll('input:checked')).map((input) => input.value);
     }
 
     function readRegistryFilters(modal) {
         return Array.from(modal.querySelectorAll('[data-registry-filter]')).flatMap((control) => {
+            if (control.dataset.multiple === 'true') {
+                const data = selectedChoices(control);
+                return data.length ? [{ field: control.dataset.registryFilter, op: 'eq', data }] : [];
+            }
             let data = normalizeText(control.value);
             if (control.type === 'date') {
                 const end = modal.querySelector(`[data-registry-filter-end="${control.dataset.registryFilter}"]`).value;
@@ -610,7 +829,10 @@
         delete postData.searchString;
         const types = [...new Set(run.debtors.map((debtor) => debtor.typeId))];
         postData._search = true;
-        postData.filters = JSON.stringify({ groupOp: 'AND', rules: run.filters, groups: [{
+        postData.filters = JSON.stringify({ groupOp: 'AND', rules: run.filters.filter((rule) => !Array.isArray(rule.data)), groups: [
+            ...run.filters.filter((rule) => Array.isArray(rule.data)).map((rule) => ({
+                groupOp: 'OR', rules: rule.data.map((data) => ({ ...rule, data }))
+            })), {
             groupOp: 'OR', rules: types.map((id) => ({ field: 'TypeName', op: 'eq', data: REGISTRY_TYPES.find((type) => type.id === id).name }))
         }] });
         return { ...gridState, postData };
@@ -799,6 +1021,7 @@
             activeRun.pauseWaiters.splice(0).forEach((resolve) => resolve());
         }
         activeRun = null;
+        void clearSavedRun().catch((error) => console.warn('[FSSP Registry Search]', error.message));
         if (modal) modal.hidden = true;
     }
 
@@ -847,11 +1070,38 @@
     }
 
     function buildMatchUrl(registryId, match) {
-        const url = new URL(`${LIST_PATH}/${encodeURIComponent(registryId)}`, window.location.origin);
+        // Enter through the registry list so switching also works when the current
+        // department has no access to the target detail page yet.
+        const url = new URL(match.department ? LIST_PATH : `${LIST_PATH}/${encodeURIComponent(registryId)}`, match.department ? window.location.origin : match.baseOrigin || window.location.origin);
         url.searchParams.set('dup_fssp_match', String(match.rowId || ''));
         url.searchParams.set('dup_fssp_pos', String(match.position || 0));
         url.searchParams.set('dup_fssp_total', String(match.totalRows || 0));
+        if (match.department?.depid) {
+            url.searchParams.set('dup_fssp_dep', match.department.depid);
+            url.searchParams.set('dup_fssp_open', registryId);
+            url.searchParams.set('dup_fssp_base', match.baseOrigin || window.location.origin);
+        }
         return url.toString();
+    }
+
+    function routeLinkedRegistry() {
+        if (!isListPage()) return false;
+        const params = new URLSearchParams(window.location.search);
+        const registryId = params.get('dup_fssp_open');
+        const depid = params.get('dup_fssp_dep');
+        if (!/^\d+$/.test(registryId || '') || !/^\d+$/.test(depid || '')) return false;
+        try {
+            const origin = params.get('dup_fssp_base') || window.location.origin;
+            const department = collectDepartments().find((d) => d.depid === depid && d.origin === origin);
+            if (!department) throw new Error('Нет доступа к департаменту найденной записи.');
+            params.delete('dup_fssp_open');
+            params.delete('dup_fssp_base');
+            const path = `${LIST_PATH}/${registryId}`;
+            const url = department.active ? new URL(`${path}?${params}`, window.location.origin).toString()
+                : departmentSwitchUrl(department, path, params);
+            window.location.replace(url);
+        } catch (error) { window.alert(error.message); }
+        return true;
     }
 
     function renderSearchResults(modal, debtors, emptyMessage = 'Найденные совпадения появятся здесь во время поиска.') {
@@ -930,7 +1180,7 @@
                 link.href = buildMatchUrl(registryId, match);
                 link.target = '_blank';
                 link.rel = 'noopener noreferrer';
-                link.textContent = `${registryId} · ${match.registryTypeName || 'Тип не указан'}`;
+                link.textContent = `${registryId} · ${match.registryTypeName || 'Тип не указан'}${match.department ? ` · ${match.department.label} (${match.department.depid}) · ${new URL(match.baseOrigin).hostname}` : ''}`;
                 link.title = `Тип реестра: ${match.registryTypeName || 'не указан'}\nОткрыть реестр ${registryId} и показать найденного должника`;
                 registryCell.appendChild(link);
                 row.appendChild(registryCell);
@@ -1008,10 +1258,10 @@
             Object.keys(match.sourceValues || {}).forEach((field) => fields.add(field));
         }));
         const sourceFields = Array.from(fields);
-        const columnCount = sourceFields.length + 3;
+        const columnCount = sourceFields.length + 5;
         if (columnCount > 16384) throw new Error('Результаты превышают допустимое число столбцов листа Excel.');
         const lastColumn = excelColumnName(columnCount - 1);
-        const headers = ['Параметры поиска', '№', ...sourceFields.map((field) => field === 'EDNumber' ? 'Номер ИД / номер дела (возбуждение ИП)' : FIELD_LABELS[field] || field), 'Идентификатор реестра'];
+        const headers = ['Параметры поиска', '№', ...sourceFields.map((field) => field === 'EDNumber' ? 'Номер ИД / номер дела (возбуждение ИП)' : FIELD_LABELS[field] || field), 'База', 'Департамент', 'Идентификатор реестра'];
         const rows = [];
         const links = [];
         const linkRelations = [];
@@ -1031,7 +1281,7 @@
                 appendRow([criteria, ...Array(columnCount - 1).fill('')]);
             }
             matches.forEach((match, index) => {
-                const number = appendRow([criteria, String(index + 1), ...sourceFields.map((field) => excelSourceValue(match.sourceValues && match.sourceValues[field])), `${match.registryId} · ${match.registryTypeName || 'Тип не указан'}`]);
+                const number = appendRow([criteria, String(index + 1), ...sourceFields.map((field) => excelSourceValue(match.sourceValues && match.sourceValues[field])), match.baseOrigin || '', match.department ? `${match.department.label} (depid ${match.department.depid})` : '', `${match.registryId} · ${match.registryTypeName || 'Тип не указан'}`]);
                 const relationId = `rId${links.length + 1}`;
                 links.push(`<hyperlink ref="${lastColumn}${number}" r:id="${relationId}"/>`);
                 linkRelations.push(`<Relationship Id="${relationId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="${escapeExcelXml(buildMatchUrl(match.registryId, match))}" TargetMode="External"/>`);
@@ -1153,7 +1403,9 @@
                 registryId,
                 typeId: normalizeText(cell.FSSPReestrTypeId),
                 typeName: normalizeText(cell.TypeName),
-                statusName: normalizeText(cell.StatusName)
+                statusName: normalizeText(cell.StatusName),
+                fileName: normalizeText(cell.FileName),
+                lastProcessing: normalizeText(cell.LastProcessing)
             });
         });
         return registries;
@@ -1233,9 +1485,12 @@
 
     async function inspectRegistry(registry, run, modal) {
         const debtors = run.debtors.filter((debtor) => registryMatchesType(registry, debtor.typeId));
-        if (isNoDataRegistry(registry) || !debtors.length) return;
+        if (!debtors.length) return;
+        const fingerprint = registryFingerprint(registry);
+        if (run.checkedRegistries.has(fingerprint)) { run.skipped += 1; return; }
+        if (isNoDataRegistry(registry)) { run.checkedRegistries.add(fingerprint); return; }
         const registryData = await collectRegistryRows(registry.registryId, run);
-        if (!registryData.rows.length) return;
+        if (!registryData.rows.length) { run.checkedRegistries.add(fingerprint); return; }
         let resultsChanged = false;
         debtors.forEach((debtor) => {
             registryData.rows.forEach((match) => {
@@ -1244,18 +1499,21 @@
                 debtor.fields.forEach((definition) => {
                     values[definition.key] = normalizeText(match.cell && match.cell[definition.field]);
                 });
-                debtor.matches.set(`${registry.registryId}:${match.position}`, {
+                debtor.matches.set(`${window.location.origin}:${registry.registryId}:${match.position}`, {
                     registryId: registry.registryId,
                     registryTypeName: registry.typeName,
                     rowId: match.rowId,
                     position: match.position,
                     totalRows: registryData.totalRows || registryData.rows.length,
                     values,
-                    sourceValues: match.cell
+                    sourceValues: match.cell,
+                    baseOrigin: window.location.origin,
+                    department: run.departments[run.departmentIndex]
                 });
                 resultsChanged = true;
             });
         });
+        run.checkedRegistries.add(fingerprint);
         if (resultsChanged) renderSearchResults(modal, run.debtors);
     }
 
@@ -1277,6 +1535,7 @@
                 } catch (error) {
                     if (isAbortError(error)) throw error;
                     run.errorCount += 1;
+                    throw error;
                 } finally {
                     run.completed += 1;
                     pageCompleted += 1;
@@ -1295,27 +1554,31 @@
 
     async function performSearch(run, modal) {
         try {
-            setNotice(modal, 'Читаю текущие фильтры списка…');
+            const department = run.departments[run.departmentIndex];
+            if (currentDepartment()?.key !== department.key) throw new Error('Активный департамент изменился. Поиск остановлен.');
+            setNotice(modal, `Ищу: ${department.label} (depid ${department.depid}), ${run.departmentIndex + 1}/${run.departments.length} департаментов…`);
             setProgress(modal, 0, 1, 'Подготовка поиска', '');
             const gridState = await getGridState();
             const result = await scanFilteredRegistryPages(searchGridState(gridState, run), run, modal);
-            if (!result.registryCount) {
-                run.status = 'complete';
-                renderSearchResults(modal, run.debtors, 'По текущим фильтрам реестры не найдены.');
-                setProgress(modal, 1, 1, 'Поиск завершён', '0 реестров');
-                setNotice(modal, 'По текущим фильтрам реестры не найдены.', 'success');
+            if (run.controller.signal.aborted) return;
+            await waitForRunResume(run);
+            if (run.departmentIndex + 1 < run.departments.length) {
+                run.departmentIndex += 1;
+                await navigateDepartment(run, modal);
                 return;
             }
-            if (run.controller.signal.aborted) return;
             run.status = 'complete';
             const found = countMatches(run.debtors);
             renderSearchResults(modal, run.debtors, 'Совпадений не найдено.');
             const errorSuffix = run.errorCount ? ` Не удалось прочитать: ${run.errorCount}.` : '';
             setProgress(modal, result.totalPages, result.totalPages, 'Поиск завершён', `${result.registryCount} реестров`);
-            setNotice(modal, `Найдено записей: ${found}.${errorSuffix}`, run.errorCount ? 'error' : 'success');
+            setNotice(modal, `Проверено департаментов: ${run.departments.length}. Найдено записей: ${found}. Пропущено ранее проверенных реестров: ${run.skipped}.${errorSuffix}`, run.errorCount ? 'error' : 'success');
+            await clearSavedRun();
         } catch (error) {
             if (isAbortError(error) || run.controller.signal.aborted) return;
             run.status = 'failed';
+            run.controller.abort();
+            await saveRun(run, 'failed').catch(() => {});
             setNotice(modal, error && error.message ? error.message : 'Поиск завершился ошибкой.', 'error');
         } finally {
             if (activeRun === run && run.status !== 'running' && run.status !== 'paused') {
@@ -1336,6 +1599,7 @@
             stopButton.classList.add('is-paused');
             stopButton.setAttribute('aria-pressed', 'true');
             setNotice(modal, 'Поиск приостановлен. Уже начатые запросы завершаются, новые не запускаются.');
+            void saveRun(run, 'paused').catch((error) => setNotice(modal, error.message, 'error'));
             return;
         }
         run.status = 'running';
@@ -1345,22 +1609,28 @@
         stopButton.setAttribute('aria-pressed', 'false');
         run.pauseWaiters.splice(0).forEach((resolve) => resolve());
         setNotice(modal, 'Поиск продолжен.');
+        void saveRun(run, 'running').catch((error) => setNotice(modal, error.message, 'error'));
     }
 
     function startSearch(modal) {
+        if (restoringSession) { setNotice(modal, 'Подождите восстановления предыдущего поиска.'); return; }
         if (activeRun && (activeRun.status === 'running' || activeRun.status === 'paused')) return;
         const filters = readRegistryFilters(modal);
         const typeFilter = filters.find((rule) => rule.field === 'TypeName');
-        const debtors = readDebtors(modal).filter((debtor) => !typeFilter || REGISTRY_TYPES.find((type) => type.id === debtor.typeId).name === typeFilter.data);
+        const debtors = readDebtors(modal).filter((debtor) => !typeFilter || (Array.isArray(typeFilter.data) ? typeFilter.data : [typeFilter.data]).includes(REGISTRY_TYPES.find((type) => type.id === debtor.typeId).name));
         if (!debtors.length) {
             setNotice(modal, 'Введите хотя бы одно условие поиска в блоке выбранного типа реестра.', 'error');
             const firstInput = modal.querySelector('.dup-fssp-registry-search-input-table input');
             if (firstInput) firstInput.focus();
             return;
         }
+        const selected = selectedChoices(modal.querySelector('[data-departments]'));
+        const departments = collectDepartments().filter((department) => selected.includes(department.key));
+        if (!departments.length) { setNotice(modal, 'Выберите хотя бы один департамент.', 'error'); return; }
+        departments.sort((left, right) => Number(right.active) - Number(left.active));
         lockDebtorRows(modal, debtors);
         modal.querySelectorAll('.dup-fssp-registry-search-settings').forEach((block) => { block.open = false; });
-        modal.querySelectorAll('[data-registry-filter], [data-registry-filter-end]').forEach((control) => { control.disabled = true; });
+        modal.querySelectorAll('.dup-fssp-registry-search-settings input, .dup-fssp-registry-search-settings button').forEach((control) => { control.disabled = true; });
         modal.querySelector('.dup-fssp-registry-search-submit').disabled = true;
         const stopButton = modal.querySelector('.dup-fssp-registry-search-stop');
         stopButton.hidden = false;
@@ -1380,7 +1650,8 @@
             discovered: 0,
             totalPages: 1
         };
-        void performSearch(activeRun, modal);
+        Object.assign(activeRun, { departments, departmentIndex: 0, checkedRegistries: new Set(), skipped: 0 });
+        void continueDepartmentSearch(activeRun, modal);
     }
 
     function waitFor(predicate, timeoutMs) {
@@ -1414,7 +1685,7 @@
 
     function clearMatchQueryParams() {
         const url = new URL(window.location.href);
-        ['dup_fssp_match', 'dup_fssp_pos', 'dup_fssp_total'].forEach((key) => url.searchParams.delete(key));
+        ['dup_fssp_match', 'dup_fssp_pos', 'dup_fssp_total', 'dup_fssp_dep', 'dup_fssp_open', 'dup_fssp_base'].forEach((key) => url.searchParams.delete(key));
         window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
     }
 
@@ -1424,6 +1695,17 @@
         const params = new URLSearchParams(window.location.search);
         const rowId = normalizeText(params.get('dup_fssp_match'));
         if (!rowId) return;
+        const expectedDepid = params.get('dup_fssp_dep');
+        if (expectedDepid && currentDepartment()?.depid !== expectedDepid) {
+            try {
+                const department = collectDepartments().find((d) => d.depid === expectedDepid && d.origin === window.location.origin);
+                if (!department) throw new Error('Нет доступа к департаменту найденной записи.');
+                window.location.assign(departmentSwitchUrl(department, window.location.pathname, params));
+            } catch (error) {
+                window.alert(error.message);
+            }
+            return;
+        }
         ensureStyles();
         const totalRows = Math.max(0, Number(params.get('dup_fssp_total') || 0));
         const position = Math.max(0, Number(params.get('dup_fssp_pos') || 0));
@@ -1470,11 +1752,13 @@
     }
 
     function initialize() {
+        if (routeLinkedRegistry()) return;
         ensureStyles();
         if (isListPage()) {
             ensureToolbarButton();
             toolbarObserver = new MutationObserver(() => ensureToolbarButton());
             toolbarObserver.observe(document.documentElement, { childList: true, subtree: true });
+            void restoreSearchSession();
         }
         void revealLinkedRow();
         document.addEventListener('keydown', (event) => {

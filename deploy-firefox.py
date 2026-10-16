@@ -63,6 +63,7 @@ DIR_FILES = {
     ],
     'FsspRegistrySearch': [
         'fssp_registry_search.js',
+        'fssp_registry_search_background.js',
     ],
     'OvzidTransferRegistrySearch': [
         'ovzid_transfer_registry_search.js',
@@ -122,6 +123,7 @@ FIREFOX_BACKGROUND_IMPORTS = [
     'support/support_background.js',
     'GoogleSheets/problem_picker_background.js',
     'IdCardServiceInfo/status_lookup_background.js',
+    'FsspRegistrySearch/fssp_registry_search_background.js',
 ]
 
 
