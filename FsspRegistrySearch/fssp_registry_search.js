@@ -13,13 +13,34 @@
     const LIST_PAGE_SIZE = 300;
     const DETAIL_PAGE_SIZE = 2000;
     const REQUEST_CONCURRENCY = 4;
-    const FIELD_DEFINITIONS = Object.freeze([
-        { key: 'regNumIp', field: 'RegNumIP', label: 'Номер ИП' },
-        { key: 'fullName', field: 'FullName', label: 'ФИО' },
-        { key: 'birthDay', field: 'BirthDay', label: 'Д.р. должника' },
-        { key: 'edNumber', field: 'EDNumber', label: 'Номер ИД' },
-        { key: 'statusName', field: 'StatusName', label: 'Статус' }
-    ]);
+    const FIELD_LABELS = Object.freeze({
+        Id: 'Идентификатор записи', StatusName: 'Статус', RegNumIP: 'Регистрационный номер ИП',
+        FullName: 'Должник', SummDebt: 'Сумма долга', Claimant: 'Взыскатель', BirthDay: 'Д.р. должника',
+        EDNumber: 'Номер ИД', DNumber: 'Номер дела', DepartmentOSP: 'ОСП',
+        EffectiveDate: 'Дата вступления решения', IssueDate: 'Дата выдачи ИД', StartDate: 'Дата возбуждения',
+        EndDate: 'Дата завершения ИП', Article: 'Статья', Paragraph: 'Пункт', SubParagraph: 'Подпункт',
+        SpiShortName: 'СПИ', ReasonFail: 'Причина', FSSPReestrId: 'Идентификатор реестра',
+        FSSPReestrTypeId: 'Идентификатор типа реестра', TypeName: 'Тип реестра',
+        EmployeeId: 'Идентификатор пользователя', FileName: 'Имя файла', CreateDate: 'Дата создания',
+        EmployeeFullName: 'Пользователь', LastProcessing: 'Дата проведения', ClaimantInn: 'ИНН взыскателя',
+        ClaimantName: 'Имя взыскателя', AddDate: 'Дата добавления', EDocId: 'Идентификатор электронного документа'
+    });
+    const END_FIELDS = 'Id StatusName RegNumIP FullName SummDebt Claimant BirthDay EDNumber DNumber DepartmentOSP EffectiveDate IssueDate StartDate EndDate Article Paragraph SubParagraph SpiShortName FSSPReestrId EDocId AddDate';
+    const REGISTRY_TYPES = Object.freeze([
+        { id: '2', name: 'Сведения об окончании факт и прекращение', fields: END_FIELDS },
+        { id: '3', name: 'Сведения об окончании БИ', fields: END_FIELDS },
+        { id: '1', name: 'Реестр возбуждение ИП', fields: 'Id StatusName RegNumIP StartDate FullName SummDebt Claimant BirthDay EDNumber DepartmentOSP EffectiveDate IssueDate ReasonFail SpiShortName DNumber EDocId AddDate' }
+    ].map((type) => ({ ...type, fields: type.fields.split(' ').map((field) => ({
+        key: field, field,
+        label: type.id === '1' && field === 'EDNumber' ? 'Номер дела' :
+            type.id === '1' && field === 'DepartmentOSP' ? 'Подразделение ОСП' : FIELD_LABELS[field]
+    })) })));
+    const FILTER_FIELDS = 'Id TypeName StatusName FileName CreateDate EmployeeFullName LastProcessing ClaimantInn ClaimantName'.split(' ');
+
+    function fieldsFor(element) {
+        const typeId = element.closest('[data-registry-type]')?.dataset.registryType;
+        return REGISTRY_TYPES.find((type) => type.id === typeId).fields;
+    }
 
     let activeRun = null;
     let toolbarObserver = null;
@@ -69,7 +90,8 @@
                 color: var(--fssp-search-ink);
             }
             #${MODAL_ID} .dup-fssp-registry-search-dialog {
-                width: min(1120px, calc(100vw - 16px));
+                width: calc(100vw - 16px);
+                box-sizing: border-box;
                 height: calc(100vh - 16px);
                 max-height: none;
                 display: flex;
@@ -128,7 +150,7 @@
                 min-height: 0;
                 display: flex;
                 flex-direction: column;
-                overflow: hidden;
+                overflow: auto;
                 padding: 14px 20px 16px;
             }
             #${MODAL_ID} .dup-fssp-registry-search-table-wrap {
@@ -138,8 +160,36 @@
                 background: #fff;
             }
             #${MODAL_ID} .dup-fssp-registry-search-input-wrap {
-                flex: 0 1 auto;
-                max-height: 220px;
+                max-height: 180px;
+            }
+            #${MODAL_ID} .dup-fssp-registry-search-settings { flex: 0 0 auto; min-width: 0; }
+            #${MODAL_ID} .dup-fssp-registry-search-settings > summary {
+                cursor: pointer; padding: 8px 10px; background: #e8f1ed;
+                border: 1px solid var(--fssp-search-line); color: #29453b; font-weight: 600; list-style: none;
+            }
+            #${MODAL_ID} .dup-fssp-registry-search-settings > summary::-webkit-details-marker { display: none; }
+            #${MODAL_ID} .dup-fssp-registry-search-settings > summary::before { content: '▸'; display: inline-block; width: 18px; }
+            #${MODAL_ID} .dup-fssp-registry-search-settings[open] > summary::before { content: '▾'; }
+            #${MODAL_ID} .dup-fssp-registry-search-settings + .dup-fssp-registry-search-settings { margin-top: 6px; }
+            #${MODAL_ID} .dup-fssp-registry-search-filters {
+                display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+                gap: 10px; padding: 10px; max-height: 190px; overflow: auto;
+            }
+            #${MODAL_ID} .dup-fssp-registry-search-filters label { min-width: 0; font-size: 12px; }
+            #${MODAL_ID} .dup-fssp-registry-search-date-range { display: flex; gap: 4px; }
+            #${MODAL_ID} .dup-fssp-registry-search-date-range input { min-width: 0; padding: 3px; }
+            #${MODAL_ID} .dup-fssp-registry-search-filters select {
+                width: 100%; height: 31px; margin-top: 4px; border: 1px solid #bdcbc6; background: #fff;
+            }
+            #${MODAL_ID} .dup-fssp-registry-search-table-wrap,
+            #${MODAL_ID} .dup-fssp-registry-search-group-table-wrap { overscroll-behavior: contain; }
+            #${MODAL_ID} .dup-fssp-registry-search-input-table,
+            #${MODAL_ID} .dup-fssp-registry-search-results-table { width: max-content; min-width: 100%; }
+            #${MODAL_ID} .dup-fssp-registry-search-input-table th:not(:first-child),
+            #${MODAL_ID} .dup-fssp-registry-search-input-table td:not(:first-child),
+            #${MODAL_ID} .dup-fssp-registry-search-results-table th:not(:first-child),
+            #${MODAL_ID} .dup-fssp-registry-search-results-table td:not(:first-child) {
+                width: 180px; min-width: 180px; max-width: 180px;
             }
             #${MODAL_ID} .dup-fssp-registry-search-results {
                 flex: 1 1 auto;
@@ -470,7 +520,7 @@
             lastInput = targetInput;
         });
         const lastRow = tbody.lastElementChild;
-        if (FIELD_DEFINITIONS.some((field) => normalizeText(lastRow.querySelector(`input[data-field="${field.key}"]`).value))) {
+        if (fieldsFor(tbody).some((field) => normalizeText(lastRow.querySelector(`input[data-field="${field.key}"]`).value))) {
             appendInputRow(tbody, false);
         }
         updateRowNumbers(tbody);
@@ -485,17 +535,99 @@
         });
     }
 
+    function scrollLocalBlock(event) {
+        if (event.ctrlKey) return;
+        const block = event.target.closest('.dup-fssp-registry-search-table-wrap, .dup-fssp-registry-search-group-table-wrap, .dup-fssp-registry-search-filters');
+        if (!block) return;
+        const horizontal = event.shiftKey || Math.abs(event.deltaX) > Math.abs(event.deltaY) || block.scrollHeight <= block.clientHeight;
+        const scale = event.deltaMode === 1 ? 20 : event.deltaMode === 2 ? block.clientWidth : 1;
+        if (horizontal && block.scrollWidth > block.clientWidth) {
+            block.scrollLeft += (event.deltaX || event.deltaY) * scale;
+        } else if (block.scrollHeight > block.clientHeight) {
+            block.scrollTop += event.deltaY * scale;
+        } else return;
+        event.preventDefault();
+        event.stopPropagation();
+    }
+
+    function populateRegistryFilters(modal) {
+        const container = modal.querySelector('.dup-fssp-registry-search-filters');
+        container.replaceChildren();
+        FILTER_FIELDS.forEach((field) => {
+            const source = document.getElementById(`gs_list_${field}`);
+            const label = document.createElement('label');
+            label.textContent = field === 'Id' ? 'Идентификатор реестра' : FIELD_LABELS[field];
+            const control = document.createElement(source?.tagName === 'SELECT' ? 'select' : 'input');
+            control.dataset.registryFilter = field;
+            control.dataset.operator = source?.tagName === 'SELECT' ? 'eq' : 'cn';
+            if (control.tagName === 'SELECT') {
+                control.add(new Option('Все', ''));
+                Array.from(source.options).forEach((option) => {
+                    if (option.value) control.add(new Option(option.text, option.value));
+                });
+            } else {
+                control.type = 'text';
+            }
+            control.value = source?.value || '';
+            if (field === 'CreateDate' || field === 'LastProcessing') {
+                const range = document.createElement('span');
+                range.className = 'dup-fssp-registry-search-date-range';
+                const end = document.createElement('input');
+                control.type = end.type = 'date';
+                end.dataset.registryFilterEnd = field;
+                control.setAttribute('aria-label', `${label.textContent}: начало периода`);
+                end.setAttribute('aria-label', `${label.textContent}: конец периода`);
+                const dates = (source?.value || '').match(/\d{2}\.\d{2}\.\d{4}/g) || [];
+                const iso = (value) => value ? value.split('.').reverse().join('-') : '';
+                control.value = iso(dates[0]);
+                end.value = iso(dates[1] || dates[0]);
+                range.append(control, end);
+                label.appendChild(range);
+            } else label.appendChild(control);
+            container.appendChild(label);
+        });
+    }
+
+    function readRegistryFilters(modal) {
+        return Array.from(modal.querySelectorAll('[data-registry-filter]')).flatMap((control) => {
+            let data = normalizeText(control.value);
+            if (control.type === 'date') {
+                const end = modal.querySelector(`[data-registry-filter-end="${control.dataset.registryFilter}"]`).value;
+                const date = (value) => value.split('-').reverse().join('.');
+                data = data || end ? `${date(data || end)}-${date(end || data)}` : '';
+            }
+            return data ? [{ field: control.dataset.registryFilter, op: control.dataset.operator, data }] : [];
+        });
+    }
+
+    function searchGridState(gridState, run) {
+        const postData = { ...gridState.postData };
+        // Replace page filters with the independent snapshot from the dialog.
+        FILTER_FIELDS.forEach((field) => { delete postData[field]; });
+        delete postData.filters;
+        delete postData.searchField;
+        delete postData.searchOper;
+        delete postData.searchString;
+        const types = [...new Set(run.debtors.map((debtor) => debtor.typeId))];
+        postData._search = true;
+        postData.filters = JSON.stringify({ groupOp: 'AND', rules: run.filters, groups: [{
+            groupOp: 'OR', rules: types.map((id) => ({ field: 'TypeName', op: 'eq', data: REGISTRY_TYPES.find((type) => type.id === id).name }))
+        }] });
+        return { ...gridState, postData };
+    }
+
     function appendInputRow(tbody, updateNumbers = true) {
         const row = document.createElement('tr');
         row.className = ROW_CLASS;
         const indexCell = document.createElement('td');
         indexCell.className = 'dup-fssp-registry-search-index';
         row.appendChild(indexCell);
-        FIELD_DEFINITIONS.forEach((field) => row.appendChild(createInputCell(field)));
+        const fields = fieldsFor(tbody);
+        fields.forEach((field) => row.appendChild(createInputCell(field)));
         row.addEventListener('input', () => {
             const rows = Array.from(tbody.querySelectorAll(`tr.${ROW_CLASS}`));
             if (rows[rows.length - 1] !== row) return;
-            const hasValue = FIELD_DEFINITIONS.some((field) => {
+            const hasValue = fields.some((field) => {
                 const input = row.querySelector(`input[data-field="${field.key}"]`);
                 return normalizeText(input && input.value) !== '';
             });
@@ -522,17 +654,24 @@
                 <header class="dup-fssp-registry-search-header">
                     <div class="dup-fssp-registry-search-heading">
                         <h2 id="dup-fssp-registry-search-title">Найти ИД в реестрах</h2>
-                        <div class="dup-fssp-registry-search-subtitle">Поиск пройдёт по всем страницам текущего отфильтрованного списка. Поля одной строки проверяются вместе. Список из одного столбца Excel можно вставить через Ctrl+V в нужное поле — каждое значение попадёт в отдельную строку.</div>
+                        <div class="dup-fssp-registry-search-subtitle">Общие фильтры действуют на все три типа. Условия каждого блока ищут только в своём типе реестра. Поля одной строки проверяются вместе; null означает пустое значение. Ctrl+V вставляет список из одного столбца Excel. Колесо прокручивает блок под курсором, Shift+колесо — по горизонтали. Дополнительные скрытые поля расположены в конце таблиц.</div>
                     </div>
                     <button type="button" class="dup-fssp-registry-search-close" aria-label="Закрыть окно">×</button>
                 </header>
                 <div class="dup-fssp-registry-search-body">
-                    <div class="dup-fssp-registry-search-table-wrap dup-fssp-registry-search-input-wrap">
+                    <details class="dup-fssp-registry-search-settings dup-fssp-registry-search-filter-section" open>
+                        <summary>В каких реестрах искать — общие фильтры</summary>
+                        <div class="dup-fssp-registry-search-filters"></div>
+                    </details>
+                    ${REGISTRY_TYPES.map((type) => `<details class="dup-fssp-registry-search-settings" data-registry-type="${type.id}" open>
+                        <summary>${type.name}</summary>
+                    <div class="dup-fssp-registry-search-table-wrap dup-fssp-registry-search-input-wrap" tabindex="0" aria-label="Условия: ${type.name}">
                         <table class="dup-fssp-registry-search-input-table">
-                            <thead><tr><th>№</th>${FIELD_DEFINITIONS.map((field) => `<th>${field.label}</th>`).join('')}</tr></thead>
+                            <thead><tr><th>№</th>${type.fields.map((field) => `<th>${field.label}</th>`).join('')}</tr></thead>
                             <tbody></tbody>
                         </table>
                     </div>
+                    </details>`).join('')}
                     <div class="dup-fssp-registry-search-footer">
                         <button type="button" class="dup-fssp-registry-search-action dup-fssp-registry-search-export" disabled>Выгрузить в Excel</button>
                         <button type="button" class="dup-fssp-registry-search-action dup-fssp-registry-search-cancel">Закрыть</button>
@@ -558,8 +697,8 @@
             </section>
         `;
         (document.body || document.documentElement).appendChild(modal);
-        const tbody = modal.querySelector('.dup-fssp-registry-search-input-table tbody');
-        appendInputRow(tbody);
+        modal.querySelectorAll('.dup-fssp-registry-search-input-table tbody').forEach((tbody) => appendInputRow(tbody));
+        modal.addEventListener('wheel', scrollLocalBlock, { passive: false });
         renderSearchResults(modal, []);
         modal.querySelector('.dup-fssp-registry-search-results-wrap').addEventListener('contextmenu', (event) => {
             const cell = event.target.closest('.dup-fssp-registry-search-results-table tbody td');
@@ -621,9 +760,12 @@
     }
 
     function resetModal(modal) {
-        const tbody = modal.querySelector('.dup-fssp-registry-search-input-table tbody');
-        tbody.replaceChildren();
-        appendInputRow(tbody);
+        modal.querySelectorAll('.dup-fssp-registry-search-input-table tbody').forEach((tbody) => {
+            tbody.replaceChildren();
+            appendInputRow(tbody);
+        });
+        modal.querySelectorAll('.dup-fssp-registry-search-settings').forEach((block) => { block.open = true; });
+        populateRegistryFilters(modal);
         renderSearchResults(modal, []);
         modal.querySelector('.dup-fssp-registry-search-progress').hidden = true;
         modal.querySelector('.dup-fssp-registry-search-notice').textContent = '';
@@ -681,24 +823,26 @@
     function readDebtors(modal) {
         return Array.from(modal.querySelectorAll(`tbody tr.${ROW_CLASS}`)).map((row, index) => {
             const values = {};
-            FIELD_DEFINITIONS.forEach((field) => {
+            const fields = fieldsFor(row);
+            fields.forEach((field) => {
                 const input = row.querySelector(`input[data-field="${field.key}"]`);
                 values[field.key] = normalizeText(input && input.value);
             });
             const hasCriteria = Object.values(values).some(Boolean);
-            return hasCriteria ? { index, row, values, matches: new Map() } : null;
+            return hasCriteria ? { index, row, values, fields, typeId: row.closest('[data-registry-type]').dataset.registryType, matches: new Map() } : null;
         }).filter(Boolean);
     }
 
     function lockDebtorRows(modal, debtors) {
-        const tbody = modal.querySelector('.dup-fssp-registry-search-input-table tbody');
-        Array.from(tbody.querySelectorAll(`tr.${ROW_CLASS}`)).forEach((row) => {
-            if (!debtors.some((debtor) => debtor.row === row)) row.remove();
+        modal.querySelectorAll('.dup-fssp-registry-search-input-table tbody').forEach((tbody) => {
+            Array.from(tbody.querySelectorAll(`tr.${ROW_CLASS}`)).forEach((row) => {
+                if (!debtors.some((debtor) => debtor.row === row)) row.remove();
+            });
+            updateRowNumbers(tbody);
         });
         debtors.forEach((debtor) => {
             debtor.row.querySelectorAll('input').forEach((input) => { input.readOnly = true; });
         });
-        updateRowNumbers(tbody);
         renderSearchResults(modal, debtors);
     }
 
@@ -732,9 +876,9 @@
                 group.className = 'dup-fssp-registry-search-result-group';
                 const summary = document.createElement('summary');
                 const criteria = document.createElement('span');
-                const labels = FIELD_DEFINITIONS.filter((definition) => debtor.values[definition.key])
+                const labels = debtor.fields.filter((definition) => debtor.values[definition.key])
                     .map((definition) => `${definition.label}: ${debtor.values[definition.key]}`);
-                criteria.textContent = `${queryIndex + 1}. ${labels.join(' · ')}`;
+                criteria.textContent = `${queryIndex + 1}. ${REGISTRY_TYPES.find((type) => type.id === debtor.typeId).name} · ${labels.join(' · ')}`;
                 summary.appendChild(criteria);
                 const groupCount = document.createElement('span');
                 groupCount.className = 'dup-fssp-registry-search-group-count';
@@ -745,7 +889,7 @@
                 tableWrap.className = 'dup-fssp-registry-search-group-table-wrap';
                 const table = document.createElement('table');
                 table.className = 'dup-fssp-registry-search-results-table';
-                table.innerHTML = `<thead><tr><th>№</th>${FIELD_DEFINITIONS.map((field) => `<th>${field.label}</th>`).join('')}<th>ID реестра</th></tr></thead><tbody></tbody>`;
+                table.innerHTML = `<thead><tr><th>№</th>${debtor.fields.map((field) => `<th>${field.label}</th>`).join('')}<th>Идентификатор реестра</th></tr></thead><tbody></tbody>`;
                 tableWrap.appendChild(table);
                 group.appendChild(tableWrap);
                 container.appendChild(group);
@@ -761,7 +905,7 @@
                 const emptyRow = document.createElement('tr');
                 emptyRow.className = 'dup-fssp-registry-search-results-empty';
                 const emptyCell = document.createElement('td');
-                emptyCell.colSpan = FIELD_DEFINITIONS.length + 2;
+                emptyCell.colSpan = debtor.fields.length + 2;
                 emptyCell.textContent = emptyMessage;
                 emptyRow.appendChild(emptyCell);
                 tbody.appendChild(emptyRow);
@@ -774,7 +918,7 @@
                 indexCell.className = 'dup-fssp-registry-search-index';
                 indexCell.textContent = String(index + 1);
                 row.appendChild(indexCell);
-                FIELD_DEFINITIONS.forEach((definition) => {
+                debtor.fields.forEach((definition) => {
                     const cell = document.createElement('td');
                     cell.className = 'dup-fssp-registry-search-result-value';
                     cell.textContent = normalizeText(match.values && match.values[definition.key]) || '—';
@@ -859,7 +1003,7 @@
     }
 
     function buildSearchWorkbook(debtors) {
-        const fields = new Set(FIELD_DEFINITIONS.map((definition) => definition.field));
+        const fields = new Set(debtors.flatMap((debtor) => debtor.fields.map((definition) => definition.field)));
         debtors.forEach((debtor) => debtor.matches.forEach((match) => {
             Object.keys(match.sourceValues || {}).forEach((field) => fields.add(field));
         }));
@@ -867,8 +1011,7 @@
         const columnCount = sourceFields.length + 3;
         if (columnCount > 16384) throw new Error('Результаты превышают допустимое число столбцов листа Excel.');
         const lastColumn = excelColumnName(columnCount - 1);
-        const labels = new Map(FIELD_DEFINITIONS.map((definition) => [definition.field, definition.label]));
-        const headers = ['Параметры поиска', '№', ...sourceFields.map((field) => labels.get(field) || field), 'ID реестра'];
+        const headers = ['Параметры поиска', '№', ...sourceFields.map((field) => field === 'EDNumber' ? 'Номер ИД / номер дела (возбуждение ИП)' : FIELD_LABELS[field] || field), 'Идентификатор реестра'];
         const rows = [];
         const links = [];
         const linkRelations = [];
@@ -882,7 +1025,7 @@
         appendRow(headers, 'ht="30" customHeight="1"', 1);
         debtors.forEach((debtor) => {
             const matches = sortedMatches(debtor);
-            const criteria = FIELD_DEFINITIONS.filter((field) => debtor.values[field.key])
+            const criteria = REGISTRY_TYPES.find((type) => type.id === debtor.typeId).name + ' · ' + debtor.fields.filter((field) => debtor.values[field.key])
                 .map((field) => `${field.label}: ${debtor.values[field.key]}`).join(' · ');
             if (!matches.length) {
                 appendRow([criteria, ...Array(columnCount - 1).fill('')]);
@@ -1008,6 +1151,7 @@
             seenRegistryIds.add(registryId);
             registries.push({
                 registryId,
+                typeId: normalizeText(cell.FSSPReestrTypeId),
                 typeName: normalizeText(cell.TypeName),
                 statusName: normalizeText(cell.StatusName)
             });
@@ -1031,7 +1175,8 @@
             const json = await fetchJson(buildRequestUrl(endpoint, { ...baseParams, page }), run.controller.signal);
             totalPages = Math.max(1, Number(json && json.total || totalPages));
             run.totalPages = totalPages;
-            const registries = extractRegistryPageRows(json, seenRegistryIds);
+            const registries = extractRegistryPageRows(json, seenRegistryIds).filter((registry) =>
+                run.debtors.some((debtor) => registryMatchesType(registry, debtor.typeId)));
             run.discovered += registries.length;
             if (registries.length) {
                 setNotice(modal, `Страница ${page} из ${totalPages}: проверяю ${registries.length} реестров.`);
@@ -1067,7 +1212,7 @@
     }
 
     function debtorMatchesCell(debtor, cell) {
-        return FIELD_DEFINITIONS.every((definition) => {
+        return debtor.fields.every((definition) => {
             const query = normalizeMatchValue(debtor.values[definition.key]);
             if (!query) return true;
             const actual = normalizeMatchValue(cell && cell[definition.field]);
@@ -1076,21 +1221,27 @@
         });
     }
 
+    function registryMatchesType(registry, typeId) {
+        if (registry.typeId) return registry.typeId === typeId;
+        return registry.typeName === REGISTRY_TYPES.find((type) => type.id === typeId)?.name;
+    }
+
     function isNoDataRegistry(registry) {
         const status = normalizeMatchValue(registry && registry.statusName);
         return status === 'проведен (нет данных)' || status === 'проведено (нет данных)';
     }
 
     async function inspectRegistry(registry, run, modal) {
-        if (isNoDataRegistry(registry)) return;
+        const debtors = run.debtors.filter((debtor) => registryMatchesType(registry, debtor.typeId));
+        if (isNoDataRegistry(registry) || !debtors.length) return;
         const registryData = await collectRegistryRows(registry.registryId, run);
         if (!registryData.rows.length) return;
         let resultsChanged = false;
-        run.debtors.forEach((debtor) => {
+        debtors.forEach((debtor) => {
             registryData.rows.forEach((match) => {
                 if (!debtorMatchesCell(debtor, match.cell)) return;
                 const values = {};
-                FIELD_DEFINITIONS.forEach((definition) => {
+                debtor.fields.forEach((definition) => {
                     values[definition.key] = normalizeText(match.cell && match.cell[definition.field]);
                 });
                 debtor.matches.set(`${registry.registryId}:${match.position}`, {
@@ -1147,7 +1298,7 @@
             setNotice(modal, 'Читаю текущие фильтры списка…');
             setProgress(modal, 0, 1, 'Подготовка поиска', '');
             const gridState = await getGridState();
-            const result = await scanFilteredRegistryPages(gridState, run, modal);
+            const result = await scanFilteredRegistryPages(searchGridState(gridState, run), run, modal);
             if (!result.registryCount) {
                 run.status = 'complete';
                 renderSearchResults(modal, run.debtors, 'По текущим фильтрам реестры не найдены.');
@@ -1198,14 +1349,18 @@
 
     function startSearch(modal) {
         if (activeRun && (activeRun.status === 'running' || activeRun.status === 'paused')) return;
-        const debtors = readDebtors(modal);
+        const filters = readRegistryFilters(modal);
+        const typeFilter = filters.find((rule) => rule.field === 'TypeName');
+        const debtors = readDebtors(modal).filter((debtor) => !typeFilter || REGISTRY_TYPES.find((type) => type.id === debtor.typeId).name === typeFilter.data);
         if (!debtors.length) {
-            setNotice(modal, 'Введите хотя бы одно поле должника.', 'error');
-            const firstInput = modal.querySelector('input');
+            setNotice(modal, 'Введите хотя бы одно условие поиска в блоке выбранного типа реестра.', 'error');
+            const firstInput = modal.querySelector('.dup-fssp-registry-search-input-table input');
             if (firstInput) firstInput.focus();
             return;
         }
         lockDebtorRows(modal, debtors);
+        modal.querySelectorAll('.dup-fssp-registry-search-settings').forEach((block) => { block.open = false; });
+        modal.querySelectorAll('[data-registry-filter], [data-registry-filter-end]').forEach((control) => { control.disabled = true; });
         modal.querySelector('.dup-fssp-registry-search-submit').disabled = true;
         const stopButton = modal.querySelector('.dup-fssp-registry-search-stop');
         stopButton.hidden = false;
@@ -1219,6 +1374,7 @@
             pauseWaiters: [],
             controller: new AbortController(),
             debtors,
+            filters,
             completed: 0,
             errorCount: 0,
             discovered: 0,
