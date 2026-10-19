@@ -15001,7 +15001,8 @@
     const columnCodeName = getManualGridColumnCodeName(sortableEl);
     if (!columnCodeName) return '';
 
-    sortableEl.title = columnCodeName;
+    const headerCaption = getManualGridHeaderCaption(sortableEl);
+    sortableEl.title = headerCaption ? `${headerCaption}\n${columnCodeName}` : columnCodeName;
     return columnCodeName;
   }
 
