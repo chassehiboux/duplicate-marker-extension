@@ -1025,13 +1025,33 @@
         delete postData.searchString;
         const types = [...new Set(run.debtors.map((debtor) => debtor.typeId))];
         postData._search = true;
-        postData.filters = JSON.stringify({ groupOp: 'AND', rules: run.filters.filter((rule) => !Array.isArray(rule.data)), groups: [
-            ...run.filters.filter((rule) => Array.isArray(rule.data)).map((rule) => ({
-                groupOp: 'OR', rules: rule.data.map((data) => ({ ...rule, data }))
-            })), {
-            groupOp: 'OR', rules: types.map((id) => ({ field: 'TypeName', op: 'eq', data: REGISTRY_TYPES.find((type) => type.id === id).name }))
-        }] });
+        // This endpoint ignores nested groups. Send only flat AND conditions;
+        // multi-value OR filters are enforced against registry metadata below.
+        const rules = run.filters.flatMap((rule) => Array.isArray(rule.data)
+            ? rule.data.length === 1 ? [{ ...rule, data: rule.data[0] }] : [] : [rule]);
+        if (types.length === 1 && !rules.some((rule) => rule.field === 'TypeName')) {
+            rules.push({ field: 'TypeName', op: 'eq', data: REGISTRY_TYPES.find((type) => type.id === types[0]).name });
+        }
+        postData.filters = JSON.stringify({ groupOp: 'AND', rules });
         return { ...gridState, postData };
+    }
+
+    function registryMatchesFilters(cell, filters) {
+        const dateKey = (value) => {
+            const match = normalizeText(value).match(/^(\d{2})\.(\d{2})\.(\d{4})(?:\s|$)/);
+            return match ? `${match[3]}${match[2]}${match[1]}` : '';
+        };
+        return filters.every((rule) => {
+            const actual = normalizeMatchValue(cell?.[rule.field]);
+            if (Array.isArray(rule.data)) return !rule.data.length || rule.data.some((value) => actual === normalizeMatchValue(value));
+            if (rule.field === 'CreateDate' || rule.field === 'LastProcessing') {
+                const bounds = String(rule.data).split('-').map(dateKey);
+                const date = dateKey(cell?.[rule.field]);
+                return !!date && !!bounds[0] && date >= bounds[0] && date <= (bounds[1] || bounds[0]);
+            }
+            const expected = normalizeMatchValue(rule.data);
+            return rule.op === 'eq' ? actual === expected : actual.includes(expected);
+        });
     }
 
     function appendInputRow(tbody, updateNumbers = true) {
@@ -1626,7 +1646,8 @@
             const json = await fetchJson(buildRequestUrl(endpoint, { ...baseParams, page }), run.controller.signal);
             totalPages = Math.max(1, Number(json && json.total || totalPages));
             run.totalPages = totalPages;
-            const registries = extractRegistryPageRows(json, seenRegistryIds).filter((registry) =>
+            const filteredJson = { ...json, rows: (json.rows || []).filter((item) => registryMatchesFilters(item.cell, run.filters)) };
+            const registries = extractRegistryPageRows(filteredJson, seenRegistryIds).filter((registry) =>
                 run.debtors.some((debtor) => registryMatchesType(registry, debtor.typeId)));
             run.discovered += registries.length;
             if (registries.length) {

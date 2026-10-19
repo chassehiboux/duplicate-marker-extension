@@ -10,7 +10,7 @@ const context = vm.createContext({
     document: { readyState: 'loading', addEventListener() {} }
 });
 vm.runInContext(source.replace('    function initialize() {', `
-    globalThis.api = { REGISTRY_TYPES, FIELD_LABELS, debtorMatchesCell, registryMatchesType, searchGridState, readRegistryFilters, buildSearchWorkbook, registryFingerprint, serializeRun, inspectRegistry, buildMatchUrl, baseLabel, matchDepartments };
+    globalThis.api = { REGISTRY_TYPES, FIELD_LABELS, debtorMatchesCell, registryMatchesType, searchGridState, readRegistryFilters, buildSearchWorkbook, registryFingerprint, serializeRun, inspectRegistry, buildMatchUrl, baseLabel, matchDepartments, registryMatchesFilters };
     function initialize() {`), context);
 const api = context.api;
 const query = (typeId, values) => ({ typeId, values, fields: api.REGISTRY_TYPES.find(t => t.id === typeId).fields, matches: new Map() });
@@ -49,7 +49,7 @@ test('dialog filters replace page filters and restrict request to populated type
     const filters = JSON.parse(result.postData.filters);
     assert.equal(filters.groupOp, 'AND');
     assert.equal(filters.rules[0].data, 'Проведен');
-    assert.deepEqual(filters.groups[0].rules.map(r => r.data), [api.REGISTRY_TYPES[2].name, api.REGISTRY_TYPES[1].name]);
+    assert.equal(filters.groups, undefined);
     assert.equal(result.postData.StatusName, undefined);
     assert.equal(result.postData.searchString, undefined);
     assert.equal(result.postData.department, 6);
@@ -88,10 +88,26 @@ test('multiple filter values use OR within each AND group', () => {
         ]
     });
     const filters = JSON.parse(result.postData.filters);
-    assert.equal(filters.rules.length, 1);
-    assert.equal(filters.groups.length, 3);
-    assert.deepEqual(filters.groups[0].rules.map(r => r.data), ['Проведен', 'Не проведен']);
-    assert.equal(filters.groups[1].groupOp, 'OR');
+    assert.equal(filters.rules.length, 2);
+    assert.equal(filters.groups, undefined);
+    const rules = [{field:'StatusName',op:'eq',data:['Проведен','Не проведен']},{field:'ClaimantInn',op:'eq',data:['111','222']}];
+    assert.ok(api.registryMatchesFilters({StatusName:'Проведен',ClaimantInn:'222'},rules));
+    assert.equal(api.registryMatchesFilters({StatusName:'Отменён',ClaimantInn:'222'},rules),false);
+    assert.equal(api.registryMatchesFilters({StatusName:'Проведен',ClaimantInn:'333'},rules),false);
+});
+
+test('creation date and selected employee are both required, even if server ignores filters', () => {
+    const filters = [{field:'CreateDate',op:'cn',data:'16.10.2026-16.10.2026'},{field:'EmployeeFullName',op:'eq',data:['Золотова Екатерина Игоревна']}];
+    const good = {CreateDate:'16.10.2026',EmployeeFullName:'Золотова Екатерина Игоревна'};
+    assert.ok(api.registryMatchesFilters(good,filters));
+    assert.equal(api.registryMatchesFilters({...good,CreateDate:'15.10.2026'},filters),false);
+    assert.equal(api.registryMatchesFilters({...good,EmployeeFullName:'Другой пользователь'},filters),false);
+    assert.equal(api.registryMatchesFilters({...good,CreateDate:''},filters),false);
+    const request = JSON.parse(api.searchGridState({postData:{}},{debtors:[query('1',{}),query('2',{}),query('3',{})],filters}).postData.filters);
+    assert.equal(request.rules.length,2);
+    assert.equal(request.rules[1].data,'Золотова Екатерина Игоревна');
+    assert.equal(request.groups,undefined);
+    assert.ok(api.registryMatchesFilters({LastProcessing:'16.10.2026 12:30:00'},[{field:'LastProcessing',data:'15.10.2026-17.10.2026'}]));
 });
 
 test('fingerprints distinguish changed metadata and independent databases', () => {
