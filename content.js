@@ -12145,6 +12145,9 @@
     const cleaned = normalizeEpguRegistryText(value);
     if (!cleaned) return '';
     const lookup = cleaned.toLocaleLowerCase('ru-RU').replace(/"/g, '');
+    // В реестрах СУЭНКО этот взыскатель ошибочно содержит название «Восток».
+    if (lookup.includes('тюменский район') && lookup.includes('дударев') &&
+        lookup.includes('восток') && lookup.includes('2018')) return 'СУЭНКО';
     for (const [canonicalName, aliases] of EPGU_REGISTRY_CLAIMANT_ALIASES) {
       if (aliases.some((alias) => lookup.includes(alias))) return canonicalName;
     }
@@ -12314,7 +12317,11 @@
       ? cacheResult.registries
       : [];
     return registries.filter((registry) => {
-      const keys = Array.isArray(registry && registry.claimantKeys) ? registry.claimantKeys : [];
+      // Имя файла исправляет и старый кэш, где СУЭНКО уже связан с «Востоком».
+      const fileClaimant = canonicalizeEpguRegistryClaimant(parseEpguRegistryFileClaimant(registry && registry.fileName));
+      const keys = fileClaimant === 'СУЭНКО'
+        ? [fileClaimant]
+        : Array.isArray(registry && registry.claimantKeys) ? registry.claimantKeys : [];
       return claimantKey && keys.some((key) => (
         normalizeEpguRegistryStatusKey(canonicalizeEpguRegistryClaimant(key)) === claimantKey
       ));
