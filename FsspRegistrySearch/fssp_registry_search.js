@@ -13,6 +13,14 @@
     const LIST_PAGE_SIZE = 300;
     const DETAIL_PAGE_SIZE = 2000;
     const REQUEST_CONCURRENCY = 4;
+    const RESULT_PAGE_SIZE = 100;
+
+    function resultPage(debtor, page) {
+        const pageCount = Math.max(1, Math.ceil(debtor.matches.size / RESULT_PAGE_SIZE));
+        const current = Math.max(0, Math.min(page || 0, pageCount - 1));
+        const start = current * RESULT_PAGE_SIZE;
+        return { current, pageCount, start, matches: sortedMatches(debtor).slice(start, start + RESULT_PAGE_SIZE) };
+    }
     const FIELD_LABELS = Object.freeze({
         Id: 'Идентификатор записи', StatusName: 'Статус', RegNumIP: 'Регистрационный номер ИП',
         FullName: 'Должник', SummDebt: 'Сумма долга', Claimant: 'Взыскатель', BirthDay: 'Д.р. должника',
@@ -1395,16 +1403,48 @@
                 table.innerHTML = `<thead><tr><th>№</th>${debtor.fields.map((field) => `<th>${field.label}</th>`).join('')}<th>Идентификатор реестра</th></tr></thead><tbody></tbody>`;
                 tableWrap.appendChild(table);
                 group.appendChild(tableWrap);
+                const navigation = document.createElement('div');
+                navigation.className = 'dup-fssp-registry-search-pagination';
+                navigation.style.cssText = 'display:flex;align-items:center;gap:12px;padding:10px 0';
+                for (const [label, delta] of [['Назад', -1], ['Далее', 1]]) {
+                    const button = document.createElement('button');
+                    button.type = 'button';
+                    button.textContent = label;
+                    button.dataset.delta = String(delta);
+                    button.addEventListener('click', () => {
+                        group.dataset.page = String(Number(group.dataset.page || 0) + delta);
+                        renderSearchResults(modal, debtors);
+                    });
+                    navigation.appendChild(button);
+                    if (delta === -1) navigation.appendChild(document.createElement('span'));
+                }
+                group.appendChild(navigation);
+                group.addEventListener('toggle', () => renderSearchResults(modal, debtors));
                 container.appendChild(group);
             }
             group.querySelector('.dup-fssp-registry-search-group-count').textContent = `Найдено: ${debtor.matches.size}`;
             group.dataset.hasMatches = String(debtor.matches.size > 0);
             const tbody = group.querySelector('tbody');
+            // Closed groups retain only their summary, regardless of result size.
+            if (!group.open) {
+                if (tbody.children.length) tbody.replaceChildren();
+                delete group.dataset.matchCount;
+                return;
+            }
             // Keep the disclosure and its focus intact as other registries finish.
             const metadataRevision = String(debtor.metadataRevision || 0);
-            if (group.dataset.matchCount === String(debtor.matches.size) && group.dataset.metadataRevision === metadataRevision && debtor.matches.size > 0) return;
+            const pageNumber = String(group.dataset.page || 0);
+            if (group.dataset.matchCount === String(debtor.matches.size) && group.dataset.metadataRevision === metadataRevision && group.dataset.renderedPage === pageNumber && debtor.matches.size > 0) return;
             group.dataset.metadataRevision = metadataRevision;
             group.dataset.matchCount = String(debtor.matches.size);
+            group.dataset.renderedPage = pageNumber;
+            const page = resultPage(debtor, Number(pageNumber));
+            group.dataset.page = String(page.current);
+            group.dataset.renderedPage = String(page.current);
+            const navigation = group.querySelector('.dup-fssp-registry-search-pagination');
+            navigation.querySelector('span').textContent = `Страница ${page.current + 1} из ${page.pageCount} · по ${RESULT_PAGE_SIZE} строк`;
+            navigation.querySelector('[data-delta="-1"]').disabled = page.current === 0;
+            navigation.querySelector('[data-delta="1"]').disabled = page.current + 1 >= page.pageCount;
             tbody.replaceChildren();
             if (!debtor.matches.size) {
                 const emptyRow = document.createElement('tr');
@@ -1416,12 +1456,12 @@
                 tbody.appendChild(emptyRow);
                 return;
             }
-            sortedMatches(debtor).forEach((match, index) => {
+            page.matches.forEach((match, index) => {
                 const registryId = match.registryId;
                 const row = document.createElement('tr');
                 const indexCell = document.createElement('td');
                 indexCell.className = 'dup-fssp-registry-search-index';
-                indexCell.textContent = String(index + 1);
+                indexCell.textContent = String(page.start + index + 1);
                 row.appendChild(indexCell);
                 debtor.fields.forEach((definition) => {
                     const cell = document.createElement('td');

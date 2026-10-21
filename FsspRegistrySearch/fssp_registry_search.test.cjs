@@ -10,10 +10,67 @@ const context = vm.createContext({
     document: { readyState: 'loading', addEventListener() {} }
 });
 vm.runInContext(source.replace('    function initialize() {', `
+    globalThis.resultPage = resultPage;
+    globalThis.renderSearchResults = renderSearchResults;
     globalThis.api = { scrollLocalBlock, REGISTRY_TYPES, FIELD_LABELS, debtorMatchesCell, registryMatchesType, searchGridState, readRegistryFilters, buildSearchWorkbook, registryFingerprint, serializeRun, inspectRegistry, buildMatchUrl, baseLabel, matchDepartments, registryMatchesFilters };
     function initialize() {`), context);
 const api = context.api;
 const query = (typeId, values) => ({ typeId, values, fields: api.REGISTRY_TYPES.find(t => t.id === typeId).fields, matches: new Map() });
+
+test('21469 results create no closed-group rows and at most 100 open-group rows', () => {
+    class Element extends context.HTMLElement {
+        constructor(tag) { super(); this.tag = tag; this.children = []; this.dataset = {}; this.style = {}; this.listeners = {}; }
+        appendChild(child) { this.children.push(child); return child; }
+        replaceChildren(...children) { this.children = children; }
+        setAttribute() {}
+        addEventListener(type, callback) { this.listeners[type] = callback; }
+        set innerHTML(_) { this.children = [new Element('tbody')]; }
+        querySelector(selector) {
+            const matches = node => selector.startsWith('.') ? node.className === selector.slice(1)
+                : selector.startsWith('[data-delta=') ? node.dataset.delta === selector.match(/"([^"]+)"/)[1]
+                : node.tag === selector;
+            for (const child of this.children) {
+                if (matches(child)) return child;
+                const found = child.querySelector(selector);
+                if (found) return found;
+            }
+            return null;
+        }
+    }
+    const originalCreate = context.document.createElement;
+    context.document.createElement = tag => new Element(tag);
+    try {
+        const debtor = query('2', { FullName: 'Иванов' });
+        for (let i = 1; i <= 21469; i++) debtor.matches.set(String(i), { registryId: String(i), values: {} });
+        const modal = new Element('div');
+        for (const name of ['results-wrap', 'results-count', 'export']) {
+            const element = new Element('div');
+            element.className = `dup-fssp-registry-search-${name}`;
+            modal.appendChild(element);
+        }
+        context.renderSearchResults(modal, [debtor]);
+        const group = modal.children[0].children[0];
+        const tbody = group.querySelector('tbody');
+        assert.equal(tbody.children.length, 0);
+        group.open = true;
+        group.listeners.toggle();
+        assert.equal(tbody.children.length, 100);
+        assert.equal(tbody.children[0].children[0].textContent, '1');
+        group.querySelector('[data-delta="1"]').listeners.click();
+        assert.equal(tbody.children.length, 100);
+        assert.equal(tbody.children[0].children[0].textContent, '101');
+        group.dataset.page = '214';
+        context.renderSearchResults(modal, [debtor]);
+        assert.equal(tbody.children.length, 69);
+        assert.equal(group.querySelector('[data-delta="1"]').disabled, true);
+        assert.equal(tbody.children[68].children[0].textContent, '21469');
+        assert.equal(context.resultPage(debtor, 999).current, 214);
+        assert.equal(debtor.matches.size, 21469);
+        group.open = false;
+        group.listeners.toggle();
+        assert.equal(tbody.children.length, 0);
+    } finally { context.document.createElement = originalCreate; }
+});
 
 test('date criteria include both boundaries and ignore time in all agreed columns', () => {
     for (const type of api.REGISTRY_TYPES) {
