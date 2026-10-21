@@ -10,10 +10,47 @@ const context = vm.createContext({
     document: { readyState: 'loading', addEventListener() {} }
 });
 vm.runInContext(source.replace('    function initialize() {', `
-    globalThis.api = { REGISTRY_TYPES, FIELD_LABELS, debtorMatchesCell, registryMatchesType, searchGridState, readRegistryFilters, buildSearchWorkbook, registryFingerprint, serializeRun, inspectRegistry, buildMatchUrl, baseLabel, matchDepartments, registryMatchesFilters };
+    globalThis.api = { scrollLocalBlock, REGISTRY_TYPES, FIELD_LABELS, debtorMatchesCell, registryMatchesType, searchGridState, readRegistryFilters, buildSearchWorkbook, registryFingerprint, serializeRun, inspectRegistry, buildMatchUrl, baseLabel, matchDepartments, registryMatchesFilters };
     function initialize() {`), context);
 const api = context.api;
 const query = (typeId, values) => ({ typeId, values, fields: api.REGISTRY_TYPES.find(t => t.id === typeId).fields, matches: new Map() });
+
+test('date criteria include both boundaries and ignore time in all agreed columns', () => {
+    for (const type of api.REGISTRY_TYPES) {
+        for (const field of ['BirthDay', 'EffectiveDate', 'IssueDate', 'StartDate', 'EndDate', 'AddDate']) {
+            if (!type.fields.some(f => f.field === field)) continue;
+            const matches = (q, value) => api.debtorMatchesCell(query(type.id, { [field]: q }), { [field]: value });
+            for (const value of ['01.01.2026', '21.10.2026 23:59:59']) assert.ok(matches('01.01.2026 - 21.10.2026', value));
+            assert.equal(matches('01.01.2026-21.10.2026', '22.10.2026'), false);
+            assert.ok(matches('*21.10.2026', '21.10.2026 23:59:59'));
+            assert.equal(matches('*21.10.2026', '22.10.2026'), false);
+            assert.ok(matches('21.10.2026*', '21.10.2026'));
+            assert.equal(matches('21.10.2026*', '20.10.2026'), false);
+            assert.ok(matches('21.10.2026', '21.10.2026 12:00:00'));
+            assert.equal(matches('21.10.2026', '20.10.2026'), false);
+            for (const value of ['', null, '31.02.2026']) assert.equal(matches('*21.10.2026', value), false);
+            assert.equal(matches('31.02.2026*', '01.03.2026'), false);
+            assert.equal(matches('21.10.2026-01.01.2026', '20.10.2026'), false);
+            assert.ok(matches('29.02.2024', '29.02.2024'));
+            assert.ok(matches('null', null));
+            assert.ok(matches('2026', '21.10.2026'));
+        }
+    }
+});
+
+test('wheel over a wide result table scrolls results vertically and falls back to dialog body', () => {
+    const results = { scrollHeight: 800, clientHeight: 200, scrollTop: 0, scrollLeft: 0 };
+    const body = { scrollTop: 0, clientHeight: 600 };
+    const block = { closest: selector => selector.endsWith('results-wrap') ? results : selector.endsWith('search-body') ? body : {} };
+    const event = { target: { closest: () => block }, deltaY: 50, deltaX: 0, deltaMode: 0, shiftKey: false,
+        preventDefault() {}, stopPropagation() {} };
+    api.scrollLocalBlock(event);
+    assert.equal(results.scrollTop, 50);
+    assert.equal(results.scrollLeft, 0);
+    results.scrollHeight = 200;
+    api.scrollLocalBlock(event);
+    assert.equal(body.scrollTop, 50);
+});
 
 test('all observed payload fields are searchable, with registry column order preserved', () => {
     const end = 'Id StatusName RegNumIP FullName SummDebt Claimant BirthDay EDNumber DNumber DepartmentOSP EffectiveDate IssueDate StartDate EndDate Article Paragraph SubParagraph SpiShortName'.split(' ');

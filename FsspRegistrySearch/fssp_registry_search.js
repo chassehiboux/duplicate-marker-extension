@@ -52,6 +52,30 @@
             type.id === '1' && field === 'DepartmentOSP' ? 'Подразделение ОСП' : FIELD_LABELS[field]
     })) })));
     const FILTER_FIELDS = 'Id TypeName StatusName FileName CreateDate EmployeeFullName LastProcessing ClaimantInn ClaimantName'.split(' ');
+    const DATE_FIELDS = new Set(['BirthDay', 'EffectiveDate', 'IssueDate', 'StartDate', 'EndDate', 'AddDate']);
+
+    function calendarDay(value) {
+        const match = normalizeText(value).match(/^(\d{2})\.(\d{2})\.(\d{4})(?:\s|$)/);
+        if (!match) return null;
+        const [, day, month, year] = match.map(Number);
+        const date = new Date(0);
+        date.setUTCFullYear(year, month - 1, day);
+        if (year < 1 || date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
+        return year * 10000 + month * 100 + day;
+    }
+
+    function matchesDateQuery(query, actual) {
+        const date = '\\d{2}\\.\\d{2}\\.\\d{4}';
+        const range = query.match(new RegExp(`^(${date})\\s*-\\s*(${date})$`));
+        const before = query.match(new RegExp(`^\\*\\s*(${date})$`));
+        const after = query.match(new RegExp(`^(${date})\\s*\\*$`));
+        const exact = query.match(new RegExp(`^(${date})$`));
+        if (!range && !before && !after && !exact) return null;
+        const lower = before ? 0 : calendarDay((range || after || exact)[1]);
+        const upper = after ? Infinity : calendarDay(range ? range[2] : (before || exact)[1]);
+        const day = calendarDay(actual);
+        return lower !== null && upper !== null && day !== null && day >= lower && day <= upper;
+    }
 
     function fieldsFor(element) {
         const typeId = element.closest('[data-registry-type]')?.dataset.registryType;
@@ -795,6 +819,17 @@
         if (event.ctrlKey) return;
         const block = event.target.closest('.dup-fssp-registry-search-table-wrap, .dup-fssp-registry-search-group-table-wrap, .dup-fssp-registry-search-choice-list, .dup-fssp-registry-search-choices, .dup-fssp-registry-search-filters');
         if (!block) return;
+        if (block.closest('.dup-fssp-registry-search-results')) {
+            const results = block.closest('.dup-fssp-registry-search-results-wrap');
+            const vertical = results && results.scrollHeight > results.clientHeight
+                ? results : block.closest('.dup-fssp-registry-search-body');
+            if (!vertical) return;
+            const scale = event.deltaMode === 1 ? 20 : event.deltaMode === 2 ? vertical.clientHeight : 1;
+            vertical.scrollTop += event.deltaY * scale;
+            event.preventDefault();
+            event.stopPropagation();
+            return;
+        }
         const horizontal = event.shiftKey || Math.abs(event.deltaX) > Math.abs(event.deltaY) || block.scrollHeight <= block.clientHeight;
         const scale = event.deltaMode === 1 ? 20 : event.deltaMode === 2 ? block.clientWidth : 1;
         if (horizontal && block.scrollWidth > block.clientWidth) {
@@ -1093,6 +1128,7 @@
                     <div class="dup-fssp-registry-search-heading">
                         <h2 id="dup-fssp-registry-search-title">Найти ИД в реестрах</h2>
                         <div class="dup-fssp-registry-search-subtitle">Общие фильтры действуют на все три типа. Условия каждого блока ищут только в своём типе реестра. Поля одной строки проверяются вместе; null означает пустое значение. Ctrl+V вставляет список из одного столбца Excel. Колесо прокручивает блок под курсором, Shift+колесо — по горизонтали. Дополнительные скрытые поля расположены в конце таблиц.</div>
+                        <div class="dup-fssp-registry-search-subtitle">В полях дат условий: 01.01.2026-21.10.2026 — период; *21.10.2026 — до даты; 21.10.2026* — после даты; 21.10.2026 — конкретный день. Все границы включительно, время не учитывается. В результатах колесо прокручивает вертикально, горизонтально — полоса прокрутки.</div>
                     </div>
                     <button type="button" class="dup-fssp-registry-search-close" aria-label="Закрыть окно">×</button>
                 </header>
@@ -1689,6 +1725,10 @@
             if (!query) return true;
             const actual = normalizeMatchValue(cell && cell[definition.field]);
             if (query === 'null') return actual === '';
+            if (DATE_FIELDS.has(definition.field)) {
+                const matched = matchesDateQuery(query, actual);
+                if (matched !== null) return matched;
+            }
             return actual.includes(query);
         });
     }
