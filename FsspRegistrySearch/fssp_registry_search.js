@@ -145,17 +145,46 @@
             version: 1, status, departments: run.departments.map(({ active, ...department }) => department),
             departmentIndex: run.departmentIndex, checkedRegistries: [...run.checkedRegistries],
             registryDepartments: [...(run.registryDepartments || new Map())],
-            filters: run.filters, completed: run.completed, skipped: run.skipped, errorCount: run.errorCount,
+            filters: run.filters, completed: run.completed, completedDepartments: run.completedDepartments || 0, skipped: run.skipped, errorCount: run.errorCount,
             debtors: run.debtors.map((debtor) => ({ typeId: debtor.typeId, values: debtor.values, matches: [...debtor.matches] }))
         };
     }
 
-    async function saveRun(run, status) {
-        const response = await sendRuntimeMessage({ action: 'FSSP_SEARCH_SESSION_SET', state: serializeRun(run, status) });
-        if (!response?.success) throw new Error(response?.error || 'Не удалось сохранить поиск перед переходом.');
+    const SESSION_CHUNK_SIZE = 256 * 1024;
+    let sessionWrites = Promise.resolve();
+    async function sessionRequest(action, data = {}) {
+        const response = await sendRuntimeMessage({ action: `FSSP_SEARCH_SESSION_${action}`, ...data });
+        if (!response?.success) throw new Error(response?.error || 'Не удалось сохранить или восстановить результаты поиска.');
+        return response;
+    }
+
+    function saveRun(run, status) {
+        const snapshot = JSON.stringify(serializeRun(run, status));
+        const write = sessionWrites.catch(() => {}).then(async () => {
+            const count = Math.ceil(snapshot.length / SESSION_CHUNK_SIZE);
+            const { id } = await sessionRequest('BEGIN', { count });
+            for (let index = 0; index < count; index++) {
+                await sessionRequest('PART', { id, index, data: snapshot.slice(index * SESSION_CHUNK_SIZE, (index + 1) * SESSION_CHUNK_SIZE) });
+            }
+            await sessionRequest('COMMIT', { id });
+        });
+        sessionWrites = write;
+        return write;
+    }
+
+    async function loadSavedRun() {
+        const response = await sessionRequest('GET');
+        if (!response.state?.chunked) return response.state;
+        const { id, count } = response.state;
+        const parts = [];
+        for (let index = 0; index < count; index++) {
+            parts.push((await sessionRequest('READ_PART', { id, index })).data);
+        }
+        return JSON.parse(parts.join(''));
     }
 
     async function clearSavedRun() {
+        await sessionWrites.catch(() => {});
         const response = await sendRuntimeMessage({ action: 'FSSP_SEARCH_SESSION_CLEAR' });
         if (!response?.success) throw new Error(response?.error || 'Не удалось завершить временную сессию поиска.');
     }
@@ -197,7 +226,8 @@
         } catch (error) {
             if (activeRun !== run) return;
             run.status = 'failed';
-            setNotice(modal, error.message, 'error');
+            setProgress(modal, 0, 1, 'Поиск прерван — результат частичный', `Найдено ${countMatches(run.debtors)}`);
+            setNotice(modal, `${searchOutcome(run)} Причина: ${error.message}`, 'error');
             modal.querySelector('.dup-fssp-registry-search-submit').disabled = false;
             modal.querySelector('.dup-fssp-registry-search-stop').hidden = true;
         }
@@ -205,9 +235,7 @@
 
     async function restoreSearchSession() {
         try {
-            const response = await sendRuntimeMessage({ action: 'FSSP_SEARCH_SESSION_GET' });
-            if (!response?.success) throw new Error(response?.error || 'Не удалось прочитать состояние поиска.');
-            const state = response.state;
+            const state = await loadSavedRun();
             if (!state || !['running', 'navigating', 'paused', 'failed'].includes(state.status)) return;
             await waitFor(() => document.querySelector('#gs_list_TypeName') && currentDepartment(), 30000);
             const modal = ensureModal();
@@ -1607,7 +1635,7 @@
             const url = URL.createObjectURL(blob);
             const link = document.createElement('a');
             link.href = url;
-            link.download = `Поиск_ИД_в_реестрах_${new Date().toISOString().replace(/[:.]/g, '-')}.xlsx`;
+            link.download = `Поиск_ИД_в_реестрах_${activeRun.status === 'complete' ? 'полный' : 'частичный'}_${new Date().toISOString().replace(/[:.]/g, '-')}.xlsx`;
             modal.appendChild(link);
             try {
                 link.click();
@@ -1615,7 +1643,8 @@
                 link.remove();
                 window.setTimeout(() => URL.revokeObjectURL(url), 60000);
             }
-            setNotice(modal, `Выгружено совпадений: ${countMatches(activeRun.debtors)}. Файл содержит результаты на момент нажатия.`, 'success');
+            setNotice(modal, `Выгружено совпадений: ${countMatches(activeRun.debtors)}. ${searchOutcome(activeRun)}`,
+                activeRun.status === 'complete' ? 'success' : activeRun.status === 'failed' ? 'error' : undefined);
         } catch (error) {
             setNotice(modal, error && error.message ? error.message : 'Не удалось выгрузить результаты в Excel.', 'error');
         }
@@ -1830,6 +1859,14 @@
         return debtors.reduce((sum, debtor) => sum + debtor.matches.size, 0);
     }
 
+    function searchOutcome(run) {
+        const counts = `Полностью проверено департаментов: ${run.completedDepartments || 0} из ${run.departments.length}. Проверено реестров: ${run.completed || 0}.`;
+        if (run.status === 'complete') return `Поиск завершён. Результат полный. ${counts}`;
+        if (run.status === 'failed') return `Поиск прерван. Результат частичный. ${counts}`;
+        if (run.status === 'paused') return `Поиск на паузе. Результат частичный. ${counts}`;
+        return `Поиск ещё не завершён. Результат частичный. ${counts}`;
+    }
+
     async function scanRegistries(registries, run, modal, page, totalPages) {
         let cursor = 0;
         let pageCompleted = 0;
@@ -1871,9 +1908,11 @@
             const result = await scanFilteredRegistryPages(searchGridState(gridState, run), run, modal);
             if (run.controller.signal.aborted) return;
             await waitForRunResume(run);
+            run.completedDepartments = run.departmentIndex + 1;
             if (run.departmentIndex + 1 < run.departments.length) {
                 run.departmentIndex += 1;
-                await navigateDepartment(run, modal);
+                try { await navigateDepartment(run, modal); }
+                catch (error) { run.departmentIndex -= 1; throw error; }
                 return;
             }
             run.status = 'complete';
@@ -1881,14 +1920,15 @@
             renderSearchResults(modal, run.debtors, 'Совпадений не найдено.');
             const errorSuffix = run.errorCount ? ` Не удалось прочитать: ${run.errorCount}.` : '';
             setProgress(modal, result.totalPages, result.totalPages, 'Поиск завершён', `${result.registryCount} реестров`);
-            setNotice(modal, `Проверено департаментов: ${run.departments.length}. Найдено записей: ${found}. Пропущено ранее проверенных реестров: ${run.skipped}.${errorSuffix}`, run.errorCount ? 'error' : 'success');
-            await clearSavedRun();
+            setNotice(modal, `${searchOutcome(run)} Найдено записей: ${found}. Пропущено ранее проверенных реестров: ${run.skipped}.${errorSuffix}`, run.errorCount ? 'error' : 'success');
+            await clearSavedRun().catch((error) => console.warn('[FSSP search cleanup]', error));
         } catch (error) {
             if (isAbortError(error) || run.controller.signal.aborted) return;
             run.status = 'failed';
             run.controller.abort();
             await saveRun(run, 'failed').catch(() => {});
-            setNotice(modal, error && error.message ? error.message : 'Поиск завершился ошибкой.', 'error');
+            setProgress(modal, 0, 1, 'Поиск прерван — результат частичный', `Проверено ${run.completed} · найдено ${countMatches(run.debtors)}`);
+            setNotice(modal, `${searchOutcome(run)} Причина: ${error?.message || 'Неизвестная ошибка.'}`, 'error');
         } finally {
             if (activeRun === run && run.status !== 'running' && run.status !== 'paused') {
                 modal.querySelector('.dup-fssp-registry-search-submit').disabled = false;
