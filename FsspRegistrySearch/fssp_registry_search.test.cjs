@@ -5,12 +5,14 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(`${__dirname}/fssp_registry_search.js`, 'utf8');
 const context = vm.createContext({
-    URL, Blob, TextEncoder, setTimeout, HTMLElement: class {},
+    URL, Blob, TextEncoder, setTimeout, clearTimeout, AbortController, DOMException, HTMLElement: class {},
     window: { location: { origin: 'https://example.test', pathname: '/ovzid/fsspreestr' } },
     document: { readyState: 'loading', addEventListener() {} }
 });
 vm.runInContext(source.replace('    function initialize() {', `
     globalThis.resultPage = resultPage;
+    globalThis.fetchJson = fetchJson;
+    globalThis.waitForRetry = waitForRetry;
     globalThis.renderSearchResults = renderSearchResults;
     globalThis.api = { scrollLocalBlock, REGISTRY_TYPES, FIELD_LABELS, debtorMatchesCell, registryMatchesType, searchGridState, readRegistryFilters, buildSearchWorkbook, registryFingerprint, serializeRun, inspectRegistry, buildMatchUrl, baseLabel, matchDepartments, registryMatchesFilters };
     function initialize() {`), context);
@@ -221,10 +223,56 @@ test('only successfully read registries are remembered and skipped on the next d
     await api.inspectRegistry(registry, run, null);
     assert.equal(calls, 1);
     assert.equal(run.skipped, 1);
-    context.fetch = async () => { throw new Error('network failure'); };
+    context.fetch = async () => ({ ok: false, status: 403, text: async () => '' });
     const changed = { ...registry, lastProcessing: 'tomorrow' };
-    await assert.rejects(api.inspectRegistry(changed, run, null), /network failure/);
+    await assert.rejects(api.inspectRegistry(changed, run, null), /HTTP 403/);
     assert.equal(run.checkedRegistries.has(api.registryFingerprint(changed)), false);
+});
+
+test('network failures and server overload retry the same request beyond two attempts', async () => {
+    const urls = [];
+    const originalTimer = context.setTimeout;
+    context.setTimeout = (fn, delay) => setTimeout(fn, delay === 45000 ? delay : 0);
+    try {
+        context.fetch = async url => {
+            urls.push(url);
+            if (urls.length === 1) throw new TypeError('Failed to fetch');
+            if (urls.length === 2) return { ok: false, status: 503, text: async () => '' };
+            if (urls.length === 3) return { ok: false, status: 429, text: async () => '' };
+            return { ok: true, text: async () => '{"rows":[{"id":42}]}' };
+        };
+        const result = await context.fetchJson(new URL('https://example.test/registry'), new AbortController().signal);
+        assert.equal(urls.length, 4);
+        assert.equal(new Set(urls).size, 1);
+        assert.equal(result.rows[0].id, 42);
+        context.fetch = async () => ({ ok: false, status: 401, text: async () => '' });
+        await assert.rejects(context.fetchJson(new URL('https://example.test/registry'), new AbortController().signal), /HTTP 401/);
+    } finally { context.setTimeout = originalTimer; }
+});
+
+test('cancel interrupts retry backoff immediately', async () => {
+    const controller = new AbortController();
+    const waiting = context.waitForRetry(30000, controller.signal);
+    controller.abort();
+    await assert.rejects(waiting, error => error.name === 'AbortError');
+});
+
+test('a hung request times out and is retried without losing its URL', async () => {
+    const originalTimer = context.setTimeout;
+    let calls = 0;
+    context.setTimeout = fn => setTimeout(fn, 1);
+    context.fetch = async (url, options) => {
+        calls++;
+        if (calls === 1) return new Promise((resolve, reject) => {
+            options.signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+        });
+        return { ok: true, text: async () => '{"records":1}' };
+    };
+    try {
+        const result = await context.fetchJson(new URL('https://example.test/registry'), new AbortController().signal);
+        assert.equal(result.records, 1);
+        assert.equal(calls, 2);
+    } finally { context.setTimeout = originalTimer; }
 });
 
 test('checkpoint converts result Maps and registry Sets to portable JSON', () => {

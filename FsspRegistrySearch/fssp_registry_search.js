@@ -1681,30 +1681,66 @@
         return url;
     }
 
-    async function fetchJson(url, signal) {
-        let lastError = null;
-        for (let attempt = 1; attempt <= 2; attempt += 1) {
+    function waitForRetry(delay, signal) {
+        return new Promise((resolve, reject) => {
+            const cancel = () => { clearTimeout(timer); reject(new DOMException('Aborted', 'AbortError')); };
+            const timer = setTimeout(() => { signal.removeEventListener('abort', cancel); resolve(); }, delay);
+            if (signal.aborted) cancel();
+            else signal.addEventListener('abort', cancel, { once: true });
+        });
+    }
+
+    async function fetchJson(url, signal, run) {
+        for (let attempt = 1; ; attempt += 1) {
+            if (run) await waitForRunResume(run);
+            if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+            const controller = new AbortController();
+            const abort = () => controller.abort();
+            signal.addEventListener('abort', abort, { once: true });
+            const timeout = setTimeout(abort, 45000);
+            let failure;
             try {
                 const response = await fetch(url.toString(), {
                     method: 'GET',
                     credentials: 'include',
                     headers: { 'X-Requested-With': 'XMLHttpRequest' },
-                    signal
+                    signal: controller.signal
                 });
                 const responseText = await response.text();
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                if (!response.ok) {
+                    const error = new Error(`HTTP ${response.status}`);
+                    error.permanent = response.status >= 400 && response.status < 500 && ![408, 429].includes(response.status);
+                    throw error;
+                }
+                if (response.redirected && /\/login(?:\/|\?|$)/i.test(new URL(response.url).pathname)) {
+                    const error = new Error('Сеанс сайта завершён. Войдите в систему для продолжения поиска.');
+                    error.permanent = true;
+                    throw error;
+                }
                 try {
-                    return JSON.parse(responseText);
+                    const json = JSON.parse(responseText);
+                    if (attempt > 1 && activeRun === run) {
+                        const modal = document.getElementById(MODAL_ID);
+                        if (modal) setNotice(modal, 'Связь восстановлена. Поиск продолжается без пропуска реестров.');
+                    }
+                    return json;
                 } catch (error) {
                     throw new Error('Пирамида вернула ответ не в формате JSON.');
                 }
             } catch (error) {
-                if (isAbortError(error)) throw error;
-                lastError = error;
-                if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 250));
+                if (signal.aborted || error.permanent) throw error;
+                failure = isAbortError(error) ? 'Сервер не ответил за 45 секунд.' : error.message;
+            } finally {
+                clearTimeout(timeout);
+                signal.removeEventListener('abort', abort);
             }
+            const delay = Math.min(30000, 1000 * 2 ** Math.min(attempt - 1, 5));
+            if (activeRun === run) {
+                const modal = document.getElementById(MODAL_ID);
+                if (modal) setNotice(modal, `Ожидаем восстановления связи. ${failure} Повтор ${attempt} через ${delay / 1000} с. Реестр не пропущен.`);
+            }
+            await waitForRetry(delay, signal);
         }
-        throw lastError || new Error('Запрос завершился ошибкой.');
     }
 
     function waitForRunResume(run) {
@@ -1748,7 +1784,7 @@
         for (let page = 1; page <= totalPages; page += 1) {
             await waitForRunResume(run);
             setProgress(modal, page - 1, totalPages, `Загружаю страницу ${page}`, `${page} / ${totalPages} стр.`);
-            const json = await fetchJson(buildRequestUrl(endpoint, { ...baseParams, page }), run.controller.signal);
+            const json = await fetchJson(buildRequestUrl(endpoint, { ...baseParams, page }), run.controller.signal, run);
             totalPages = Math.max(1, Number(json && json.total || totalPages));
             run.totalPages = totalPages;
             const filteredJson = { ...json, rows: (json.rows || []).filter((item) => registryMatchesFilters(item.cell, run.filters)) };
@@ -1769,13 +1805,13 @@
         const endpoint = `${LIST_PATH}/${encodeURIComponent(registryId)}/typedata`;
         const baseParams = { _search: false, rows: DETAIL_PAGE_SIZE, page: 1, sidx: 'Id', sord: 'asc' };
         await waitForRunResume(run);
-        const firstPage = await fetchJson(buildRequestUrl(endpoint, baseParams), run.controller.signal);
+        const firstPage = await fetchJson(buildRequestUrl(endpoint, baseParams), run.controller.signal, run);
         const totalPages = Math.max(1, Number(firstPage && firstPage.total || 1));
         const totalRows = Math.max(0, Number(firstPage && firstPage.records || 0));
         const sourceRows = Array.isArray(firstPage && firstPage.rows) ? firstPage.rows.slice() : [];
         for (let page = 2; page <= totalPages; page += 1) {
             await waitForRunResume(run);
-            const json = await fetchJson(buildRequestUrl(endpoint, { ...baseParams, page }), run.controller.signal);
+            const json = await fetchJson(buildRequestUrl(endpoint, { ...baseParams, page }), run.controller.signal, run);
             if (Array.isArray(json && json.rows)) sourceRows.push(...json.rows);
         }
         return {
