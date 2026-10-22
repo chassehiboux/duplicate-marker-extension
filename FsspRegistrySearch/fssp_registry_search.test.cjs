@@ -164,8 +164,9 @@ test('calendar ranges use the same date format as the page filter', () => {
 
 test('Excel retains hidden and unknown data, Russian headers, text values and hyperlinks', async () => {
     const debtor = query('1', { EDocId: '00123' });
-    debtor.matches.set('9:0', { registryId: '9', registryTypeName: api.REGISTRY_TYPES[2].name, rowId: '7', position: 0,
+    debtor.matches.set('9:0', { registryId: '9', registryFileName: 'Реестр_9.xml', registryTypeName: api.REGISTRY_TYPES[2].name, rowId: '7', position: 0,
         sourceValues: { Id: 7, EDocId: '00123', AddDate: '16.10.2026', SummDebt: 0, Extra: false, Object: { a: 1 } } });
+    debtor.matches.set('8:0', { registryId: '8', registryFileName: 'Реестр_8.xml', sourceValues: { FileName: 'wrong.xml' } });
     const blob = api.buildSearchWorkbook([debtor, query('2', { FullName: 'Нет результата' })]);
     const bytes = Buffer.from(await blob.arrayBuffer());
     const xml = bytes.toString('utf8');
@@ -173,6 +174,11 @@ test('Excel retains hidden and unknown data, Russian headers, text values and hy
     assert.ok(!xml.includes('>EDocId<'));
     assert.ok(!xml.includes('>AddDate<'));
     assert.ok(xml.includes('Идентификатор записи'));
+    assert.equal(xml.split('Имя файла (FileName)').length - 1, 1);
+    const rows = xml.match(/<row\b[^>]*>.*?<\/row>/g);
+    assert.ok(rows[1].includes('Реестр_9.xml'));
+    assert.ok(rows[2].includes('Реестр_8.xml'));
+    assert.ok(!xml.includes('wrong.xml'));
 });
 
 test('multiple filter values use OR within each AND group', () => {

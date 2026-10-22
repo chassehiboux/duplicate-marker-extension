@@ -1580,11 +1580,12 @@
         debtors.forEach((debtor) => debtor.matches.forEach((match) => {
             Object.keys(match.sourceValues || {}).forEach((field) => fields.add(field));
         }));
+        fields.add('FileName');
         const sourceFields = Array.from(fields);
         const columnCount = sourceFields.length + 5;
         if (columnCount > 16384) throw new Error('Результаты превышают допустимое число столбцов листа Excel.');
         const lastColumn = excelColumnName(columnCount - 1);
-        const headers = ['Параметры поиска', '№', ...sourceFields.map((field) => field === 'EDNumber' ? 'Номер ИД / номер дела (возбуждение ИП)' : FIELD_LABELS[field] || field), 'База', 'Департаменты', 'Идентификатор реестра'];
+        const headers = ['Параметры поиска', '№', ...sourceFields.map((field) => field === 'FileName' ? 'Имя файла (FileName)' : field === 'EDNumber' ? 'Номер ИД / номер дела (возбуждение ИП)' : FIELD_LABELS[field] || field), 'База', 'Департаменты', 'Идентификатор реестра'];
         const rows = [];
         const links = [];
         const linkRelations = [];
@@ -1604,7 +1605,7 @@
                 appendRow([criteria, ...Array(columnCount - 1).fill('')]);
             }
             matches.forEach((match, index) => {
-                const number = appendRow([criteria, String(index + 1), ...sourceFields.map((field) => excelSourceValue(match.sourceValues && match.sourceValues[field])), baseLabel(match.baseOrigin), matchDepartments(match), `${match.registryId} · ${match.registryTypeName || 'Тип не указан'}`]);
+                const number = appendRow([criteria, String(index + 1), ...sourceFields.map((field) => excelSourceValue(field === 'FileName' ? match.registryFileName ?? match.sourceValues?.FileName : match.sourceValues && match.sourceValues[field])), baseLabel(match.baseOrigin), matchDepartments(match), `${match.registryId} · ${match.registryTypeName || 'Тип не указан'}`]);
                 const relationId = `rId${links.length + 1}`;
                 links.push(`<hyperlink ref="${lastColumn}${number}" r:id="${relationId}"/>`);
                 linkRelations.push(`<Relationship Id="${relationId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="${escapeExcelXml(buildMatchUrl(match.registryId, match))}" TargetMode="External"/>`);
@@ -1873,6 +1874,7 @@
                 debtor.matches.set(`${window.location.origin}:${registry.registryId}:${match.position}`, {
                     registryId: registry.registryId,
                     registryTypeName: registry.typeName,
+                    registryFileName: registry.fileName,
                     rowId: match.rowId,
                     position: match.position,
                     totalRows: registryData.totalRows || registryData.rows.length,
