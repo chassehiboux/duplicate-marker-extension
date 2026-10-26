@@ -9,6 +9,8 @@
 
   const UI_CLASS = 'dup-chatgpt-extension-ui';
   const ACTIONS_CLASS = 'dup-chatgpt-actions';
+  const HISTORY_SELECTOR = 'nav[aria-label="История чатов"], nav[aria-label="История чата"], nav[aria-label="Chat history"]';
+  let actionBusy = false;
   const ICONS = {
     archive: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16v12H4z"/><path d="M3 4h18v3H3zM9 11h6"/></svg>',
     delete: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3m-9 0 1 13h10l1-13M10 11v5m4-5v5"/></svg>',
@@ -23,6 +25,8 @@
   }
 
   function chatTitle(link) {
+    const label = String(link.getAttribute('aria-label') || '').trim();
+    if (label) return label;
     const menuButton = link.querySelector('button[aria-label*="настройки диалога" i], button[aria-label*="conversation" i]');
     const aria = String(menuButton?.getAttribute('aria-label') || '');
     const quoted = aria.match(/[«“\"](.+?)[»”\"]/);
@@ -30,6 +34,10 @@
     const clone = link.cloneNode(true);
     clone.querySelectorAll('button, .' + ACTIONS_CLASS).forEach((node) => node.remove());
     return String(clone.textContent || '').trim() || 'Без названия';
+  }
+
+  function chatRow(link) {
+    return link?.closest('[data-sidebar-cycle-item]') || link;
   }
 
   function nativeActionLabel(action) {
@@ -58,9 +66,9 @@
   }
 
   async function requestConversation(id, action) {
-    const link = [...document.querySelectorAll('a[href*="/c/"]')]
+    const link = [...(document.querySelector(HISTORY_SELECTOR)?.querySelectorAll('a[href*="/c/"]') || [])]
       .find((candidate) => conversationIdFromLink(candidate) === id);
-    const trigger = link?.querySelector('[data-conversation-options-trigger], button[aria-haspopup="menu"]');
+    const trigger = chatRow(link)?.querySelector('[data-conversation-options-trigger], button[aria-haspopup="menu"]');
     if (!trigger) throw new Error('Не удалось найти штатное меню чата.');
     trigger.click();
     const menuItem = await waitForElement(() => {
@@ -91,16 +99,10 @@
     if (!dialogClosed) throw new Error('Окно подтверждения удаления не закрылось.');
   }
 
-  function removeConversationLinks(id) {
-    document.querySelectorAll('a[href*="/c/"]').forEach((candidate) => {
-      if (conversationIdFromLink(candidate) === id) candidate.remove();
-    });
-  }
-
   async function runNativeConversationAction(id, action) {
     await requestConversation(id, action);
     const removed = await waitForCondition(() => {
-      return ![...document.querySelectorAll('a[href*="/c/"]')]
+      return ![...(document.querySelector(HISTORY_SELECTOR)?.querySelectorAll('a[href*="/c/"]') || [])]
         .some((candidate) => conversationIdFromLink(candidate) === id);
     }, 5000);
     if (!removed) throw new Error(`ChatGPT не подтвердил ${action === 'delete' ? 'удаление' : 'архивирование'} чата.`);
@@ -123,7 +125,7 @@
     const button = event.currentTarget;
     const link = button.closest('a[href*="/c/"]');
     const id = link && conversationIdFromLink(link);
-    if (!id || button.disabled) return;
+    if (!id || button.disabled || actionBusy) return;
     const action = button.dataset.action === 'confirm-delete' ? 'delete' : button.dataset.action;
     const title = chatTitle(link);
     if (action === 'delete' && button.dataset.action !== 'confirm-delete') {
@@ -137,29 +139,34 @@
       return;
     }
     button.disabled = true;
+    actionBusy = true;
     try {
       await runNativeConversationAction(id, action);
       if (conversationIdFromLink({ getAttribute: () => location.pathname }) === id) location.assign('/');
     } catch (error) {
       button.disabled = false;
       window.alert(`Не удалось ${action === 'delete' ? 'удалить' : 'архивировать'} чат. ${error.message}`);
+    } finally {
+      actionBusy = false;
     }
   }
 
   function enhanceChatLinks(root = document) {
-    const history = root.querySelector('nav[aria-label="История чата"], nav[aria-label="Chat history"]');
+    const history = root.querySelector(HISTORY_SELECTOR);
     if (!history) return;
     history.querySelectorAll('a[href*="/c/"]').forEach((link) => {
       if (!conversationIdFromLink(link) || link.querySelector(':scope > .' + ACTIONS_CLASS)) return;
       const actions = document.createElement('span');
       actions.className = `${ACTIONS_CLASS} ${UI_CLASS}`;
+      const row = chatRow(link);
+      if (row !== link) row.classList.add('dup-chatgpt-chat-host');
       const nativeTrailing = link.querySelector(':scope > .trailing, :scope > [class*="trailing"]');
       if (nativeTrailing) nativeTrailing.classList.add('dup-chatgpt-native-actions');
       const archive = iconButton('archive', 'Архивировать чат');
       const remove = iconButton('delete', 'Удалить чат');
       archive.addEventListener('click', runSingleAction);
       remove.addEventListener('click', runSingleAction);
-      link.addEventListener('mouseleave', () => {
+      row.addEventListener('mouseleave', () => {
         if (actions.dataset.confirmingDelete !== 'true') return;
         delete actions.dataset.confirmingDelete;
         archive.hidden = false;
@@ -176,16 +183,69 @@
   }
 
   function loadVisibleChats() {
-    const nav = document.querySelector('nav[aria-label="История чата"], nav[aria-label="Chat history"]');
+    const nav = document.querySelector(HISTORY_SELECTOR);
     const chats = [];
     const seen = new Set();
     nav?.querySelectorAll('a[href*="/c/"]').forEach((link) => {
       const id = conversationIdFromLink(link);
       if (!id || seen.has(id)) return;
       seen.add(id);
-      chats.push({ id, title: chatTitle(link) });
+      const project = String(link.getAttribute('href') || '').match(/\/g\/(g-p-[a-zA-Z0-9-]+)(?:\/|$)/);
+      chats.push({ id, title: chatTitle(link), projectId: project ? project[1] : '' });
     });
     return chats;
+  }
+
+  function loadProjects() {
+    const projects = new Map();
+    document.querySelector(HISTORY_SELECTOR)?.querySelectorAll('[data-app-action-sidebar-project-id]').forEach((row) => {
+      const id = row.getAttribute('data-app-action-sidebar-project-id');
+      if (!id || projects.has(id)) return;
+      projects.set(id, { id, title: row.getAttribute('data-app-action-sidebar-project-label') || 'Проект', loaded: false });
+    });
+    return projects;
+  }
+
+  async function expandNativeProject(id) {
+    const row = [...(document.querySelector(HISTORY_SELECTOR)?.querySelectorAll('[data-app-action-sidebar-project-id]') || [])]
+      .find((candidate) => candidate.getAttribute('data-app-action-sidebar-project-id') === id);
+    if (!row) throw new Error('Проект не найден в боковой панели.');
+    if (row.getAttribute('data-app-action-sidebar-project-collapsed') === 'true') row.click();
+    const ready = await waitForCondition(() => {
+      const list = row.nextElementSibling?.querySelector('[role="list"]');
+      return list && !list.querySelector('[aria-busy="true"], [role="progressbar"]')
+        && (list.querySelector('a[href*="/c/"]') || /Нет чатов|No chats/i.test(list.textContent || ''));
+    }, 10000);
+    if (!ready) throw new Error('ChatGPT не загрузил список проекта. Попробуйте ещё раз.');
+    return row;
+  }
+
+  async function loadNextHistoryPage() {
+    const nav = document.querySelector(HISTORY_SELECTOR);
+    const section = nav?.querySelector('[data-app-action-sidebar-section-heading="Recents"]');
+    if (!section) throw new Error('Не удалось найти раздел недавних чатов для подгрузки.');
+    if (section.getAttribute('data-app-action-sidebar-section-collapsed') === 'true') {
+      section.querySelector('[aria-expanded="false"]:not([aria-haspopup])')?.click();
+    }
+    const items = () => [...section.querySelectorAll('[role="listitem"]')];
+    const hasMore = () => items().some((item) => !item.querySelector('a[href*="/c/"]') && item.querySelector('.min-h-px, [role="progressbar"]'));
+    if (!hasMore()) return false;
+    const scroll = [...nav.querySelectorAll('div')].find((element) => {
+      return element.contains(section) && ['auto', 'scroll'].includes(getComputedStyle(element).overflowY);
+    });
+    if (!scroll) throw new Error('Не удалось найти прокрутку истории чатов.');
+    const before = section.querySelectorAll('a[href*="/c/"]').length;
+    // Keep the native pagination sentinel visible even behind the manager overlay.
+    scroll.scrollTop = Math.max(0, scroll.scrollHeight - scroll.clientHeight - 2);
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    scroll.scrollTop = scroll.scrollHeight;
+    const changed = await waitForCondition(() => {
+      // content-visibility changes row heights after scrolling; follow the moving bottom.
+      scroll.scrollTop = scroll.scrollHeight;
+      return section.querySelectorAll('a[href*="/c/"]').length > before || !hasMore();
+    }, 15000);
+    if (!changed) throw new Error('ChatGPT не загрузил следующую страницу истории. Нажмите «Продолжить загрузку».');
+    return hasMore();
   }
 
   function createModal() {
@@ -199,7 +259,6 @@
         </header>
         <div class="dup-chatgpt-modal-toolbar">
           <input class="dup-chatgpt-search" type="search" placeholder="Поиск по названию" aria-label="Поиск по названию чата">
-          <label class="dup-chatgpt-select-all"><input type="checkbox" data-select-all> Выбрать все</label>
         </div>
         <div class="dup-chatgpt-chat-list"><div class="dup-chatgpt-empty">Загружаем чаты…</div></div>
         <footer class="dup-chatgpt-modal-footer">
@@ -217,64 +276,171 @@
     document.body.append(modal);
     const list = modal.querySelector('.dup-chatgpt-chat-list');
     const search = modal.querySelector('.dup-chatgpt-search');
-    const selectAll = modal.querySelector('[data-select-all]');
     const status = modal.querySelector('.dup-chatgpt-status');
     const bulkButtons = [...modal.querySelectorAll('[data-bulk]')];
     const deleteButton = modal.querySelector('[data-bulk="delete"]');
     let chats = [];
+    const projects = loadProjects();
+    const outside = { id: '', title: 'Вне проектов', loaded: false };
+    const openedGroups = new Set(['']);
+    const loadingProjects = new Set();
+    const projectErrors = new Map();
 
-    const close = () => modal.remove();
+    let processing = false;
+    const close = () => { if (!processing) modal.remove(); };
     const selectedInputs = () => [...list.querySelectorAll('input[data-chat-id]:checked')];
     const resetBulkDeleteConfirmation = () => {
       delete deleteButton.dataset.confirmed;
       delete deleteButton.dataset.confirmedCount;
       deleteButton.textContent = 'Удалить';
     };
-    const updateSelection = () => {
+    const updateSelection = (result = '') => {
       resetBulkDeleteConfirmation();
       const selected = selectedInputs().length;
-      const visible = [...list.querySelectorAll('.dup-chatgpt-chat-row:not([hidden]) input[data-chat-id]')];
-      status.textContent = `Выбрано: ${selected}`;
-      bulkButtons.forEach((button) => { button.disabled = selected === 0; });
-      selectAll.checked = visible.length > 0 && visible.every((input) => input.checked);
-      selectAll.indeterminate = visible.some((input) => input.checked) && !selectAll.checked;
+      status.textContent = typeof result === 'string' && result ? result : `Выбрано: ${selected}`;
+      bulkButtons.forEach((button) => { button.disabled = selected === 0 || loadingProjects.size > 0; });
+      list.querySelectorAll('.dup-chatgpt-group').forEach((group) => {
+        const visible = [...group.querySelectorAll('.dup-chatgpt-chat-row:not([hidden]) input[data-chat-id]')];
+        const selectAll = group.querySelector('[data-select-all]');
+        selectAll.checked = visible.length > 0 && visible.every((input) => input.checked);
+        selectAll.indeterminate = visible.some((input) => input.checked) && !selectAll.checked;
+        selectAll.disabled = processing || loadingProjects.has(group.dataset.projectId) || visible.length === 0;
+        const project = group.dataset.projectId ? projects.get(group.dataset.projectId) : outside;
+        group.querySelector('.dup-chatgpt-group-count').textContent = `${visible.length}${project?.loaded ? '' : '+'}`;
+      });
+    };
+    const applySearch = () => {
+      const query = search.value.trim().toLocaleLowerCase();
+      list.querySelectorAll('.dup-chatgpt-chat-row').forEach((row) => { row.hidden = !row.dataset.search.includes(query); });
+      updateSelection();
+    };
+    const syncChats = () => {
+      const merged = new Map(chats.map((chat) => [chat.id, chat]));
+      loadVisibleChats().forEach((chat) => merged.set(chat.id, chat));
+      chats = [...merged.values()];
+      chats.forEach((chat) => {
+        if (chat.projectId && !projects.has(chat.projectId)) {
+          projects.set(chat.projectId, { id: chat.projectId, title: `Проект ${chat.projectId}`, loaded: false });
+        }
+      });
+    };
+    const loadProject = async (project) => {
+      if (processing || loadingProjects.has(project.id) || project.loaded) return;
+      loadingProjects.add(project.id);
+      projectErrors.delete(project.id);
+      render();
+      try {
+        if (project.id) {
+          const row = await expandNativeProject(project.id);
+          syncChats();
+          render();
+          while (modal.isConnected) {
+            const more = [...(row.nextElementSibling?.querySelectorAll('button') || [])]
+              .find((button) => /^(Показать (?:больше|ещё|еще)|Show more)$/i.test(String(button.textContent || '').trim()));
+            if (!more) break;
+            const before = row.nextElementSibling.querySelectorAll('a[href*="/c/"]').length;
+            more.click();
+            const changed = await waitForCondition(() => row.nextElementSibling?.querySelectorAll('a[href*="/c/"]').length > before, 15000);
+            if (!changed) throw new Error('ChatGPT не загрузил следующую страницу проекта.');
+            syncChats();
+            render();
+          }
+        } else {
+          let more = true;
+          while (more && modal.isConnected) {
+            more = await loadNextHistoryPage();
+            syncChats();
+            render();
+          }
+        }
+        if (!modal.isConnected) return;
+        project.loaded = true;
+      } catch (error) {
+        projectErrors.set(project.id, String(error.message || error));
+      } finally {
+        loadingProjects.delete(project.id);
+        if (modal.isConnected) render();
+      }
     };
     const render = () => {
+      const selectedIds = new Set(selectedInputs().map((input) => input.dataset.chatId));
       list.replaceChildren();
-      chats.forEach((chat) => {
-        const row = document.createElement('label');
-        row.className = 'dup-chatgpt-chat-row';
-        row.dataset.search = chat.title.toLocaleLowerCase();
-        const checkbox = document.createElement('input');
-        checkbox.type = 'checkbox';
-        checkbox.dataset.chatId = chat.id;
-        const title = document.createElement('span');
-        title.className = 'dup-chatgpt-chat-title';
-        title.textContent = chat.title;
-        row.append(checkbox, title);
-        list.append(row);
+      [...projects.values(), outside].forEach((project) => {
+        const group = document.createElement('details');
+        group.className = 'dup-chatgpt-group';
+        group.dataset.projectId = project.id;
+        group.open = openedGroups.has(project.id);
+        const summary = document.createElement('summary');
+        summary.className = 'dup-chatgpt-group-heading';
+        const heading = document.createElement('span');
+        heading.textContent = project.title;
+        const count = document.createElement('span');
+        count.className = 'dup-chatgpt-group-count';
+        summary.append(heading, count);
+        const selectLabel = document.createElement('label');
+        selectLabel.className = 'dup-chatgpt-select-all';
+        const selectAll = document.createElement('input');
+        selectAll.type = 'checkbox';
+        selectAll.dataset.selectAll = '';
+        selectAll.setAttribute('aria-label', `Выбрать все: ${project.title}`);
+        selectLabel.append(selectAll, document.createTextNode('Выбрать все'));
+        group.append(summary, selectLabel);
+        selectAll.addEventListener('change', () => {
+          group.querySelectorAll('.dup-chatgpt-chat-row:not([hidden]) input[data-chat-id]').forEach((input) => { input.checked = selectAll.checked; });
+          updateSelection();
+        });
+        const groupChats = chats.filter((chat) => chat.projectId === project.id);
+        groupChats.forEach((chat) => {
+          const row = document.createElement('label');
+          row.className = 'dup-chatgpt-chat-row';
+          row.dataset.search = chat.title.toLocaleLowerCase();
+          const checkbox = document.createElement('input');
+          checkbox.type = 'checkbox';
+          checkbox.dataset.chatId = chat.id;
+          checkbox.checked = selectedIds.has(chat.id);
+          const title = document.createElement('span');
+          title.className = 'dup-chatgpt-chat-title';
+          title.textContent = chat.title;
+          row.append(checkbox, title);
+          group.append(row);
+        });
+        const error = projectErrors.get(project.id);
+        if (!groupChats.length || loadingProjects.has(project.id) || error) {
+          const empty = document.createElement('div');
+          empty.className = 'dup-chatgpt-group-note';
+          empty.textContent = loadingProjects.has(project.id) ? 'Загружаем все чаты… Список пополняется автоматически.'
+            : error || (project.loaded ? 'Нет доступных чатов' : 'Раскройте проект, чтобы загрузить его чаты');
+          group.append(empty);
+          if (error) {
+            const retry = document.createElement('button');
+            retry.type = 'button';
+            retry.className = 'dup-chatgpt-button';
+            retry.textContent = 'Продолжить загрузку';
+            retry.addEventListener('click', () => loadProject(project));
+            group.append(retry);
+          }
+        }
+        group.addEventListener('toggle', () => {
+          if (!group.isConnected) return;
+          if (group.open) {
+            openedGroups.add(project.id);
+            if (!projectErrors.has(project.id)) loadProject(project);
+          } else openedGroups.delete(project.id);
+        });
+        list.append(group);
       });
-      if (!chats.length) list.innerHTML = '<div class="dup-chatgpt-empty">Чаты не найдены</div>';
-      updateSelection();
+      applySearch();
     };
 
     modal.querySelector('[data-close]').addEventListener('click', close);
     modal.addEventListener('click', (event) => { if (event.target === modal) close(); });
     modal.addEventListener('keydown', (event) => { if (event.key === 'Escape') close(); });
     list.addEventListener('change', updateSelection);
-    search.addEventListener('input', () => {
-      const query = search.value.trim().toLocaleLowerCase();
-      list.querySelectorAll('.dup-chatgpt-chat-row').forEach((row) => { row.hidden = !row.dataset.search.includes(query); });
-      updateSelection();
-    });
-    selectAll.addEventListener('change', () => {
-      list.querySelectorAll('.dup-chatgpt-chat-row:not([hidden]) input[data-chat-id]').forEach((input) => { input.checked = selectAll.checked; });
-      updateSelection();
-    });
+    search.addEventListener('input', applySearch);
     bulkButtons.forEach((button) => button.addEventListener('click', async () => {
       const selected = selectedInputs();
       const action = button.dataset.bulk;
-      if (!selected.length) return;
+      if (!selected.length || actionBusy || loadingProjects.size) return;
       if (action === 'delete' && button.dataset.confirmed !== 'true') {
         button.dataset.confirmed = 'true';
         button.dataset.confirmedCount = String(selected.length);
@@ -286,8 +452,10 @@
         return;
       }
       bulkButtons.forEach((item) => { item.disabled = true; });
+      actionBusy = true;
+      processing = true;
       search.disabled = true;
-      selectAll.disabled = true;
+      list.querySelectorAll('input').forEach((input) => { input.disabled = true; });
       let completed = 0;
       const failed = [];
       for (const input of selected) {
@@ -297,19 +465,20 @@
           chats = chats.filter((chat) => chat.id !== input.dataset.chatId);
           input.closest('.dup-chatgpt-chat-row')?.remove();
         } catch (error) {
-          failed.push(input.dataset.chatId);
+          failed.push(String(error.message || error));
         }
         completed += 1;
       }
       search.disabled = false;
-      selectAll.disabled = false;
-      status.textContent = failed.length ? `Готово: ${completed - failed.length}; ошибок: ${failed.length}` : `Готово: ${completed}`;
-      updateSelection();
+      list.querySelectorAll('input').forEach((input) => { input.disabled = false; });
+      actionBusy = false;
+      processing = false;
+      updateSelection(failed.length ? `Готово: ${completed - failed.length}; ошибок: ${failed.length}. ${failed[0]}` : `Готово: ${completed}`);
       enhanceChatLinks();
     }));
 
     try {
-      chats = loadVisibleChats();
+      syncChats();
       render();
       search.focus();
     } catch (error) {
@@ -318,16 +487,18 @@
   }
 
   function addManagerTrigger() {
-    if (document.querySelector('.dup-chatgpt-manager-trigger')) return;
-    const closeButton = [...document.querySelectorAll('button')].find((button) => {
+    const closeButtons = [...document.querySelectorAll('button')].filter((button) => {
       const label = String(button.getAttribute('aria-label') || '').toLocaleLowerCase();
-      return label === 'закрыть боковую панель' || label === 'close sidebar';
+      return ['закрыть боковую панель', 'скрыть боковую панель', 'close sidebar', 'hide sidebar'].includes(label)
+        || (button.matches('[data-app-shell-sidebar-trigger]') && button.getAttribute('aria-expanded') === 'true');
     });
-    if (!closeButton?.parentElement) return;
-    const trigger = iconButton('manage', 'Массовое управление чатами');
-    trigger.classList.add('dup-chatgpt-manager-trigger', UI_CLASS);
-    trigger.addEventListener('click', (event) => { event.preventDefault(); event.stopPropagation(); openManager(); });
-    closeButton.before(trigger);
+    closeButtons.forEach((closeButton) => {
+      if (!closeButton.parentElement || closeButton.parentElement.querySelector('.dup-chatgpt-manager-trigger')) return;
+      const trigger = iconButton('manage', 'Массовое управление чатами');
+      trigger.classList.add('dup-chatgpt-manager-trigger', UI_CLASS);
+      trigger.addEventListener('click', (event) => { event.preventDefault(); event.stopPropagation(); openManager(); });
+      closeButton.before(trigger);
+    });
   }
 
   let scheduled = false;
