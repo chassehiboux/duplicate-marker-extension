@@ -14,10 +14,69 @@ vm.runInContext(source.replace('    function initialize() {', `
     globalThis.fetchJson = fetchJson;
     globalThis.waitForRetry = waitForRetry;
     globalThis.renderSearchResults = renderSearchResults;
-    globalThis.api = { scrollLocalBlock, REGISTRY_TYPES, FIELD_LABELS, debtorMatchesCell, registryMatchesType, searchGridState, readRegistryFilters, buildSearchWorkbook, registryFingerprint, serializeRun, inspectRegistry, buildMatchUrl, baseLabel, matchDepartments, registryMatchesFilters };
+    globalThis.api = { readDebtors, updateCollectAllFields, scrollLocalBlock, REGISTRY_TYPES, FIELD_LABELS, debtorMatchesCell, registryMatchesType, searchGridState, readRegistryFilters, buildSearchWorkbook, registryFingerprint, serializeRun, inspectRegistry, buildMatchUrl, baseLabel, matchDepartments, registryMatchesFilters };
     function initialize() {`), context);
 const api = context.api;
 const query = (typeId, values) => ({ typeId, values, fields: api.REGISTRY_TYPES.find(t => t.id === typeId).fields, matches: new Map() });
+
+test('collect all disables only its type, preserves inputs and creates one unfiltered query', () => {
+    const rows = [];
+    const blocks = api.REGISTRY_TYPES.map(type => {
+        const checkbox = { checked: type.id === '1' };
+        const inputs = [];
+        const block = { dataset: { registryType: type.id }, querySelector: () => checkbox, querySelectorAll: () => inputs };
+        for (let i = 0; i < 2; i++) {
+            const values = Object.fromEntries(type.fields.map(field => [field.key, { value: field.key === 'FullName' && i === 0 ? 'Иванов' : '', disabled: false }]));
+            inputs.push(...Object.values(values));
+            rows.push({ closest: () => block, querySelector: selector => values[selector.match(/"([^"]+)"/)[1]] });
+        }
+        return { block, checkbox, inputs };
+    });
+    const modal = { querySelectorAll: () => rows };
+    blocks.forEach(({ block }) => api.updateCollectAllFields(block));
+    const selected = blocks.find(({ checkbox }) => checkbox.checked);
+    assert.ok(selected.inputs.every(input => input.disabled));
+    assert.ok(blocks.filter(item => item !== selected).every(({ inputs }) => inputs.every(input => !input.disabled)));
+    const queries = api.readDebtors(modal);
+    assert.equal(queries.length, 3);
+    const all = queries.find(q => q.typeId === '1');
+    assert.equal(all.collectAll, true);
+    assert.ok(Object.values(all.values).every(value => value === ''));
+    assert.ok(api.debtorMatchesCell(all, { FullName: 'Другой должник' }));
+    assert.equal(api.debtorMatchesCell(queries.find(q => q.typeId === '2'), { FullName: 'Другой должник' }), false);
+    selected.checkbox.checked = false;
+    api.updateCollectAllFields(selected.block);
+    assert.ok(selected.inputs.every(input => !input.disabled));
+    assert.equal(api.readDebtors(modal).find(q => q.typeId === '1').values.FullName, 'Иванов');
+});
+
+test('collect all flag survives department session serialization', () => {
+    const debtor = { ...query('1', {}), collectAll: true };
+    const restored = JSON.parse(JSON.stringify(api.serializeRun({ debtors: [debtor], departments: [{}], checkedRegistries: new Set(), registryDepartments: new Map(), filters: [] })));
+    assert.equal(restored.debtors[0].collectAll, true);
+    assert.ok(api.debtorMatchesCell({ ...restored.debtors[0], fields: debtor.fields }, {}));
+});
+
+test('collect all reads every page, keeps empty rows and exports the mode to Excel', async () => {
+    const requested = [];
+    context.fetch = async url => {
+        const page = Number(new URL(url).searchParams.get('page'));
+        requested.push(page);
+        return { ok: true, text: async () => JSON.stringify({ total: 2, records: 3, rows: page === 1
+            ? [{ id: '11', cell: { FullName: 'Иванов' } }, { id: '12', cell: {} }]
+            : [{ id: '13', cell: { FullName: 'Петров' } }] }) };
+    };
+        const debtor = { ...query('1', { FullName: 'Игнорировать' }), collectAll: true };
+        const other = query('2', { FullName: 'Иванов' });
+        const run = { debtors: [debtor, other], checkedRegistries: new Set(), skipped: 0, controller: new AbortController(), departments: [{}], departmentIndex: 0 };
+        await api.inspectRegistry({ registryId: '42', typeId: '1' }, run, { querySelector: () => null });
+        assert.deepEqual(requested, [1, 2]);
+        assert.equal(debtor.matches.size, 3);
+        assert.equal(other.matches.size, 0);
+        const xml = Buffer.from(await api.buildSearchWorkbook([debtor]).arrayBuffer()).toString('utf8');
+        assert.ok(xml.includes('Все строки'));
+        assert.ok(xml.includes('Петров'));
+});
 
 test('21469 results create no closed-group rows and at most 100 open-group rows', () => {
     class Element extends context.HTMLElement {

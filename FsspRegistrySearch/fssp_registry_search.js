@@ -146,7 +146,7 @@
             departmentIndex: run.departmentIndex, checkedRegistries: [...run.checkedRegistries],
             registryDepartments: [...(run.registryDepartments || new Map())],
             filters: run.filters, completed: run.completed, completedDepartments: run.completedDepartments || 0, skipped: run.skipped, errorCount: run.errorCount,
-            debtors: run.debtors.map((debtor) => ({ typeId: debtor.typeId, values: debtor.values, matches: [...debtor.matches] }))
+            debtors: run.debtors.map((debtor) => ({ typeId: debtor.typeId, values: debtor.values, collectAll: !!debtor.collectAll, matches: [...debtor.matches] }))
         };
     }
 
@@ -274,6 +274,11 @@
                 const tbody = modal.querySelector(`[data-registry-type="${debtor.typeId}"] tbody`);
                 const row = appendInputRow(tbody);
                 row.querySelectorAll('input').forEach((input) => { input.value = debtor.values[input.dataset.field] || ''; });
+                if (debtor.collectAll) {
+                    const block = row.closest('[data-registry-type]');
+                    block.querySelector('[data-collect-all]').checked = true;
+                    updateCollectAllFields(block);
+                }
                 return { ...debtor, index, row, fields: fieldsFor(row), matches: new Map(debtor.matches) };
             });
             lockDebtorRows(modal, debtors);
@@ -432,6 +437,11 @@
             #${MODAL_ID} .dup-fssp-registry-search-input-wrap {
                 max-height: 180px;
             }
+            #${MODAL_ID} .dup-fssp-registry-search-collect-all {
+                display: flex; align-items: center; gap: 8px; padding: 8px 10px; cursor: pointer;
+            }
+            #${MODAL_ID} .dup-fssp-registry-search-collect-all input { margin: 0; width: 16px; height: 16px; }
+            #${MODAL_ID} .dup-fssp-registry-search-input-table input:disabled { background: #edf0ee; color: #6f7e79; cursor: default; }
             #${MODAL_ID} .dup-fssp-registry-search-settings { flex: 0 0 auto; min-width: 0; }
             #${MODAL_ID} .dup-fssp-registry-search-settings > summary {
                 cursor: pointer; padding: 8px 10px; background: #e8f1ed;
@@ -1175,6 +1185,7 @@
                     </details>
                     ${REGISTRY_TYPES.map((type) => `<details class="dup-fssp-registry-search-settings" data-registry-type="${type.id}" open>
                         <summary>${type.name}</summary>
+                        <label class="dup-fssp-registry-search-collect-all"><input type="checkbox" data-collect-all>Собирать все строки</label>
                     <div class="dup-fssp-registry-search-table-wrap dup-fssp-registry-search-input-wrap" tabindex="0" aria-label="Условия: ${type.name}">
                         <table class="dup-fssp-registry-search-input-table">
                             <thead><tr><th>№</th>${type.fields.map((field) => `<th>${field.label}</th>`).join('')}</tr></thead>
@@ -1208,6 +1219,9 @@
         `;
         (document.body || document.documentElement).appendChild(modal);
         modal.querySelectorAll('.dup-fssp-registry-search-input-table tbody').forEach((tbody) => appendInputRow(tbody));
+        modal.querySelectorAll('[data-collect-all]').forEach((input) => {
+            input.addEventListener('change', () => updateCollectAllFields(input.closest('[data-registry-type]')));
+        });
         modal.addEventListener('wheel', scrollLocalBlock, { passive: false });
         renderSearchResults(modal, []);
         modal.querySelector('.dup-fssp-registry-search-results-wrap').addEventListener('contextmenu', (event) => {
@@ -1270,6 +1284,7 @@
     }
 
     function resetModal(modal) {
+        modal.querySelectorAll('[data-collect-all]').forEach((input) => { input.checked = false; input.disabled = false; });
         modal.querySelectorAll('.dup-fssp-registry-search-input-table tbody').forEach((tbody) => {
             tbody.replaceChildren();
             appendInputRow(tbody);
@@ -1332,16 +1347,27 @@
         progress.querySelector('.dup-fssp-registry-search-progress-count').textContent = suffix || `${current} / ${total}`;
     }
 
+    function updateCollectAllFields(block) {
+        const collectAll = block.querySelector('[data-collect-all]').checked;
+        block.querySelectorAll('.dup-fssp-registry-search-input-table input').forEach((input) => { input.disabled = collectAll; });
+    }
+
     function readDebtors(modal) {
+        const allTypes = new Set();
         return Array.from(modal.querySelectorAll(`tbody tr.${ROW_CLASS}`)).map((row, index) => {
+            const block = row.closest('[data-registry-type]');
+            const typeId = block.dataset.registryType;
+            const collectAll = block.querySelector('[data-collect-all]').checked;
+            if (collectAll && allTypes.has(typeId)) return null;
+            if (collectAll) allTypes.add(typeId);
             const values = {};
             const fields = fieldsFor(row);
             fields.forEach((field) => {
                 const input = row.querySelector(`input[data-field="${field.key}"]`);
-                values[field.key] = normalizeText(input && input.value);
+                values[field.key] = collectAll ? '' : normalizeText(input && input.value);
             });
             const hasCriteria = Object.values(values).some(Boolean);
-            return hasCriteria ? { index, row, values, fields, typeId: row.closest('[data-registry-type]').dataset.registryType, matches: new Map() } : null;
+            return collectAll || hasCriteria ? { index, row, values, fields, typeId, collectAll, matches: new Map() } : null;
         }).filter(Boolean);
     }
 
@@ -1417,6 +1443,7 @@
                 const criteria = document.createElement('span');
                 const labels = debtor.fields.filter((definition) => debtor.values[definition.key])
                     .map((definition) => `${definition.label}: ${debtor.values[definition.key]}`);
+                if (debtor.collectAll) labels.splice(0, labels.length, 'Все строки');
                 criteria.textContent = `${queryIndex + 1}. ${REGISTRY_TYPES.find((type) => type.id === debtor.typeId).name} · ${labels.join(' · ')}`;
                 summary.appendChild(criteria);
                 const groupCount = document.createElement('span');
@@ -1599,8 +1626,8 @@
         appendRow(headers, 'ht="30" customHeight="1"', 1);
         debtors.forEach((debtor) => {
             const matches = sortedMatches(debtor);
-            const criteria = REGISTRY_TYPES.find((type) => type.id === debtor.typeId).name + ' · ' + debtor.fields.filter((field) => debtor.values[field.key])
-                .map((field) => `${field.label}: ${debtor.values[field.key]}`).join(' · ');
+            const criteria = REGISTRY_TYPES.find((type) => type.id === debtor.typeId).name + ' · ' + (debtor.collectAll ? 'Все строки' : debtor.fields.filter((field) => debtor.values[field.key])
+                .map((field) => `${field.label}: ${debtor.values[field.key]}`).join(' · '));
             if (!matches.length) {
                 appendRow([criteria, ...Array(columnCount - 1).fill('')]);
             }
@@ -1826,6 +1853,7 @@
     }
 
     function debtorMatchesCell(debtor, cell) {
+        if (debtor.collectAll) return true;
         return debtor.fields.every((definition) => {
             const query = normalizeMatchValue(debtor.values[definition.key]);
             if (!query) return true;
@@ -2006,7 +2034,7 @@
         const typeFilter = filters.find((rule) => rule.field === 'TypeName');
         const debtors = readDebtors(modal).filter((debtor) => !typeFilter || (Array.isArray(typeFilter.data) ? typeFilter.data : [typeFilter.data]).includes(REGISTRY_TYPES.find((type) => type.id === debtor.typeId).name));
         if (!debtors.length) {
-            setNotice(modal, 'Введите хотя бы одно условие поиска в блоке выбранного типа реестра.', 'error');
+            setNotice(modal, 'Введите хотя бы одно условие поиска или отметьте «Собирать все строки» в блоке выбранного типа реестра.', 'error');
             const firstInput = modal.querySelector('.dup-fssp-registry-search-input-table input');
             if (firstInput) firstInput.focus();
             return;
