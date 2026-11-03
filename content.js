@@ -12254,6 +12254,8 @@
           registryId,
           fileName,
           typeName,
+          hasUnknown: false,
+          hasCaseSearch: false,
           claimantKeys: new Set(),
           statusNames: new Set(),
           departmentNames: new Set(),
@@ -12262,6 +12264,8 @@
       }
 
       const item = grouped.get(groupKey);
+      item.hasUnknown ||= raw.hasUnknown === true;
+      item.hasCaseSearch ||= raw.hasCaseSearch === true;
       if (!item.fileName && fileName) item.fileName = fileName;
       if (!item.typeName && typeName) item.typeName = typeName;
       claimantKeys.forEach((key) => item.claimantKeys.add(key));
@@ -12288,6 +12292,8 @@
       registryId: item.registryId,
       fileName: item.fileName,
       typeName: item.typeName,
+      hasUnknown: item.hasUnknown,
+      hasCaseSearch: item.hasCaseSearch,
       claimantKeys: Array.from(item.claimantKeys).sort((left, right) => left.localeCompare(right, 'ru')),
       statusNames: Array.from(item.statusNames).sort((left, right) => left.localeCompare(right, 'ru')),
       departmentNames: Array.from(item.departmentNames).sort((left, right) => left.localeCompare(right, 'ru')),
@@ -12336,6 +12342,12 @@
     if (!source.length) {
       return { label: 'Реестры не созданы', color: EPGU_REQUESTS_COLOR_RED, count: 0, checked: true };
     }
+
+    const problem = source.some((registry) => registry.hasCaseSearch)
+      ? 'Требуется перепроведение (поиск дела произведен)'
+      : source.some((registry) => registry.hasUnknown) ? 'Требуется перепроведение (неизвестно)' : '';
+    if (problem) return { label: problem, color: source.some((registry) => registry.hasCaseSearch)
+      ? EPGU_REQUESTS_COLOR_RED : EPGU_REQUESTS_COLOR_YELLOW, count: source.length, checked: true };
 
     const positiveStatuses = new Set([
       'проведен',
@@ -12389,7 +12401,7 @@
     if (isPositiveEpguRegistryStatusName(key)) {
       return { className: 'is-positive', color: EPGU_REQUESTS_COLOR_GREEN };
     }
-    if (key === 'не проведен' || key === 'не проведено') {
+    if (key === 'не проведен' || key === 'не проведено' || key === 'требуется перепроведение (неизвестно)') {
       return { className: 'is-pending', color: EPGU_REQUESTS_COLOR_YELLOW };
     }
     return { className: 'is-error', color: EPGU_REQUESTS_COLOR_RED };
@@ -12405,36 +12417,9 @@
     ].includes(key);
   }
 
-  function getEpguRegistryDepartmentsForRecheck(scanContext, cacheResult, claimantNames = []) {
-    const registries = cacheResult && Array.isArray(cacheResult.registries)
-      ? cacheResult.registries
-      : [];
-    if (!registries.length) return scanContext.departments.slice();
-
-    const currentClaimants = Array.from(new Set(
-      (Array.isArray(claimantNames) ? claimantNames : [])
-        .map((claimantName) => normalizeEpguRegistryText(claimantName))
-        .filter(Boolean)
-    ));
-    if (currentClaimants.some((claimantName) => (
-      getEpguClaimantRegistries(cacheResult, claimantName).length < 1
-    ))) {
-      return scanContext.departments.slice();
-    }
-
-    return scanContext.departments.filter((department) => {
-      const depid = normalizeEpguRegistryText(department && department.depid);
-      const departmentEntries = registries.flatMap((registry) => (
-        Array.isArray(registry && registry.departmentEntries)
-          ? registry.departmentEntries.filter((entry) => normalizeEpguRegistryText(entry && entry.depid) === depid)
-          : []
-      ));
-      if (!departmentEntries.length) return true;
-      const statuses = departmentEntries.flatMap((entry) => (
-        Array.isArray(entry && entry.statusNames) ? entry.statusNames : []
-      ));
-      return !statuses.length || statuses.some((statusName) => !isPositiveEpguRegistryStatusName(statusName));
-    });
+  function getEpguRegistryDepartmentsForRecheck(scanContext) {
+    // New registries and changed detail rows can appear even in positive departments.
+    return scanContext.departments.slice();
   }
 
   function mergeEpguRegistryScanRows(previousResult, refreshedRows, scannedDepids, departmentCount) {
@@ -12578,6 +12563,8 @@
     }
 
     targetRegistry.departmentEntries = departmentEntries;
+    targetRegistry.hasUnknown = response.hasUnknown === true;
+    targetRegistry.hasCaseSearch = response.hasCaseSearch === true;
     targetRegistry.statusNames = departmentEntries.length
       ? Array.from(new Set(departmentEntries.flatMap((entry) => entry.statusNames))).sort((left, right) => left.localeCompare(right, 'ru'))
       : [statusName];
@@ -12688,9 +12675,11 @@
       const row = document.createElement('tr');
       const statusCell = document.createElement('td');
       statusCell.className = 'dup-epgu-registry-status-cell';
-      const statuses = Array.isArray(registry.statusNames) && registry.statusNames.length
-        ? registry.statusNames
-        : ['Статус не указан'];
+      const statuses = registry.hasCaseSearch
+        ? ['Требуется перепроведение (поиск дела произведен)']
+        : registry.hasUnknown ? ['Требуется перепроведение (неизвестно)']
+        : Array.isArray(registry.statusNames) && registry.statusNames.length
+          ? registry.statusNames : ['Статус не указан'];
       statuses.forEach((statusName) => {
         const statusMeta = resolveEpguRegistryRowStatusMeta(statusName);
         const badge = createEpguSummaryBadge(

@@ -885,13 +885,18 @@ async function collectEpguRegistryRowsInTab(tabId, requestData) {
 
         try {
             const firstPage = await fetchPage(1);
+            if (!Array.isArray(firstPage.rows) || !Number.isInteger(Number(firstPage.total)) ||
+                !Number.isInteger(Number(firstPage.records))) throw new Error('INVALID_REGISTRY_DATA');
             const totalPages = Math.max(1, Number(firstPage && firstPage.total || 1));
             const sourceRows = Array.isArray(firstPage && firstPage.rows) ? firstPage.rows.slice() : [];
             for (let pageNo = 2; pageNo <= totalPages; pageNo += 1) {
                 const nextPage = await fetchPage(pageNo);
+                if (!Array.isArray(nextPage.rows) || Number(nextPage.records) !== Number(firstPage.records) ||
+                    Number(nextPage.total) !== Number(firstPage.total)) throw new Error('REGISTRIES_CHANGED_DURING_SCAN');
                 if (Array.isArray(nextPage && nextPage.rows)) sourceRows.push(...nextPage.rows);
             }
 
+            if (sourceRows.length !== Number(firstPage.records)) throw new Error('INCOMPLETE_REGISTRY_ROWS');
             const rows = sourceRows.map((item) => {
                 const cell = item && item.cell && typeof item.cell === 'object' ? item.cell : {};
                 return {
@@ -903,8 +908,46 @@ async function collectEpguRegistryRowsInTab(tabId, requestData) {
                     createDate: normalizeText(cell.CreateDate)
                 };
             }).filter((item) => (
-                item.createDate === payload.checkDate && (item.registryId || item.fileName)
+                item.createDate.split(' ')[0] === payload.checkDate && (item.registryId || item.fileName) &&
+                (!payload.registryId || item.registryId === payload.registryId)
             ));
+
+            for (const row of rows) {
+                if (!row.registryId) throw new Error('REGISTRY_ID_MISSING');
+                const statuses = new Set();
+                let received = 0;
+                let expected = null;
+                let total = 1;
+                for (let page = 1; page <= total; page += 1) {
+                    const url = new URL(`/ovzid/fsspreestr/${encodeURIComponent(row.registryId)}/typedata`, window.location.origin);
+                    Object.entries({ _search: false, rows: 300, page, sidx: 'Id', sord: 'asc' })
+                        .forEach(([key, value]) => url.searchParams.set(key, String(value)));
+                    const response = await fetch(url.toString(), {
+                        credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' }
+                    });
+                    if (!response.ok) throw new Error(`DETAIL_HTTP_${response.status}`);
+                    const data = await response.json();
+                    if (!Array.isArray(data.rows) || !Number.isInteger(Number(data.total)) ||
+                        !Number.isInteger(Number(data.records)) || Number(data.records) < 0 || Number(data.total) < 0) {
+                        throw new Error('INVALID_DETAIL_DATA');
+                    }
+                    if (page === 1) {
+                        total = Math.max(1, Number(data.total));
+                        expected = Number(data.records);
+                    } else if (Number(data.records) !== expected || Math.max(1, Number(data.total)) !== total) {
+                        throw new Error('DETAIL_CHANGED_DURING_SCAN');
+                    }
+                    received += data.rows.length;
+                    for (const item of data.rows) {
+                        const cell = item && item.cell;
+                        if (!cell || typeof cell.StatusName !== 'string') throw new Error('DETAIL_STATUS_MISSING');
+                        statuses.add(normalizeText(cell.StatusName).toLowerCase().replace(/ё/g, 'е'));
+                    }
+                }
+                if (received !== expected) throw new Error('INCOMPLETE_DETAIL_ROWS');
+                row.hasUnknown = statuses.has('неизвестно');
+                row.hasCaseSearch = statuses.has('поиск дела произведен');
+            }
 
             return { success: true, rows, totalPages };
         } catch (error) {
@@ -1131,6 +1174,11 @@ async function runEpguRegistryConduct(sourceTab, conductRequest) {
 
         await navigateEpguRegistryWorkerTab(workerTabId, conductRequest.targetUrl, conductRequest.targetDepid);
         conductResult = await conductEpguRegistryInTab(workerTabId, conductRequest);
+        const checkedRows = await collectEpguRegistryRowsInTab(workerTabId, conductRequest);
+        const checkedRegistry = checkedRows.find((row) => row.registryId === conductRequest.registryId);
+        if (!checkedRegistry) throw new Error('После проведения не удалось проверить строки реестра. Повторите проверку.');
+        conductResult.hasUnknown = checkedRegistry.hasUnknown;
+        conductResult.hasCaseSearch = checkedRegistry.hasCaseSearch;
     } catch (error) {
         conductError = error;
     } finally {
