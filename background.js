@@ -839,8 +839,8 @@ async function conductEpguRegistryInTab(tabId, requestData) {
     return result;
 }
 
-async function collectEpguRegistryRowsInTab(tabId, requestData) {
-    const result = await executeScriptInTabAsync(tabId, async (payload) => {
+async function collectEpguRegistryRowsInTab(tabId, requestData, detailCache = new Map(), onProgress = async () => {}) {
+    const read = async (payload) => executeScriptInTabAsync(tabId, async (payload) => {
         const normalizeText = (value) => String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
         if (String(window.location.hostname || '').trim().toLowerCase() !== payload.baseHost) {
             return { success: false, error: 'WRONG_BASE_HOST' };
@@ -884,10 +884,13 @@ async function collectEpguRegistryRowsInTab(tabId, requestData) {
         };
 
         try {
+            let rows = payload.detailRows;
+            let totalPages = 0;
+            if (!Array.isArray(rows)) {
             const firstPage = await fetchPage(1);
             if (!Array.isArray(firstPage.rows) || !Number.isInteger(Number(firstPage.total)) ||
                 !Number.isInteger(Number(firstPage.records))) throw new Error('INVALID_REGISTRY_DATA');
-            const totalPages = Math.max(1, Number(firstPage && firstPage.total || 1));
+            totalPages = Math.max(1, Number(firstPage && firstPage.total || 1));
             const sourceRows = Array.isArray(firstPage && firstPage.rows) ? firstPage.rows.slice() : [];
             for (let pageNo = 2; pageNo <= totalPages; pageNo += 1) {
                 const nextPage = await fetchPage(pageNo);
@@ -897,7 +900,7 @@ async function collectEpguRegistryRowsInTab(tabId, requestData) {
             }
 
             if (sourceRows.length !== Number(firstPage.records)) throw new Error('INCOMPLETE_REGISTRY_ROWS');
-            const rows = sourceRows.map((item) => {
+            rows = sourceRows.map((item) => {
                 const cell = item && item.cell && typeof item.cell === 'object' ? item.cell : {};
                 return {
                     registryId: normalizeText(cell.Id || (item && item.id)),
@@ -912,6 +915,8 @@ async function collectEpguRegistryRowsInTab(tabId, requestData) {
                 (!payload.registryId || item.registryId === payload.registryId)
             ));
 
+            }
+            if (payload.listOnly) return { success: true, rows, totalPages };
             for (const row of rows) {
                 if (!row.registryId) throw new Error('REGISTRY_ID_MISSING');
                 const statuses = new Set();
@@ -920,7 +925,7 @@ async function collectEpguRegistryRowsInTab(tabId, requestData) {
                 let total = 1;
                 for (let page = 1; page <= total; page += 1) {
                     const url = new URL(`/ovzid/fsspreestr/${encodeURIComponent(row.registryId)}/typedata`, window.location.origin);
-                    Object.entries({ _search: false, rows: 300, page, sidx: 'Id', sord: 'asc' })
+                    Object.entries({ _search: false, rows: 2000, page, sidx: 'Id', sord: 'asc' })
                         .forEach(([key, value]) => url.searchParams.set(key, String(value)));
                     const response = await fetch(url.toString(), {
                         credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' }
@@ -956,12 +961,50 @@ async function collectEpguRegistryRowsInTab(tabId, requestData) {
                 error: error && error.message ? error.message : 'FETCH_FAILED'
             };
         }
-    }, [requestData], { world: 'MAIN' });
+    }, [payload], { world: 'MAIN' });
 
+    const result = await read({ ...requestData, listOnly: true });
     if (!result || result.success !== true || !Array.isArray(result.rows)) {
         throw new Error(result && result.error ? result.error : 'REGISTRY_ROWS_UNAVAILABLE');
     }
-    return result.rows;
+    const rows = result.rows;
+    let reused = 0;
+    await onProgress({ registryCurrent: 0, registryTotal: rows.length, registryReused: reused });
+    let next = 0;
+    let completed = 0;
+    let failure = null;
+    const workers = Array.from({ length: Math.min(4, rows.length) }, async () => {
+        while (!failure && next < rows.length) {
+            const row = rows[next++];
+            try {
+                if (!row.registryId) throw new Error('REGISTRY_ID_MISSING');
+                const key = `${requestData.baseHost}|${row.registryId}`;
+                if (detailCache.has(key)) {
+                    reused += 1;
+                } else {
+                    // Cache the in-flight promise too: simultaneous copies share one request.
+                    detailCache.set(key, read({ ...requestData, detailRows: [row] }).then((checked) => {
+                        if (!checked || checked.success !== true || !checked.rows || checked.rows.length !== 1) {
+                            throw new Error(checked && checked.error ? checked.error : 'REGISTRY_DETAILS_UNAVAILABLE');
+                        }
+                        return { hasUnknown: checked.rows[0].hasUnknown, hasCaseSearch: checked.rows[0].hasCaseSearch };
+                    }).catch((error) => {
+                        detailCache.delete(key);
+                        throw error;
+                    }));
+                }
+                Object.assign(row, await detailCache.get(key));
+                completed += 1;
+                await onProgress({ registryCurrent: completed, registryTotal: rows.length, registryReused: reused });
+            } catch (error) {
+                failure = failure || error;
+            }
+        }
+    });
+    // Drain all requests before changing department, including on failure.
+    await Promise.all(workers);
+    if (failure) throw failure;
+    return rows;
 }
 
 async function verifyEpguRegistryDepartmentInTab(tabId, depid) {
@@ -1017,6 +1060,7 @@ async function runEpguRegistryScan(sourceTab, scanRequest) {
     let restoreCompleted = false;
     let scanError = null;
     const collectedRows = [];
+    const detailCache = new Map();
 
     try {
         let workerTab = null;
@@ -1051,6 +1095,12 @@ async function runEpguRegistryScan(sourceTab, scanRequest) {
                         departmentRows = await collectEpguRegistryRowsInTab(workerTabId, {
                             baseHost: scanRequest.baseHost,
                             checkDate: scanRequest.checkDate
+                        }, detailCache, async (counts) => {
+                            await sendTabMessageAsync(sourceTabId, {
+                                action: 'EPGU_REGISTRY_SCAN_PROGRESS',
+                                data: { current: index, total: scanRequest.departments.length,
+                                    department: department.label, ...counts }
+                            });
                         });
                         break;
                     } catch (error) {

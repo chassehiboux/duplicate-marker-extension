@@ -13808,7 +13808,7 @@
       const progress = epguRegistryCheckProgress;
       status.textContent = progress.restoring
         ? 'Проверка завершена. Возвращаем исходный департамент…'
-        : `Проверено ${Math.max(0, Number(progress.current) || 0)} из ${Math.max(0, Number(progress.total) || 0)}. Сейчас: ${progress.department || 'подготовка'}.`;
+        : `Проверено ${Math.max(0, Number(progress.current) || 0)} из ${Math.max(0, Number(progress.total) || 0)}. Сейчас: ${progress.department || 'подготовка'}.${Number.isFinite(progress.registryTotal) ? ` Реестров проверено ${Math.max(0, Number(progress.registryCurrent) || 0)} из ${progress.registryTotal} (повторно использовано: ${Math.max(0, Number(progress.registryReused) || 0)}).` : ' Загружаем список реестров…'}`;
       return;
     }
     if (epguRegistryCheckNotice) {
