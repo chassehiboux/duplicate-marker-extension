@@ -1986,8 +1986,30 @@ function readNotifyWindow_(sheet) {
 }
 
 // ---------------- АЛЕРТЫ ----------------
+function setupAlertStageExclusions_(sheet) {
+  sheet.getRange("G3").setValue("Исключить стадии (через |)")
+    .setBackground("#cfe2f3").setFontWeight("bold");
+  sheet.getRange("G4:G6").setNumberFormat("@").setNote(
+    "Не включать в алерт по лимиту времени стадии, содержащие любой из фрагментов через |. " +
+    "Регистр не учитывается. Пример: Реестры передачи в ОВЗИД | Другая стадия. " +
+    "Пустое поле — без исключений. Статистика не изменяется."
+  );
+}
+
+function parseAlertStageExclusions_(raw) {
+  return String(raw || "").split("|").map(function(part) {
+    return part.trim().toLowerCase();
+  }).filter(function(part) { return part.length > 0; });
+}
+
+function isAlertStageExcluded_(stageName, exclusions) {
+  var normalized = String(stageName || "").toLowerCase();
+  return exclusions.some(function(part) { return normalized.indexOf(part) !== -1; });
+}
+
 function checkAlerts(sheet, stats, timeZone) {
-  var configsRange = sheet.getRange("A4:F6");
+  setupAlertStageExclusions_(sheet);
+  var configsRange = sheet.getRange("A4:G6");
   var configs = configsRange.getValues();
   var props = PropertiesService.getScriptProperties();
   var nowMs = Date.now();
@@ -2004,6 +2026,7 @@ function checkAlerts(sheet, stats, timeZone) {
     var isActive = row[3];   
     var lastMsgId = row[4]; 
     var lastStatus = row[5] || "OK";
+    var stageExclusions = parseAlertStageExclusions_(row[6]);
 
     if (!baseTarget || !limit || !chatId || isActive !== true) continue;
 
@@ -2045,6 +2068,7 @@ function checkAlerts(sheet, stats, timeZone) {
         var loadTypeAlerts = []; 
 
         for (var stageName in stats[baseName][loadType]) {
+          if (isAlertStageExcluded_(stageName, stageExclusions)) continue;
           var s = stats[baseName][loadType][stageName];
           if (s.count === 0) continue; 
 
@@ -2453,6 +2477,7 @@ function setupDashboard() {
   sheet.getRange("A2:D2").setBackground("#fff2cc");
   sheet.getRange("A3:F3").setValues([["Имя базы (или *)", "Лимит времени (сек)", "ID Чата Telegram", "Активно?", "ID посл. сообщ.", "Статус (Last)"]]);
   sheet.getRange("A3:F3").setBackground("#cfe2f3").setFontWeight("bold");
+  setupAlertStageExclusions_(sheet);
   
   sheet.getRange("A4:D4").setValues([["*", 15, "ВСТАВЬТЕ_ID", true]]);
   sheet.getRange("D4").insertCheckboxes();
