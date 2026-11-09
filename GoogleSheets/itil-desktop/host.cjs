@@ -8,6 +8,16 @@ const path = require('node:path');
 const FRAME_LIMIT = 1024 * 1024;
 const WINDOW_ERROR = 'Откройте одно локальное окно 1С:ITIL и выберите Service Desk.';
 const CARD_ERROR = 'В локальной 1С:ITIL не открылась карточка с нужным номером.';
+const ACTION_LABELS = {
+  'list-windows': 'Проверка окна 1С',
+  'focus-window': 'Переключение на окно 1С',
+  minimize: 'Сворачивание окна 1С',
+  restore: 'Восстановление окна 1С',
+  snapshot: 'Чтение интерфейса 1С',
+  'clipboard-set': 'Копирование номера ITIL',
+  press: 'Ввод с клавиатуры',
+  'mouse-click': 'Нажатие в окне 1С'
+};
 
 function readBytes(size) {
   const bytes = Buffer.alloc(size);
@@ -148,8 +158,12 @@ async function searchItil(run, message) {
     return current;
   }
 
-  async function focusTarget() {
-    if (target.is_focused || (target.minimized && getTargetWindow().is_focused)) return;
+  async function focusTarget(current = target) {
+    if (current.is_focused) return;
+    if (current.minimized) {
+      run('restore', ...windowArgs);
+      if (getTargetWindow().is_focused) return;
+    }
     try {
       run('focus-window', ...windowArgs);
     } catch (error) {
@@ -166,7 +180,7 @@ async function searchItil(run, message) {
     }
   }
 
-  function click(node) {
+  function click(node, label) {
     const current = getTargetWindow();
     const { x, y, width, height } = node.bounds;
     const center = { x: Math.round(x + width / 2), y: Math.round(y + height / 2) };
@@ -174,13 +188,36 @@ async function searchItil(run, message) {
     const sameBounds = ['x', 'y', 'width', 'height'].every((key) => area[key] === snapshotBounds[key]);
     if (!current.is_focused || !sameBounds || center.x < area.x || center.x >= area.x + area.width
       || center.y < area.y || center.y >= area.y + area.height) {
-      throw new Error('Окно 1С:ITIL потеряло фокус или переместилось во время поиска.');
+      const error = new Error(label + '. Окно 1С:ITIL потеряло фокус или переместилось.');
+      error.safeToRetry = true;
+      throw error;
     }
-    run('--headed', 'mouse-click', '--xy=' + center.x + ',' + center.y);
+    try {
+      run('--headed', 'mouse-click', '--xy=' + center.x + ',' + center.y);
+    } catch (error) {
+      error.message = label + '. ' + error.message;
+      throw error;
+    }
+  }
+
+  async function closeCard(close) {
+    const label = 'Закрытие карточки ITIL';
+    try {
+      click(close, label);
+    } catch (error) {
+      if (!error.safeToRetry && error.code !== 'ACTION_FAILED') throw error;
+      if (error.safeToRetry) await focusTarget(getTargetWindow());
+      const state = await poll(snapshot, (nodes) => {
+        if (findDeskSearch(nodes)) return { closed: true };
+        if (!error.safeToRetry || findField(nodes, 'Номер:')?.value !== number) return null;
+        const button = findCardClose(nodes);
+        return button && { button };
+      }, 5000, error.message);
+      if (!state.closed) click(state.button, label);
+    }
   }
 
   try {
-    if (target.minimized) run('restore', ...windowArgs);
     await focusTarget();
     const ready = await poll(snapshot, (nodes) => {
       const field = findDeskSearch(nodes);
@@ -192,7 +229,7 @@ async function searchItil(run, message) {
     }, 5000, WINDOW_ERROR);
     if (!ready.field) return { success: true, itilNumber: number, ...ready.data };
 
-    click(ready.field);
+    click(ready.field, 'Выбор поля поиска Service Desk');
     run('clipboard-set', number);
     run('press', 'ctrl+a', ...windowArgs);
     run('press', 'ctrl+v', ...windowArgs);
@@ -207,7 +244,7 @@ async function searchItil(run, message) {
     }
     const row = await poll(snapshot, findResult, targetTimeout(message.searchMs),
       'В Service Desk не найдена строка с точным номером ' + number + '.');
-    click(row);
+    click(row, 'Выбор найденной строки ITIL');
     await poll(snapshot, (nodes) => findResult(nodes)?.states?.includes('focused'), 5000,
       'В 1С не удалось выбрать строку с точным номером.');
     run('press', 'return', ...windowArgs);
@@ -218,7 +255,7 @@ async function searchItil(run, message) {
       const close = findCardClose(nodes);
       return data && close ? { data, close } : null;
     }, targetTimeout(message.cardMs), CARD_ERROR);
-    if (card.close) click(card.close);
+    if (card.close) await closeCard(card.close);
     return { success: true, itilNumber: number, ...card.data };
   } finally {
     if (!leaveOpen && originalFocus && !usedManualFocus) {
@@ -247,7 +284,10 @@ async function main() {
         throw new Error('Не удалось получить ответ от установленного agent-desktop.');
       }
       if (!result.ok) {
-        const error = new Error('Действие в 1С не выполнено (' + result.error?.code + '). Проверьте окно и повторите поиск.');
+        const action = args[0] === '--headed' ? args[1] : args[0];
+        const label = ACTION_LABELS[action] || action;
+        const detail = result.error?.message?.slice(0, 240);
+        const error = new Error(label + ' (' + result.error?.code + ').' + (detail ? ' ' + detail : ''));
         error.code = result.error?.code;
         error.safeToRetry = result.error?.disposition?.retry === 'safe';
         throw error;
