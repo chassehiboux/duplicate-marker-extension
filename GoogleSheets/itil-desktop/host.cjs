@@ -149,7 +149,7 @@ async function searchItil(run, message) {
   }
 
   async function focusTarget() {
-    if (getTargetWindow().is_focused) return;
+    if (target.is_focused || (target.minimized && getTargetWindow().is_focused)) return;
     try {
       run('focus-window', ...windowArgs);
     } catch (error) {
@@ -179,22 +179,20 @@ async function searchItil(run, message) {
     run('--headed', 'mouse-click', '--xy=' + center.x + ',' + center.y);
   }
 
-  if (target.minimized) run('restore', ...windowArgs);
-  const initial = await poll(snapshot, (nodes) => nodes, 12000, 'Не удалось полностью прочитать окно 1С:ITIL.');
-  if (findField(initial, 'Номер:')?.value === number) {
-    if (leaveOpen) {
-      await focusTarget();
-      return { success: true, itilNumber: number };
-    }
-    const card = readCard(initial, number);
-    if (card) return { success: true, itilNumber: number, ...card };
-  }
-  if (!findDeskSearch(initial)) throw new Error(WINDOW_ERROR);
-
   try {
+    if (target.minimized) run('restore', ...windowArgs);
     await focusTarget();
-    const field = await poll(snapshot, findDeskSearch, 5000, WINDOW_ERROR);
-    click(field);
+    const ready = await poll(snapshot, (nodes) => {
+      const field = findDeskSearch(nodes);
+      if (field) return { field };
+      if (findField(nodes, 'Номер:')?.value !== number) return null;
+      if (leaveOpen) return {};
+      const data = readCard(nodes, number);
+      return data && { data };
+    }, 5000, WINDOW_ERROR);
+    if (!ready.field) return { success: true, itilNumber: number, ...ready.data };
+
+    click(ready.field);
     run('clipboard-set', number);
     run('press', 'ctrl+a', ...windowArgs);
     run('press', 'ctrl+v', ...windowArgs);
@@ -220,10 +218,7 @@ async function searchItil(run, message) {
       const close = findCardClose(nodes);
       return data && close ? { data, close } : null;
     }, targetTimeout(message.cardMs), CARD_ERROR);
-    if (card.close) {
-      click(card.close);
-      await poll(snapshot, findDeskSearch, 5000, 'Не удалось вернуться в Service Desk после чтения заявки.');
-    }
+    if (card.close) click(card.close);
     return { success: true, itilNumber: number, ...card.data };
   } finally {
     if (!leaveOpen && originalFocus && !usedManualFocus) {
