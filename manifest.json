@@ -88,6 +88,8 @@
       ],
       "js": [
         "GoogleSheets/problem_picker_config.js",
+        "GoogleSheets/itil_category_model.js",
+        "GoogleSheets/itil_category_predictor.js",
         "GoogleSheets/problem_picker_content.js"
       ],
       "run_at": "document_idle",

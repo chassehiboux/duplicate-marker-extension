@@ -86,6 +86,8 @@ DIR_FILES = {
     'GoogleSheets': [
         'problem_picker_background.js',
         'problem_picker_config.js',
+        'itil_category_model.js',
+        'itil_category_predictor.js',
         'problem_picker_content.js',
     ],
     'StageTimer': [
