@@ -195,11 +195,13 @@ async function searchItil(run, message) {
     await focusTarget();
     const field = await poll(snapshot, findDeskSearch, 5000, WINDOW_ERROR);
     click(field);
-    const suffix = number.split('-')[1].replace(/^0+(?=\d)/, '');
-    for (const key of ['ctrl+a', ...suffix, 'return']) run('press', key, ...windowArgs);
+    run('clipboard-set', number);
+    run('press', 'ctrl+a', ...windowArgs);
+    run('press', 'ctrl+v', ...windowArgs);
+    run('press', 'return', ...windowArgs);
 
     function findResult(nodes) {
-      if (findDeskSearch(nodes)?.value !== suffix) return null;
+      if (findDeskSearch(nodes)?.value !== number) return null;
       const matches = nodes.filter((node) => node.bounds && node.name?.replace(/<[^>]*>/g, '') === number + ' Номер'
         && !node.states?.includes('offscreen'));
       if (matches.length > 1) throw new Error('В 1С найдено несколько строк с одним номером.');
