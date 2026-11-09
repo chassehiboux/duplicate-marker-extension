@@ -44,6 +44,10 @@
   }
 
   function predict(text) {
+    if (/^[^\S\r\n]*[^\s:][^\r\n]*:[^\S\r\n]*Обновления заказа успешно собраны\./im.test(text)) {
+      return 'ЕПГУ';
+    }
+
     const tokens = tokenize(text);
     if (tokens.length < 3) return '';
 
