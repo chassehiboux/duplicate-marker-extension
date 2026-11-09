@@ -17,6 +17,7 @@
   const ITIL_URL = 'http://tmn-vpitil1c01/ITIL/ru_RU/';
   const SUPP_URL = 'http://tmn-vpsupp1c01.corp.vostok-electra.ru/PMS/ru_RU/';
   const ITIL_BASE_URL = 'http://tmn-vpitil1c01/ITIL/';
+  const ITIL_DESKTOP_HOST = 'ru.duplicate_marker.itil_desktop';
   const SUPP_BASE_URL = 'http://tmn-vpsupp1c01.corp.vostok-electra.ru/PMS/';
   const ONE_C_USERNAME = 'ЗуйкевичДИ';
   const ONE_C_PASSWORD = 'Nu3ho5ja';
@@ -58,8 +59,13 @@
   }
 
   function isAllowedSender(sender) {
-    const url = sender && sender.url ? String(sender.url) : '';
-    return url.includes(`https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/`);
+    try {
+      const url = new URL(sender?.url);
+      return url.origin === 'https://docs.google.com'
+        && url.pathname.startsWith(`/spreadsheets/d/${SPREADSHEET_ID}/`);
+    } catch {
+      return false;
+    }
   }
 
   function normalizeBridgeUrl(url) {
@@ -1710,14 +1716,67 @@
     };
   }
 
+  function requestDesktopItil(itilNumber, waitTimeouts, leaveOpen = false) {
+    if (!chrome.runtime.getManifest().permissions?.includes('nativeMessaging')) return Promise.resolve(null);
+
+    return new Promise((resolve, reject) => {
+      const port = chrome.runtime.connectNative(ITIL_DESKTOP_HOST);
+      const timer = setTimeout(() => {
+        port.disconnect();
+        reject(new Error('Не дождался ответа локального помощника 1С:ITIL.'));
+      }, 150000);
+      port.onDisconnect.addListener(() => {
+        clearTimeout(timer);
+        const message = chrome.runtime.lastError?.message || '';
+        if (message === 'Specified native messaging host not found.') {
+          resolve(null);
+        } else {
+          reject(new Error('Потеряна связь с локальным помощником 1С:ITIL.' + (message ? ' ' + message : '')));
+        }
+      });
+      port.onMessage.addListener((response) => {
+        clearTimeout(timer);
+        port.disconnect();
+        if (response?.success !== true) {
+          reject(new Error(response?.error || 'Помощник 1С:ITIL не вернул результат.'));
+          return;
+        }
+        if (response.itilNumber !== itilNumber) {
+          reject(new Error('Помощник 1С:ITIL вернул данные другой заявки.'));
+          return;
+        }
+        if (!leaveOpen && ['requestText', 'solutionText', 'additionalInfoText'].some((key) => typeof response[key] !== 'string')) {
+          reject(new Error('Помощник 1С:ITIL вернул неполные данные карточки.'));
+          return;
+        }
+        resolve(response);
+      });
+      try {
+        port.postMessage({
+          itilNumber,
+          leaveOpen,
+          searchMs: waitTimeouts.itilSearchResultMs,
+          cardMs: waitTimeouts.itilRequestTabMs
+        });
+      } catch (error) {
+        clearTimeout(timer);
+        port.disconnect();
+        reject(error);
+      }
+    });
+  }
+
   async function collectItilFillData(itilNumber, waitTimeouts) {
     const number = String(itilNumber || '').trim();
     if (!number) throw new Error('Не передан номер ITIL.');
 
     const timeouts = normalizeWaitTimeouts(waitTimeouts);
-    const tab = await getOrCreateItilTab(timeouts);
-    const clipboardPrepared = await writeClipboardText(number);
-    const result = await executeInTab(tab.id, collectItilRequestData, [number, clipboardPrepared, { waitTimeouts: timeouts }]);
+    let result = await requestDesktopItil(number, timeouts);
+    if (!result) {
+      const tab = await getOrCreateItilTab(timeouts);
+      const clipboardPrepared = await writeClipboardText(number);
+      result = await executeInTab(tab.id, collectItilRequestData, [number, clipboardPrepared, { waitTimeouts: timeouts }]);
+    }
     if (!result || result.success !== true) {
       throw new Error(result && result.error ? result.error : 'Не удалось получить данные из ITIL.');
     }
@@ -1739,6 +1798,8 @@
       || ''
     ).trim();
     if (!itilNumber) throw new Error('Не передан номер ITIL для открытия заявки.');
+
+    if (await requestDesktopItil(itilNumber, waitTimeouts, true)) return { itilNumber };
 
     const tab = await getOrCreateItilTab(waitTimeouts);
     const clipboardPrepared = await writeClipboardText(itilNumber);

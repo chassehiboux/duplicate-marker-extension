@@ -460,7 +460,7 @@ def create_firefox_manifest(version, update_manifest_url):
     }
     manifest['permissions'] = [
         permission for permission in manifest.get('permissions', [])
-        if permission not in {'sidePanel', 'debugger'}
+        if permission not in {'sidePanel', 'debugger', 'nativeMessaging'}
     ]
     for firefox_permission in ('cookies', 'contextualIdentities'):
         if firefox_permission not in manifest['permissions']:
