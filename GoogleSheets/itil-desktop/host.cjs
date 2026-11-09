@@ -112,6 +112,17 @@ function targetTimeout(value) {
   return Number.isFinite(value) ? Math.max(1000, Math.min(45000, value)) : 30000;
 }
 
+function isItilWindow(window) {
+  return window.app_name.toLowerCase() === '1cv8c.exe' && /^1С:ITIL\b/i.test(window.title);
+}
+
+function releaseItilFocus(run) {
+  const window = run('list-windows', '--app', '1cv8c.exe')
+    .find((candidate) => candidate.is_focused && isItilWindow(candidate));
+  if (window) run('minimize', '--window-id', window.id);
+  return { success: true, released: !!window };
+}
+
 async function poll(snapshot, find, timeoutMs, errorMessage) {
   const deadline = Date.now() + timeoutMs;
   do {
@@ -130,8 +141,7 @@ async function searchItil(run, message) {
   }
   const leaveOpen = message.leaveOpen === true;
   const allWindows = run('list-windows');
-  const candidates = allWindows.filter((window) => window.app_name.toLowerCase() === '1cv8c.exe'
-    && /^1С:ITIL\b/i.test(window.title));
+  const candidates = allWindows.filter(isItilWindow);
   if (candidates.length !== 1) throw new Error(WINDOW_ERROR);
   const target = candidates[0];
   const windowArgs = ['--window-id', target.id];
@@ -294,7 +304,7 @@ async function main() {
       }
       return result.data;
     };
-    response = await searchItil(run, message);
+    response = message.action === 'releaseItilFocus' ? releaseItilFocus(run) : await searchItil(run, message);
   } catch (error) {
     response = { success: false, error: error.message };
   } finally {

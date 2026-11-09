@@ -904,6 +904,37 @@
     });
   }
 
+  function getBrowserWindow(windowId) {
+    return new Promise((resolve) => {
+      if (!Number.isInteger(windowId) || typeof chrome.windows?.get !== 'function') {
+        resolve(null);
+        return;
+      }
+      chrome.windows.get(windowId, (win) => resolve(chrome.runtime.lastError ? null : win));
+    });
+  }
+
+  async function ensureSuppWindowFocused(windowId) {
+    if (!chrome.runtime.getManifest().permissions?.includes('nativeMessaging')) return;
+    let win = await getBrowserWindow(windowId);
+    if (win?.focused !== false) return;
+    if (win.state === 'minimized') {
+      await windowsUpdate(windowId, { state: 'normal', focused: true });
+      win = await getBrowserWindow(windowId);
+      if (win?.focused !== false) return;
+    }
+
+    const handoff = await requestItilDesktopHost({ action: 'releaseItilFocus' }, 10000);
+    if (!handoff?.released) return;
+    await windowsUpdate(windowId, { focused: true });
+    if ((await getBrowserWindow(windowId))?.focused === false) {
+      await backgroundSleep(300);
+      if ((await getBrowserWindow(windowId))?.focused === false) {
+        throw new Error('Не удалось вывести окно Edge с вкладкой СУПП на передний план.');
+      }
+    }
+  }
+
   function backgroundSleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
@@ -938,6 +969,7 @@
     await backgroundSleep(700);
 
     const refreshedTab = await tabsGet(tabId).catch(() => activatedTab || currentTab || tab);
+    if (urlPrefix === SUPP_BASE_URL) await ensureSuppWindowFocused(refreshedTab?.windowId);
 
     if (refreshedTab && refreshedTab.status !== 'complete') {
       return waitForTabReady(tabId, urlPrefix, timeouts.tabLoadMs);
@@ -1716,7 +1748,7 @@
     };
   }
 
-  function requestDesktopItil(itilNumber, waitTimeouts, leaveOpen = false) {
+  function requestItilDesktopHost(message, timeoutMs) {
     if (!chrome.runtime.getManifest().permissions?.includes('nativeMessaging')) return Promise.resolve(null);
 
     return new Promise((resolve, reject) => {
@@ -1724,7 +1756,7 @@
       const timer = setTimeout(() => {
         port.disconnect();
         reject(new Error('Не дождался ответа локального помощника 1С:ITIL.'));
-      }, 150000);
+      }, timeoutMs);
       port.onDisconnect.addListener(() => {
         clearTimeout(timer);
         const message = chrome.runtime.lastError?.message || '';
@@ -1741,29 +1773,33 @@
           reject(new Error(response?.error || 'Помощник 1С:ITIL не вернул результат.'));
           return;
         }
-        if (response.itilNumber !== itilNumber) {
-          reject(new Error('Помощник 1С:ITIL вернул данные другой заявки.'));
-          return;
-        }
-        if (!leaveOpen && ['requestText', 'solutionText', 'additionalInfoText'].some((key) => typeof response[key] !== 'string')) {
-          reject(new Error('Помощник 1С:ITIL вернул неполные данные карточки.'));
-          return;
-        }
         resolve(response);
       });
       try {
-        port.postMessage({
-          itilNumber,
-          leaveOpen,
-          searchMs: waitTimeouts.itilSearchResultMs,
-          cardMs: waitTimeouts.itilRequestTabMs
-        });
+        port.postMessage(message);
       } catch (error) {
         clearTimeout(timer);
         port.disconnect();
         reject(error);
       }
     });
+  }
+
+  async function requestDesktopItil(itilNumber, waitTimeouts, leaveOpen = false) {
+    const response = await requestItilDesktopHost({
+      itilNumber,
+      leaveOpen,
+      searchMs: waitTimeouts.itilSearchResultMs,
+      cardMs: waitTimeouts.itilRequestTabMs
+    }, 150000);
+    if (!response) return null;
+    if (response.itilNumber !== itilNumber) {
+      throw new Error('Помощник 1С:ITIL вернул данные другой заявки.');
+    }
+    if (!leaveOpen && ['requestText', 'solutionText', 'additionalInfoText'].some((key) => typeof response[key] !== 'string')) {
+      throw new Error('Помощник 1С:ITIL вернул неполные данные карточки.');
+    }
+    return response;
   }
 
   async function collectItilFillData(itilNumber, waitTimeouts) {
