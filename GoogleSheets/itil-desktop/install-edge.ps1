@@ -7,9 +7,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$nodePath = (Get-Command node.exe -CommandType Application).Source
+$nodePath = (Get-Command node.exe -CommandType Application -TotalCount 1).Source
 if (-not $AgentDesktopPath) {
-    $npm = (Get-Command npm.cmd -CommandType Application).Source
+    $npm = (Get-Command npm.cmd -CommandType Application -TotalCount 1).Source
     $npmRoot = & $npm root -g
     if ($LASTEXITCODE -ne 0) { throw 'npm root -g failed' }
     $arch = & $nodePath -p process.arch
