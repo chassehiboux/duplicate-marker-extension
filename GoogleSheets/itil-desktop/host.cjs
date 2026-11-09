@@ -8,6 +8,7 @@ const path = require('node:path');
 const FRAME_LIMIT = 1024 * 1024;
 const WINDOW_ERROR = 'Откройте одно локальное окно 1С:ITIL и выберите Service Desk.';
 const CARD_ERROR = 'В локальной 1С:ITIL не открылась карточка с нужным номером.';
+const CLOSE_ERROR = 'Карточка ITIL осталась открытой. Не удалось вернуться в Service Desk.';
 const ACTION_LABELS = {
   'list-windows': 'Проверка окна 1С',
   'focus-window': 'Переключение на окно 1С',
@@ -103,11 +104,6 @@ function readCard(nodes, number) {
   };
 }
 
-function findCardClose(nodes) {
-  const header = nodes.find((node) => node.children?.some((child) => child.name === 'Получить ссылку...'));
-  return header?.children.find((node) => node.role === 'button' && node.name === 'Закрыть' && node.bounds);
-}
-
 function targetTimeout(value) {
   return Number.isFinite(value) ? Math.max(1000, Math.min(45000, value)) : 30000;
 }
@@ -149,9 +145,9 @@ async function searchItil(run, message) {
   let usedManualFocus = false;
   let snapshotBounds;
 
-  function snapshot() {
+  function snapshot(depth = 44) {
     try {
-      const result = run('snapshot', ...windowArgs, '--max-depth', '44', '--timeout-ms', '12000', '--include-bounds', '--compact');
+      const result = run('snapshot', ...windowArgs, '--max-depth', String(depth), '--timeout-ms', '12000', '--include-bounds', '--compact');
       if (!result.complete || !result.tree?.bounds) return null;
       snapshotBounds = result.tree.bounds;
       return flatten(result.tree);
@@ -210,21 +206,24 @@ async function searchItil(run, message) {
     }
   }
 
-  async function closeCard(close) {
-    const label = 'Закрытие карточки ITIL';
+  async function closeCard() {
+    const snapshotDesk = () => snapshot(18);
     try {
-      click(close, label);
+      run('press', 'ctrl+f4', ...windowArgs);
     } catch (error) {
+      error.message = 'Закрытие карточки ITIL. ' + error.message;
       if (!error.safeToRetry && error.code !== 'ACTION_FAILED') throw error;
-      if (error.safeToRetry) await focusTarget(getTargetWindow());
-      const state = await poll(snapshot, (nodes) => {
-        if (findDeskSearch(nodes)) return { closed: true };
-        if (!error.safeToRetry || findField(nodes, 'Номер:')?.value !== number) return null;
-        const button = findCardClose(nodes);
-        return button && { button };
-      }, 5000, error.message);
-      if (!state.closed) click(state.button, label);
+      if (error.safeToRetry) {
+        await focusTarget(getTargetWindow());
+        const state = await poll(snapshotDesk, (nodes) => {
+          if (findDeskSearch(nodes)) return 'desk';
+          return findField(nodes, 'Номер:')?.value === number ? 'card' : null;
+        }, 3500, error.message);
+        if (state === 'desk') return;
+        run('press', 'ctrl+f4', ...windowArgs);
+      }
     }
+    await poll(snapshotDesk, findDeskSearch, 3500, CLOSE_ERROR);
   }
 
   try {
@@ -262,10 +261,9 @@ async function searchItil(run, message) {
     const card = await poll(snapshot, (nodes) => {
       if (leaveOpen && findField(nodes, 'Номер:')?.value === number) return {};
       const data = readCard(nodes, number);
-      const close = findCardClose(nodes);
-      return data && close ? { data, close } : null;
+      return data && { data };
     }, targetTimeout(message.cardMs), CARD_ERROR);
-    if (card.close) await closeCard(card.close);
+    if (!leaveOpen) await closeCard();
     return { success: true, itilNumber: number, ...card.data };
   } finally {
     if (!leaveOpen && originalFocus && !usedManualFocus) {
