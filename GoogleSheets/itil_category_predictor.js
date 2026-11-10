@@ -5,9 +5,11 @@
   if (!model) return;
 
   const featureCount = 32768;
+  const tentativeThreshold = 0.45;
   let weights;
   let previousText;
-  let previousCategory = '';
+  let previousInfo;
+  let previousPrediction = null;
 
   function tokenize(text) {
     const messages = text.toLowerCase().replace(/ё/g, 'е').replace(/\r\n?/g, '\n')
@@ -43,13 +45,20 @@
     return counts;
   }
 
-  function predict(text) {
+  function confirmsSystemFailure(info) {
+    const resolution = info?.match(/(?:^|\n)[ \t]*Решение обращения(?: \(ITIL\))?:\s*([^\r\n]+)/i)?.[1]?.trim();
+    if (!resolution) return false;
+    return /^был временный сбой(?:,\s*(?:проблема|ошибка) устранена)?[.!]?$/i.test(resolution)
+      || /^работоспособность (?:базы|сервиса) восстановлена(?:[.,!]|$)/i.test(resolution);
+  }
+
+  function predict(text, info) {
     if (/^[^\S\r\n]*[^\s:][^\r\n]*:[^\S\r\n]*Обновления заказа успешно собраны\./im.test(text)) {
-      return 'ЕПГУ';
+      return { category: 'ЕПГУ', level: 'high' };
     }
 
     const tokens = tokenize(text);
-    if (tokens.length < 3) return '';
+    if (tokens.length < 3) return null;
 
     if (!weights) {
       const decoded = atob(model.weights);
@@ -73,14 +82,19 @@
       if (logits[category] > logits[best]) best = category;
     }
     const confidence = 1 / logits.reduce((sum, logit) => sum + Math.exp(logit - logits[best]), 0);
-    return confidence >= model.threshold ? model.categories[best] : '';
+    const category = model.categories[best];
+    if (confidence >= model.threshold || (category === 'Системный сбой' && confirmsSystemFailure(info))) {
+      return { category, level: 'high' };
+    }
+    return { category, level: confidence >= tentativeThreshold ? 'medium' : 'low' };
   }
 
-  globalThis.predictItilCategory = (text) => {
-    if (text !== previousText) {
-      previousCategory = predict(text);
+  globalThis.predictItilCategory = (text, info = '') => {
+    if (text !== previousText || info !== previousInfo) {
+      previousPrediction = predict(text, info);
       previousText = text;
+      previousInfo = info;
     }
-    return previousCategory;
+    return previousPrediction;
   };
 })();

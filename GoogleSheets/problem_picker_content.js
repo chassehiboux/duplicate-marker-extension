@@ -198,7 +198,7 @@
   };
 
   let autoOpenTimer = 0;
-  let classificationTextRefresh = null;
+  let classificationDetailsRefresh = null;
   let autoOpenInProgress = false;
   let lastAutoOpenAtMs = 0;
   let menuStatusText = '';
@@ -3842,11 +3842,14 @@
       #${MODAL_ID} .gs-problem-picker-category-list{min-height:0;overflow:auto;display:grid;align-content:start;gap:8px;padding-right:2px}
       #${MODAL_ID} .gs-problem-picker-category-button{width:100%;min-height:40px;text-align:left;white-space:normal;overflow-wrap:anywhere;line-height:1.25;padding:9px 10px;border-color:#cbd5e1;background:#fff;color:#172033;box-shadow:0 3px 10px rgba(15,23,42,.05)}
       #${MODAL_ID} .gs-problem-picker-category-button:hover:not(:disabled),#${MODAL_ID} .gs-problem-picker-category-button:focus-visible{border-color:#1155cc;background:#eef5ff;color:#0f3f99;outline:none}
-      #${MODAL_ID} .gs-problem-picker-category-button.is-default{border-color:#1155cc;background:#1155cc;color:#fff;box-shadow:0 8px 22px rgba(17,85,204,.2)}
+      #${MODAL_ID} .gs-problem-picker-category-list:not(.has-prediction) .gs-problem-picker-category-button.is-default{border-color:#1155cc;background:#1155cc;color:#fff;box-shadow:0 8px 22px rgba(17,85,204,.2)}
       #${MODAL_ID} .gs-problem-picker-category-button.is-selected{border-color:#2e7d32;box-shadow:0 0 0 2px rgba(46,125,50,.14),0 3px 10px rgba(15,23,42,.05)}
-      #${MODAL_ID} .gs-problem-picker-category-button.is-selected:not(.is-default){background:#e9f6ee;color:#14532d}
-      #${MODAL_ID} .gs-problem-picker-category-list .gs-problem-picker-category-button.is-recommended{border-color:#a16207;background:#fde047;color:#422006}
-      #${MODAL_ID} .gs-problem-picker-category-button.is-recommended:focus-visible{outline:2px solid #713f12;outline-offset:2px}
+      #${MODAL_ID} .gs-problem-picker-category-list:not(.has-prediction) .gs-problem-picker-category-button.is-selected:not(.is-default){background:#e9f6ee;color:#14532d}
+      #${MODAL_ID} .gs-problem-picker-category-list .gs-problem-picker-category-button[data-prediction-level="high"]{border-color:#15803d;background:#86efac;color:#052e16}
+      #${MODAL_ID} .gs-problem-picker-category-list .gs-problem-picker-category-button[data-prediction-level="medium"]{border-color:#a16207;background:#fde047;color:#422006}
+      #${MODAL_ID} .gs-problem-picker-category-list .gs-problem-picker-category-button[data-prediction-level="low"]{border-color:#b91c1c;background:#fca5a5;color:#450a0a}
+      #${MODAL_ID} .gs-problem-picker-category-button[data-prediction-level]:focus-visible{outline:2px solid currentColor;outline-offset:2px}
+      #${MODAL_ID} .gs-problem-picker-category-list.has-prediction .gs-problem-picker-category-button:focus-visible:not([data-prediction-level]){background:#fff;outline:2px solid #1155cc;outline-offset:2px}
       #${MODAL_ID} .gs-problem-picker-category-button:disabled{opacity:.58;cursor:default;box-shadow:none}
       #${ITIL_IMPORT_MODAL_ID} .gs-itil-import-card{width:min(860px,100%);max-height:min(760px,calc(100vh - 32px));display:grid;grid-template-rows:auto auto minmax(240px,1fr) minmax(160px,1fr) auto;gap:14px;box-sizing:border-box;padding:22px;border:1px solid #d6dce8;border-radius:8px;background:#fbfcfe;color:#172033;box-shadow:0 24px 70px rgba(15,23,42,.26);pointer-events:auto}
       #${ITIL_IMPORT_MODAL_ID} .gs-itil-import-header,#${ITIL_IMPORT_MODAL_ID} .gs-itil-import-footer{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}
@@ -6314,26 +6317,36 @@
       .filter((button) => button instanceof HTMLButtonElement);
   }
 
-  function renderCategoryRecommendation(buttons, text) {
-    const recommendation = text ? globalThis.predictItilCategory?.(text) : '';
+  function renderCategoryRecommendation(buttons, item) {
+    const prediction = item?.text ? globalThis.predictItilCategory?.(item.text, item.info) : null;
     const list = buttons[0]?.parentElement;
     if (!list) return;
 
-    const previous = buttons.find((button) => button.classList.contains('is-recommended'));
-    const next = buttons.find((button) => button.dataset.value === recommendation);
-    if (previous === next) return;
+    const previous = buttons.find((button) => button.dataset.predictionLevel);
+    const next = buttons.find((button) => button.dataset.value === prediction?.category);
+    if (previous === next && previous?.dataset.predictionLevel === prediction?.level) return;
+    list.classList.toggle('has-prediction', !!next);
 
     if (previous) {
-      previous.classList.remove('is-recommended');
+      if (previous.dataset.predictionLevel === 'high') {
+        const followingOption = OPTIONS[OPTIONS.indexOf(previous.dataset.value) + 1];
+        const following = buttons.find((button) => button.dataset.value === followingOption) || null;
+        if (previous.nextElementSibling !== following) list.insertBefore(previous, following);
+      }
+      delete previous.dataset.predictionLevel;
       previous.removeAttribute('aria-description');
-      const followingOption = OPTIONS[OPTIONS.indexOf(previous.dataset.value) + 1];
-      const following = buttons.find((button) => button.dataset.value === followingOption) || null;
-      if (previous.nextElementSibling !== following) list.insertBefore(previous, following);
     }
     if (next) {
-      next.classList.add('is-recommended');
-      next.setAttribute('aria-description', 'Рекомендуемая категория');
-      if (list.firstElementChild !== next) list.insertBefore(next, list.firstElementChild);
+      const descriptions = {
+        high: 'Уверенная рекомендация',
+        medium: 'Возможная категория, требуется проверка',
+        low: 'Предположение с низкой уверенностью'
+      };
+      next.dataset.predictionLevel = prediction.level;
+      next.setAttribute('aria-description', descriptions[prediction.level]);
+      if (prediction.level === 'high' && list.firstElementChild !== next) {
+        list.insertBefore(next, list.firstElementChild);
+      }
     }
   }
 
@@ -6359,7 +6372,7 @@
     const info = $('.gs-problem-picker-info', modal);
     const backButton = $('.gs-problem-picker-back', modal);
     const categoryButtons = getCategoryButtons(modal);
-    renderCategoryRecommendation(categoryButtons, item?.text);
+    renderCategoryRecommendation(categoryButtons, item);
 
     renderFavoriteControl(modal, item, '.gs-problem-picker-favorite', '.gs-problem-picker-layout');
 
@@ -6689,7 +6702,7 @@
     const settings = options && typeof options === 'object' ? options : {};
     if (settings.useExistingQueue) {
       showClassificationModal();
-      void refreshClassificationText();
+      void refreshClassificationDetails();
       return;
     }
 
@@ -6717,17 +6730,17 @@
     if (modal instanceof HTMLElement && !modal.hidden) renderModal();
   }
 
-  async function refreshClassificationText() {
+  async function refreshClassificationDetails() {
     const item = getCurrentItem();
     const { gid, columns } = state;
-    if (!item?.itilNumber || !columns?.itil || !columns.text || !gid) return;
+    if (!item?.itilNumber || !columns?.itil || !columns.text || !columns.info || !gid) return;
 
-    const first = Math.min(columns.itil, columns.text);
-    const last = Math.max(columns.itil, columns.text);
+    const first = Math.min(columns.itil, columns.text, columns.info);
+    const last = Math.max(columns.itil, columns.text, columns.info);
     const range = `R${item.row}C${first}:R${item.row}C${last}`;
-    classificationTextRefresh?.abort();
+    classificationDetailsRefresh?.abort();
     const controller = new AbortController();
-    classificationTextRefresh = controller;
+    classificationDetailsRefresh = controller;
     try {
       const response = await fetch(getCsvUrl(gid, range), {
         credentials: 'omit', cache: 'no-store', signal: controller.signal
@@ -6737,13 +6750,15 @@
       if (controller.signal.aborted || state.gid !== gid || getCurrentItem() !== item
         || rows.length !== 1 || rows[0][columns.itil - first]?.trim() !== item.itilNumber) return;
       const text = (rows[0][columns.text - first] || '').trim();
-      if (text === item.text) return;
+      const info = (rows[0][columns.info - first] || '').trim();
+      if (text === item.text && info === item.info) return;
       item.text = text;
+      item.info = info;
       refreshVisibleModal();
     } catch {
-      // При недоступности экспорта используется уже загруженный текст.
+      // При недоступности экспорта используются уже загруженные данные.
     } finally {
-      if (classificationTextRefresh === controller) classificationTextRefresh = null;
+      if (classificationDetailsRefresh === controller) classificationDetailsRefresh = null;
     }
   }
 
@@ -8135,7 +8150,7 @@
     if (autoOpenInProgress || state.isLoading) return;
     const existingModal = document.getElementById(MODAL_ID);
     if (existingModal instanceof HTMLElement && !existingModal.hidden) {
-      void refreshClassificationText();
+      void refreshClassificationDetails();
       return;
     }
     if (now - lastAutoOpenAtMs < AUTO_OPEN_AFTER_EDIT_COOLDOWN_MS) return;
