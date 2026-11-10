@@ -3839,6 +3839,7 @@
       #${NEW_RESPONSE_REVIEW_MODAL_ID} .gs-new-response-review-buttons{display:flex;flex-shrink:0;gap:10px}
       #${MODAL_ID} .gs-problem-picker-category-rail{height:100%;min-width:0;display:grid;grid-template-rows:auto minmax(0,1fr);gap:12px;box-sizing:border-box;padding:18px;border:1px solid #d6dce8;border-radius:8px;background:#f8fafc;color:#172033;box-shadow:0 24px 70px rgba(15,23,42,.18)}
       #${MODAL_ID} .gs-problem-picker-category-title{font-size:15px;line-height:1.25;font-weight:700;color:#253044}
+      #${MODAL_ID} .gs-problem-picker-category-empty{margin-top:4px;font-size:12px;line-height:1.4;color:#475569}
       #${MODAL_ID} .gs-problem-picker-category-list{min-height:0;overflow:auto;display:grid;align-content:start;gap:8px;padding-right:2px}
       #${MODAL_ID} .gs-problem-picker-category-button{width:100%;min-height:40px;text-align:left;white-space:normal;overflow-wrap:anywhere;line-height:1.25;padding:9px 10px;border-color:#cbd5e1;background:#fff;color:#172033;box-shadow:0 3px 10px rgba(15,23,42,.05)}
       #${MODAL_ID} .gs-problem-picker-category-button:hover:not(:disabled),#${MODAL_ID} .gs-problem-picker-category-button:focus-visible{border-color:#1155cc;background:#eef5ff;color:#0f3f99;outline:none}
@@ -6274,7 +6275,10 @@
           </footer>
         </section>
         <aside class="gs-problem-picker-category-rail" aria-label="Категории проблем">
-          <div class="gs-problem-picker-category-title">Категория</div>
+          <div>
+            <div class="gs-problem-picker-category-title">Категория</div>
+            <div class="gs-problem-picker-category-empty" hidden>Прогноз не дал результата</div>
+          </div>
           <div class="gs-problem-picker-category-list" role="group" aria-label="Выбор категории проблемы"></div>
         </aside>
       </div>
@@ -6317,13 +6321,15 @@
       .filter((button) => button instanceof HTMLButtonElement);
   }
 
-  function renderCategoryRecommendation(buttons, item) {
+  function renderCategoryRecommendation(modal, buttons, item) {
     const prediction = item?.text ? globalThis.predictItilCategory?.(item.text, item.info) : null;
     const list = buttons[0]?.parentElement;
     if (!list) return;
 
     const previous = buttons.find((button) => button.dataset.predictionLevel);
     const next = buttons.find((button) => button.dataset.value === prediction?.category);
+    const emptyMessage = $('.gs-problem-picker-category-empty', modal);
+    if (emptyMessage instanceof HTMLElement) emptyMessage.hidden = !item || !!next;
     if (previous === next && previous?.dataset.predictionLevel === prediction?.level) return;
     list.classList.toggle('has-prediction', !!next);
 
@@ -6372,7 +6378,7 @@
     const info = $('.gs-problem-picker-info', modal);
     const backButton = $('.gs-problem-picker-back', modal);
     const categoryButtons = getCategoryButtons(modal);
-    renderCategoryRecommendation(categoryButtons, item);
+    renderCategoryRecommendation(modal, categoryButtons, item);
 
     renderFavoriteControl(modal, item, '.gs-problem-picker-favorite', '.gs-problem-picker-layout');
 
